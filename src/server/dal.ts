@@ -4,6 +4,7 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 
+import { baselineSummary, type BaselineSummary } from "@/core/ledger/baseline";
 import { listDevices, type Device } from "@/core/platform/devices";
 import { waitingPhones, type WaitingPhone } from "@/core/platform/pairing";
 import {
@@ -73,3 +74,9 @@ export const waitingPhonesForViewer = cache(async (): Promise<WaitingPhone[]> =>
 
 /** The request's time from the container's clock, for pages that show ages. */
 export const requestTime = cache(async (): Promise<Date> => (await getContainer()).clock.now());
+
+/** The Baseline page: the stopwatch and the manual runs' timings (ledger spec). */
+export const baselineForViewer = cache(async (): Promise<BaselineSummary> => {
+  await requireSession();
+  return baselineSummary(await getContainer());
+});

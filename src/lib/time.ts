@@ -12,3 +12,14 @@ export function lastSeen(then: Date, now: Date): string {
   if (ms < DAY_MS) return relative.format(-Math.floor(ms / HOUR_MS), "hour");
   return relative.format(-Math.floor(ms / DAY_MS), "day");
 }
+
+/** A stopwatch reading, "1:05" or "1:02:05", in whole seconds. */
+export function formatDuration(ms: number): string {
+  const total = Math.floor(ms / 1000);
+  const seconds = String(total % 60).padStart(2, "0");
+  const minutes = Math.floor(total / 60) % 60;
+  const hours = Math.floor(total / 3600);
+  return hours > 0
+    ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}`
+    : `${minutes}:${seconds}`;
+}

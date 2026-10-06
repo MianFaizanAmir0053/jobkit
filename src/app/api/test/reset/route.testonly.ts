@@ -11,6 +11,10 @@ export async function POST() {
   const container = await getContainer();
   if (container.kind !== "test") return new NextResponse(null, { status: 404 });
   // Deleting the sessions deletes their pairing tokens and approvals too.
-  await container.db.exec("delete from {{schema}}.sessions; delete from {{schema}}.owner;");
+  await container.db.exec(`
+    delete from {{schema}}.sessions;
+    delete from {{schema}}.owner;
+    delete from {{schema}}.baseline_runs;
+  `);
   return new NextResponse(null, { status: 204 });
 }

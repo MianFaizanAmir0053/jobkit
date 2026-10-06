@@ -6,6 +6,7 @@ import { requireSession } from "@/server/dal";
 // Each later task adds its page here: New job, Stats, Spend, Profile.
 const NAV: readonly { href: string; label: string; googleOnly?: boolean }[] = [
   { href: "/jobs", label: "Jobs" },
+  { href: "/baseline", label: "Baseline" },
   // Paired phones cannot pair, approve or revoke (platform spec B3).
   { href: "/devices", label: "Devices", googleOnly: true },
 ];
