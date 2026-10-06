@@ -2,12 +2,11 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { guardCommits, guardStaged, guardTree } from "./guard";
 
 // Each test spawns many git processes, which is slow on Windows.
-vi.setConfig({ testTimeout: 30_000, hookTimeout: 30_000 });
 
 let repo: string;
 

@@ -1,11 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createPgliteDb, type PgliteDb } from "@/adapters/pglite";
 
 import { claimOne } from "./claim";
-
-// PGlite boots a WebAssembly Postgres for each test, which takes a few seconds.
-vi.setConfig({ testTimeout: 30_000 });
 
 const CLAIM_TOKEN_1 =
   "update {{schema}}.tokens set used_by = $1 where id = 1 and used_by is null returning id";

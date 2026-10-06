@@ -15,6 +15,11 @@ export default defineConfig(({ mode }) => {
         ? ["src/**/*.live.test.ts", "scripts/**/*.live.test.ts"]
         : ["src/**/*.test.ts", "scripts/**/*.test.ts", "evals/**/*.test.ts"],
       exclude: live ? ["node_modules/**"] : ["**/*.live.test.ts", "node_modules/**", "e2e/**"],
+      // Integration tests boot a WebAssembly Postgres (PGlite) or make git
+      // repositories, which takes well over the 10-second default once files
+      // run in parallel under coverage. Hooks need the same allowance as tests.
+      testTimeout: 30_000,
+      hookTimeout: 30_000,
       coverage: {
         provider: "v8",
         // The domain logic carries the coverage bar (platform spec A7).

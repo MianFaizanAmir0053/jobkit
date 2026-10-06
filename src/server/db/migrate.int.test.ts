@@ -1,14 +1,11 @@
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { createPgliteDb, type PgliteDb } from "@/adapters/pglite";
 
 import { applyMigrations, bootstrapForTests, loadMigrations } from "./migrate";
-
-// PGlite boots a WebAssembly Postgres for each test, which takes a few seconds.
-vi.setConfig({ testTimeout: 30_000 });
 
 const MIGRATIONS_DIR = join(process.cwd(), "db", "migrations");
 
