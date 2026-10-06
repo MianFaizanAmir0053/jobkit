@@ -4,7 +4,7 @@
 - **Depends on:** `drafting`, `ledger`
 - **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 9, 11, 13, 15, 16, 18, 21, 28 and 29, the status default, and amendments A1, A4, A5, A8 and A11
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A; job states from platform B9
-- **Status:** draft for owner approval
+- **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
 

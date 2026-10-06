@@ -4,7 +4,7 @@
 - **Depends on:** `platform`
 - **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 5, 6, 8, 15, 18, 21 and 22, and amendment A11
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A
-- **Status:** draft for owner approval
+- **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
 

@@ -5,7 +5,7 @@
 - **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 8, 9, 12, 15, 20, 21 and 28, and amendments A11, A14 and A15
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A; job states, stage hashes and the model wrapper from platform B4 and B9
 - **References:** [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs), [effort](https://platform.claude.com/docs/en/build-with-claude/effort), [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
-- **Status:** draft for owner approval
+- **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
 

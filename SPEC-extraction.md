@@ -5,7 +5,7 @@
 - **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 2, 15, 16 and 18, the multi-role and language defaults, and amendments A4 and A11
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A; job states, stage hashes and the model wrapper from platform B4 and B9
 - **References:** [Claude vision](https://platform.claude.com/docs/en/build-with-claude/vision), [vision coordinates](https://platform.claude.com/docs/en/build-with-claude/vision-coordinates), [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs), [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output), [WhatsApp click to chat](https://faq.whatsapp.com/5913398998672934)
-- **Status:** draft for owner approval
+- **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
 

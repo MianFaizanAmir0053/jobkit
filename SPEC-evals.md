@@ -4,7 +4,7 @@
 - **Depends on:** `extraction`, `drafting`
 - **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 2, 3, 4, 9, 27 and 30, the one-pager's key assumptions, and amendments A7, A9 and A10
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A
-- **Status:** draft for owner approval
+- **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
 

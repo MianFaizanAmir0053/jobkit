@@ -3,7 +3,7 @@
 - **Module id:** `platform` (see [CAPABILITIES.md](CAPABILITIES.md))
 - **Depends on:** nothing
 - **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 1, 2, 4, 5, 14, 19, 23, 24, 26 and 29, with amendments A1 to A3, A6, A7, A9 and A11
-- **Status:** draft for owner approval
+- **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 Part A sets the conventions every module follows. Part B specifies the platform module itself.
 
