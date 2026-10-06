@@ -10,7 +10,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
 - [x] **Task 2: Guard and CI** — Owns: platform AC15.
   - Fixture keys are built at run time, never committed in a key-like form.
   - Verify: `npm test`; a dry commit of a planted path is refused. Depends on: 1. Files: scripts/guard.ts, scripts/guard.test.ts, .githooks/pre-commit, .github/workflows/ci.yml. Scope: M.
-- [ ] **Task 3: Database, storage and composition** — Owns: platform AC16.
+- [x] **Task 3: Database, storage and composition** — Owns: platform AC16.
   - `Db` and `Storage` ports; PGlite, pg, local-storage and Supabase-storage adapters; `{{schema}}` placeholder; migration runner and bootstrap (local by default, `--prod` with typed confirmation, bucket creation); atomic-claim helper; `src/server/container.ts`; live contract test behind `JOBKIT_LIVE=1`.
   - Verify: `npm test`; migrations twice on PGlite. Depends on: 1. Files: src/core/ports.ts, src/adapters/{pglite,pg,local-storage,supabase-storage}.ts, scripts/{migrate,bootstrap}.ts, db/migrations/0001_platform.sql, src/server/container.ts. Scope: M (two commits if needed).
 - [ ] **Task 4: Google sign-in, sessions and app shell** — Owns: platform AC2, AC3, AC4, AC9, AC10.

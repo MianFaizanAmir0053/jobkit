@@ -1,21 +1,27 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
-export default defineConfig({
-  resolve: {
-    alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
-  },
-  test: {
-    environment: "node",
-    include: ["src/**/*.test.ts", "scripts/**/*.test.ts", "evals/**/*.test.ts"],
-    // Live contract tests talk to real services and spend money; they run only by hand.
-    exclude: ["**/*.live.test.ts", "node_modules/**", "e2e/**"],
-    coverage: {
-      provider: "v8",
-      // The domain logic carries the coverage bar (platform spec A7).
-      include: ["src/core/**/*.ts"],
-      exclude: ["src/core/**/*.test.ts"],
-      thresholds: { lines: 90, branches: 90 },
+// `vitest run --mode live` runs only the live contract tests, which talk to
+// real services and spend money; every other run excludes them.
+export default defineConfig(({ mode }) => {
+  const live = mode === "live";
+  return {
+    resolve: {
+      alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
     },
-  },
+    test: {
+      environment: "node",
+      include: live
+        ? ["src/**/*.live.test.ts", "scripts/**/*.live.test.ts"]
+        : ["src/**/*.test.ts", "scripts/**/*.test.ts", "evals/**/*.test.ts"],
+      exclude: live ? ["node_modules/**"] : ["**/*.live.test.ts", "node_modules/**", "e2e/**"],
+      coverage: {
+        provider: "v8",
+        // The domain logic carries the coverage bar (platform spec A7).
+        include: ["src/core/**/*.ts"],
+        exclude: ["src/core/**/*.test.ts"],
+        thresholds: { lines: 90, branches: 90 },
+      },
+    },
+  };
 });
