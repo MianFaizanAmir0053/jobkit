@@ -5,6 +5,7 @@
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { claimOne } from "@/core/platform/claim";
 import { applyMigrations, loadMigrations } from "@/server/db/migrate";
 
 import { loadOpsEnv } from "../../scripts/ops";
@@ -47,13 +48,14 @@ describe("pg through Supabase's transaction pooler", () => {
     await app.exec("create table {{schema}}.claim_probe (id int primary key, owner text)");
     await app.query("insert into {{schema}}.claim_probe (id) values (1)");
     const claim = (who: string) =>
-      app.query(
+      claimOne(
+        app,
         "update {{schema}}.claim_probe set owner = $1 where id = 1 and owner is null returning owner",
         [who],
       );
 
-    const [a, b] = await Promise.all([claim("a"), claim("b")]);
+    const results = await Promise.all([claim("a"), claim("b")]);
 
-    expect(a.rowCount + b.rowCount).toBe(1);
+    expect(results.filter((row) => row !== null)).toHaveLength(1);
   }, 60_000);
 });
