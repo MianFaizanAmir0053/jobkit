@@ -4,10 +4,10 @@ Approved by the owner on 2026-10-06, and amended the same day when one-tap send 
 
 | Module id | Responsibility | Depends on |
 |---|---|---|
-| `platform` | App skeleton, database schema and migrations, owner sign-in and sessions, QR pairing with laptop approval, the model-call wrapper that logs cost and time per call, the job pipeline runner, keep-alive and daily purges, CI and pre-commit guard. Also holds the project-wide conventions. | — |
+| `platform` | App skeleton, database schema and migrations, owner sign-in and sessions, QR pairing confirmed by a code typed on the pairing session, the model-call wrapper that logs cost and time per call, the job pipeline runner, keep-alive and daily purges, CI and pre-commit guard. Also holds the project-wide conventions. | — |
 | `profile` | Facts YAML schema and validation, seed script, access to approved facts only, fixed answers, gap templates, signature, style examples | platform |
 | `intake` | Upload, share target, pasted text, image encoding, storage, job creation, adding screenshots, 30-day purge | platform |
-| `ledger` | Application log: statuses, timings, costs, spend cap, duplicate matching, import of earlier applications, interleaved baseline, factual-edit rate and trust-gate counter, 180-day purge | platform |
+| `ledger` | Application log: statuses, timings, costs, spend cap, duplicate matching, import of earlier applications, timing comparison with the manual arm, factual-edit rate and trust-gate counter, 180-day purge | platform |
 | `extraction` | Tiling, job record schema, vision extraction, instructions checklist, untrusted-input rules, strict contact checks, contact box and Gemini second read, multi-role pick, form questions, eligibility check | intake, profile |
 | `drafting` | Fit table, email, form and message kits, style rules, citations, independent judge and classification, gap coverage, recheck | extraction, profile |
 | `review` | Job page: contact panel and address checks, flags, checklist, editor, outbound gate on every exit, Gmail, `wa.me` and copy handoffs, Mark sent with the Gmail question, Submitted, Skip and Bounced | drafting, ledger |

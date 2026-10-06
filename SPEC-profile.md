@@ -2,7 +2,7 @@
 
 - **Module id:** `profile` (see [CAPABILITIES.md](CAPABILITIES.md))
 - **Depends on:** `platform`
-- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 5, 6, 8, 15, 21 and 22
+- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 5, 6, 8, 15, 18, 21 and 22, and amendment A11
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A
 - **Status:** draft for owner approval
 
@@ -24,7 +24,7 @@ links:
   portfolio: https://faizan-dev.vercel.app
   linkedin: https://www.linkedin.com/in/...
   github: https://github.com/...
-signature: |
+signature: |                # message kits; also what the owner sets as Gmail's mobile signature
   Faizan Amir
   Portfolio: https://faizan-dev.vercel.app
   LinkedIn: ...
@@ -36,8 +36,9 @@ cv:
 facts:
   - id: F-nextjs-production
     statement: "Shipped production Next.js applications since 2022, including Carder and Volumize."
+    phrase: "four years shipping production Next.js apps"   # fills {related} in gap templates
     kind: experience        # skill | experience | project | metric | education | language | other
-    skills: [nextjs, react, typescript]
+    skills: [nextjs, react, typescript]                    # from the shared skill vocabulary
     depth: production       # production | professional | side-project | learning
     years: 4                # optional
     source: "resume.pdf, page 1; Portfolio projects.ts: carder, volumize"
@@ -47,10 +48,10 @@ gaps:
     - id: G-not-professional
       text: "I haven't used {skill} professionally; the closest is {related}."
     - id: G-learning
-      text: "I'm new to {skill}; I have been working through it in {related}."
+      text: "I'm new to {skill}; I have been working towards it through {related}."
   known:
     - id: K-kubernetes
-      skills: [kubernetes, k8s]
+      skills: [kubernetes]
       line: "I haven't run Kubernetes in production; I deploy containers on Fly.io and Vercel."
       approved: true
 fixed_answers:
@@ -62,14 +63,14 @@ fixed_answers:
     PKR: "..."
   notice_period: "..."
   availability: "..."
-  timezone_overlap: "..."
-  relocation: "..."
-  work_authorisation:       # one entry per region the owner may meet in posts
-    - { region: PK, authorised: true }
-    - { region: US, authorised: false, sponsorship_needed: true, note: "..." }
-    - { region: UK, authorised: false, sponsorship_needed: true, note: "..." }
-    - { region: EU, authorised: false, sponsorship_needed: true, note: "..." }
-    - { region: AE, authorised: false, sponsorship_needed: true, note: "..." }
+  working_window: { start_utc: "04:00", end_utc: "13:00", text: "..." }
+  relocation: { open: true, places: [AE, SA, QA], text: "..." }
+  work_authorisation:       # one entry per country or region; anything unlisted counts as unknown
+    - { place: PK, authorised: true }
+    - { place: US, authorised: false, sponsorship_needed: true, text: "..." }
+    - { place: GB, authorised: false, sponsorship_needed: true, text: "..." }
+    - { place: EU, authorised: false, sponsorship_needed: true, text: "..." }
+    - { place: AE, authorised: false, sponsorship_needed: true, text: "..." }
   years_per_stack: { typescript: 4, python: 3 }
   eeo:
     gender: "Prefer not to say"
@@ -82,22 +83,26 @@ style_examples:             # 3 to 5 of the owner's best past emails, as plain t
   - style/2026-08-initech.txt
 ```
 
-- **Fact IDs** match `F-[a-z0-9-]+`, known-gap IDs `K-[a-z0-9-]+`, template IDs `G-[a-z0-9-]+`. IDs are unique and never reused for a different statement; changing a statement's meaning means a new ID.
-- **Depth** is what the judge uses to catch inflation: a `side-project` fact cannot support "production experience", and `years` bounds any claim about duration.
-- **Templates** use only the placeholders `{skill}` and `{related}`. `{related}` is filled with a cited approved fact, never with free text.
+- **IDs:** fact IDs match `F-[a-z0-9-]+`, known-gap IDs `K-[a-z0-9-]+`, template IDs `G-[a-z0-9-]+`. IDs are unique and never reused for a different statement; changing a statement's meaning means a new ID.
+- **Skills** come from the shared skill vocabulary (extraction spec); an unknown tag is a seed error, so fit checks compare like with like.
+- **Depth and years** are what the judge and the fit check use to catch inflation: a `side-project` fact cannot support "production experience", and `years` bounds any claim about duration.
+- **Phrases** are short noun phrases the owner approves with the fact. Code puts them into `{related}`; the model never writes that part of a gap line.
+- **Templates** use only the placeholders `{skill}` and `{related}`.
+- **Fixed answers** are structured where code decides with them: the working window (for time-zone checks), relocation (for onsite roles), work authorisation per ISO country code or region (for eligibility). A country or currency the file does not list is unknown: eligibility reports it as unclear, and a form question about it shows "Needs your answer".
+- **Signature:** message kits end with it. The Gmail app adds the owner's own Gmail signature to handoff drafts, so the runbook has the owner set Gmail's mobile signature to this text once.
 
 ## Drafting the first version
 
-Writing the first profile is a build task, not a product feature. During the build, Claude Code drafts `private/profile.yaml` from `Portfolio/public/resume.pdf` and `Portfolio/src/data/projects.ts`, with every fact set to `approved: false` and its source filled in. The owner reads each fact, edits it or deletes it, and sets `approved: true`. The owner writes the gap templates, the known gap lines, the fixed answers and the signature, and picks the style examples. No runtime code drafts facts.
+Writing the first profile is a build task, not a product feature. During the build, Claude Code drafts `private/profile.yaml` from `Portfolio/public/resume.pdf` and `Portfolio/src/data/projects.ts`, with every fact set to `approved: false` and its source and phrase filled in. The owner reads each fact, edits it or deletes it, and sets `approved: true`. The owner writes the gap templates, the known gap lines, the fixed answers and the signature, and picks the style examples. No runtime code drafts facts.
 
 ## Seeding
 
 `npm run profile:seed` reads `private/profile.yaml` and:
 
 1. validates it against the strict schema and reports every error with its line number;
-2. checks that IDs are unique and well formed, every fact has a source, the signature is present, the CV file exists, is a PDF and is at most 5 MB, and there are 3 to 5 style example files, each at most 2,000 words;
-3. computes the SHA-256 of the file plus the CV and style files; if a profile version with that hash already exists, stops without changes;
-4. uploads the CV to storage at `profile/cv-<sha256>.pdf` when that object does not exist yet;
+2. checks that IDs are unique and well formed, every fact has a source and a phrase, every skill is in the vocabulary, the signature is present, the CV file exists, is a PDF and is at most 5 MB, and there are 3 to 5 style example files with at most 1,500 words in total;
+3. computes the SHA-256 of the file plus the CV and style files. If a version with that hash already exists, it makes that version active again (which is how the owner rolls back) and stops;
+4. otherwise uploads the CV to storage at `profile/cv-<sha256>.pdf` when that object does not exist yet;
 5. inserts a `profile_versions` row holding the validated document, its hash, the CV storage path and label, and the time, and marks it active.
 
 Versions are immutable. Drafts store the profile version they used, so their citations still resolve after the profile changes.
@@ -124,8 +129,8 @@ A read-only page shows the active version's date and hash prefix, counts of appr
 
 ## Acceptance criteria
 
-1. The seed rejects, with line numbers: unknown keys, a duplicate or malformed ID, a fact without a source, a missing signature, a missing or oversized CV, a CV that is not a PDF, and fewer than 3 or more than 5 style examples.
-2. Seeding an unchanged profile creates no new version.
+1. The seed rejects, with line numbers: unknown keys; a duplicate or malformed ID; a fact without a source or phrase; a skill outside the vocabulary; a missing signature; a missing or oversized CV, or one that is not a PDF; fewer than 3 or more than 5 style examples, or more than 1,500 words in total.
+2. Seeding an unchanged profile creates no new version; seeding an older file makes its existing version active again.
 3. `getActiveProfile` never returns an unapproved fact or gap line (tested with a mixed file).
 4. An older version stays retrievable by ID after a new one is seeded.
 5. The CV is uploaded once per content hash, and the label is returned with the profile.

@@ -2,78 +2,90 @@
 
 - **Module id:** `ledger` (see [CAPABILITIES.md](CAPABILITIES.md))
 - **Depends on:** `platform`
-- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 7, 11, 17, 20 and 24, the status default, and amendments A1, A7, A8, A9 and A11
-- **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A
+- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 7, 11, 17, 20, 24 and 30, the status default, and amendments A1, A7, A8, A9 and A11
+- **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A; job states from platform B9
 - **Status:** draft for owner approval
 
 ## Objective
 
-Keep the truth about applications: what was applied for, by which route, when, at what cost and how fast. The ledger warns before a repeat application, enforces the monthly spend cap, times the interleaved manual baseline, and records the factual-edit rate and trust-gate counter that milestone 2 will need.
+Keep the truth about applications: what was applied for, by which route, when, at what cost and how fast. The ledger warns before a repeat application, enforces the monthly spend cap, runs the timing comparison with the manual baseline, and records the factual-edit rate and trust-gate counter that milestone 2 will need.
 
 ## Records
 
-- `applications`, one per job that reached a kit: company, role, normalised keys, address or number, route, status, the time of each status change, CV label, profile version, the final draft, and whether the job is an evaluation or test job.
+- `applications`: one per job and role. A row is created when a role is chosen (automatically for a single-role post, by the owner otherwise). It holds company, role, normalised keys, address or number, route, status, the time of each status change, CV label, profile version, the final draft, the timing arm, and whether the job is an evaluation or test job.
 - `earlier_applications`: applications made before jobkit, imported from the owner's list.
 - `status_changes`: an audit row for every status change, with time and session.
-- `draft_outcomes`: one row per email kit handed off, with `factual_edit` and `changed_in_gmail`, written by the review module.
-- `baseline_runs`: the manual stopwatch runs.
+- `draft_outcomes`: one row per email kit handed off, with the list of changed sentences and fields and `changed_in_gmail`, written by the review module.
+- `baseline_runs`: the manual runs, each tied to the job that started it.
+- `upload_attempts`: written by intake, read for the Stats page.
 
 ## Normalisation and keys
 
-- **Company:** lower case; punctuation removed; legal suffixes removed (Ltd, Limited, LLC, Inc, Corp, Pvt, (Pvt) Ltd, GmbH, BV, FZ-LLC, PLC and the like); whitespace collapsed.
-- **Role:** lower case; punctuation removed; common abbreviations expanded (sr to senior, jr to junior, eng to engineer, dev to developer, swe to software engineer); location and work-mode suffixes removed ("- Remote", "(Lahore)", "Hybrid"); seniority words kept, because "Senior Engineer" and "Engineer" are different roles.
-- `company_role_hash` is the SHA-256 of normalised company, a bar, and normalised role.
+- **Company:** lower case; legal suffixes removed (Ltd, Limited, LLC, Inc, Corp, Pvt, (Pvt) Ltd, GmbH, BV, FZ-LLC, PLC and the like); then every character that is not a letter or digit removed. An empty company produces no company key.
+- **Role:** lower case; common abbreviations expanded (sr to senior, jr to junior, eng to engineer, dev to developer, swe to software engineer, fe to front end, be to back end); location and work-mode words removed ("remote", "hybrid", "onsite", place names in brackets); then every character that is not a letter or digit removed, so "Front-End", "Front End" and "Frontend" match. Seniority words stay, because "Senior Engineer" and "Engineer" are different roles.
+- `company_role_hash`: the SHA-256 of normalised company, a bar, and normalised role; absent when the company is empty.
+- **Post fingerprint:** the set of word trigrams from the role's requirement texts, after the same normalisation.
 
-## Duplicate check
+## Duplicate check (ADR 0001 entry 11)
 
-`findDuplicates(candidate)` compares a new job with sent and submitted applications, earlier applications, and jobs that already have a kit. It returns every match with its reason and date:
+`findDuplicates(candidate)` compares a new application with sent and submitted applications, applications with a kit that was never sent, manual baseline runs, and earlier applications. Every match needs the owner's "apply again" tap before any outbound action:
 
-- `company-role`: same company and role, which also catches reposts with new text. **Needs "apply again".**
-- `drafted`: a kit already exists for the same company and role and was never sent. **Needs "apply again".**
-- `address`: same address or number under another role. **Information only**, because one inbox often serves every role at a company.
+- `company-role`: the same company-role hash, which also catches reposts with new text;
+- `address`: the same address or number. The banner names the earlier role, because a shared inbox often serves several roles;
+- `post`: post fingerprints with a Jaccard similarity of at least 0.6, which catches a repost under a reworded title such as "Sr. Front End Developer";
+- `drafted`: a kit already exists for the same company-role hash and was never sent.
 
-The review page shows every match; the handoff gate (review spec) enforces the "apply again" tap.
+The banner shows each match with its reason and date.
 
 ## Statuses
 
 | From | To | Trigger |
 |---|---|---|
-| (none) | `kit_ready` | a kit is ready |
+| (none) | `open` | a role is chosen |
+| `open` | `kit_ready` | the job reaches `kit_ready` |
+| `open` | `skipped` | the owner skips before a kit exists (role pick, eligibility decision, kit-type pick) |
 | `kit_ready` | `sent` | the owner taps "Mark sent" after a Gmail handoff |
 | `kit_ready` | `submitted` | the owner taps "Mark submitted" (form and message routes) |
-| `kit_ready` | `skipped` | the owner taps Skip, or skips on the eligibility banner |
+| `kit_ready` | `skipped` | the owner taps Skip |
 | `sent` | `bounced` | the owner taps "Mark bounced" |
 
-Any other transition is refused. The owner can correct a mistaken tap from the job's menu, which writes an audit row like any other change.
+Any other transition is refused. The owner can correct a mistaken tap from the job's menu, which writes an audit row like any other change. A second tap on the same button changes nothing, so a double tap cannot record twice.
+
+## The timing comparison (amendment A8)
+
+- **Periods.** Before real use, the Baseline page (which ships in the first week) times the owner's manual applications. **Real use** starts at the first handoff of a kit made by jobkit; from then until the end of week 4, the comparison runs.
+- **Arms.** During real use, the server assigns each new job to the manual arm with probability one in three, from a seeded random sequence, at the moment the job is created. The owner cannot choose or swap arms; a post the owner does not want to apply for is skipped, which removes it from both arms.
+- **Manual arm.** The job page says "This one is a manual run: apply the old way, then tap Stop", starts the stopwatch from the job's start time (intake's clock), and shows nothing else for that job: no extraction or draft runs. At Stop, the owner picks the route and types the company and role, which enter the duplicate log.
+- **Tool arm.** Total time runs from the job's start to `sent` or `submitted`.
+- Both arms therefore start at the same event: the share or upload reaching jobkit with the screenshots already taken.
 
 ## Timing and stats
 
-- **Machine time:** the sum of the job's stage durations (platform B9), which leaves out time spent waiting for the owner.
-- **Total time:** from the job's start (intake's clock) to `sent` or `submitted`.
-- The Stats page shows, for real jobs only (not evaluation or test jobs), the count, median and 90th percentile of both times, pooled and per route; each stage's median; the route mix; the factual-edit rate; and the trust-gate counter.
-
-## Interleaved baseline (amendment A8)
-
-- During weeks 1 to 3, every third application is done the old manual way. The New job page says when the next one is due ("This one is a manual run"), and the owner can swap it with the next job if this post does not suit.
-- The Baseline page has Start and Stop, a route picker and a note. The owner taps Start at the same moment the tool's clock would start (post in hand, nothing opened yet) and Stop when the application is sent or submitted.
-- The Stats page shows the baseline's count, median and 90th percentile, pooled and per route. "N times faster" appears only per route with at least 5 baseline runs and 5 tool applications on that route, and pooled once both arms have 10.
+- **Machine time** and **processing time** as defined in platform B9.
+- The Stats page shows, for real jobs only (not evaluation or test jobs):
+  - count, median and 90th percentile of machine and total time, pooled and per route;
+  - each stage's median processing time;
+  - the route mix;
+  - upload success rate;
+  - the factual-edit rate with its 95% Wilson interval, and the trust-gate counter.
+- **The comparison** shows the median total time of each arm, pooled and per route, with bootstrap 95% intervals for each median and for their ratio. It appears per route once that route has at least 5 runs in each arm, and pooled once both arms have 10. Pre-real-use baseline runs are shown separately and never enter the ratio.
 
 ## Factual edits and the trust-gate counter
 
-- An email handoff records `factual_edit = true` when the owner's in-app edits changed a claim sentence, the address, the subject, a company or role name, the greeting's name, or a gap line, or when the owner answers "Yes" to "Did you change anything in Gmail?" at Mark sent.
+- An email handoff records `factual_edit = true` when the owner's in-app edits changed a claim sentence, the address, the subject, a company or role name, the greeting's name or a gap line, or when the owner answers "Yes" to "Did you change anything in Gmail?" at Mark sent.
 - "I checked this" on a flagged sentence, with no edit, keeps the outcome clean and is counted separately as a judge false positive.
-- `trustGateState()` reads email outcomes in time order and returns `{ unlocked, cleanStreak, needed }`: unlocked after 10 consecutive clean outcomes; once unlocked, a factual edit locks it again and 5 clean outcomes unlock it. Skipped jobs and form and message kits do not count. In the MVP the state is shown on the Stats page only; nothing acts on it.
-- The Stats page states the limit of the evidence: ten clean drafts in a row are still consistent with a factual-edit rate of up to about 26% (95% upper bound).
+- `trustGateState()` reads email outcomes in time order and returns `{ unlocked, cleanStreak, needed }`: unlocked after 10 consecutive clean outcomes; once unlocked, a factual edit locks it again and 5 clean outcomes unlock it. Skipped jobs and form and message kits do not count. In the MVP nothing acts on it.
+- The streak is a gate, not a measurement. The Stats page reports the factual-edit rate over all email outcomes with its interval, and says that a streak of ten can occur by chance even at a rate near one in four.
 
 ## Spend cap
 
-- Month-to-date cost is the sum of the app's `model_calls.cost_usd` in the current UTC calendar month, matching how Anthropic's workspace limit counts. Evaluation runs use the separate "jobkit-evals" key and never write to the production database.
-- New jobs are refused when month-to-date cost is at least $25. The guard injected into the model wrapper refuses any call once it reaches $26, so a job already running can finish but overshoot stays bounded. A warning banner shows from $20.
+- Month-to-date cost is the sum of the app's `model_calls.cost_usd` in the current UTC calendar month, matching how Anthropic's workspace limit counts. Evaluation runs use their own key and local database (platform B4) and never appear here.
+- New jobs are refused when month-to-date cost is at least $25. The guard injected into the model wrapper refuses any call once it reaches $26, so a job already running can finish but overshoot stays bounded. A warning banner shows from $20. Calls with unknown cost are counted at the most expensive known rate.
 - The Spend page shows month-to-date cost, the median cost per job, and cost per stage. On day 3 of real use the owner reviews the measured cost per job and decides whether to change the cap or move a stage to a cheaper model (amendment A9).
 
 ## Retention (amendment A7)
 
-The daily purge deletes extracted records, drafts and recruiter names 180 days after the job's last status change. The application row keeps company, role, route, dates, status and the address or number, for duplicate checks.
+The daily purge deletes extracted records, drafts and recruiter names 180 days after an application's last status change, and 30 days after the last state change for jobs that never got an application (`stopped`, `closed` before a role, `failed`, `upload_failed`). The application row keeps company, role, route, dates, status and the address or number, for duplicate checks.
 
 ## Earlier applications
 
@@ -81,13 +93,13 @@ The daily purge deletes extracted records, drafts and recruiter names 180 days a
 
 ## Acceptance criteria
 
-1. Table-driven tests cover company and role normalisation: legal suffixes, abbreviations, location suffixes, and kept seniority.
-2. A repost with new text but the same company and role matches `company-role` with the earlier date; a second share of a drafted post matches `drafted`; the same address under another role yields an information-only `address` match; an imported earlier application matches.
-3. Only the transitions in the table are accepted, and each writes an audit row with time and session.
-4. Machine time is the sum of stage durations and excludes waiting states; total time runs from intake's start; stats exclude evaluation and test jobs and report n, median and 90th percentile, pooled and per route.
-5. Every third application in weeks 1 to 3 is announced as a manual run; the comparison appears only once the thresholds above are met.
-6. Factual-edit tests: an edited claim, address, subject, company or role name, greeting name or gap line each set `factual_edit`; a "Yes" to the Gmail question sets it; "I checked this" without an edit does not, and is counted as a judge false positive.
+1. Table-driven tests cover normalisation: legal suffixes, abbreviations, location words, "Front-End" equal to "Front End" and "Frontend", kept seniority, and no company key for an empty company.
+2. Duplicates: a repost with new text but the same company and role matches `company-role`; the same address under another role matches `address` and names that role; "Sr. Front End Developer" with mostly the same requirements matches `post`; a second share of a drafted post matches `drafted`; a manual run and an imported earlier application both match; every match needs "apply again".
+3. Only the transitions in the table are accepted; a skip before a kit moves `open` to `skipped`; each change writes an audit row; a double tap records once.
+4. With a seeded sequence, about one job in three is assigned to the manual arm; the arm cannot be changed; a manual-arm job runs no model stage; Stop records route, company and role.
+5. Real use starts at the first kit handoff; pre-real-use baseline runs are reported apart and never enter the ratio; the comparison appears only past the thresholds above, with bootstrap intervals.
+6. Factual-edit tests: an edited claim, address, subject, company or role name, greeting name or gap line each set `factual_edit`; a "Yes" to the Gmail question sets it; "I checked this" without an edit does not, and counts as a judge false positive.
 7. Trust-gate sequence tests: 10 clean outcomes unlock; a factual edit after unlocking locks; 5 clean outcomes unlock again; skipped jobs and non-email kits are ignored.
-8. With fixture `model_calls` rows, new jobs are refused from $25, calls are refused from $26, and the banner shows from $20.
-9. With a fake clock, the purge removes records, drafts and recruiter names after 180 days and keeps the application row.
+8. With fixture `model_calls` rows, new jobs are refused from $25, calls are refused from $26, the banner shows from $20, and an unknown-cost call counts at the highest rate.
+9. With a fake clock, the purge removes records, drafts and recruiter names after 180 days for applications and after 30 days for kit-less jobs, and keeps the application row.
 10. The CSV import reports bad rows by line and is idempotent.

@@ -184,3 +184,31 @@ A second Anthropic key, "jobkit-evals", in its own Console workspace with a $15 
 - Mark sent asks "Did you change anything in Gmail?". The answer counts towards the factual-edit rate, which also counts edits to the address, subject, company or role names, greeting name and gap lines.
 - A GitHub Actions schedule calls the keep-alive endpoint every 8 hours, because Supabase asks for a few database requests a day and Vercel Hobby cron runs only daily.
 - The plan carries a ranked cut list of features.
+
+## Refinements from the spec reviews (2026-10-06)
+
+Three fresh-context reviews of the module specs raised 36 findings; none was dismissed. Most changed only the specs. These refine decisions recorded above, and one corrects a spec that had drifted from this record.
+
+### A12. Pairing is confirmed by a code (refines A3)
+
+Sessions are of two kinds by how they were made: `google` (a Google sign-in, on any device) or `paired` (a QR pairing). After a phone redeems a QR code, it shows a 6-digit code, and only the session that created the QR code can approve the phone, by typing that code while its own Google sign-in is still within 5 minutes. Someone who redeems a leaked QR code first cannot be approved by mistake, because the code the owner sees on their own phone does not match. Session lifetimes are absolute: 30 days for `google`, 180 for `paired`. Google's `sub` is pinned at the first sign-in.
+
+### A13. Timing arms are assigned at random (refines A8)
+
+Real use starts at the first handoff of a kit made by jobkit. From then to the end of week 4, the server assigns each new job to the manual arm with probability one in three when the job is created; the owner cannot choose or swap. Both arms start at the same event, the share or upload reaching jobkit. Manual runs from before real use are reported separately and never enter the comparison, which carries bootstrap 95% intervals.
+
+### A14. No jobkit signature on Gmail handoffs (refines entry 21)
+
+The Gmail app adds the owner's own Gmail signature to a handoff draft, so email kits carry none; the runbook has the owner set Gmail's mobile signature to the profile's signature once. Message kits keep the profile's sign-off, and milestone 2's API send will append it.
+
+### A15. Company statements limited to name, role and requirements (refines entry 12)
+
+The job record holds no description of the company, so kits mention the company only by name, the role only by title, and requirements only as the post states them. A sentence that says more is flagged for the owner.
+
+### A16. Duplicate rule restored to entry 11
+
+A spec had made address-only matches informational and dropped post-text matching, without the owner's decision. Both are restored: every match (company and role, address, post text, existing draft) needs "apply again". Post text matches by similarity of the requirement texts, so a reworded repost is caught, and normalisation ignores punctuation and spacing ("Front-End", "Front End", "Frontend").
+
+### A17. Evaluation design (refines A9 and A10)
+
+The ten held-out test cases are the ten labelled blind, so the headline numbers rest on labels no model shaped. The judge is measured on a frozen set of at least 80 sentences written against the owner's real facts and labelled once. Model comparisons use an exact McNemar test on the same cases. A month's planned evaluation runs cost about $14, inside the $15 evaluation workspace.
