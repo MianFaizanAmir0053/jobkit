@@ -153,14 +153,14 @@ export function findDuplicates(
 
 ### B1. Database and migrations
 
-- Migrations are SQL files `db/migrations/NNNN_<name>.sql`, forward-only, applied in order and recorded in `jobkit.schema_migrations`. The same files run on PGlite and on Supabase Postgres.
-- Every statement names its schema (`jobkit.jobs`, never `jobs`), so nothing depends on `search_path`, which Supabase's transaction pooler does not keep between statements.
+- Migrations are SQL files `db/migrations/NNNN_<name>.sql`, forward-only, applied in order and recorded in `<schema>.schema_migrations`. The same files run on PGlite and on Supabase Postgres.
+- Every statement names its schema through the placeholder `{{schema}}` (`{{schema}}.jobs`, never `jobs`), which the migration runner and the `Db` adapters fill in: `jobkit` in production and in tests, a throwaway name in the live contract test. Nothing depends on `search_path`, which Supabase's transaction pooler does not keep between statements.
 - The `Db` port offers `query(sql, params)` and `tx(fn)`. The production adapter uses a `pg` pool against Supabase's transaction pooler, with no named prepared statements.
-- **Bootstrap (once, from the laptop):** `npm run db:bootstrap` connects with `DATABASE_BOOTSTRAP_URL` (the project's `postgres` role, kept only in the laptop's `.env.local`) and creates the role `jobkit_app` with the password from `JOBKIT_APP_DB_PASSWORD`, and the schema `jobkit` owned by that role. The password never appears in a migration or in git.
+- **Bootstrap (once, from the laptop):** `npm run db:bootstrap` connects with `DATABASE_BOOTSTRAP_URL` (the project's `postgres` role, kept only in the laptop's `.env.ops.local`, see B8) and creates the role `jobkit_app` with the password from `JOBKIT_APP_DB_PASSWORD`, and the schema `jobkit` owned by that role. The password never appears in a migration or in git. Tests run the PGlite equivalent (create the schema) before migrating.
 - **Migrations run as `jobkit_app`**, so it owns every jobkit table. Every table has row-level security enabled with no policies: Supabase's `anon` and `authenticated` roles have no grants on the schema and read nothing even if the Data API were exposed, while the owning role is unaffected. The Data API's exposed schemas stay at the default (`public` only).
 - **Atomic claims:** every check-then-act on shared rows (redeeming a pairing token, approving a session, claiming a job's lease) is one conditional `UPDATE … WHERE … RETURNING`, never a read followed by a write, because PGlite's single connection would hide a race in tests.
-- A live contract test (`JOBKIT_LIVE=1`, by hand) runs migrations into a throwaway schema on the real database, checks that `jobkit_app` can read and write, that `anon` cannot, and that two concurrent claims on one row let exactly one win, then drops the schema.
-- Platform owns these tables: `owner`, `sessions`, `pairing_tokens`, `jobs` (state and lease columns), `job_stage_runs`, `model_calls`, `heartbeat` and `schema_migrations`. Other modules add theirs in their own migrations.
+- A live contract test (`JOBKIT_LIVE=1`, by hand) uses the bootstrap connection to create a throwaway schema owned by `jobkit_app`, runs the migrations into it as `jobkit_app`, checks that `jobkit_app` can read and write, that `anon` cannot, and that two concurrent claims on one row let exactly one win, then drops the schema.
+- Platform owns these tables: `owner`, `sessions`, `pairing_tokens`, `jobs` (state, pending stage and lease columns), `job_state_changes`, `job_stage_runs`, `model_calls`, `heartbeat` and `schema_migrations`. Other modules add theirs in their own migrations.
 
 ### B2. Owner sign-in and sessions
 
@@ -170,7 +170,7 @@ export function findDuplicates(
 - **Sessions:** a session is a `sessions` row plus the cookie `jobkit_session` holding a random 32-byte token (base64url), HttpOnly, Secure, SameSite=Lax, Path=/, with `Max-Age` equal to the session's remaining life. The row stores the token's SHA-256 hash, never the token. Columns: kind, label (from the user agent, for example "Windows · Chrome"), `created_at`, `last_seen_at`, `expires_at`, `approved_at`, and `google_auth_at`.
 - **Lifetimes are absolute, never sliding:** a `google` session ends 30 days after it was created, a `paired` session 180 days after (ADR 0001, default for the phone). The cookie is set only when the session is created or rotated, which happens in route handlers and server actions, never while rendering a page.
 - **Re-authentication** (the 5-minute rule below) runs Google sign-in from inside a `google` session: on success it updates that same row's `google_auth_at` and rotates the token (new token, new hash, same row).
-- **`requireSession({ kind, googleAuthWithin })`** runs at the start of every server action and route handler. It hashes the cookie's token, loads the row, rejects a missing, expired or unapproved session, optionally requires a kind or a recent Google sign-in, and updates `last_seen_at` at most once an hour.
+- **`requireSession({ kind, googleAuthWithin })`** runs at the start of every server action, every route handler, and every page and layout that loads data, so no server component renders the owner's data for an unapproved, expired or revoked session. It hashes the cookie's token, loads the row, rejects a missing, expired or unapproved session, optionally requires a kind or a recent Google sign-in, and updates `last_seen_at` at most once an hour. An unapproved `paired` session sees only the "Type this code on your laptop" screen.
 - **Cross-site requests:** route handlers that change state accept only requests whose `Origin` equals `APP_ORIGIN`; server actions rely on Next's own origin check as well.
 - **Sign out** deletes the row. **Revoke** on the Devices page deletes another session's row.
 - The proxy (`src/proxy.ts`) only redirects page requests that carry no session cookie to `/login`. The real check is `requireSession`, because Next documents that the proxy can be skipped.
@@ -196,16 +196,16 @@ Rules:
 ### B4. Model-call wrapper
 
 - `callModel({ stage, jobId, model, system, content, schema, effort, maxTokens })` returns the parsed output and its usage, or a typed failure. The provider follows from the model ID.
-  - **Claude:** `messages.parse` with `output_config.format = zodOutputFormat(schema)` and `output_config.effort`. Server-side refusal fallbacks are enabled in their default form if the API accepts them together with structured outputs; the implementation checks the current documentation first.
+  - **Claude:** a streamed request with `output_config.format` set from the stage's zod schema and `output_config.effort`; the final message is parsed with the same schema. Server-side refusal fallbacks are enabled in their default form if the API accepts them together with structured outputs; the implementation checks the current documentation first.
   - **Gemini:** a JSON-schema response format, then the same zod parse. The model ID is pinned at implementation after checking Google's current model list, and only the paid tier is used (ADR 0001 entry 2).
 - The wrapper has no parameter for tools, so no stage can hand a tool to a model that reads post text.
-- **Logging:** the wrapper inserts a `model_calls` row with outcome `started` before sending, then completes it: the model that actually answered (`response.model`), input, output, cache-read and cache-write tokens per iteration, cost in US dollars, end time, outcome, and the provider's request ID. A row left at `started` by a killed invocation is marked `abandoned` with unknown cost when the job is next claimed.
-- **Costs** come from a price table in code, checked against the providers' pricing pages whenever the table changes: Claude Opus 5.5 at $4 per million input tokens and $20 per million output tokens (thinking is billed as output), Claude Sonnet 5.5 at $2 and $10, any model a refusal fallback can route to at its own rates, cache reads and writes at their published rates, and Gemini Flash at Google's published rate. Each fallback iteration is priced at the rates of the model that ran it. An unknown model ID records the cost as unknown and shows a warning on the Spend page.
-- **Guard:** before each call the wrapper runs a guard injected by the composition root. In the app, the ledger supplies it to enforce the monthly cap. When the guard refuses, no request is sent and the outcome is `refused-cap`.
-- **Retries:** the SDKs' own retries are switched off (`maxRetries: 0`). The wrapper retries once on a rate limit, a server error or a dropped connection, and never on a timeout, a refusal or any other client error. With a 120-second timeout per attempt, a stage's worst case is 240 seconds, inside Vercel's 300-second limit.
+- **Logging, one row per request attempt:** before each attempt the wrapper inserts a `model_calls` row with outcome `started`, then completes it: the model that actually answered (`response.model`), input, output (thinking included), cache-read and cache-write tokens per iteration, cost in US dollars, end time, outcome, and the provider's request ID. A retried request has two rows. An attempt that ends without usage (timeout, dropped connection, a row left `started` by a killed invocation and marked `abandoned` when the job is next claimed) records a provisional cost: its input tokens, counted before sending, at the input rate, plus its `max_tokens` at the output rate. Provisional costs count towards the cap and are labelled as upper bounds on the Spend page.
+- **Costs** come from a price table in code, checked against the providers' pricing pages whenever the table changes: Claude Opus 5.5 at $4 per million input tokens and $20 per million output tokens, Claude Sonnet 5.5 at $2 and $10, any model a refusal fallback can route to at its own rates, cache reads and writes at their published rates, and Gemini Flash at Google's published rates. Both providers bill thinking tokens as output. Each fallback iteration is priced at the rates of the model that ran it. An unknown model ID gets the provisional cost above and a warning on the Spend page.
+- **Guard:** before each attempt the wrapper runs a guard injected by the composition root. In the app, the ledger supplies it to enforce the monthly cap. When the guard refuses, no request is sent and the outcome is `refused-cap`.
+- **Timeouts and retries:** the SDKs' own retries are switched off (`maxRetries: 0`). Responses are streamed: an attempt is abandoned when no event arrives for 45 seconds, or when it passes 200 seconds in all. The wrapper retries once on a rate limit, a server error or a dropped connection, after the `retry-after` the provider sends, capped at 15 seconds; it never retries a timeout, a refusal or any other client error. A model stage's worst case is therefore about 215 seconds plus its own image and database work.
 - **Refusal:** a `refusal` stop reason fails the stage at once, with no retry and the message "The model declined this post."
-- **Caching:** the stable parts of each prompt (instructions, approved profile) come first and are marked for prompt caching.
-- **Evaluations** use the same wrapper with their own composition: a local PGlite database seeded from `private/profile.yaml`, the `ANTHROPIC_EVALS_API_KEY`, and a guard enforcing the run's `--budget`. They never use `DATABASE_URL`, so evaluation spend never reaches the app's `model_calls` or its cap.
+- **Caching** is decided per stage in the module specs. In the MVP no stage uses prompt caching (drafting spec explains why); the stable parts of each prompt still come first, so caching can be switched on without reordering.
+- **Evaluations** use the same wrapper with their own composition: a local PGlite database seeded from `private/profile.yaml`, `ANTHROPIC_EVALS_API_KEY` and `GEMINI_EVALS_API_KEY`, and a guard enforcing the run's `--budget`. They refuse to start with any remote database URL or with the app's keys, so evaluation spend never reaches the app's `model_calls`, its cap or its workspace.
 
 ### B5. App shell and PWA
 
@@ -216,67 +216,84 @@ Rules:
 
 ### B6. Keep-alive and the daily jobs
 
-- `GET /api/cron/keepalive` accepts only `Authorization: Bearer <KEEPALIVE_SECRET>`. It runs three small queries and updates the `heartbeat` row, and can do nothing else. A GitHub Actions schedule calls it every 8 hours, through a GitHub environment restricted to the `main` branch that holds `KEEPALIVE_SECRET` and nothing else.
+- `GET /api/cron/keepalive` accepts only `Authorization: Bearer <KEEPALIVE_SECRET>`. It runs three small queries and updates the `heartbeat` row, and can do nothing else. A GitHub Actions schedule calls it every 8 hours. On GitHub's free plan, environment secrets are not available to private repositories, so `KEEPALIVE_SECRET` is a repository secret referenced only by the keep-alive workflow; it is the only secret in GitHub and can do nothing but touch the heartbeat. If the owner's plan offers environments, the secret moves into one restricted to `main`.
 - `GET /api/cron/daily` accepts only `Authorization: Bearer <CRON_SECRET>`, which only Vercel holds. Vercel's cron calls it once a day. It touches the heartbeat and runs the retention purges that intake and ledger define.
 - GitHub disables scheduled workflows in public repositories after 60 days without activity. If the repository goes public, the runbook says to re-enable the schedule; the daily Vercel run alone still makes a few database requests a day.
 
 ### B7. CI and the guard
 
-- GitHub Actions on every push and pull request: `npm ci`, lint, typecheck, tests with the coverage threshold, build, and the guard below over the whole tree and over every commit in the push. These jobs get no secrets.
-- `npm run prepare` sets `core.hooksPath` to `.githooks`. The pre-commit hook runs the same guard on staged changes. It blocks a path under `private/`, a `.env` file other than `.env.example`, a file larger than 1 MB, and content matching a key pattern: Anthropic keys (`sk-ant-`), Google API keys (`AIza`), Google OAuth client secrets (`GOCSPX-`), Supabase secret keys (`sb_secret_`), private-key headers, and long JWT-shaped strings.
+- GitHub Actions on every push and pull request: `npm ci`, lint, typecheck, tests with the coverage threshold, build, and the guard below over the whole tree and over every commit the push adds. The checkout fetches full history; on a new branch, whose `before` is all zeros, "added commits" means those not on `main`. These jobs get no secrets.
+- `npm run prepare` sets `core.hooksPath` to `.githooks`. The pre-commit hook runs the same guard on staged changes. It blocks:
+  - a path under `private/`, a `.env` file other than `.env.example`, or a file larger than 1 MB;
+  - content matching a key pattern: Anthropic keys (`sk-ant-`), Google API keys (`AIza`), Google OAuth client secrets (`GOCSPX-`), Supabase secret keys (`sb_secret_`), connection strings carrying a password (`postgres://user:password@` and `postgresql://` alike), private-key headers, and long JWT-shaped strings;
+  - on the laptop, any staged text containing an exact value of 12 characters or more from `.env.local` or `.env.ops.local`, which catches the random secrets no pattern can.
 - Before the repository is made public, a full-history scan runs (ADR 0001 entry 30).
 
 ### B8. Environment variables
 
-Documented in `.env.example` with empty values:
+Three places hold values, each with its own purpose. All are documented in `.env.example` with empty values; the owner sets real values, and none goes in chat or git.
 
-- **App (Vercel and `.env.local`):** `OWNER_EMAIL`, `APP_ORIGIN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `DATABASE_URL` (as `jobkit_app`, through the transaction pooler), `SUPABASE_URL`, `SUPABASE_SECRET_KEY` (Supabase's newer secret key format; the legacy `service_role` key is not used), `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `CRON_SECRET`, `KEEPALIVE_SECRET` and `JOBKIT_ENV` (`development`, `test` or `production`).
-- **Laptop only (`.env.local`):** `DATABASE_BOOTSTRAP_URL`, `JOBKIT_APP_DB_PASSWORD` and `ANTHROPIC_EVALS_API_KEY`.
+- **Vercel (production only):** `OWNER_EMAIL`, `APP_ORIGIN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `DATABASE_URL` (as `jobkit_app`, through the transaction pooler), `SUPABASE_URL`, `SUPABASE_SECRET_KEY` (Supabase's newer secret key format; the legacy `service_role` key is not used), `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `CRON_SECRET`, `KEEPALIVE_SECRET` and `JOBKIT_ENV=production`.
+- **`.env.local` (development and evaluations on the laptop; `next dev` loads it):** `OWNER_EMAIL`, `APP_ORIGIN=http://localhost:3000`, the Google client values, `JOBKIT_ENV=development`, `ANTHROPIC_EVALS_API_KEY` and `GEMINI_EVALS_API_KEY`. No production database URL and no production model key: the dev server and the evaluation runner refuse to start if they find a remote `DATABASE_URL`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`, so a local run can never spend the app's budget unseen.
+- **`.env.ops.local` (laptop operations only; loaded explicitly by the bootstrap, migrate, seed and import scripts, never by the app):** `DATABASE_BOOTSTRAP_URL`, `JOBKIT_APP_DB_PASSWORD`, the production `DATABASE_URL`, `SUPABASE_URL` and `SUPABASE_SECRET_KEY`.
 
-The owner sets real values; none goes in chat or git.
 
 ### B9. Jobs, states and the pipeline runner
 
 Modules register stages; the runner owns their order, the job's state and the bookkeeping, not the stages' logic.
 
-**Job states** (`jobs.state`) and their transitions, the single table every other spec cites:
+**Job states** (`jobs.state`), their kinds and transitions: the single table every other spec cites. Every change of state is recorded in `job_state_changes` with its time.
 
-| State | Meaning | Next states |
-|---|---|---|
-| `manual_run` | the job was assigned to the manual arm of the timing comparison (ledger spec); nothing uploads and no stage runs | `closed` (the owner taps Stop) |
-| `uploading` | intake is receiving images | `queued`, `upload_failed` |
-| `upload_failed` | the upload did not complete within 15 minutes, or its objects were missing; the page offers "Upload again" | `uploading` |
-| `queued` | ready for the first stage | `extracting` |
-| `extracting` | `extract` (post images or text) or `extract_questions` (form images) running | `needs_role_pick`, `checking`, `drafting` (new form questions on a ready kit), `stopped`, `failed` |
-| `needs_role_pick` | waiting for the owner to pick a role | `checking`, `closed` |
-| `checking` | `eligibility` running (code only, no model) | `needs_eligibility_decision`, `needs_kit_type`, `drafting`, `failed` |
-| `needs_eligibility_decision` | waiting for Draft anyway or Skip | `needs_kit_type`, `drafting`, `closed` |
-| `needs_kit_type` | the route is `other` or `unknown`; waiting for the owner to pick email, form or message | `drafting`, `closed` |
-| `drafting` | `draft`, `address_read` and `address_checks` running together | `judging`, `failed` |
-| `judging` | `judge` running | `kit_ready`, `failed` |
-| `kit_ready` | the kit is ready for review | `extracting` (screenshots added), `drafting` (contact edited, another kit type, or new questions), `needs_role_pick` (the owner picks another role) |
-| `stopped` | not a job post, or not in English | `extracting` (the owner confirms a post marked "not a job post"; never for language) |
-| `closed` | the owner skipped it before a kit existed | none |
-| `failed` | a stage failed; the page shows the stage, a readable reason and Retry | the failed stage's running state |
+| State | Kind | Meaning | Next states |
+|---|---|---|---|
+| `manual_run` | owner | assigned to the manual arm of the timing comparison (ledger spec); nothing uploads and no stage runs | `closed` (Stop) |
+| `uploading` | client | intake is receiving images | `queued`, `upload_failed` |
+| `upload_failed` | owner | the upload did not complete within 15 minutes, or its objects were missing | `uploading` (Upload again), `closed` (Skip) |
+| `queued` | running | ready for the first stage | `extracting` |
+| `extracting` | running | `extract` or `extract_questions` due or running | `needs_role_pick`, `checking`, `drafting` (new form questions on a ready kit), `stopped`, `failed` |
+| `needs_role_pick` | waiting | the owner picks a role | `checking`; on Skip, `closed`, or back to `kit_ready` if another role already has a kit |
+| `checking` | running | `eligibility` (code only, no model) | `needs_eligibility_decision`, `needs_kit_type`, `drafting`, `failed` |
+| `needs_eligibility_decision` | waiting | Draft anyway or Skip | `needs_kit_type`, `drafting`, `closed` |
+| `needs_kit_type` | waiting | the route is `other` or `unknown`; the owner picks email, form or message | `drafting`, `closed` |
+| `drafting` | running | `draft` or `draft_answers`, with `address_read` and `address_checks` alongside | `judging`, `failed` |
+| `judging` | running | `judge` | `kit_ready`, `failed` |
+| `kit_ready` | ready | the kit is ready for review | `extracting` (screenshots added), `drafting` (contact edited, another kit type, or new questions), `needs_role_pick` (another role) |
+| `stopped` | owner | not a job post, or not in English | `extracting` (the owner confirms a post marked "not a job post"; never for language), `closed` |
+| `failed` | owner | a stage failed; the page shows the stage, a readable reason, Retry and Skip | the failed stage's running state (Retry), `closed` (Skip) |
+| `closed` | final | finished without a kit, or skipped | none |
 
-The application's outcome (sent, submitted, skipped, bounced) is the ledger's status, not a job state.
+- **Kinds:** only `running` jobs are advanced by the runner. `waiting` and `owner` states move only on the owner's action; `client` moves on intake's requests; `ready` and `final` never advance by themselves. The application's outcome (sent, submitted, skipped, bounced) is the ledger's status, not a job state.
+- **Pending stage:** a running job records which stage is due next (`jobs.pending_stage`), so `extracting` knows whether `extract` or `extract_questions` comes next, and `drafting` whether it is `draft` or `draft_answers`.
+- **Timeouts are checked when status is read** (each poll and page load), and again by the daily cron as a backstop: an `uploading` job older than 15 minutes moves to `upload_failed`; a pending pairing older than 5 minutes is deleted.
 
-**Stage runs and idempotency:** each stage run is recorded in `job_stage_runs` with the stage, an input hash, its output, start and end times, and an attempt number. The input hash covers everything the stage reads: the job's image hashes and pasted text, the chosen role, the profile version, the contact the owner typed, the kit type. A stage whose output already exists for the same input hash reuses it without calling a model; new screenshots, another role or an edited contact produce a new hash and a fresh run.
+**Stage runs and idempotency:** each stage run is recorded in `job_stage_runs` with the stage, its input hash, its output and output hash, start and end times, and an attempt number. Each stage hashes only what it reads, and a stage whose output already exists for the same input hash reuses it without calling a model:
+
+| Stage | Input hash covers |
+|---|---|
+| `extract` | post image hashes and pasted text; the owner's "This is a job post" confirmation; model, effort and prompt version |
+| `extract_questions` | form image hashes; model, effort and prompt version |
+| `eligibility` | the record's output hash; the chosen role; the profile version; the owner's eligibility decision |
+| `draft` | the record's output hash; the chosen role; the profile version; the kit type; the owner's declined instructions; model, effort and prompt version |
+| `draft_answers` | the IDs and texts of questions not yet answered; the profile version; model, effort and prompt version |
+| `address_read` | the crop's hash; model and prompt version |
+| `address_checks` | the address as it now stands (extracted or typed by the owner) |
+| `judge` | the output hash of `draft` or `draft_answers`; the cited facts' hash; model, effort and prompt version |
+
+So the owner's override re-runs `extract`; an edited address re-runs only `address_checks`, and the draft, the verdicts and the owner's edits stay; new screenshots re-run what reads them and nothing else.
 
 **Leases instead of self-requests:**
 
-- A job is advanced by whichever request finds it runnable (not in a waiting or final state): the upload confirmation, or the open job page and jobs list, which poll every 2 seconds and send `POST /api/jobs/<id>/advance` (a normal session-checked, origin-checked request) when the status reply says the job is runnable and unclaimed.
+- The runner advances a `running` job when a request finds it unclaimed: the upload confirmation, or a page that polls. `POST /api/jobs/<id>/advance` is a normal session-checked, origin-checked request.
 - `advance` claims the job's lease with one conditional update that succeeds only when no unexpired lease exists, sets the lease to expire 330 seconds later (longer than Vercel's 300-second limit, so a killed invocation's lease always lapses), replies 202, and runs the pipeline in Next's `after()`.
-- The pipeline runs stages in order within that one invocation. Before starting a stage, it checks that the stage's worst case (240 seconds for a model stage) still fits before 280 seconds of invocation time; if not, it releases the lease and stops, and the next poll resumes it. It also stops at a waiting state.
+- Within that invocation the runner runs stages in order. It starts a model stage only if 215 seconds (its worst case, B4) still fit before 285 seconds of invocation time; otherwise it releases the lease and stops, and the next poll resumes it. A typical job (extract about 25 seconds, the drafting group about 30, the judge about 15) finishes in one invocation.
 - No request ever calls the app's own URL, so Vercel's loop detection and deployment protection never come into play.
 - A stage started three times without finishing (killed invocations or retryable errors) moves the job to `failed`; Retry resets that stage's attempt count. A refusal fails at once.
-- While no page is open, a job waits where it stopped and resumes when the owner opens the job or the jobs list.
+- **Polling:** the job page polls every 2 seconds only while the job is `running` or `client`, slowing to every 5 seconds after a minute, and stops while the page is hidden. The jobs list polls every 10 seconds only while some job is running. Ready, waiting, owner and final states are never polled. This keeps the app well inside Vercel Hobby's monthly invocations.
 
-**Times:**
+**Times** (computed from `job_state_changes`, `job_stage_runs` and the lease history):
 
-- **Machine time** is the wall-clock time from the job's start (intake's clock) to `kit_ready`, minus the intervals the job spent in waiting states (`needs_role_pick`, `needs_eligibility_decision`, `needs_kit_type`) and between a failure and its Retry. Upload, cold starts and pauses between stages all count. The job page's poll adds at most 2 seconds before the kit appears.
-- **Processing time** is the sum of stage-run durations, reported separately so the cost of waiting for the phone or a cold start is visible.
-- **Concurrency inside a stage group:** in `drafting`, the runner starts `draft`, `address_read` and `address_checks` together and waits for all three; each is still recorded as its own stage run with its own input hash.
+- **Machine time** runs from the job's start (intake's clock) to its first `kit_ready`. It excludes every interval spent in a `waiting` or `owner` state, and every gap in which the job was runnable but unclaimed for more than 5 seconds because no page was polling (a locked phone, a closed app). Those excluded gaps are reported separately as paused time. Upload, cold starts and normal poll delays count.
+- **Processing time** is the union of stage-run intervals, so the drafting group's concurrent stages are counted once.
 
 ### B10. Acceptance criteria
 
@@ -285,16 +302,17 @@ The application's outcome (sent, submitted, skipped, bounced) is the ledger's st
 3. Session lifetimes are absolute: a `google` session is refused after 30 days and a `paired` one after 180, however often they are used; the cookie's `Max-Age` matches.
 4. Re-authentication updates the same row's `google_auth_at` and rotates the token; the old token stops working.
 5. A pairing token can be created only by a `google` session whose Google sign-in is at most 5 minutes old. It works exactly once, within two minutes, while its creating session exists; every failure returns the same message.
-6. A redeemed `paired` session is refused everywhere until approved. Only the creating session can approve, only with the matching confirmation code and a Google sign-in still within 5 minutes; five wrong codes, Reject or 5 minutes without approval delete it.
+6. A redeemed `paired` session is refused everywhere until approved, including when it loads `/jobs`, `/stats` or a job page, which render only the waiting screen. Only the creating session can approve, only with the matching confirmation code and a Google sign-in still within 5 minutes; five wrong codes, Reject or 5 minutes without approval delete it.
 7. In the end-to-end pairing test, no request URL and no server log line contains the token.
-8. After a session is revoked, its next request is refused and redirected to sign-in. `paired` sessions cannot reach the Devices page, create tokens, approve or revoke (server-side checks).
+8. After a session is revoked, its next request or page load is refused and redirected to sign-in. `paired` sessions cannot reach the Devices page, create tokens, approve or revoke (server-side checks).
 9. A state-changing request with a foreign `Origin` is refused.
 10. The test sign-in route returns 404 in a production build.
-11. Every model call has exactly one `model_calls` row: inserted as `started` before sending and completed after, recording the answering model and each iteration's cost; a call refused by the guard sends nothing; a refusal is not retried; the SDK's own retries are off.
+11. Every request attempt has exactly one `model_calls` row: inserted as `started` before sending and completed after, recording the answering model and each iteration's cost; a retried call has two rows; an attempt without usage carries a provisional upper-bound cost; a call refused by the guard sends nothing; a refusal is not retried; the SDK's own retries are off; a stream silent for 45 seconds is abandoned.
 12. The wrapper's type signature has no way to pass tools (a type-level test fails to compile if one is added).
-13. Evaluation runs write only to their local database and never touch the app's `model_calls` (tested with both compositions).
+13. Evaluation runs write only to their local database, use only the evaluation keys, and refuse to start when a remote database URL or an app key is present; the dev server refuses the same.
 14. The keep-alive endpoint accepts only `KEEPALIVE_SECRET` and only touches the heartbeat; the daily endpoint accepts only `CRON_SECRET`; each rejects the other's secret.
-15. CI runs lint, typecheck, tests with the coverage threshold, build and the guard over the tree and the pushed commits. The guard blocks a staged file under `private/` and staged strings shaped like each key pattern listed in B7.
-16. Migrations apply cleanly to an empty PGlite database, and running them again changes nothing; every statement names the `jobkit` schema.
-17. Runner: stages run in order inside one claimed invocation; a second `advance` while the lease is live is refused; a lapsed lease can be claimed again; an unchanged input hash reuses the stage's output without a model call, and a changed one runs it again; three unfinished starts move the job to `failed`, and Retry resumes; every transition outside the table is refused.
-18. Machine time includes upload and pauses between stages and excludes waiting states and the time before a Retry; processing time is reported separately.
+15. CI runs lint, typecheck, tests with the coverage threshold, build and the guard over the tree and the commits the push adds, including on a new branch. The guard blocks a staged file under `private/`, staged strings shaped like each key pattern in B7, a connection string with a password, and an exact value from the local env files.
+16. Migrations apply cleanly to an empty PGlite database after the test bootstrap, and running them again changes nothing; every statement uses the `{{schema}}` placeholder.
+17. Runner: only `running` jobs advance; stages run in order inside one claimed invocation; a second `advance` while the lease is live is refused; a lapsed lease can be claimed again; each stage's input hash follows its row in the table, so the override re-runs `extract`, an edited address re-runs only `address_checks`, and an unchanged input reuses the output with no model call; three unfinished starts move the job to `failed`, and Retry resumes; Skip closes `failed`, `upload_failed` and `stopped` jobs; timeouts apply when status is read; every transition outside the table is refused.
+18. Times: machine time ends at the first `kit_ready`, includes upload and normal poll delays, and excludes waiting and owner states and unpolled gaps, which are reported as paused time; processing time counts concurrent stages once.
+19. Polling stops while the page is hidden and never runs for ready, waiting, owner or final states.

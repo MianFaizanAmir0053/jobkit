@@ -12,7 +12,7 @@ Put everything the owner must check on one phone screen, refuse every outbound a
 
 ## Jobs list
 
-`/jobs` lists jobs newest first, with company, role, route, state or status, and a progress label while the pipeline runs. Failed jobs show their reason and Retry; jobs in `upload_failed` show "Upload again". Opening the list resumes runnable jobs (platform B9).
+`/jobs` lists jobs newest first, with company, role, route, state or status, and a progress label while the pipeline runs. Failed jobs show their reason, Retry and Skip; jobs in `upload_failed` show "Upload again" and Skip. Opening the list resumes running jobs, and the list polls only while some job is running (platform B9).
 
 ## Job page
 
@@ -25,7 +25,8 @@ Put everything the owner must check on one phone screen, refuse every outbound a
 - `needs_eligibility_decision`: the reasons, with Draft anyway and Skip.
 - `needs_kit_type`: email, form or message, and Skip.
 - `stopped`: the reason. For "not a job post", the button "This is a job post" sends it back to extraction.
-- `failed`: the stage, a readable reason and Retry.
+- `failed`: the stage, a readable reason, Retry and Skip.
+- `upload_failed`: "Upload again" and Skip.
 - While a stage runs: state names and elapsed seconds.
 
 **The kit (`kit_ready`), from top to bottom:**
@@ -40,13 +41,13 @@ Put everything the owner must check on one phone screen, refuse every outbound a
    - every instruction from the post, marked applied, declined, not applied, or "Not followed: addressed to AI". The owner can decline an applied subject format, word limit or keyword, which rebuilds the subject or clears the flag it caused;
    - required attachments, each with a tick box;
    - screening questions addressed to AI, marked "Not answered".
-4. **Fit table:** each requirement with Met, Partial or Gap; tapping a verdict shows the cited facts; `fit_unverified` rows say why.
+4. **Fit table:** each requirement with Met, Partial or Gap; tapping a verdict shows the cited facts; `fit_unverified` and `fit_missing` rows say why, and requirements that need the owner's tick (a language, an "other" requirement) offer it.
 5. **Draft:**
-   - email: To, Subject and Body as editable fields. A note says the Gmail app adds the owner's Gmail signature;
-   - form: the cover note and each answer, each with a copy button; fixed answers marked "from your profile"; "Needs your answer" fields where the profile has no answer;
-   - message: the message and a copy button.
+   - email: To and Subject as fields, and the body as a list of blocks, each editable on its own, with buttons to add or delete a block. A note says the Gmail app adds the owner's Gmail signature;
+   - form: the cover note as blocks, and each answer with a copy button; topic answers marked "from your profile"; a question only one classifier tied to a topic offers "Use my profile answer" or "Draft it"; "Needs your answer" fields where the question or the profile lacks what the answer needs;
+   - message: the message as blocks, and a copy button.
    
-   Flagged sentences are highlighted with their reason. Each flagged sentence offers "I checked this"; each drafted short answer offers a tick; a sentence the owner typed can be marked as answering a requirement.
+   Flagged blocks are highlighted with their reason. Each flagged block offers "I checked this"; each drafted short answer offers a tick; a gap without a usable line shows "Needs your line"; a block the owner wrote can be marked as answering a requirement.
 6. **Actions:** the handoff buttons, the status buttons and Skip.
 
 Images and crops reach the page only through signed URLs that last 60 seconds.

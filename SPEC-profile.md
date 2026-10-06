@@ -88,7 +88,7 @@ style_examples:             # 3 to 5 of the owner's best past emails, as plain t
 - **Depth and years** are what the judge and the fit check use to catch inflation: a `side-project` fact cannot support "production experience", and `years` bounds any claim about duration.
 - **Phrases** are short noun phrases the owner approves with the fact. Code puts them into `{related}`; the model never writes that part of a gap line.
 - **Templates** use only the placeholders `{skill}` and `{related}`.
-- **Fixed answers** are structured where code decides with them: the working window (for time-zone checks), relocation (for onsite roles), work authorisation per ISO country code or region (for eligibility). A country or currency the file does not list is unknown: eligibility reports it as unclear, and a form question about it shows "Needs your answer".
+- **Fixed answers** are structured where code decides with them: the working window (for time-zone checks), relocation (for onsite roles), and work authorisation (for eligibility). Every place is a code from the shared region table (extraction spec), which the seed checks, so a post's "UK" or "Germany" meets this file's `GB` or `EU`. A place or currency the file does not cover is unknown: eligibility reports it as unclear, and a form question about it shows "Needs your answer".
 - **Signature:** message kits end with it. The Gmail app adds the owner's own Gmail signature to handoff drafts, so the runbook has the owner set Gmail's mobile signature to this text once.
 
 ## Drafting the first version
@@ -100,7 +100,7 @@ Writing the first profile is a build task, not a product feature. During the bui
 `npm run profile:seed` reads `private/profile.yaml` and:
 
 1. validates it against the strict schema and reports every error with its line number;
-2. checks that IDs are unique and well formed, every fact has a source and a phrase, every skill is in the vocabulary, the signature is present, the CV file exists, is a PDF and is at most 5 MB, and there are 3 to 5 style example files with at most 1,500 words in total;
+2. checks that IDs are unique and well formed, every fact has a source and a phrase, every skill is in the skill vocabulary, every place is in the region table, the signature is present, the CV file exists, is a PDF and is at most 5 MB, and there are 3 to 5 style example files with at most 1,500 words in total;
 3. computes the SHA-256 of the file plus the CV and style files. If a version with that hash already exists, it makes that version active again (which is how the owner rolls back) and stops;
 4. otherwise uploads the CV to storage at `profile/cv-<sha256>.pdf` when that object does not exist yet;
 5. inserts a `profile_versions` row holding the validated document, its hash, the CV storage path and label, and the time, and marks it active.
@@ -129,7 +129,7 @@ A read-only page shows the active version's date and hash prefix, counts of appr
 
 ## Acceptance criteria
 
-1. The seed rejects, with line numbers: unknown keys; a duplicate or malformed ID; a fact without a source or phrase; a skill outside the vocabulary; a missing signature; a missing or oversized CV, or one that is not a PDF; fewer than 3 or more than 5 style examples, or more than 1,500 words in total.
+1. The seed rejects, with line numbers: unknown keys; a duplicate or malformed ID; a fact without a source or phrase; a skill outside the vocabulary; a place outside the region table; a missing signature; a missing or oversized CV, or one that is not a PDF; fewer than 3 or more than 5 style examples, or more than 1,500 words in total.
 2. Seeding an unchanged profile creates no new version; seeding an older file makes its existing version active again.
 3. `getActiveProfile` never returns an unapproved fact or gap line (tested with a mixed file).
 4. An older version stays retrievable by ID after a new one is seeded.
