@@ -27,6 +27,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
   - Verify: the owner signs in on the laptop and pairs the phone on the live site; both cron endpoints answer 401 without their secrets. Depends on: 2, 5, 6. Files: vercel.json, src/app/api/cron/*, .github/workflows/keepalive.yml, docs/runbook/setup.md. Scope: M.
 - [ ] **Task 8: Spikes** — Owns: none.
   - On the owner's phone: PWA install; the share target through the service worker, recorded as working or not, with the server switch set accordingly. A static test page with both Gmail handoffs (`mailto:` and Web Share with a dummy PDF), tap counts recorded, mechanism chosen. On Vercel: a 200-second `after()` run to confirm the function limit. Jobs from spikes are marked as test jobs.
+  - Code done: the manifest and icons, the service worker with the spike's share report, the security and service-worker headers, the spike page with both handoffs and the 200-second `after()` run, and `docs/runbook/spikes.md` with the steps and blank results. The spikes themselves run once the deploy is live.
   - Verify: results in `docs/runbook/spikes.md`. Depends on: 7. Files: public/sw.js, src/app/manifest.ts, src/app/(app)/spike/*, docs/runbook/spikes.md. Scope: S.
 - [ ] **Checkpoint A (day 3)** — device tests by the owner; doubt review of sessions and pairing; merge.
 
