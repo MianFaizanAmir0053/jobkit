@@ -1,0 +1,98 @@
+# Public sample profile.
+# A fictional person; any resemblance to a real one is accidental.
+schema: 1
+owner:
+  name: Sam Rivera
+  email: sam.rivera@example.com
+  location: { city: Lahore, country: PK, timezone: Asia/Karachi }
+links:
+  portfolio: https://portfolio.example.com
+  linkedin: https://www.linkedin.com/in/example
+  github: https://github.com/example
+signature: |
+  Sam Rivera
+  Portfolio: https://portfolio.example.com
+  WhatsApp: +1 202 555 0143
+cv:
+  file: cv.sample.pdf
+  label: "sample"
+facts:
+  - id: F-react-production
+    statement: "I have built production React and Next.js applications for five years."
+    phrase: "five years of production React and Next.js"
+    kind: experience
+    skills: [react, nextjs, typescript]
+    depth: production
+    years: 5
+    source: "sample CV, Experience"
+    approved: true
+  - id: F-node-apis
+    statement: "I have designed and run REST APIs in Node.js and Express against PostgreSQL in production."
+    phrase: "production Node.js APIs on PostgreSQL"
+    kind: experience
+    skills: [nodejs, express, postgresql, rest]
+    depth: production
+    years: 4
+    source: "sample CV, Experience"
+    approved: true
+  - id: F-python-side
+    statement: "I have used Python with FastAPI in side projects."
+    phrase: "Python and FastAPI in side projects"
+    kind: skill
+    skills: [python, fastapi]
+    depth: side-project
+    years: 1
+    source: "sample CV, Projects"
+    approved: true
+  - id: F-docker-deploys
+    statement: "I package services with Docker and deploy them to managed platforms."
+    phrase: "Docker deployments on managed platforms"
+    kind: skill
+    skills: [docker]
+    depth: production
+    years: 3
+    source: "sample CV, Skills"
+    approved: true
+  - id: F-rag-feature
+    statement: "I shipped a RAG feature over customer documents that is used in production."
+    phrase: "a production RAG feature over customer documents"
+    kind: project
+    skills: [rag, llm]
+    depth: production
+    years: 1
+    source: "sample CV, Projects"
+    approved: true
+  - id: F-unapproved-example
+    statement: "This fact is waiting for approval and must never appear in a draft."
+    phrase: "an unapproved fact"
+    kind: other
+    skills: [react]
+    depth: learning
+    source: "test fixture"
+    approved: false
+gaps:
+  templates:
+    - id: G-not-professional
+      text: "I haven't used {skill} professionally; the closest is {related}."
+  known:
+    - id: K-kubernetes
+      skills: [kubernetes]
+      line: "I haven't run Kubernetes in production; I deploy containers with Docker on managed platforms."
+      approved: true
+fixed_answers:
+  salary_expectation: { USD: "USD 5,000 a month", GBP: "GBP 4,000 a month", EUR: "EUR 4,600 a month", AED: "AED 18,000 a month", PKR: "PKR 900,000 a month" }
+  notice_period: "One month"
+  availability: "Can start one month after an offer"
+  working_window: { start_utc: "04:00", end_utc: "13:00", text: "09:00 to 18:00 Pakistan time, flexible for overlap" }
+  relocation: { open: true, places: [AE], text: "Open to relocating to the UAE" }
+  work_authorisation:
+    - { place: PK, authorised: true }
+    - { place: US, authorised: false, sponsorship_needed: false, text: "Not authorised; I work as a remote contractor from Pakistan." }
+    - { place: GB, authorised: false, sponsorship_needed: false, text: "Not authorised; I work as a remote contractor from Pakistan." }
+    - { place: AE, authorised: false, sponsorship_needed: true, text: "Would need an employment visa." }
+  years_per_stack: { react: 5, typescript: 5, nodejs: 4, python: 1 }
+  eeo: { gender: "Prefer not to say", ethnicity: "Prefer not to say", veteran: "Not applicable", disability: "Prefer not to say" }
+style_examples:
+  - style/sample-1.txt
+  - style/sample-2.txt
+  - style/sample-3.txt

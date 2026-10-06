@@ -1,0 +1,14 @@
+# Personal data and secrets never enter git (ADR 0001 entry 4, platform spec B7/B8)
+private/
+.env*
+!.env.example
+
+# Build output and tooling
+node_modules/
+.next/
+out/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.vercel/
