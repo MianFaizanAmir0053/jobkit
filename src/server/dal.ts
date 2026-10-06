@@ -4,6 +4,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { cache } from "react";
 
+import { listDevices, type Device } from "@/core/platform/devices";
+import { waitingPhones, type WaitingPhone } from "@/core/platform/pairing";
 import {
   checkRequirements,
   findSession,
@@ -56,3 +58,18 @@ export const listJobs = cache(async (): Promise<JobSummary[]> => {
   await requireSession();
   return [];
 });
+
+/** The Devices page's list: google sessions only (platform spec B3). */
+export const devicesForViewer = cache(async (): Promise<Device[]> => {
+  const session = await requireSession({ kind: "google" });
+  return listDevices(await getContainer(), session);
+});
+
+/** Phones waiting for this session to type their code, so a reload resumes approval. */
+export const waitingPhonesForViewer = cache(async (): Promise<WaitingPhone[]> => {
+  const session = await requireSession({ kind: "google" });
+  return waitingPhones(await getContainer(), session);
+});
+
+/** The request's time from the container's clock, for pages that show ages. */
+export const requestTime = cache(async (): Promise<Date> => (await getContainer()).clock.now());

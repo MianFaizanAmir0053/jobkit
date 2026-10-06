@@ -3,15 +3,20 @@ import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
 import { requireSession } from "@/server/dal";
 
-// Each later task adds its page here: New job, Stats, Spend, Profile, Devices.
-const NAV = [{ href: "/jobs", label: "Jobs" }] as const;
+// Each later task adds its page here: New job, Stats, Spend, Profile.
+const NAV: readonly { href: string; label: string; googleOnly?: boolean }[] = [
+  { href: "/jobs", label: "Jobs" },
+  // Paired phones cannot pair, approve or revoke (platform spec B3).
+  { href: "/devices", label: "Devices", googleOnly: true },
+];
 
 /**
  * The app shell. It checks the session for its own sake only; every page
  * under it calls requireSession itself (platform spec B2).
  */
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  await requireSession();
+  const session = await requireSession();
+  const items = NAV.filter((item) => !item.googleOnly || session.kind === "google");
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-2xl flex-col px-4">
@@ -27,7 +32,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       </header>
       <nav aria-label="Main">
         <ul className="flex gap-1 border-b border-border pb-2">
-          {NAV.map((item) => (
+          {items.map((item) => (
             <li key={item.href}>
               <Link href={item.href} className={buttonVariants({ variant: "ghost", size: "sm" })}>
                 {item.label}
