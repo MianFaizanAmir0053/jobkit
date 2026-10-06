@@ -1,0 +1,4 @@
+#!/bin/sh
+# The commit guard (platform spec B7): blocks private paths, .env files,
+# files over 1 MB, key-shaped strings and exact local secret values.
+exec npx --no-install tsx scripts/guard.ts --staged

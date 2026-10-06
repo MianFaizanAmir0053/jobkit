@@ -4,10 +4,10 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
 
 ## Phase 0: Foundation and spikes (days 1–3)
 
-- [ ] **Task 1: Scaffold and tooling** — Owns: platform AC1.
+- [x] **Task 1: Scaffold and tooling** — Owns: platform AC1.
   - Next 16, TypeScript strict, Tailwind v4, shadcn, Vitest, ESLint and Prettier at pinned majors; `.env.example` lists platform B8. Before any Next code, read the guides in `node_modules/next/dist/docs/` and note anything that changes the specs' assumptions in `docs/runbook/next16-notes.md`.
   - Verify: `npm run check`; `npm run build`. Depends on: none. Files: package.json, tsconfig.json, vitest.config.ts, eslint.config.mjs, .env.example. Scope: M.
-- [ ] **Task 2: Guard and CI** — Owns: platform AC15.
+- [x] **Task 2: Guard and CI** — Owns: platform AC15.
   - Fixture keys are built at run time, never committed in a key-like form.
   - Verify: `npm test`; a dry commit of a planted path is refused. Depends on: 1. Files: scripts/guard.ts, scripts/guard.test.ts, .githooks/pre-commit, .github/workflows/ci.yml. Scope: M.
 - [ ] **Task 3: Database, storage and composition** — Owns: platform AC16.

@@ -1,0 +1,46 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    # No secrets reach this job (platform spec B7).
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The guard reads every commit a push adds, and compares new branches with main.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test:coverage
+      - run: npm run build
+
+      - name: Guard the tree
+        run: npx tsx scripts/guard.ts --tree
+
+      - name: Guard the commits this push adds
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.sha }}
+        run: npx tsx scripts/guard.ts --commits "$BEFORE" "$AFTER"
+
+      - name: Guard the pull request's commits
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: npx tsx scripts/guard.ts --commits "$BASE" "$HEAD"
