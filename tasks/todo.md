@@ -23,6 +23,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
   - Verify: `npm test`. Depends on: 4. Files: src/core/ledger/baseline.ts, src/app/(app)/baseline/*, db/migrations/NNNN_baseline.sql. Scope: S.
 - [ ] **Task 7: Deploy skeleton** — Owns: platform AC14.
   - Vercel project live from `main` (merge after this task) with Production-scoped variables; bootstrap and migrate run on Supabase with `--prod`; keep-alive workflow with the repository secret; daily cron in `vercel.json`; the runbook matches what was done.
+  - Code done: the cron endpoints, `vercel.json`, the keep-alive workflow and the runbook. The deploy itself waits for the owner's accounts (runbook steps 2 to 8), then Claude pushes, bootstraps and migrates with `--prod`, and the owner runs step 11.
   - Verify: the owner signs in on the laptop and pairs the phone on the live site; both cron endpoints answer 401 without their secrets. Depends on: 2, 5, 6. Files: vercel.json, src/app/api/cron/*, .github/workflows/keepalive.yml, docs/runbook/setup.md. Scope: M.
 - [ ] **Task 8: Spikes** — Owns: none.
   - On the owner's phone: PWA install; the share target through the service worker, recorded as working or not, with the server switch set accordingly. A static test page with both Gmail handoffs (`mailto:` and Web Share with a dummy PDF), tap counts recorded, mechanism chosen. On Vercel: a 200-second `after()` run to confirm the function limit. Jobs from spikes are marked as test jobs.

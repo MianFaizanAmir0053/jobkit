@@ -1,0 +1,26 @@
+name: keep-alive
+
+# Supabase's free tier pauses a project after a week without activity, so this
+# touches the heartbeat every 8 hours (platform spec B6). KEEPALIVE_SECRET is
+# the only secret in GitHub, can do nothing but touch the heartbeat, and only
+# this workflow references it. APP_ORIGIN is a repository variable, not a secret.
+on:
+  schedule:
+    - cron: "17 */8 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  touch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Touch the heartbeat
+        env:
+          APP_ORIGIN: ${{ vars.APP_ORIGIN }}
+          KEEPALIVE_SECRET: ${{ secrets.KEEPALIVE_SECRET }}
+        run: >-
+          curl --fail --silent --show-error --max-time 60
+          --header "Authorization: Bearer $KEEPALIVE_SECRET"
+          "$APP_ORIGIN/api/cron/keepalive"

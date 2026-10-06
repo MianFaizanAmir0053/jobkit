@@ -13,7 +13,7 @@ The repository ignores `private/` and every `.env*` file except `.env.example`, 
 1. Start the Gmail export (step 1) on day 1; it can take hours or days.
 2. Steps 2 to 8 when Claude reaches Task 7 (the deploy skeleton). Step 2 comes before step 4 because the Google client needs the Vercel address.
 3. Step 9 after you have approved the profile, so the signature text is final.
-4. Step 10 once the first deploy is live.
+4. Step 10 once the first deploy is live, then the checks in step 11.
 
 ## 1. Gmail export for the evaluation
 
@@ -32,7 +32,7 @@ In your own terminal, run this once each for `CRON_SECRET` and `KEEPALIVE_SECRET
 node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 ```
 
-Both go into Vercel and into `.env.ops.local` (the commit guard reads them there so it can block them). `KEEPALIVE_SECRET` also becomes a GitHub repository secret: on the free plan, private repositories get no environment secrets, and only the keep-alive workflow uses it; it can do nothing but touch the database heartbeat. If your plan offers environments, put it in one restricted to `main` instead. No other secret goes to GitHub. If the repository is ever made public, GitHub disables scheduled workflows after 60 days without activity; re-enable the keep-alive schedule then.
+Both go into Vercel and into `.env.ops.local` (the commit guard reads them there so it can block them). `KEEPALIVE_SECRET` also becomes a GitHub repository secret: on the free plan, private repositories get no environment secrets, and only the keep-alive workflow uses it; it can do nothing but touch the database heartbeat. If your plan offers environments, put it in one restricted to `main` instead. No other secret goes to GitHub. The keep-alive workflow also needs the address it calls: add a repository **variable** (Settings, Secrets and variables, Actions, Variables), not a secret, named `APP_ORIGIN`, with the value `https://<your-vercel-domain>`. If the repository is ever made public, GitHub disables scheduled workflows after 60 days without activity; re-enable the keep-alive schedule then.
 
 ## 4. Google sign-in client
 
@@ -55,7 +55,7 @@ Both go into Vercel and into `.env.ops.local` (the commit guard reads them there
    - `SUPABASE_URL`: the project URL;
    - `SUPABASE_SECRET_KEY`: a secret API key in the newer `sb_secret_…` format (not the legacy `service_role` key).
 3. Leave the Data API's exposed schemas at their default (`public` only).
-4. Claude then runs the bootstrap with `--prod`; you type the project reference when it asks. The bootstrap creates the `jobkit_app` role, the `jobkit` schema and the private storage bucket `jobkit-private`.
+4. Claude then runs the bootstrap with `--prod`, then the migrations with `--prod`; you type the project reference each time it asks. The bootstrap creates the `jobkit_app` role, the `jobkit` schema and the private storage bucket `jobkit-private`; the migrations create the tables, as `jobkit_app`. After that, Claude runs the live contract tests (`npm run test:live`) against a throwaway schema, which settle whether `pg` works through the transaction pooler.
 5. `DATABASE_URL`: the **transaction pooler** connection string (port 6543) with the user written as `jobkit_app.<project-ref>` and the password from step 2. It goes into Vercel and `.env.ops.local`; never the `postgres` string.
 6. `SUPABASE_URL` and `SUPABASE_SECRET_KEY` also go into Vercel.
 
@@ -81,3 +81,20 @@ After the profile is approved: in the Gmail app on the phone (Settings, your acc
 
 1. Open `https://<your-vercel-domain>` in Chrome on the phone and install it from Chrome's menu ("Install app").
 2. Note Chrome's version (Settings, About Chrome) for the share-target spike.
+
+## 11. Checks after the first deploy
+
+1. On the laptop, open `https://<your-vercel-domain>`, sign in with Google, open Devices and pair the phone (Pair a phone, scan the code with the phone's camera, type the phone's six digits on the laptop).
+2. Both scheduled endpoints refuse a request without their secret. In your own terminal:
+
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}\n" https://<your-vercel-domain>/api/cron/daily
+   ```
+
+   ```bash
+   curl -s -o /dev/null -w "%{http_code}\n" https://<your-vercel-domain>/api/cron/keepalive
+   ```
+
+   Each prints `401`.
+3. In GitHub, Actions, keep-alive: run the workflow once by hand (Run workflow). It goes green, which proves the secret and the `APP_ORIGIN` variable.
+4. In Vercel, the project's Settings, Cron Jobs lists `/api/cron/daily` at `0 22 * * *`: 22:00 UTC, 03:00 in Pakistan. On the Hobby plan Vercel runs it at some point within that hour.
