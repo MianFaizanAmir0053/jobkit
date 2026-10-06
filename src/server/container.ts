@@ -8,11 +8,13 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { systemClock } from "@/adapters/clock";
 import { createLocalStorage } from "@/adapters/localStorage";
 import { createPgDb } from "@/adapters/pg";
 import { createPgliteDb } from "@/adapters/pglite";
+import { cryptoRandom } from "@/adapters/random";
 import { createSupabaseStorage } from "@/adapters/supabaseStorage";
-import type { Db, Storage } from "@/core/ports";
+import type { Clock, Db, Random, Storage } from "@/core/ports";
 import { applyMigrations, bootstrapForTests, loadMigrations } from "@/server/db/migrate";
 
 export const SCHEMA = "jobkit";
@@ -22,10 +24,14 @@ export interface Container {
   kind: "production" | "development" | "test";
   db: Db;
   storage: Storage;
+  clock: Clock;
+  random: Random;
   close(): Promise<void>;
 }
 
 type Env = Readonly<Record<string, string | undefined>>;
+
+const SYSTEM = { clock: systemClock, random: cryptoRandom };
 
 function required(env: Env, names: readonly string[]): Record<string, string> {
   const missing = names.filter((name) => !env[name]);
@@ -48,7 +54,7 @@ export async function createContainer(
         secretKey: v.SUPABASE_SECRET_KEY!,
         bucket: BUCKET,
       });
-      return { kind: "production", db, storage, close: () => db.close() };
+      return { kind: "production", db, storage, ...SYSTEM, close: () => db.close() };
     }
     case "development":
     case "test": {
@@ -66,11 +72,30 @@ export async function createContainer(
         root: join(dataDir, "storage"),
         origin: env.APP_ORIGIN ?? "http://localhost:3000",
       });
-      return { kind: env.JOBKIT_ENV, db, storage, close: () => db.close() };
+      return { kind: env.JOBKIT_ENV, db, storage, ...SYSTEM, close: () => db.close() };
     }
     default:
       throw new Error(
         `JOBKIT_ENV must be production, development or test, not ${JSON.stringify(env.JOBKIT_ENV)}`,
       );
   }
+}
+
+const processWide = globalThis as typeof globalThis & { jobkitContainer?: Promise<Container> };
+
+/**
+ * The process's one container, built from its environment on first use. It
+ * lives on globalThis so the dev server's reloads reuse the PGlite database
+ * instead of opening its folder twice. A failed start is forgotten, so the
+ * next request tries again.
+ */
+export function getContainer(): Promise<Container> {
+  if (!processWide.jobkitContainer) {
+    const starting = createContainer(process.env);
+    processWide.jobkitContainer = starting;
+    starting.catch(() => {
+      if (processWide.jobkitContainer === starting) processWide.jobkitContainer = undefined;
+    });
+  }
+  return processWide.jobkitContainer;
 }

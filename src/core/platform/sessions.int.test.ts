@@ -7,6 +7,7 @@ import { createTestDb } from "@/server/db/testDb";
 
 import {
   checkRequirements,
+  deviceLabel,
   endSession,
   findSession,
   hashToken,
@@ -235,5 +236,14 @@ describe("remainingSeconds", () => {
 
     expect(remainingSeconds(session, clock.now())).toBe((30 * DAY) / 1000);
     expect(remainingSeconds(session, new Date(session.expiresAt.getTime() + 1))).toBe(0);
+  });
+});
+
+describe("deviceLabel", () => {
+  it("names the system and the browser, and says when either is unknown", () => {
+    expect(deviceLabel({ os: { name: "Android" }, browser: { name: "Chrome" } })).toBe(
+      "Android · Chrome",
+    );
+    expect(deviceLabel({ os: {}, browser: {} })).toBe("Unknown system · unknown browser");
   });
 });

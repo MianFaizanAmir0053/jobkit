@@ -194,3 +194,8 @@ export async function endSession(db: Db, token: string): Promise<void> {
 export function remainingSeconds(session: Session, now: Date): number {
   return Math.max(0, Math.floor((session.expiresAt.getTime() - now.getTime()) / 1000));
 }
+
+/** The name the Devices page shows for a session, such as "Windows · Chrome". */
+export function deviceLabel(agent: { os: { name?: string }; browser: { name?: string } }): string {
+  return `${agent.os.name ?? "Unknown system"} · ${agent.browser.name ?? "unknown browser"}`;
+}

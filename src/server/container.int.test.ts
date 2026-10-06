@@ -1,9 +1,9 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { createContainer, type Container } from "./container";
+import { createContainer, getContainer, type Container } from "./container";
 
 let container: Container | undefined;
 let dataDir: string | undefined;
@@ -13,6 +13,9 @@ afterEach(async () => {
   container = undefined;
   if (dataDir) rmSync(dataDir, { recursive: true, force: true });
   dataDir = undefined;
+  vi.unstubAllEnvs();
+  // getContainer keeps its container on globalThis; forget the closed one.
+  delete (globalThis as { jobkitContainer?: unknown }).jobkitContainer;
 });
 
 describe("createContainer", () => {
@@ -39,6 +42,15 @@ describe("createContainer", () => {
     expect((await container.db.query("select 1 as one")).rows).toEqual([{ one: 1 }]);
   });
 
+  it("supplies the system clock and cryptographic randomness", async () => {
+    container = await createContainer({ JOBKIT_ENV: "test" });
+
+    expect(Math.abs(container.clock.now().getTime() - Date.now())).toBeLessThan(5_000);
+    const [a, b] = [container.random.bytes(32), container.random.bytes(32)];
+    expect(a).toHaveLength(32);
+    expect(Buffer.from(a).equals(Buffer.from(b))).toBe(false);
+  });
+
   it("in production, refuses to start and names every missing variable", async () => {
     await expect(createContainer({ JOBKIT_ENV: "production" })).rejects.toThrow(
       /DATABASE_URL.*SUPABASE_URL.*SUPABASE_SECRET_KEY/,
@@ -47,5 +59,18 @@ describe("createContainer", () => {
 
   it("refuses an unknown environment", async () => {
     await expect(createContainer({ JOBKIT_ENV: "staging" })).rejects.toThrow(/JOBKIT_ENV/);
+  });
+});
+
+describe("getContainer", () => {
+  it("builds one container per process from its environment, and retries after a failed start", async () => {
+    vi.stubEnv("JOBKIT_ENV", "staging");
+    await expect(getContainer()).rejects.toThrow(/JOBKIT_ENV/);
+
+    vi.stubEnv("JOBKIT_ENV", "test");
+    container = await getContainer();
+
+    expect(container.kind).toBe("test");
+    expect(await getContainer()).toBe(container);
   });
 });

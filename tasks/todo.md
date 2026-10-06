@@ -1,6 +1,6 @@
 # Task list: jobkit MVP
 
-Every task is test-first and ends with `npm run check` green (platform AC1 holds after every task). "Owns" lists the acceptance criteria (AC) a task must make pass; each criterion in the eight MVP specs has exactly one owner. Scope: S is 1–2 files, M is 3–5.
+Every task is test-first and ends with `npm run check` green (platform AC1 holds after every task). "Owns" lists the acceptance criteria (AC) a task must make pass; each criterion in the eight MVP specs has exactly one owner. Scope: S is 1–2 files, M is 3–5. Migrations take the next free number when their task is built (`NNNN` below), since tasks may land in a different order.
 
 ## Phase 0: Foundation and spikes (days 1–3)
 
@@ -13,14 +13,14 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
 - [x] **Task 3: Database, storage and composition** — Owns: platform AC16.
   - `Db` and `Storage` ports; PGlite, pg, local-storage and Supabase-storage adapters; `{{schema}}` placeholder; migration runner and bootstrap (local by default, `--prod` with typed confirmation, bucket creation); atomic-claim helper; `src/server/container.ts`; live contract test behind `JOBKIT_LIVE=1`.
   - Verify: `npm test`; migrations twice on PGlite. Depends on: 1. Files: src/core/ports.ts, src/adapters/{pglite,pg,local-storage,supabase-storage}.ts, scripts/{migrate,bootstrap}.ts, db/migrations/0001_platform.sql, src/server/container.ts. Scope: M (two commits if needed).
-- [ ] **Task 4: Google sign-in, sessions and app shell** — Owns: platform AC2, AC3, AC4, AC9, AC10.
+- [x] **Task 4: Google sign-in, sessions and app shell** — Owns: platform AC2, AC3, AC4, AC9, AC10.
   - App shell and navigation, with a `/jobs` page that loads (empty) data through `requireSession`.
   - Verify: `npm test`; integration tests with a fake Google token endpoint. Depends on: 3. Files: src/core/platform/sessions.ts, src/app/api/auth/google/*, src/server/session.ts, src/proxy.ts, src/app/(app)/layout.tsx, src/app/(app)/jobs/page.tsx. Scope: M.
 - [ ] **Task 5: QR pairing and Devices** — Owns: platform AC5, AC6, AC7, AC8.
   - Verify: `npm test`; Playwright with two browser contexts, including an unapproved phone loading `/jobs` and a test page, checking that no data reaches the response; every data read goes through the data access layer's `requireSession`, never a layout check (docs/runbook/next16-notes.md). Depends on: 4. Files: src/core/platform/pairing.ts, src/app/(app)/devices/*, src/app/pair/*, src/app/api/pair/*, e2e/pairing.spec.ts. Scope: M.
 - [ ] **Task 6: Baseline page** — Owns: none (ledger "Timing comparison", pre-real-use part).
   - Start and Stop record a pre-real-use baseline run with route, company and role; the page shows count, median and 90th percentile.
-  - Verify: `npm test`. Depends on: 4. Files: src/core/ledger/baseline.ts, src/app/(app)/baseline/*, db/migrations/0002_baseline.sql. Scope: S.
+  - Verify: `npm test`. Depends on: 4. Files: src/core/ledger/baseline.ts, src/app/(app)/baseline/*, db/migrations/NNNN_baseline.sql. Scope: S.
 - [ ] **Task 7: Deploy skeleton** — Owns: platform AC14.
   - Vercel project live from `main` (merge after this task) with Production-scoped variables; bootstrap and migrate run on Supabase with `--prod`; keep-alive workflow with the repository secret; daily cron in `vercel.json`; the runbook matches what was done.
   - Verify: the owner signs in on the laptop and pairs the phone on the live site; both cron endpoints answer 401 without their secrets. Depends on: 2, 5, 6. Files: vercel.json, src/app/api/cron/*, .github/workflows/keepalive.yml, docs/runbook/setup.md. Scope: M.
@@ -33,16 +33,16 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
 
 - [ ] **Task 9: Runner** — Owns: platform AC17, AC18.
   - States with kinds, pending stage, `job_state_changes`, leases, per-stage input hashes, attempts, Retry and Skip, timeouts on status read.
-  - Verify: `npm test` with fake stages and a fake clock. Depends on: 3. Files: src/core/platform/{runner,jobStates,times}.ts, src/app/api/jobs/[id]/advance/route.ts, db/migrations/0003_jobs.sql. Scope: M.
+  - Verify: `npm test` with fake stages and a fake clock. Depends on: 3. Files: src/core/platform/{runner,jobStates,times}.ts, src/app/api/jobs/[id]/advance/route.ts, db/migrations/NNNN_jobs.sql. Scope: M.
 - [ ] **Task 10: Model wrapper** — Owns: platform AC11, AC12, AC13.
   - Streaming with idle timeout, one row per attempt, provisional costs, guard hook, retries, refusals, price table; the local-only check used by the dev server and the evaluation composition.
   - Verify: `npm test`; adapter contract tests behind `JOBKIT_LIVE=1`, with the owner's approval for a few cents. Depends on: 3. Files: src/core/platform/{models,prices}.ts, src/adapters/{anthropic,gemini,fake-llm}.ts, src/server/localOnly.ts. Scope: M.
 - [ ] **Task 11: Ledger core** — Owns: ledger AC1, AC2, AC3, AC7, AC8, AC10.
   - Normalisation, duplicate check with fuzzy post match, statuses and audit, arm assignment, trust-gate state, spend cap guard wired into the wrapper, CSV import.
-  - Verify: `npm test`. Depends on: 3, 10. Files: src/core/ledger/{normalise,duplicates,statuses,arms,trustGate,spend}.ts, scripts/ledger-import.ts, db/migrations/0004_ledger.sql. Scope: M (two commits).
+  - Verify: `npm test`. Depends on: 3, 10. Files: src/core/ledger/{normalise,duplicates,statuses,arms,trustGate,spend}.ts, scripts/ledger-import.ts, db/migrations/NNNN_ledger.sql. Scope: M (two commits).
 - [ ] **Task 12: Intake server path** — Owns: intake AC1, AC8, AC10.
   - Metadata-only job creation with arm assignment and `manual_run`, signed upload URLs, re-issue, confirm, 15-minute timeout, clock fields, upload-attempt log.
-  - Verify: `npm test`. Depends on: 9, 11. Files: src/core/intake/{jobs,uploads}.ts, src/app/api/jobs/route.ts, src/app/api/jobs/[id]/{uploaded,upload-urls}/route.ts, db/migrations/0005_intake.sql. Scope: M.
+  - Verify: `npm test`. Depends on: 9, 11. Files: src/core/intake/{jobs,uploads}.ts, src/app/api/jobs/route.ts, src/app/api/jobs/[id]/{uploaded,upload-urls}/route.ts, db/migrations/NNNN_intake.sql. Scope: M.
 - [ ] **Task 13: Intake client and share target** — Owns: intake AC2, AC3, AC4, AC5, AC6.
   - Encoding and tile counts, limits, resume, the New job page, the share-target page with the service worker's refusals and the server switch.
   - Verify: `npm test`; Playwright upload and synthetic-share tests. Depends on: 8, 12. Files: src/core/intake/{encode,tiles,limits}.ts, src/app/(app)/jobs/new/*, public/sw.js, e2e/upload.spec.ts. Scope: M.
