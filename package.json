@@ -16,6 +16,7 @@
     "guard": "tsx scripts/guard.ts --tree",
     "prepare": "git config core.hooksPath .githooks || true",
     "test:live": "vitest run --mode live",
+    "test:e2e": "playwright test",
     "db:bootstrap": "tsx scripts/bootstrap.ts",
     "db:migrate": "tsx scripts/migrate.ts"
   },
@@ -37,6 +38,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^24.19.1",
     "@types/pg": "^8.23.1",

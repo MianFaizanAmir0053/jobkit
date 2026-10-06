@@ -7,7 +7,11 @@ const production = {
   "/api/auth/google/callback/route": "/api/auth/google/callback",
   "/login/page": "/login",
 };
-const withTestRoute = { ...production, "/api/test/signin/route": "/api/test/signin" };
+const withTestRoute = {
+  ...production,
+  "/api/test/signin/route": "/api/test/signin",
+  "/(app)/test/data/page": "/test/data",
+};
 
 describe("checkBuildRoutes", () => {
   it("passes a build without test-only routes", () => {
@@ -19,7 +23,7 @@ describe("checkBuildRoutes", () => {
     for (const env of [undefined, "production", "development"]) {
       expect(checkBuildRoutes(withTestRoute, env)).toEqual({
         ok: false,
-        routes: ["/api/test/signin"],
+        routes: ["/api/test/signin", "/test/data"],
       });
     }
   });

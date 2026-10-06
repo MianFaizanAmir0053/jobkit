@@ -16,7 +16,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
 - [x] **Task 4: Google sign-in, sessions and app shell** — Owns: platform AC2, AC3, AC4, AC9, AC10.
   - App shell and navigation, with a `/jobs` page that loads (empty) data through `requireSession`.
   - Verify: `npm test`; integration tests with a fake Google token endpoint. Depends on: 3. Files: src/core/platform/sessions.ts, src/app/api/auth/google/*, src/server/session.ts, src/proxy.ts, src/app/(app)/layout.tsx, src/app/(app)/jobs/page.tsx. Scope: M.
-- [ ] **Task 5: QR pairing and Devices** — Owns: platform AC5, AC6, AC7, AC8.
+- [x] **Task 5: QR pairing and Devices** — Owns: platform AC5, AC6, AC7, AC8.
   - Verify: `npm test`; Playwright with two browser contexts, including an unapproved phone loading `/jobs` and a test page, checking that no data reaches the response; every data read goes through the data access layer's `requireSession`, never a layout check (docs/runbook/next16-notes.md). Depends on: 4. Files: src/core/platform/pairing.ts, src/app/(app)/devices/*, src/app/pair/*, src/app/api/pair/*, e2e/pairing.spec.ts. Scope: M.
 - [ ] **Task 6: Baseline page** — Owns: none (ledger "Timing comparison", pre-real-use part).
   - Start and Stop record a pre-real-use baseline run with route, company and role; the page shows count, median and 90th percentile.

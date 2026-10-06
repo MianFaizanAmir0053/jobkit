@@ -10,14 +10,17 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const TEST_ONLY_PREFIX = "/api/test/";
+// Test-only routes live under these paths and nowhere else.
+const TEST_ONLY_PREFIXES = ["/api/test/", "/test/"];
 
 export function checkBuildRoutes(
   manifest: Readonly<Record<string, string>>,
   jobkitEnv: string | undefined,
 ): { ok: true } | { ok: false; routes: string[] } {
   if (jobkitEnv === "test") return { ok: true };
-  const routes = Object.values(manifest).filter((route) => route.startsWith(TEST_ONLY_PREFIX));
+  const routes = Object.values(manifest).filter((route) =>
+    TEST_ONLY_PREFIXES.some((prefix) => route.startsWith(prefix)),
+  );
   return routes.length === 0 ? { ok: true } : { ok: false, routes };
 }
 
