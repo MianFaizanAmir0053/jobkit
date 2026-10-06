@@ -1,6 +1,6 @@
 # Implementation Plan: jobkit MVP
 
-- **Status:** draft for owner approval (revised after its review)
+- **Status:** approved by the owner on 2026-10-06, after its review
 - **Inputs:** [CAPABILITIES.md](../CAPABILITIES.md), the eight approved module specs (`SPEC-*.md`), [ADR 0001](../docs/decisions/0001-mvp-decisions.md)
 - **Task list:** [tasks/todo.md](todo.md)
 
@@ -8,7 +8,7 @@
 
 Eight modules in the map's dependency order, built test-first over four weeks from Monday 2026-10-06 to Sunday 2026-11-02. The plan reaches a **thin end-to-end email path by the end of week 2**: share a screenshot, get an email kit checked by the judge, pass the outbound gate, hand off to Gmail, Mark sent. Real use starts at that first handoff, about 2026-10-19, so the comparison with the manual arm runs for two weeks. Week 3 completes the review page, the form and message kits, and the stats; week 4 measures and writes up, with two days of buffer. `send` waits for milestone 2.
 
-**How much real use the measurement needs.** The pooled comparison appears once each arm has 10 runs (ledger spec). With one new job in three assigned to the manual arm, that takes about 30 jobs: some 2 a day over the two weeks of real use. The first 20 tool uses alone take about 10 a week. If the owner applies less often, the numbers arrive later; at checkpoint F the owner decides whether to extend the measuring window.
+**How much real use the measurement needs.** The owner applies to three or more jobs a day. The pooled comparison appears once each arm has 10 runs (ledger spec). With one new job in three assigned to the manual arm, that takes about 30 jobs: some 2 a day over the two weeks of real use. The first 20 tool uses alone take about 10 a week. If the owner applies less often, the numbers arrive later; at checkpoint F the owner decides whether to extend the measuring window.
 
 ## Calendar
 
