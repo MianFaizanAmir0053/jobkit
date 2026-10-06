@@ -121,3 +121,66 @@ The idea one-pager left questions open, and its two reviews raised more. Three g
 ## Review findings carried in
 
 The two reviews of the one-pager raised 23 findings and none was dismissed. Their fixes appear in entries 4, 7, 9, 11, 13 to 16, 18 to 20, 26 and 27, and in the input defaults. Points the one-pager had dropped from the brief without saying so are restored: the portfolio link (entry 21), application status (defaults) and reposted listings (entry 11). The brief's single fit score is replaced, on purpose, by the per-requirement table.
+
+## Amendments (2026-10-06, after the reviews of this record)
+
+Two fresh-context reviews of this record, one adversarial and one taking the view of the developer who must build it in four weeks, raised 22 findings. None was dismissed. The owner adopted amendments A1 to A10; the fixes in A11 follow from decisions already made and are applied directly in the module specs.
+
+### A1. One-tap send moves to milestone 2 (supersedes entry 10, the build order in entry 13, the passkey and send parts of entry 14, the `gmail.send` part of entry 19, and the unlock in entry 20)
+
+The four-week MVP ends at the kit, the handoff and the log. The `send` module is specified in `SPEC-send.md` and marked deferred; it holds every send-path finding. The trust-gate counter and the factual-edit rate are recorded from day 1 as metrics, so milestone 2 starts with evidence. The reason: the gate was unlikely to open within four weeks (ten clean email drafts in a row, with email's share of applications unknown and send built last), while the send path carried the most new code and the most hazards.
+
+### A2. Own sign-in code instead of Auth.js (supersedes the Auth.js default)
+
+Google sign-in uses `arctic`. Sessions live in a jobkit table, one row per device, following a well-known recipe: a random token in an HttpOnly cookie, stored only as a hash. The device list is the session list, and Revoke deletes the row. The reasons: Auth.js is in security-patch-only mode; its JWT sessions cannot revoke a single device (mailagent revokes by rotating its secret, which signs out every device); and every special rule here (re-authentication before pairing, approval of new devices) needs own code anyway.
+
+### A3. QR pairing gains two guards (refines entry 14)
+
+Creating a QR code needs a Google sign-in within the last 5 minutes. After a phone redeems the code, the laptop shows the new device ("Approve Android · Chrome?"), and the phone's session works only once the owner approves it there. A stolen laptop cookie alone can no longer pair a phone.
+
+### A4. Second read by Gemini Flash (refines entries 2 and 16)
+
+The second, independent read of an application address or WhatsApp number uses Gemini Flash on a crop made by code, through the owner's paid Gemini key, so the two reads do not share one model's misreadings. When the reads disagree, the owner retypes the address or number; picking one of the two reads is not enough.
+
+### A5. No domain-age check (supersedes the RDAP part of entry 16)
+
+IANA's RDAP bootstrap has no server for .io, .ae, .pk, .de, .sa and other domains common in the target markets, so the warning would silently skip most of them.
+
+### A6. No shared Supabase project (supersedes the fallback in entry 26)
+
+mailagent's project holds the owner's synced mail, and project-wide credentials would reach it. If the account has no free slot, the owner pauses or deletes another free project, or jobkit uses Neon's free Postgres with separate file storage.
+
+### A7. Retention (refines entry 4)
+
+- Screenshots are deleted after 30 days unless kept for evaluation.
+- Extracted records, drafts and recruiter names are deleted 180 days after the job's last status change.
+- The application log (company, role, route, dates, status and address) is kept for duplicate checks.
+- Evaluation data stays on the laptop, except what evaluation runs send to the model providers' paid APIs.
+
+### A8. Interleaved baseline (refines entry 7)
+
+Every third application in weeks 1 to 3 is done the old manual way and timed, instead of ten manual applications in week 1, so job mix and the owner's own speed-up do not skew the comparison. Both arms start at the same moment: the owner has the post in hand and taps Start (manual) or shares it (tool). Medians are reported per route as well as pooled.
+
+### A9. Separate evaluation spend (refines entry 24)
+
+A second Anthropic key, "jobkit-evals", in its own Console workspace with a $15 monthly limit, so evaluation runs can never stop the app. The app's $25 cap stays until the real cost per job is measured on day 3. The reviews estimate $0.35 to $0.45 per job with Claude Opus 5.5, which would cap the month at about 60 jobs; the owner then decides the cap, or a cheaper model per stage on evidence.
+
+### A10. Honest labelling (refines entries 2 and 27)
+
+- Ten cases are labelled blind, without pre-labels, to measure anchoring.
+- Claim labels never show the judge's verdict.
+- Cases whose emails serve as style examples are excluded from the evaluation set.
+- The model comparison for the Claude stages covers Claude Opus 5.5 and Claude Sonnet 5.5; Claude Haiku 4.5 has a different thinking API and a lower image resolution.
+- Realistic owner time for labelling is two to three hours.
+
+### A11. Fixes applied directly in the specs
+
+- The judge, not the drafter, classifies every sentence, and an unclear sentence counts as a claim. Statements about the company form a `post` class that cites the record field they come from. Short form answers drafted by the model count as claims.
+- Every outbound action is gated: copy buttons, the Gmail handoff and the WhatsApp link.
+- Addresses are validated strictly and every part of a `mailto:` link is encoded, so a post cannot smuggle in a Bcc or extra headers. A null MX blocks.
+- WhatsApp numbers are normalised and get the same crop and second read as addresses.
+- Tall scrolling screenshots are cut into overlapping tiles within the model's 2,576-pixel limit instead of being shrunk; coordinates map back through the tile offsets.
+- The job has an explicit state machine with a Retry action, and machine time excludes time spent waiting for the owner.
+- Mark sent asks "Did you change anything in Gmail?". The answer counts towards the factual-edit rate, which also counts edits to the address, subject, company or role names, greeting name and gap lines.
+- A GitHub Actions schedule calls the keep-alive endpoint every 8 hours, because Supabase asks for a few database requests a day and Vercel Hobby cron runs only daily.
+- The plan carries a ranked cut list of features.
