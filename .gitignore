@@ -12,3 +12,10 @@ playwright-report/
 test-results/
 *.tsbuildinfo
 .vercel/
+build/
+next-env.d.ts
+.pnp
+.pnp.*
+*.pem
+npm-debug.log*
+.DS_Store
