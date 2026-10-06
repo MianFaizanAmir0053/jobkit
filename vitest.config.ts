@@ -20,6 +20,9 @@ export default defineConfig(({ mode }) => {
       // run in parallel under coverage. Hooks need the same allowance as tests.
       testTimeout: 30_000,
       hookTimeout: 30_000,
+      // Each PGlite boot keeps a core busy for seconds; one worker per logical
+      // CPU starved them on a busy laptop, so half the CPUs run test files.
+      maxWorkers: "50%",
       coverage: {
         provider: "v8",
         // The domain logic carries the coverage bar (platform spec A7).

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { createPgliteDb, type PgliteDb } from "@/adapters/pglite";
 
@@ -9,17 +9,21 @@ const CLAIM_TOKEN_1 =
 
 let db: PgliteDb;
 
-beforeEach(async () => {
+beforeAll(async () => {
   db = await createPgliteDb({ schema: "jobkit" });
+  await db.exec("create schema {{schema}}");
+});
+
+afterAll(async () => {
+  await db.close();
+});
+
+beforeEach(async () => {
   await db.exec(`
-    create schema {{schema}};
+    drop table if exists {{schema}}.tokens;
     create table {{schema}}.tokens (id int primary key, used_by text);
     insert into {{schema}}.tokens (id) values (1), (2);
   `);
-});
-
-afterEach(async () => {
-  await db.close();
 });
 
 async function usedBy(): Promise<unknown[]> {
