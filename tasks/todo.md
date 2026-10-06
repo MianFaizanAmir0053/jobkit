@@ -1,96 +1,128 @@
 # Task list: jobkit MVP
 
-Every task is test-first and ends with `npm run check` green. "AC" refers to the acceptance criteria in the named spec. Scope: S is 1-2 files, M is 3-5.
+Every task is test-first and ends with `npm run check` green (platform AC1 holds after every task). "Owns" lists the acceptance criteria (AC) a task must make pass; each criterion in the eight MVP specs has exactly one owner. Scope: S is 1–2 files, M is 3–5.
 
-## Phase 0: Foundation
+## Phase 0: Foundation and spikes (days 1–3)
 
-- [ ] **Task 1: Scaffold and tooling**
-  - Acceptance: Next 16, TypeScript strict, Tailwind v4, shadcn, Vitest, ESLint and Prettier at pinned majors; `.gitignore` covers `private/`, every `.env*` except `.env.example`, and build output; `.env.example` lists platform B8; a trivial test passes. Before any Next code, the guides in `node_modules/next/dist/docs/` are read and anything that changes the specs' assumptions is noted.
-  - Verify: `npm run check`; `npm run build`.
-  - Depends on: none. Files: package.json, tsconfig.json, vitest.config.ts, eslint.config.mjs, .gitignore, .env.example. Scope: M.
-- [ ] **Task 2: Guard and CI**
-  - Acceptance: platform AC15. Fixture keys are built at run time, never committed in a key-like form.
-  - Verify: `npm test`; a dry commit of a planted path is refused.
-  - Depends on: 1. Files: scripts/guard.ts, scripts/guard.test.ts, .githooks/pre-commit, .github/workflows/ci.yml. Scope: M.
-- [ ] **Task 3: Database layer and bootstrap**
-  - Acceptance: platform AC16; `Db` port with PGlite and pg adapters; `{{schema}}` placeholder; bootstrap script; atomic-claim helper; live contract test behind `JOBKIT_LIVE=1`.
-  - Verify: `npm test`; migrations twice on PGlite.
-  - Depends on: 1. Files: src/core/ports.ts, src/adapters/pglite.ts, src/adapters/pg.ts, scripts/migrate.ts, scripts/bootstrap.ts, db/migrations/0001_platform.sql. Scope: M.
-- [ ] **Task 4: Google sign-in and sessions**
-  - Acceptance: platform AC2, AC3, AC4, AC8, AC9, AC10; `requireSession` on pages, layouts, actions and route handlers.
-  - Verify: `npm test`; integration tests with a fake Google token endpoint.
-  - Depends on: 3. Files: src/core/platform/sessions.ts, src/app/api/auth/google/*, src/server/session.ts, src/proxy.ts, tests. Scope: M.
-- [ ] **Task 5: QR pairing**
-  - Acceptance: platform AC5, AC6, AC7.
-  - Verify: `npm test`; Playwright pairing test with two browser contexts, including an unapproved phone loading `/jobs`.
-  - Depends on: 4. Files: src/core/platform/pairing.ts, src/app/devices/*, src/app/pair/*, src/app/api/pair/*, e2e/pairing.spec.ts. Scope: M.
-- [ ] **Task 6: Baseline page and Stats shell**
-  - Acceptance: Start and Stop record a pre-real-use baseline run with route, company and role; the Stats shell shows its count, median and 90th percentile.
-  - Verify: `npm test`.
-  - Depends on: 4. Files: src/core/ledger/baseline.ts, src/app/baseline/*, src/app/stats/page.tsx, db/migrations/0002_baseline.sql. Scope: S.
-- [ ] **Task 7: Deploy skeleton**
-  - Acceptance: the Vercel project is live with the owner's environment values; bootstrap and migrate ran on Supabase from `.env.ops.local`; platform AC14; the keep-alive workflow uses the repository secret; `vercel.json` holds the daily cron; [the runbook](../docs/runbook/setup.md) matches what was done.
-  - Verify: the owner signs in on the laptop and pairs the phone on the live site; both cron endpoints answer 401 without their secrets.
-  - Depends on: 2, 5, 6. Files: vercel.json, src/app/api/cron/*, .github/workflows/keepalive.yml, docs/runbook/setup.md. Scope: M.
-- [ ] **Checkpoint A** — tests green; sign-in, pairing and baseline timing on real devices; doubt review of sessions and pairing; merge to `main`.
+- [ ] **Task 1: Scaffold and tooling** — Owns: platform AC1.
+  - Next 16, TypeScript strict, Tailwind v4, shadcn, Vitest, ESLint and Prettier at pinned majors; `.env.example` lists platform B8. Before any Next code, read the guides in `node_modules/next/dist/docs/` and note anything that changes the specs' assumptions in `docs/runbook/next16-notes.md`.
+  - Verify: `npm run check`; `npm run build`. Depends on: none. Files: package.json, tsconfig.json, vitest.config.ts, eslint.config.mjs, .env.example. Scope: M.
+- [ ] **Task 2: Guard and CI** — Owns: platform AC15.
+  - Fixture keys are built at run time, never committed in a key-like form.
+  - Verify: `npm test`; a dry commit of a planted path is refused. Depends on: 1. Files: scripts/guard.ts, scripts/guard.test.ts, .githooks/pre-commit, .github/workflows/ci.yml. Scope: M.
+- [ ] **Task 3: Database, storage and composition** — Owns: platform AC16.
+  - `Db` and `Storage` ports; PGlite, pg, local-storage and Supabase-storage adapters; `{{schema}}` placeholder; migration runner and bootstrap (local by default, `--prod` with typed confirmation, bucket creation); atomic-claim helper; `src/server/container.ts`; live contract test behind `JOBKIT_LIVE=1`.
+  - Verify: `npm test`; migrations twice on PGlite. Depends on: 1. Files: src/core/ports.ts, src/adapters/{pglite,pg,local-storage,supabase-storage}.ts, scripts/{migrate,bootstrap}.ts, db/migrations/0001_platform.sql, src/server/container.ts. Scope: M (two commits if needed).
+- [ ] **Task 4: Google sign-in, sessions and app shell** — Owns: platform AC2, AC3, AC4, AC9, AC10.
+  - App shell and navigation, with a `/jobs` page that loads (empty) data through `requireSession`.
+  - Verify: `npm test`; integration tests with a fake Google token endpoint. Depends on: 3. Files: src/core/platform/sessions.ts, src/app/api/auth/google/*, src/server/session.ts, src/proxy.ts, src/app/(app)/layout.tsx, src/app/(app)/jobs/page.tsx. Scope: M.
+- [ ] **Task 5: QR pairing and Devices** — Owns: platform AC5, AC6, AC7, AC8.
+  - Verify: `npm test`; Playwright with two browser contexts, including an unapproved phone loading `/jobs` and a test page in the `(app)` group; later pages inherit the layout's check. Depends on: 4. Files: src/core/platform/pairing.ts, src/app/(app)/devices/*, src/app/pair/*, src/app/api/pair/*, e2e/pairing.spec.ts. Scope: M.
+- [ ] **Task 6: Baseline page** — Owns: none (ledger "Timing comparison", pre-real-use part).
+  - Start and Stop record a pre-real-use baseline run with route, company and role; the page shows count, median and 90th percentile.
+  - Verify: `npm test`. Depends on: 4. Files: src/core/ledger/baseline.ts, src/app/(app)/baseline/*, db/migrations/0002_baseline.sql. Scope: S.
+- [ ] **Task 7: Deploy skeleton** — Owns: platform AC14.
+  - Vercel project live from `main` (merge after this task) with Production-scoped variables; bootstrap and migrate run on Supabase with `--prod`; keep-alive workflow with the repository secret; daily cron in `vercel.json`; the runbook matches what was done.
+  - Verify: the owner signs in on the laptop and pairs the phone on the live site; both cron endpoints answer 401 without their secrets. Depends on: 2, 5, 6. Files: vercel.json, src/app/api/cron/*, .github/workflows/keepalive.yml, docs/runbook/setup.md. Scope: M.
+- [ ] **Task 8: Spikes** — Owns: none.
+  - On the owner's phone: PWA install; the share target through the service worker, recorded as working or not, with the server switch set accordingly. A static test page with both Gmail handoffs (`mailto:` and Web Share with a dummy PDF), tap counts recorded, mechanism chosen. On Vercel: a 200-second `after()` run to confirm the function limit. Jobs from spikes are marked as test jobs.
+  - Verify: results in `docs/runbook/spikes.md`. Depends on: 7. Files: public/sw.js, src/app/manifest.ts, src/app/(app)/spike/*, docs/runbook/spikes.md. Scope: S.
+- [ ] **Checkpoint A (day 3)** — device tests by the owner; doubt review of sessions and pairing; merge.
 
-## Phase 1: Capture
+## Phase 1: Capture, ledger and profile (days 3–5)
 
-- [ ] **Task 8: Phone spike**
-  - Acceptance: the PWA installs on the owner's phone; the share target delivers images through the service worker, or the failure is recorded and the server switch set off; empty and link-only shares are refused.
-  - Verify: by hand on the phone; result in docs/runbook/spikes.md.
-  - Depends on: 7. Files: public/sw.js, src/app/manifest.ts, the share-switch route, docs/runbook/spikes.md. Scope: S.
-- [ ] **Task 9: Intake upload path**
-  - Acceptance: intake AC1 to AC12.
-  - Verify: `npm test`; Playwright upload test with the local storage adapter.
-  - Depends on: 8, 10. Files: src/core/intake/*, src/app/jobs/new/*, src/app/api/jobs/*, src/adapters/supabase-storage.ts, src/adapters/local-storage.ts. Scope: M (split into 9a client encoding and 9b server path if it grows).
-- [ ] **Task 10: Runner**
-  - Acceptance: platform AC17, AC18, AC19.
-  - Verify: `npm test` with fake stages and a fake clock.
-  - Depends on: 3. Files: src/core/platform/runner.ts, src/core/platform/jobStates.ts, src/app/api/jobs/[id]/advance/route.ts, db/migrations/0003_jobs.sql. Scope: M.
-- [ ] **Task 11: Model wrapper**
-  - Acceptance: platform AC11, AC12, AC13.
-  - Verify: `npm test`; adapter contract tests behind `JOBKIT_LIVE=1`, with the owner's approval for a few cents of spend.
-  - Depends on: 3. Files: src/core/platform/models.ts, src/adapters/anthropic.ts, src/adapters/gemini.ts, src/adapters/fake-llm.ts, src/core/platform/prices.ts. Scope: M.
-- [ ] **Task 12: Profile**
-  - Acceptance: profile AC1 to AC7, with the shared skill vocabulary and region table.
-  - Verify: `npm test`; `npm run profile:seed` on the sample profile.
-  - Depends on: 3. Files: src/core/profile/*, src/core/shared/skills.ts, src/core/shared/regions.ts, scripts/profile-seed.ts, src/app/profile/page.tsx, evals/synthetic/profile.sample.yaml. Scope: M.
-  - Owner, in parallel: once `.gitignore` exists, Claude Code moves the drafted profile to `private/profile.yaml`; the owner approves facts and writes the rest.
-- [ ] **Checkpoint B** — a phone upload creates a job; fake stages advance through the state table.
+- [ ] **Task 9: Runner** — Owns: platform AC17, AC18.
+  - States with kinds, pending stage, `job_state_changes`, leases, per-stage input hashes, attempts, Retry and Skip, timeouts on status read.
+  - Verify: `npm test` with fake stages and a fake clock. Depends on: 3. Files: src/core/platform/{runner,jobStates,times}.ts, src/app/api/jobs/[id]/advance/route.ts, db/migrations/0003_jobs.sql. Scope: M.
+- [ ] **Task 10: Model wrapper** — Owns: platform AC11, AC12, AC13.
+  - Streaming with idle timeout, one row per attempt, provisional costs, guard hook, retries, refusals, price table; the local-only check used by the dev server and the evaluation composition.
+  - Verify: `npm test`; adapter contract tests behind `JOBKIT_LIVE=1`, with the owner's approval for a few cents. Depends on: 3. Files: src/core/platform/{models,prices}.ts, src/adapters/{anthropic,gemini,fake-llm}.ts, src/server/localOnly.ts. Scope: M.
+- [ ] **Task 11: Ledger core** — Owns: ledger AC1, AC2, AC3, AC7, AC8, AC10.
+  - Normalisation, duplicate check with fuzzy post match, statuses and audit, arm assignment, trust-gate state, spend cap guard wired into the wrapper, CSV import.
+  - Verify: `npm test`. Depends on: 3, 10. Files: src/core/ledger/{normalise,duplicates,statuses,arms,trustGate,spend}.ts, scripts/ledger-import.ts, db/migrations/0004_ledger.sql. Scope: M (two commits).
+- [ ] **Task 12: Intake server path** — Owns: intake AC1, AC8, AC10.
+  - Metadata-only job creation with arm assignment and `manual_run`, signed upload URLs, re-issue, confirm, 15-minute timeout, clock fields, upload-attempt log.
+  - Verify: `npm test`. Depends on: 9, 11. Files: src/core/intake/{jobs,uploads}.ts, src/app/api/jobs/route.ts, src/app/api/jobs/[id]/{uploaded,upload-urls}/route.ts, db/migrations/0005_intake.sql. Scope: M.
+- [ ] **Task 13: Intake client and share target** — Owns: intake AC2, AC3, AC4, AC5, AC6.
+  - Encoding and tile counts, limits, resume, the New job page, the share-target page with the service worker's refusals and the server switch.
+  - Verify: `npm test`; Playwright upload and synthetic-share tests. Depends on: 8, 12. Files: src/core/intake/{encode,tiles,limits}.ts, src/app/(app)/jobs/new/*, public/sw.js, e2e/upload.spec.ts. Scope: M.
+- [ ] **Task 14: Profile** — Owns: profile AC1–AC7.
+  - Schema, shared skill vocabulary and region table, seed with rollback (local by default, `--prod` for production), access API, Profile page, the public sample in CI. In parallel, the owner reviews `private/profile.draft.yaml`, approves facts and writes the rest; it is then seeded with `--prod`.
+  - Verify: `npm test`; `npm run profile:seed` on the sample profile locally. Depends on: 3. Files: src/core/profile/*, src/core/shared/{skills,regions}.ts, scripts/profile-seed.ts, src/app/(app)/profile/page.tsx. Scope: M.
+- [ ] **Checkpoint B (day 5)** — a phone upload on the live site creates a job and stores its images; the spend cap guards every model call; the profile is seeded.
 
-## Phase 2: Extraction and first measurement
+## Phase 2: Extraction and first measurement (days 5–9)
 
-- [ ] **Task 13: Extraction core** — extraction AC1, AC2, AC3, AC8; record schema, sentinels, contact checks, phrase backstop, tiling. Depends on 11, 12. Scope: M.
-- [ ] **Task 14: `extract`, stops and override, role pick, `extract_questions`** — extraction AC4, AC5, AC6, AC7, AC12. Depends on 9, 10, 13. Scope: M.
-- [ ] **Task 15: `address_read`** — extraction AC9, AC10. Depends on 14. Scope: S.
-- [ ] **Task 16: `eligibility`** — extraction AC11; the decision screen. Depends on 12, 13. Scope: S.
-- [ ] **Task 17: Evaluations, part 1** — evals AC1 to AC7 for extraction, the synthetic renderer and cases. Depends on 13, 14, 15. Scope: M (split: 17a import and labelling page, 17b runner and scorer).
-- [ ] **Task 18: Live extraction evaluation** — the owner approves the spend; report reviewed; stage latency and effort settings recorded. Depends on 17 and the owner's blind test labels. Scope: S.
-- [ ] **Checkpoint C** — assumption 1 measured; latency against the stage budget; owner review; doubt review.
+- [ ] **Task 15: Extraction core** — Owns: extraction AC1, AC3, AC5, AC8.
+  - Record schema with sentinels (and the start of the schema-counting test), contact checks, phrase backstop, tiling and coordinate mapping.
+  - Verify: `npm test`. Depends on: 10, 14. Files: src/core/extraction/{record,contacts,backstop,tiles}.ts and tests. Scope: M.
+- [ ] **Task 16: `extract`, stops, role pick, `extract_questions`** — Owns: extraction AC4, AC6, AC7.
+  - Verify: `npm test` with the fake model and synthetic fixtures. Depends on: 9, 12, 15. Files: src/core/extraction/{extractStage,questionsStage,prompts}.ts, src/app/api/jobs/[id]/role/route.ts. Scope: M.
+- [ ] **Task 17: `address_read`** — Owns: extraction AC9, AC10, AC12.
+  - Verify: `npm test` on synthetic images. Depends on: 16. Files: src/core/extraction/{crop,addressRead}.ts. Scope: S.
+- [ ] **Task 18: `eligibility`** — Owns: extraction AC11.
+  - Verify: `npm test` (table tests). Depends on: 14, 15. Files: src/core/extraction/eligibility.ts and tests. Scope: S.
+- [ ] **Task 19: Evaluation tooling A** — Owns: evals AC1, AC2, AC7.
+  - mbox and eml import, the labelling page (blind test labels first), `eval:pull`, the synthetic renderer.
+  - Verify: `npm test`; the labelling page returns 404 in a production build. Depends on: 15, 16. Files: scripts/eval-import.ts, scripts/eval-pull.ts, src/app/dev/label/*, evals/render.ts. Scope: M.
+- [ ] **Task 20: Evaluation tooling B** — Owns: evals AC3, AC4, AC5, AC6.
+  - Split, scorer (exact match, Wilson, precision and recall, McNemar), runner with budget on the evaluation keys and a local database, reports and aggregate summary.
+  - Verify: `npm test`. Depends on: 10, 19. Files: evals/{split,score,run,summary}.ts and tests. Scope: M.
+- [ ] **Task 21: Live extraction evaluation** — Owns: none.
+  - Runs on the dev split only, after the owner approves the estimated spend; records accuracy, per-stage latency and cost.
+  - Verify: report reviewed by the owner. Depends on: 17, 18, 20, and the owner's labels. Files: private reports; a summary note in docs/runbook/measurements.md. Scope: S.
+- [ ] **Checkpoint C (day 9)** — assumption 1 measured on dev cases; latency against the stage budget; owner review; doubt review.
 
-## Phase 3: Drafting
+## Phase 3: Drafting and the thin path (days 9–13)
 
-- [ ] **Task 19: Drafting core and `validate`** — drafting AC3 to AC8, AC10, AC12, AC13. Depends on 12, 13. Scope: M.
-- [ ] **Task 20: `draft` and `draft_answers`** — drafting AC1, AC2, AC11. Depends on 19, 10, 11. Scope: M.
-- [ ] **Task 21: `judge`** — drafting AC9. Depends on 20. Scope: S.
-- [ ] **Task 22: Evaluations, part 2** — the frozen judge set, judge metrics, gap coverage, the McNemar comparison; a live run within budget. Depends on 21, 17. Scope: M.
-- [ ] **Checkpoint D** — a kit end to end from a real screenshot; production machine time against 60 seconds; owner decision if missed; doubt review.
+- [ ] **Task 22: Drafting core and `validate`** — Owns: drafting AC4, AC5, AC6, AC7, AC8, AC10, AC12; extraction AC2.
+  - Kit types and blocks, the keyword topic classifier, fixed answers, code-built subject, greeting and gap lines, the fit check, `validate(kit, context)` as a pure shared function; the schema-counting test extended to drafting's schemas.
+  - Verify: `npm test`. Depends on: 14, 15. Files: src/core/drafting/{kit,topics,fit,gapLines,validate}.ts and tests. Scope: M (two commits).
+- [ ] **Task 23: `draft`** — Owns: drafting AC1, AC2, AC3.
+  - Verify: `npm test` with the fake model. Depends on: 9, 10, 22. Files: src/core/drafting/{draftStage,prompts}.ts. Scope: S.
+- [ ] **Task 24: `judge`** — Owns: drafting AC9.
+  - Verify: `npm test`. Depends on: 23. Files: src/core/drafting/judgeStage.ts and tests. Scope: S.
+- [ ] **Task 25: `address_checks`** — Owns: review AC5.
+  - DNS port and adapter, implicit and null MX, free mail, company mismatch.
+  - Verify: `npm test` with a fake DNS. Depends on: 9. Files: src/core/review/addressChecks.ts, src/adapters/dns.ts. Scope: S.
+- [ ] **Task 26: Thin kit page** — Owns: review AC1; ledger AC4; platform AC19.
+  - Job page for email kits: progress, the manual-run screen with Stop, the contact panel with retype, flags with "I checked this", basic block editing with confirmation, `canHandOff` in the browser and on the server, polling rules; the jobs list.
+  - Verify: `npm test`; Playwright with the fake models. Depends on: 11, 24, 25. Files: src/app/(app)/jobs/[id]/*, src/app/(app)/jobs/page.tsx, src/core/review/canHandOff.ts. Scope: M.
+- [ ] **Task 27: Gmail handoff and Mark sent** — Owns: review AC3, AC7, AC10; ledger AC6.
+  - The mechanism chosen in Task 8, built inside the click; Mark sent with the Gmail question; draft outcomes and factual edits; Skip.
+  - Verify: `npm test`; Playwright with a slowed network. Depends on: 8, 26. Files: src/core/review/handoffs.ts, src/app/(app)/jobs/[id]/handoff/*, src/core/ledger/outcomes.ts. Scope: M.
+- [ ] **Checkpoint D (day 13)** — a kit end to end from a real screenshot on the phone; production machine time; owner decision if the median misses 60 seconds; doubt review; real use starts at the next handoff.
 
-## Phase 4: Review and ledger
+## Phase 4: Full review, kits and stats (days 14–20)
 
-- [ ] **Task 23: Ledger core** — ledger AC1 to AC4, AC10. Depends on 3. Scope: M.
-- [ ] **Task 24: `address_checks`** — review AC5. Depends on 10. Scope: S.
-- [ ] **Task 25: Job page, part 1** — review AC6, AC9; waiting-state screens, banners, contact panel, checklist, fit table. Depends on 21, 23, 24. Scope: M.
-- [ ] **Task 26: Job page, part 2** — review AC1, AC2, AC4, AC11; drafting AC13; block editor. Depends on 25. Scope: M.
-- [ ] **Task 27: Handoffs** — review AC3, AC7, AC8, AC10; the tap-count spike, recorded. Depends on 26. Scope: M.
-- [ ] **Task 28: Stats and Spend** — ledger AC5 to AC8; intake AC12. Depends on 23, 27. Scope: M.
-- [ ] **Task 29: Retention purges** — intake AC9; ledger AC9. Depends on 23, 9. Scope: S.
-- [ ] **Task 30: End-to-end and accessibility** — review AC12, AC13. Depends on 27, 28. Scope: S.
-- [ ] **Checkpoint E** — real use starts at the first handoff; doubt review.
+- [ ] **Task 28: Job page in full** — Owns: review AC6, AC9, AC11.
+  - Banners, every waiting and owner-state screen, the crop with full-screenshot fallback, the checklist with declines, the fit table with ticks, the scam override.
+  - Verify: `npm test`; Playwright. Depends on: 26. Files: src/app/(app)/jobs/[id]/{banners,checklist,fit,contact}/*. Scope: M.
+- [ ] **Task 29: Block editor and edit tracking** — Owns: review AC4; drafting AC13.
+  - Add and delete blocks, mark a block as answering a requirement, topic choices, "Needs your line" and "Needs your answer", keep for evaluation.
+  - Verify: `npm test`; Playwright. Depends on: 28. Files: src/app/(app)/jobs/[id]/editor/*, src/core/drafting/edits.ts. Scope: M.
+- [ ] **Task 30: Form and message kits** — Owns: review AC2, AC8.
+  - Copy controls, "Copy all", https-only application links, `wa.me`, Mark submitted; every outbound control behind the gate.
+  - Verify: `npm test`; Playwright tries every control. Depends on: 27, 29. Files: src/app/(app)/jobs/[id]/{form,message}/*, src/core/review/links.ts. Scope: M.
+- [ ] **Task 31: Adding screenshots and `draft_answers`** — Owns: intake AC11; drafting AC11.
+  - Verify: `npm test`. Depends on: 13, 16, 24. Files: src/core/drafting/draftAnswersStage.ts, src/app/(app)/jobs/[id]/add/*. Scope: S.
+- [ ] **Task 32: Evaluation part 2** — Owns: none (evals metrics for the judge).
+  - The frozen judge set (Claude Code drafts candidates; the owner labels), judge metrics, gap coverage, the Opus–Sonnet comparison with McNemar; a live run on dev within budget.
+  - Verify: report reviewed by the owner. Depends on: 20, 24. Files: evals/judgeSet.ts, private reports. Scope: M.
+- [ ] **Task 33: Stats and Spend** — Owns: ledger AC5; intake AC12.
+  - Verify: `npm test`. Depends on: 11, 27. Files: src/app/(app)/{stats,spend}/*, src/core/ledger/{stats,bootstrap}.ts. Scope: M.
+- [ ] **Task 34: Retention purges** — Owns: intake AC7, AC9; ledger AC9.
+  - Verify: `npm test` with a fake clock. Depends on: 11, 12, 13. Files: src/core/{intake,ledger}/purge.ts, src/app/api/cron/daily/route.ts. Scope: S.
+- [ ] **Task 35: End-to-end and accessibility** — Owns: review AC12, AC13.
+  - Verify: `npm run test:e2e`. Depends on: 30, 33. Files: e2e/flow.spec.ts, e2e/a11y.spec.ts. Scope: S.
+- [ ] **Checkpoint E (day 20)** — all criteria owned so far pass; doubt review.
 
-## Phase 5: Measure and write up
+## Phase 5: Measure and write up (days 21–28)
 
-- [ ] **Task 31: Final evaluation** — the blind test split with `--final`; the aggregate summary approved by the owner. Depends on 22 and real use. Scope: S.
-- [ ] **Task 32: Write-up** — README case study and Portfolio entry draft; full-history scan before anything is published. Depends on 31. Scope: S.
-- [ ] **Checkpoint F** — success criteria on the first 20 real uses; decide milestone 2.
+- [ ] **Task 36: Final evaluation** — Owns: none.
+  - The blind test split with `--final`; the aggregate summary approved by the owner.
+  - Verify: summary approved. Depends on: 32 and real use. Files: evals/results/<date>.md. Scope: S.
+- [ ] **Task 37: Write-up** — Owns: none.
+  - README case study and Portfolio entry draft; full-history scan before anything is published.
+  - Verify: the owner approves the text; the scan is clean. Depends on: 36. Files: README.md, a draft for Portfolio/src/data/projects.ts. Scope: S.
+- [ ] **Checkpoint F (day 28)** — success criteria on the real uses so far; decide milestone 2 and whether to extend measuring.

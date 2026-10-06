@@ -235,7 +235,11 @@ Three places hold values, each with its own purpose. All are documented in `.env
 
 - **Vercel (production only):** `OWNER_EMAIL`, `APP_ORIGIN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `DATABASE_URL` (as `jobkit_app`, through the transaction pooler), `SUPABASE_URL`, `SUPABASE_SECRET_KEY` (Supabase's newer secret key format; the legacy `service_role` key is not used), `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `CRON_SECRET`, `KEEPALIVE_SECRET` and `JOBKIT_ENV=production`.
 - **`.env.local` (development and evaluations on the laptop; `next dev` loads it):** `OWNER_EMAIL`, `APP_ORIGIN=http://localhost:3000`, the Google client values, `JOBKIT_ENV=development`, `ANTHROPIC_EVALS_API_KEY` and `GEMINI_EVALS_API_KEY`. No production database URL and no production model key: the dev server and the evaluation runner refuse to start if they find a remote `DATABASE_URL`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`, so a local run can never spend the app's budget unseen.
-- **`.env.ops.local` (laptop operations only; loaded explicitly by the bootstrap, migrate, seed and import scripts, never by the app):** `DATABASE_BOOTSTRAP_URL`, `JOBKIT_APP_DB_PASSWORD`, the production `DATABASE_URL`, `SUPABASE_URL` and `SUPABASE_SECRET_KEY`.
+- **`.env.ops.local` (laptop operations only; never loaded by the app):** `DATABASE_BOOTSTRAP_URL` (Supabase's session pooler for the `postgres` role, which works over IPv4), `JOBKIT_APP_DB_PASSWORD`, the production `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and copies of `CRON_SECRET` and `KEEPALIVE_SECRET` so the guard's exact-value check knows them.
+
+**Scripts never reach production by accident.** The bootstrap, migrate, seed and import scripts work on the local PGlite database by default. Only with `--prod` do they load `.env.ops.local`, and then they print the target project and ask the owner to type its reference before changing anything. The bootstrap also creates the private storage bucket `jobkit-private`.
+
+**Vercel previews hold no secrets.** Every variable in Vercel is scoped to the Production environment only, so a preview deployment of a branch has no keys, fails closed, and cannot spend or read anything.
 
 
 ### B9. Jobs, states and the pipeline runner
