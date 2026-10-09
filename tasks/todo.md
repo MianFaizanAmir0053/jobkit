@@ -40,9 +40,10 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
   - Streaming with idle timeout, one row per attempt, provisional costs, guard hook, retries, refusals, price table; the local-only check used by the dev server and the evaluation composition.
   - Code done: the wrapper, the price table and call log, the Claude and Gemini adapters (tested on recorded streams), the local-only check at server start and in the container, and the container's models (app keys in production, each loaded on first use; evaluation keys in development). The live contract tests wait for the owner's keys and go-ahead (docs/runbook/testing.md). The evaluation runner's own check is Task 20's; the test server's scripted models are Task 26's.
   - Verify: `npm test`; adapter contract tests in `--mode live`, with the owner's approval for a few cents. Depends on: 3. Files: src/core/platform/{models,prices}.ts, src/adapters/{anthropic,gemini,fake-llm}.ts, src/server/localOnly.ts. Scope: M.
-- [ ] **Task 11: Ledger core** — Owns: ledger AC1, AC2, AC3, AC7, AC8, AC10.
+- [x] **Task 11: Ledger core** — Owns: ledger AC1, AC2, AC3, AC7, AC8, AC10.
   - Normalisation, duplicate check with fuzzy post match, statuses and audit, arm assignment, trust-gate state, spend cap guard wired into the wrapper, CSV import.
   - Verify: `npm test`. Depends on: 3, 10. Files: src/core/ledger/{normalise,duplicates,statuses,arms,trustGate,spend}.ts, scripts/ledger-import.ts, db/migrations/NNNN_ledger.sql. Scope: M (two commits).
+  - Done. For later tasks: intake calls `drawArm` once real use has started (AC4 and AC5 are Task 26's and the stats task's); the review module writes `draft_outcomes`, which `trustGateState` will read; every model stage takes `modelCallDeps(container)`, which carries the spend guard; the New job page asks `spendState`.
 - [ ] **Task 12: Intake server path** — Owns: intake AC1, AC8, AC10.
   - Metadata-only job creation with arm assignment and `manual_run`, signed upload URLs, re-issue, confirm, 15-minute timeout, clock fields, upload-attempt log.
   - Verify: `npm test`. Depends on: 9, 11. Files: src/core/intake/{jobs,uploads}.ts, src/app/api/jobs/route.ts, src/app/api/jobs/[id]/{uploaded,upload-urls}/route.ts, db/migrations/NNNN_intake.sql. Scope: M.

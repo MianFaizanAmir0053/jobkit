@@ -1,5 +1,6 @@
-import { providerOf } from "@/core/platform/models";
-import type { Llm } from "@/core/ports";
+import { spendGuard } from "@/core/ledger/spend";
+import { type ModelCallDeps, providerOf } from "@/core/platform/models";
+import type { Clock, Db, Llm } from "@/core/ports";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -37,6 +38,23 @@ export function modelsFor(kind: keyof typeof KEY_NAMES, env: Env): (model: strin
         ? `${names[provider]} is not set, so ${model} cannot run here`
         : `The ${kind} server has no models`,
     );
+  };
+}
+
+/**
+ * What every model stage hands the wrapper: the container's models, and the
+ * monthly spend cap as its guard (ledger spec, "Spend cap").
+ */
+export function modelCallDeps(container: {
+  db: Db;
+  clock: Clock;
+  llmFor(model: string): Llm;
+}): ModelCallDeps {
+  return {
+    db: container.db,
+    clock: container.clock,
+    llmFor: (model) => container.llmFor(model),
+    guard: spendGuard(container),
   };
 }
 

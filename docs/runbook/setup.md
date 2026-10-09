@@ -14,6 +14,7 @@ The repository ignores `private/` and every `.env*` file except `.env.example`, 
 2. Steps 2 to 8 when Claude reaches Task 7 (the deploy skeleton). Step 2 comes before step 4 because the Google client needs the Vercel address.
 3. Step 9 after you have approved the profile, so the signature text is final.
 4. Step 10 once the first deploy is live, then the checks in step 11.
+5. Step 12 any time after step 5; the duplicate check uses the list from then on.
 
 ## 1. Gmail export for the evaluation
 
@@ -98,3 +99,9 @@ After the profile is approved: in the Gmail app on the phone (Settings, your acc
    Each prints `401`.
 3. In GitHub, Actions, keep-alive: run the workflow once by hand (Run workflow). It goes green, which proves the secret and the `APP_ORIGIN` variable.
 4. In Vercel, the project's Settings, Cron Jobs lists `/api/cron/daily` at `0 22 * * *`: 22:00 UTC, 03:00 in Pakistan. On the Hobby plan Vercel runs it at some point within that hour.
+
+## 12. Earlier applications
+
+1. Type the applications you made before jobkit into `private/earlier.csv`, one per line: `company,role,applied_on,route,address`. The date is written like `2026-05-04`; the route is `email`, `form` or `message`; the address (an email address or a phone number) may be left out. A header line with those names is fine, and a field that holds a comma goes in double quotes.
+2. Check the file against the local database: `npm run ledger:import private/earlier.csv`. A bad row is reported by its line, and nothing is imported until every row is right.
+3. Then import it into production: `npm run ledger:import -- private/earlier.csv --prod`, typing the project reference when asked. Running it again adds nothing new, so a longer list can be imported later.
