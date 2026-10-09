@@ -228,7 +228,7 @@ Rules:
 
 - GitHub Actions on every push and pull request: `npm ci`, lint, typecheck, tests with the coverage threshold, build, and the guard below over the whole tree and over every commit the push adds. The checkout fetches full history; on a new branch, whose `before` is all zeros, "added commits" means those not on `main`. These jobs get no secrets.
 - `npm run prepare` sets `core.hooksPath` to `.githooks`. The pre-commit hook runs the same guard on staged changes. It blocks:
-  - a path under `private/`, a `.env` file other than `.env.example`, or a file larger than 1 MB;
+  - a path under `private/` or `.data/` (the local database, which holds copies of the profile and CV), a `.env` file other than `.env.example`, or a file larger than 1 MB;
   - content matching a key pattern: Anthropic keys (`sk-ant-`), Google API keys (`AIza`), Google OAuth client secrets (`GOCSPX-`), Supabase secret keys (`sb_secret_`), connection strings carrying a password (`postgres://user:password@` and `postgresql://` alike), private-key headers, and long JWT-shaped strings;
   - on the laptop, any staged text containing an exact value of 12 characters or more from `.env.local` or `.env.ops.local`, which catches the random secrets no pattern can.
 - Before the repository is made public, a full-history scan runs (ADR 0001 entry 30).

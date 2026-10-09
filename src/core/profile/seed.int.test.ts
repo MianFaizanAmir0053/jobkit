@@ -41,9 +41,13 @@ beforeEach(async () => {
   puts = [];
   storage = {
     ...local,
-    put: async (path, bytes, type) => {
+    // Like Supabase Storage: an object that exists is replaced only when asked.
+    put: async (path, bytes, type, options) => {
+      if (!options?.overwrite && (await local.stat(path)) !== null) {
+        throw new Error("The resource already exists");
+      }
       puts.push(path);
-      await local.put(path, bytes, type);
+      await local.put(path, bytes, type, options);
     },
   };
 });
@@ -158,6 +162,23 @@ describe("seedProfile", () => {
     const results = await Promise.all([seedProfile(deps(), valid()), seedProfile(deps(), valid())]);
 
     expect(results.map((result) => result.status).sort()).toEqual(["created", "unchanged"]);
+    expect(await versions()).toHaveLength(1);
+  });
+
+  it("gives a CV label to one CV only, when two seeds of different CVs run at once", async () => {
+    const otherCv = new TextEncoder().encode("%PDF-1.4 another CV");
+
+    const results = await Promise.all([
+      seedProfile(deps(), valid()),
+      seedProfile(
+        deps(),
+        valid(SAMPLE.replace('notice_period: "One month"', 'notice_period: "Two weeks"'), {
+          "cv.sample.pdf": otherCv,
+        }),
+      ),
+    ]);
+
+    expect(results.map((result) => result.status).sort()).toEqual(["created", "refused"]);
     expect(await versions()).toHaveLength(1);
   });
 });

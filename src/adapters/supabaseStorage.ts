@@ -26,6 +26,9 @@ export function createSupabaseStorage(opts: {
   const fail = (what: string, message: string): never => {
     throw new Error(`Supabase Storage ${what} failed: ${message}`);
   };
+  // Storage reports a missing object as status 400 or 404 with "not found" in the message.
+  const notFound = (error: { message: string; status?: number; statusCode?: string }) =>
+    error.status === 404 || error.statusCode === "404" || /not.?found/i.test(error.message);
 
   async function listRecursive(prefix: string): Promise<string[]> {
     const { data, error } = await bucket().list(prefix, { limit: 1000 });
@@ -53,9 +56,12 @@ export function createSupabaseStorage(opts: {
       if (error) return fail("signed read URL", error.message);
       return data.signedUrl;
     },
-    async put(path, bytes, contentType) {
+    async put(path, bytes, contentType, options) {
       assertStoragePath(path);
-      const { error } = await bucket().upload(path, bytes, { contentType, upsert: false });
+      const { error } = await bucket().upload(path, bytes, {
+        contentType,
+        upsert: options?.overwrite ?? false,
+      });
       if (error) fail("upload", error.message);
     },
     async get(path) {
@@ -64,11 +70,13 @@ export function createSupabaseStorage(opts: {
       if (error || !data) return null;
       return new Uint8Array(await data.arrayBuffer());
     },
+    // Only a missing object is null: a passing server error must not read
+    // as "absent", or the seed would try to upload over a stored CV.
     async stat(path) {
       assertStoragePath(path);
       const { data, error } = await bucket().info(path);
-      if (error || !data) return null;
-      return { size: data.size ?? 0 };
+      if (error) return notFound(error) ? null : fail("stat", error.message);
+      return data ? { size: data.size ?? 0 } : null;
     },
     async list(prefix) {
       assertStoragePath(prefix);

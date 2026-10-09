@@ -293,7 +293,14 @@ const REGIONS: readonly { code: string; name: string; members: string | null; al
     aliases: [],
   },
   { code: "EMEA", name: "Europe, the Middle East and Africa", members: null, aliases: [] },
-  { code: "MENA", name: "Middle East and North Africa", members: null, aliases: ["menap"] },
+  { code: "MENA", name: "Middle East and North Africa", members: null, aliases: [] },
+  {
+    // The IMF's grouping, which includes Pakistan.
+    code: "MENAP",
+    name: "Middle East, North Africa, Afghanistan and Pakistan",
+    members: "AF DZ BH DJ EG IR IQ JO KW LB LY MR MA OM PK QA SA SO SD SY TN AE YE PS",
+    aliases: [],
+  },
   { code: "APAC", name: "Asia-Pacific", members: null, aliases: ["asia pacific"] },
 ];
 
@@ -375,6 +382,11 @@ export function isPlaceCode(code: string): boolean {
 export function isCountryCode(code: string): boolean {
   const entry = PLACES.get(code);
   return entry !== undefined && entry.members === undefined;
+}
+
+/** A region whose countries are unclear, such as EMEA, which no country can be matched to. */
+export function isUnclearRegion(code: string): boolean {
+  return PLACES.get(code)?.members === null;
 }
 
 export function placeName(code: string): string {

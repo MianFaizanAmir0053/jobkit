@@ -49,7 +49,7 @@ function required(env: Env, names: readonly string[]): Record<string, string> {
 
 export async function createContainer(
   env: Env,
-  opts: { dataDir?: string } = {},
+  opts: { dataDir?: string; migrationsDir?: string } = {},
 ): Promise<Container> {
   // Vercel holds only production, so a wrong JOBKIT_ENV there must stop the
   // app rather than give it an in-memory database and the test routes.
@@ -87,14 +87,21 @@ export async function createContainer(
         env.JOBKIT_ENV === "development"
           ? await openLocalDb(dataDir, { schema: SCHEMA, holder: "the dev server" })
           : await createPgliteDb({ schema: SCHEMA });
-      await bootstrapForTests(db);
-      await applyMigrations(db, loadMigrations(join(process.cwd(), "db", "migrations")));
-      const storage = createLocalStorage({
-        root: join(dataDir, "storage"),
-        origin: env.APP_ORIGIN ?? "http://localhost:3000",
-      });
-      const llmFor = modelsFor(env.JOBKIT_ENV, env);
-      return { kind: env.JOBKIT_ENV, db, storage, ...SYSTEM, llmFor, close: () => db.close() };
+      // A start that fails lets go of the database, so the next try can open it.
+      try {
+        await bootstrapForTests(db);
+        const migrations = opts.migrationsDir ?? join(process.cwd(), "db", "migrations");
+        await applyMigrations(db, loadMigrations(migrations));
+        const storage = createLocalStorage({
+          root: join(dataDir, "storage"),
+          origin: env.APP_ORIGIN ?? "http://localhost:3000",
+        });
+        const llmFor = modelsFor(env.JOBKIT_ENV, env);
+        return { kind: env.JOBKIT_ENV, db, storage, ...SYSTEM, llmFor, close: () => db.close() };
+      } catch (error) {
+        await db.close();
+        throw error;
+      }
     }
     default:
       throw new Error(

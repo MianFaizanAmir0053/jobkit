@@ -28,8 +28,15 @@ export interface Storage {
   createSignedUploadUrl(path: string): Promise<{ url: string; token: string }>;
   /** A short-lived URL the browser reads one private file from. */
   createSignedReadUrl(path: string, expiresInSeconds: number): Promise<string>;
-  put(path: string, bytes: Uint8Array, contentType: string): Promise<void>;
+  /** Stores a file. One already at the path is replaced only with `overwrite`; otherwise put throws. */
+  put(
+    path: string,
+    bytes: Uint8Array,
+    contentType: string,
+    options?: { overwrite?: boolean },
+  ): Promise<void>;
   get(path: string): Promise<Uint8Array | null>;
+  /** A file's size; null when there is no file at the path, and a throw for any other failure. */
   stat(path: string): Promise<{ size: number } | null>;
   list(prefix: string): Promise<string[]>;
   remove(paths: readonly string[]): Promise<void>;

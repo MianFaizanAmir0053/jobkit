@@ -15,30 +15,25 @@ export type SeedResult =
 
 type Deps = { db: Db; storage: Storage; clock: Clock };
 
+const LABEL_TAKEN: SeedResult = {
+  status: "refused",
+  message: "cv.label already names a different CV in an earlier version; give this CV a new label",
+};
+
 export async function seedProfile(deps: Deps, input: CheckedProfile): Promise<SeedResult> {
   const existing = await versionWithHash(deps.db, input.hash);
   if (existing) return adopt(deps.db, existing);
 
   const cvPath = `profile/cv-${createHash("sha256").update(input.cv).digest("hex")}.pdf`;
-  // Applications log the CV label, so a label names one CV.
-  const { rows: labelled } = await deps.db.query(
-    "select 1 from {{schema}}.profile_versions where cv_label = $1 and cv_path <> $2 limit 1",
-    [input.profile.cv.label, cvPath],
-  );
-  if (labelled.length > 0) {
-    return {
-      status: "refused",
-      message:
-        "cv.label already names a different CV in an earlier version; give this CV a new label",
-    };
-  }
+  const label = input.profile.cv.label;
+  // Checked here to spare the upload, and again where the version is stored.
+  if (await labelTaken(deps.db, label, cvPath)) return LABEL_TAKEN;
+  await storeCv(deps.storage, cvPath, input.cv);
 
-  // A copy cut short by an interrupted upload is replaced.
-  const stored = await deps.storage.stat(cvPath);
-  if (stored === null || stored.size !== input.cv.length) {
-    await deps.storage.put(cvPath, input.cv, "application/pdf");
-  }
-  const versionId = await deps.db.tx(async (tx) => {
+  const outcome = await deps.db.tx(async (tx) => {
+    // One seed at a time takes a label and stores a version, so a label never names two CVs.
+    await tx.query("select pg_advisory_xact_lock(hashtext($1))", ["jobkit.profile_versions"]);
+    if (await labelTaken(tx, label, cvPath)) return "label-taken" as const;
     const inserted = await tx.query<{ id: string }>(
       `insert into {{schema}}.profile_versions
          (hash, document, style_examples, cv_path, cv_label, created_at)
@@ -50,17 +45,43 @@ export async function seedProfile(deps: Deps, input: CheckedProfile): Promise<Se
         JSON.stringify(input.profile),
         [...input.styleExamples],
         cvPath,
-        input.profile.cv.label,
+        label,
         deps.clock.now(),
       ],
     );
     const id = inserted.rows[0]?.id;
-    if (id !== undefined) await activate(tx, id);
-    return id;
+    if (id === undefined) return "stored-already" as const;
+    await activate(tx, id);
+    return { id };
   });
-  if (versionId !== undefined) return { status: "created", versionId };
+  if (outcome === "label-taken") return LABEL_TAKEN;
   // Another seed of the same files stored it first.
-  return adopt(deps.db, (await versionWithHash(deps.db, input.hash))!);
+  if (outcome === "stored-already")
+    return adopt(deps.db, (await versionWithHash(deps.db, input.hash))!);
+  return { status: "created", versionId: outcome.id };
+}
+
+/** Applications log the CV label, so a label names one CV. */
+async function labelTaken(db: Db, label: string, cvPath: string): Promise<boolean> {
+  const { rows } = await db.query(
+    "select 1 from {{schema}}.profile_versions where cv_label = $1 and cv_path <> $2 limit 1",
+    [label, cvPath],
+  );
+  return rows.length > 0;
+}
+
+/**
+ * The CV in storage once per content. A copy cut short by an interrupted
+ * upload is replaced; one another seed stored a moment ago is kept.
+ */
+async function storeCv(storage: Storage, path: string, cv: Uint8Array): Promise<void> {
+  const stored = await storage.stat(path);
+  if (stored?.size === cv.length) return;
+  try {
+    await storage.put(path, cv, "application/pdf", { overwrite: stored !== null });
+  } catch (error) {
+    if ((await storage.stat(path))?.size !== cv.length) throw error;
+  }
 }
 
 /**

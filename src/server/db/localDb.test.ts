@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -29,9 +29,8 @@ function endedProcess(): number {
 }
 
 describe("lockLocalData", () => {
-  it("lets this process hold the local data, again after a reload, and let go", () => {
+  it("lets this process hold the local data and let go", () => {
     const release = lockLocalData(dir, "a test");
-    lockLocalData(dir, "the same test, reloaded");
 
     expect(JSON.parse(readFileSync(lockFile(), "utf8"))).toEqual({
       pid: process.pid,
@@ -39,6 +38,15 @@ describe("lockLocalData", () => {
     });
     release();
     expect(existsSync(lockFile())).toBe(false);
+  });
+
+  it("refuses a second hold in the same process, which would open the database twice", () => {
+    const release = lockLocalData(dir, "a test");
+
+    expect(() => lockLocalData(dir, "the same test, again")).toThrow(
+      "The local database is already open in this process (a test).",
+    );
+    release();
   });
 
   it("refuses while another running process holds it, and names that process", () => {
@@ -57,9 +65,14 @@ describe("lockLocalData", () => {
     expect(existsSync(lockFile())).toBe(false);
   });
 
-  it("takes over a lock file it cannot read", () => {
+  it("waits on a lock file it cannot read while it is new, and takes it over once it is old", () => {
     writeFileSync(lockFile(), "");
 
+    expect(() => lockLocalData(dir, "a test")).toThrow(
+      `The local database's lock is being taken by another program. Try again in a moment; if this keeps happening, delete ${lockFile()}.`,
+    );
+    const aMinuteAgo = new Date(Date.now() - 60_000);
+    utimesSync(lockFile(), aMinuteAgo, aMinuteAgo);
     expect(() => lockLocalData(dir, "a test")()).not.toThrow();
   });
 });

@@ -30,6 +30,19 @@ describe("Supabase Storage", () => {
     expect(await storage.list(prefix)).toEqual([`${prefix}/a.txt`]);
   }, 60_000);
 
+  it("says a missing object is absent, and replaces an object only when asked", async () => {
+    expect(await storage.stat(`${prefix}/missing.txt`)).toBeNull();
+    await storage.put(`${prefix}/c.txt`, new TextEncoder().encode("one"), "text/plain");
+
+    await expect(
+      storage.put(`${prefix}/c.txt`, new TextEncoder().encode("two"), "text/plain"),
+    ).rejects.toThrow(/upload failed/);
+    await storage.put(`${prefix}/c.txt`, new TextEncoder().encode("three"), "text/plain", {
+      overwrite: true,
+    });
+    expect(await storage.stat(`${prefix}/c.txt`)).toEqual({ size: 5 });
+  }, 60_000);
+
   it("issues signed upload and read URLs on the project's domain", async () => {
     const upload = await storage.createSignedUploadUrl(`${prefix}/b.txt`);
     const read = await storage.createSignedReadUrl(`${prefix}/a.txt`, 60);

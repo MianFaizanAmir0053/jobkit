@@ -43,4 +43,13 @@ describe("loadProfileFile", () => {
       problems: [{ line: 1, message: "the file is not UTF-8 text; save it as UTF-8" }],
     });
   });
+
+  it("says the file cannot be read when it is a folder, not that it is not UTF-8", () => {
+    mkdirSync(join(dir, "folder.yaml"));
+
+    expect(loadProfileFile(join(dir, "folder.yaml"))).toEqual({
+      ok: false,
+      problems: [{ line: 1, message: "the file cannot be read" }],
+    });
+  });
 });

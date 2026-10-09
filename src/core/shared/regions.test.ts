@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { isCountryCode, isPlaceCode, placeCode, placeContains, placeName } from "./regions";
+import {
+  isCountryCode,
+  isPlaceCode,
+  isUnclearRegion,
+  placeCode,
+  placeContains,
+  placeName,
+} from "./regions";
 
 describe("placeCode", () => {
   it.each([
@@ -72,11 +79,20 @@ describe("isPlaceCode, isCountryCode and placeName", () => {
     expect(placeName("XX")).toBe("XX");
   });
 
-  it("tells countries from regions", () => {
+  it("tells countries from regions, and clear regions from unclear ones", () => {
     expect(isCountryCode("PK")).toBe(true);
     expect(isCountryCode("EU")).toBe(false);
     expect(isCountryCode("WORLDWIDE")).toBe(false);
     expect(isCountryCode("XX")).toBe(false);
+    expect(isUnclearRegion("EMEA")).toBe(true);
+    expect(isUnclearRegion("EU")).toBe(false);
+    expect(isUnclearRegion("PK")).toBe(false);
+  });
+
+  it("knows MENAP, which includes Pakistan, apart from MENA, whose countries are unclear", () => {
+    expect(placeCode("MENAP")).toBe("MENAP");
+    expect(placeContains("MENAP", "PK")).toBe(true);
+    expect(placeContains("MENA", "PK")).toBe("unknown");
   });
 });
 

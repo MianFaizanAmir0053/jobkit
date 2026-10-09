@@ -51,11 +51,52 @@ describe("validateProfile", () => {
     expect(result.hash).toMatch(/^[0-9a-f]{64}$/);
   });
 
-  it("rejects an unknown key at its line", () => {
+  it("rejects an unknown key at its line, without repeating it", () => {
     const text = SAMPLE.replace("  name: Sam Rivera\n", "  name: Sam Rivera\n  nickname: Sammy\n");
 
     expect(problemsOf(text)).toEqual([
-      { line: lineOf(text, "nickname"), message: "owner.nickname: is not a key the profile knows" },
+      { line: lineOf(text, "nickname"), message: "owner: holds a key the profile does not know" },
+    ]);
+  });
+
+  it("names a misplaced key the profile knows elsewhere", () => {
+    const text = SAMPLE.replace(
+      "  portfolio: https://portfolio.example.com\n",
+      "  portfolio: https://portfolio.example.com\n  city: Lahore\n",
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "  city: Lahore"),
+        message: "links.city: is not a key the profile knows here",
+      },
+    ]);
+  });
+
+  it("never repeats an answer that an unquoted comma turned into a key", () => {
+    const text = SAMPLE.replace(
+      'disability: "Prefer not to say" }',
+      "disability: Type 1 diabetes, managed }",
+    ).replace('PKR: "PKR 900,000 a month" }', "PKR: 950,000 a month }");
+
+    const messages = problemsOf(text).map((problem) => problem.message);
+
+    expect(messages.length).toBeGreaterThan(0);
+    for (const message of messages) expect(message).not.toMatch(/diabetes|managed|000 a month|950/);
+  });
+
+  it("finds a record key that YAML read as a number", () => {
+    const text = SAMPLE.replace(
+      "years_per_stack: { react: 5,",
+      "years_per_stack: { 3: 4, react: 5,",
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "years_per_stack"),
+        message:
+          "fixed_answers.years_per_stack[key]: is not in the skill vocabulary (src/core/shared/skills.ts)",
+      },
     ]);
   });
 
@@ -225,6 +266,68 @@ describe("validateProfile", () => {
       {
         line: lineOf(text, "notice_period"),
         message: "fixed_answers.notice_period: holds a control character",
+      },
+    ]);
+  });
+
+  it("rejects a control character in a link, and a broken character anywhere", () => {
+    const text = SAMPLE.replace(
+      "portfolio: https://portfolio.example.com\n",
+      'portfolio: "https://portfolio.example.com/\\e"\n',
+    ).replace('notice_period: "One month"', 'notice_period: "One \\uD800 month"');
+
+    expect(problemsOf(text)).toEqual([
+      { line: lineOf(text, "portfolio:"), message: "links.portfolio: holds a control character" },
+      {
+        line: lineOf(text, "notice_period"),
+        message: "fixed_answers.notice_period: holds a broken character",
+      },
+    ]);
+  });
+
+  it("reports a file path holding a control character without trying to read it", () => {
+    const text = SAMPLE.replace("  file: cv.sample.pdf\n", '  file: "cv\\0.pdf"\n');
+    const read = (path: string) => {
+      if (path.includes("\0")) throw new Error(`tried to read ${path}`);
+      return sampleFiles().read(path);
+    };
+
+    expect(problemsOf(text, { read })).toEqual([
+      { line: lineOf(text, "cv\\0.pdf"), message: "cv.file: holds a control character" },
+    ]);
+  });
+
+  it("reports a file that cannot be read, instead of failing", () => {
+    const read = (path: string) => {
+      if (path === "style/sample-2.txt")
+        throw new Error("EACCES: permission denied, open 'C:/private/style/sample-2.txt'");
+      return sampleFiles().read(path);
+    };
+
+    expect(problemsOf(SAMPLE, { read })).toEqual([
+      {
+        line: lineOf(SAMPLE, "- style/sample-2.txt"),
+        message: "style_examples[1]: cannot be read",
+      },
+    ]);
+  });
+
+  it("refuses work-authorisation entries whose places overlap with different answers, and unclear regions", () => {
+    const text = SAMPLE.replace(
+      "    - { place: GB, authorised: false",
+      "    - { place: SOUTH_ASIA, authorised: false }\n    - { place: EMEA, authorised: true }\n    - { place: GB, authorised: false",
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "SOUTH_ASIA"),
+        message:
+          "fixed_answers.work_authorisation[2].place: overlaps an earlier entry that answers otherwise",
+      },
+      {
+        line: lineOf(text, "EMEA"),
+        message:
+          "fixed_answers.work_authorisation[3].place: is a region whose countries are unclear; name countries or a clear region",
       },
     ]);
   });

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { isMap, isScalar, LineCounter, parseDocument, visit, type Document } from "yaml";
+import { z } from "zod";
 
 import { isPathBelow, type ProfileDocument, profileSchema, samePathKey } from "./schema";
 
@@ -81,8 +82,17 @@ export function validateProfile(text: string, files: ProfileFiles): ValidatedPro
     for (const issue of parsed.error.issues) {
       const path = issue.path as Path;
       if (issue.code === "unrecognized_keys") {
-        for (const key of issue.keys) at(path, "is not a key the profile knows", key);
-      } else if (path.length > 0 && !doc.hasIn(path)) {
+        // A key the profile knows elsewhere is named; any other key may be
+        // part of an answer an unquoted comma split, so it is not.
+        for (const key of issue.keys) {
+          if (SCHEMA_KEYS.has(key)) at(path, "is not a key the profile knows here", key);
+          else
+            problems.push({
+              line: lineOf(doc, counter, path, key),
+              message: `${pathText(path)}: holds a key the profile does not know`,
+            });
+        }
+      } else if (path.length > 0 && !hasPath(data, path)) {
         at(path, "is missing");
       } else if (issue.code === "invalid_key") {
         at(path, issue.issues[0]?.message ?? issue.message);
@@ -129,7 +139,8 @@ function checkIds(data: unknown, at: Report): void {
 /**
  * The CV and the style examples, read even when the rest of the file has
  * problems, so the owner hears about everything at once. A path the schema
- * refuses is never read.
+ * refuses is never read, and a file that cannot be read is reported, not
+ * thrown, since the error would name its full path.
  */
 function readFiles(
   data: unknown,
@@ -138,14 +149,28 @@ function readFiles(
 ): { cv: Uint8Array | null; styleExamples: string[]; styleBytes: Uint8Array[] } {
   const root = asRecord(data);
   const readable = (path: unknown): path is string =>
-    typeof path === "string" && path.trim() !== "" && isPathBelow(path.trim());
+    typeof path === "string" &&
+    path.trim() !== "" &&
+    !CONTROL_CHARACTER.test(path) &&
+    isPathBelow(path.trim());
+  const read = (path: string, where: Path): Uint8Array | null | "unreadable" => {
+    try {
+      return files.read(path.trim());
+    } catch {
+      at(where, "cannot be read");
+      return "unreadable";
+    }
+  };
 
   let cv: Uint8Array | null = null;
   const cvFile = asRecord(root?.cv)?.file;
   if (readable(cvFile)) {
-    cv = files.read(cvFile.trim());
-    if (cv === null) at(["cv", "file"], "there is no such file");
-    else if (cv.length > MAX_CV_BYTES) at(["cv", "file"], "the CV is larger than 5 MB");
+    const bytes = read(cvFile, ["cv", "file"]);
+    cv = bytes === "unreadable" ? null : bytes;
+    if (bytes === null) at(["cv", "file"], "there is no such file");
+    else if (cv === null) {
+      // Reported as unreadable.
+    } else if (cv.length > MAX_CV_BYTES) at(["cv", "file"], "the CV is larger than 5 MB");
     else if (new TextDecoder().decode(cv.subarray(0, 5)) !== "%PDF-")
       at(["cv", "file"], "the CV is not a PDF");
   }
@@ -156,7 +181,8 @@ function readFiles(
   asList(root?.style_examples).forEach((path, i) => {
     if (!readable(path) || seen.has(samePathKey(path))) return;
     seen.add(samePathKey(path));
-    const bytes = files.read(path.trim());
+    const bytes = read(path, ["style_examples", i]);
+    if (bytes === "unreadable") return;
     if (bytes === null) return at(["style_examples", i], "there is no such file");
     let example: string;
     try {
@@ -224,12 +250,41 @@ function asList(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 
+/** Whether the parsed file has a value at the path; YAML's own keys may be numbers, the parsed ones are not. */
+function hasPath(data: unknown, path: Path): boolean {
+  let here: unknown = data;
+  for (const part of path) {
+    if (typeof here !== "object" || here === null || !Object.hasOwn(here, part)) return false;
+    here = (here as Record<string | number, unknown>)[part];
+  }
+  return true;
+}
+
+/** The keys the profile schema names anywhere, the only ones a problem may print. */
+function keysOf(schema: z.ZodType, keys = new Set<string>()): Set<string> {
+  if (schema instanceof z.ZodObject) {
+    for (const [key, value] of Object.entries(schema.shape)) {
+      keys.add(key);
+      keysOf(value as z.ZodType, keys);
+    }
+  } else if (schema instanceof z.ZodArray) {
+    keysOf(schema.element as z.ZodType, keys);
+  } else if (schema instanceof z.ZodOptional) {
+    keysOf(schema.unwrap() as z.ZodType, keys);
+  } else if (schema instanceof z.ZodRecord) {
+    keysOf(schema.valueType as z.ZodType, keys);
+  }
+  return keys;
+}
+
+const SCHEMA_KEYS: ReadonlySet<string> = keysOf(profileSchema);
+
 /** The line of the deepest node on the path that exists, or of the named key in it; else line 1. */
 function lineOf(doc: Document, counter: LineCounter, path: Path, key?: string): number {
   for (let depth = path.length; depth >= 0; depth--) {
     const node: unknown = depth === 0 ? doc.contents : doc.getIn(path.slice(0, depth), true);
     if (key !== undefined && depth === path.length && isMap(node)) {
-      const pair = node.items.find((item) => isScalar(item.key) && item.key.value === key);
+      const pair = node.items.find((item) => isScalar(item.key) && String(item.key.value) === key);
       const range = pair && isScalar(pair.key) ? pair.key.range : undefined;
       if (range) return counter.linePos(range[0]).line;
     }
@@ -239,13 +294,18 @@ function lineOf(doc: Document, counter: LineCounter, path: Path, key?: string): 
   return 1;
 }
 
+/**
+ * Where a problem is, in the schema's own words: positions in a list as
+ * [n], and any key the schema does not name, such as a currency, a skill or
+ * the tail of an answer an unquoted comma split, as [key].
+ */
 function pathText(path: Path, key?: string): string {
   const parts = key === undefined ? path : [...path, key];
   return (
-    parts.reduce<string>(
-      (text, part) =>
-        typeof part === "number" ? `${text}[${part}]` : text ? `${text}.${part}` : part,
-      "",
-    ) || "the file"
+    parts.reduce<string>((text, part) => {
+      if (typeof part === "number") return `${text}[${part}]`;
+      if (!SCHEMA_KEYS.has(part)) return `${text}[key]`;
+      return text ? `${text}.${part}` : part;
+    }, "") || "the file"
   );
 }

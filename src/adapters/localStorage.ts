@@ -64,10 +64,15 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
       const read = reads.get(t);
       return read && read.expiresAtMs >= nowMs ? read.path : null;
     },
-    async put(path, bytes) {
+    // Like Supabase Storage, a file already there is replaced only when asked.
+    async put(path, bytes, _contentType, options) {
       const file = fileFor(path);
       await mkdir(dirname(file), { recursive: true });
-      await writeFile(file, bytes);
+      await writeFile(file, bytes, { flag: options?.overwrite ? "w" : "wx" }).catch(
+        (error: NodeJS.ErrnoException) => {
+          throw error.code === "EEXIST" ? new Error(`${path} already exists in storage`) : error;
+        },
+      );
     },
     async get(path) {
       return readFile(fileFor(path)).then(

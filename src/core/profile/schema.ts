@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { isCountryCode, isPlaceCode } from "@/core/shared/regions";
+import { isCountryCode, isPlaceCode, isUnclearRegion, placeContains } from "@/core/shared/regions";
 import { isSkillTag } from "@/core/shared/skills";
 
 /**
@@ -12,11 +12,15 @@ import { isSkillTag } from "@/core/shared/skills";
  * holds the owner's personal data.
  */
 
-/** Any value: no control characters, which Postgres cannot store and no answer needs. */
+/**
+ * Any value: no control characters and no half of a surrogate pair, which
+ * Postgres cannot store and no answer needs.
+ */
 const str = () =>
   z
     .string()
-    .regex(/^[^\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]*$/, "holds a control character");
+    .regex(/^[^\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]*$/, "holds a control character")
+    .regex(/^(?:[^\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])*$/, "holds a broken character");
 
 const id = (prefix: string) =>
   z
@@ -58,7 +62,7 @@ const filePath = (what: string) =>
   text(what).refine(isPathBelow, "must name a file in the profile file's folder or below it");
 
 /** A web address: a link in a message to a recruiter must open a page. */
-const webLink = z.url({ protocol: /^https?$/ });
+const webLink = str().pipe(z.url({ protocol: /^https?$/ }));
 
 /**
  * An IANA zone written as the database names it, such as Asia/Karachi, and
@@ -130,6 +134,33 @@ const workAuthorisationSchema = z
     path: ["sponsorship_needed"],
   });
 
+/**
+ * Work-authorisation entries that eligibility can read one way: no region
+ * whose countries are unclear, such as EMEA, no place twice, and no place
+ * that takes in, or lies in, an earlier entry's place with the other answer
+ * (PK authorised with SOUTH_ASIA not).
+ */
+function oneAnswerPerPlace(
+  entries: readonly { place: string; authorised: boolean }[],
+  ctx: z.RefinementCtx,
+): void {
+  entries.forEach((entry, i) => {
+    const at = (message: string) => ctx.addIssue({ code: "custom", message, path: [i, "place"] });
+    if (isUnclearRegion(entry.place)) {
+      return at("is a region whose countries are unclear; name countries or a clear region");
+    }
+    const earlier = entries.slice(0, i);
+    if (earlier.some((other) => other.place === entry.place)) {
+      return at("names the same place as an earlier entry");
+    }
+    const overlaps = (other: { place: string; authorised: boolean }) =>
+      other.authorised !== entry.authorised &&
+      (placeContains(other.place, entry.place) === true ||
+        placeContains(entry.place, other.place) === true);
+    if (earlier.some(overlaps)) at("overlaps an earlier entry that answers otherwise");
+  });
+}
+
 /** Reports each entry whose key repeats an earlier one's, at that entry. */
 function noRepeats<T>(keyOf: (item: T) => string, field: string | null, message: string) {
   return (items: readonly T[], ctx: z.RefinementCtx) => {
@@ -161,11 +192,7 @@ export const fixedAnswersSchema = z.strictObject({
     places: z.array(place),
     text: text("the relocation answer"),
   }),
-  work_authorisation: z
-    .array(workAuthorisationSchema)
-    .superRefine(
-      noRepeats((entry) => entry.place, "place", "names the same place as an earlier entry"),
-    ),
+  work_authorisation: z.array(workAuthorisationSchema).superRefine(oneAnswerPerPlace),
   years_per_stack: z.record(str(), z.number().nonnegative()).superRefine((years, ctx) => {
     for (const tag of Object.keys(years)) {
       if (!isSkillTag(tag)) {

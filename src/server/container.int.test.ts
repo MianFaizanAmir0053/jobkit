@@ -1,9 +1,10 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createContainer, getContainer, type Container } from "./container";
+import { lockLocalData } from "./db/localDb";
 
 let container: Container | undefined;
 let dataDir: string | undefined;
@@ -19,6 +20,22 @@ afterEach(async () => {
 });
 
 describe("createContainer", () => {
+  it("in development, lets go of the local database when it fails to start, so the next try can open it", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "jobkit-dev-"));
+    const migrationsDir = join(dataDir, "migrations");
+    mkdirSync(migrationsDir);
+    writeFileSync(join(migrationsDir, "0001_broken.sql"), "this is not sql;");
+
+    await expect(
+      createContainer(
+        { JOBKIT_ENV: "development", APP_ORIGIN: "http://localhost:3000" },
+        { dataDir, migrationsDir },
+      ),
+    ).rejects.toThrow();
+
+    expect(() => lockLocalData(dataDir!, "the next try")()).not.toThrow();
+  });
+
   it("in development, uses PGlite and local files under the data folder, migrated and ready", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "jobkit-dev-"));
     container = await createContainer(

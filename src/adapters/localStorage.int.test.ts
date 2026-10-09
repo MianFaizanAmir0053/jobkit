@@ -31,6 +31,16 @@ describe("local storage", () => {
     expect(await storage.stat("jobs/j1/a.webp")).toBeNull();
   });
 
+  it("replaces a file only when asked, as Supabase Storage does", async () => {
+    await storage.put("profile/cv.pdf", bytes("one"), "application/pdf");
+
+    await expect(storage.put("profile/cv.pdf", bytes("two"), "application/pdf")).rejects.toThrow(
+      "profile/cv.pdf already exists in storage",
+    );
+    await storage.put("profile/cv.pdf", bytes("three"), "application/pdf", { overwrite: true });
+    expect(new TextDecoder().decode((await storage.get("profile/cv.pdf"))!)).toBe("three");
+  });
+
   it("lists the files under a prefix", async () => {
     await storage.put("jobs/j1/a.webp", bytes("a"), "image/webp");
     await storage.put("jobs/j1/crops/c.png", bytes("c"), "image/png");
