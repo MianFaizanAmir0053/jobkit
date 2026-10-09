@@ -220,7 +220,17 @@ describe("createAnthropicLlm", () => {
   it("sends only its own key to Anthropic's address, whatever the shell says", async () => {
     vi.stubEnv("ANTHROPIC_BASE_URL", "https://proxy.example.test");
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "token-from-the-shell");
-    vi.stubEnv("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer shell-token\nx-api-key: shell-key");
+    vi.stubEnv(
+      "ANTHROPIC_CUSTOM_HEADERS",
+      [
+        "Authorization: Bearer shell-token",
+        "x-api-key: shell-key",
+        "cf-aig-authorization: Bearer gateway-token",
+        "Cookie: session=shell",
+        "anthropic-version: 1999-01-01",
+        "anthropic-beta: some-other-beta",
+      ].join("\n"),
+    );
     const api = fakeApi((sent) =>
       sent.url.pathname.endsWith("count_tokens")
         ? Response.json({ input_tokens: 1, context_management: null })
@@ -230,13 +240,32 @@ describe("createAnthropicLlm", () => {
 
     await llm.countInputTokens(request());
     await llm.call(request());
+    await llm.call(request({ model: "claude-opus-4-8" }));
 
+    expect(api.sent).toHaveLength(3);
     for (const sent of api.sent) {
       expect(sent.url.origin).toBe("https://api.anthropic.com");
       expect(sent.headers.get("x-api-key")).toBe("test-key");
-      expect(sent.headers.get("authorization")).toBeNull();
+      expect(sent.headers.get("anthropic-version")).toBe("2023-06-01");
+      for (const name of ["authorization", "cf-aig-authorization", "cookie"]) {
+        expect(sent.headers.get(name), name).toBeNull();
+      }
     }
-    expect(api.sent).toHaveLength(2);
+    expect(api.sent.map((sent) => sent.headers.get("anthropic-beta"))).toEqual([
+      null,
+      "server-side-fallback-2026-07-01",
+      null,
+    ]);
+  });
+
+  it("asks for fallbacks on a dated snapshot of a model that takes them", async () => {
+    const api = fakeApi(() => ({ chunks: answerOf('{"a":1}') }));
+
+    await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request({ model: "claude-opus-5-5-20260801" }),
+    );
+
+    expect(api.sent[0]!.body).toMatchObject({ fallbacks: "default" });
   });
 
   it("joins an answer a fallback model finished after the first model declined mid-stream", async () => {
@@ -345,8 +374,20 @@ describe("createAnthropicLlm", () => {
     expect(reply).toMatchObject({
       kind: "refusal",
       category: "cyber",
+      detail: "the fallback model was too busy to run; the API suggests claude-opus-4-8",
       usage: [{ model: "claude-opus-5-5", inputTokens: 1200, outputTokens: 300 }],
     });
+  });
+
+  it("settles on a refusal whose closing event was lost, rather than sending it again", async () => {
+    const api = fakeApi(() => ({
+      chunks: [messageStart(), messageDelta({ stop_reason: "refusal", stop_details: refusalDetails() })],
+      failWith: new TypeError("terminated"),
+    }));
+
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+
+    expect(reply).toMatchObject({ kind: "refusal", category: "cyber" });
   });
 
   it("returns an answer cut off at max_tokens as truncated, not as a failure", async () => {
@@ -632,12 +673,12 @@ describe("fromMessage", () => {
     });
   });
 
-  it("takes any other ending as a server failure worth one retry, not a cut-off answer", () => {
+  it("leaves any other ending to the wrapper's parse, with its usage, not calling it cut off", () => {
     for (const stop_reason of ["pause_turn", null] as const) {
       expect(fromMessage(message({ stop_reason }), "req_1", "claude-opus-5-5"), String(stop_reason)).toMatchObject({
-        kind: "failure",
-        failure: "server",
-        requestId: "req_1",
+        kind: "answer",
+        truncated: false,
+        usage: [{ model: "claude-opus-5-5", outputTokens: 300 }],
       });
     }
   });

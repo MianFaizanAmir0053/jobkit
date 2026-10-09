@@ -48,11 +48,25 @@ describe("parseEnvFile", () => {
     });
   });
 
-  it("keeps a value exactly as written, # included, since a password may hold one", () => {
-    expect(parseEnvFile(["JOBKIT_APP_DB_PASSWORD=Xk3#pQ9", 'B="quoted # too"'].join("\n"))).toEqual({
-      JOBKIT_APP_DB_PASSWORD: "Xk3#pQ9",
-      B: "quoted # too",
-    });
+  it("keeps a quoted value whole, # included, and lets a comment follow the closing quote", () => {
+    expect(
+      parseEnvFile(['JOBKIT_APP_DB_PASSWORD="Xk3#pQ9" # rotated', "B='single # too'", "C= # removed"].join("\n")),
+    ).toEqual({ JOBKIT_APP_DB_PASSWORD: "Xk3#pQ9", B: "single # too", C: "" });
+  });
+
+  it("refuses what next dev would read differently, naming the line and key but never the value", () => {
+    const read = () =>
+      parseEnvFile(["A=1", "JOBKIT_APP_DB_PASSWORD=Xk3#pQ9", 'KEY="unclosed', 'D="x" trailing'].join("\n"));
+
+    expect(read).toThrow(
+      [
+        "This env file needs fixing:",
+        "line 2: JOBKIT_APP_DB_PASSWORD holds #, so its value must be in quotes",
+        "line 3: KEY's quotes do not close, or text follows them",
+        "line 4: D's quotes do not close, or text follows them",
+      ].join("\n"),
+    );
+    expect(read).not.toThrow(/Xk3/);
   });
 
   it("drops an export prefix", () => {

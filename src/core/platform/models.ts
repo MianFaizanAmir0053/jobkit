@@ -207,7 +207,8 @@ export async function callModel<T>(
       priced.length > 0 ? roundUsd(priced.reduce((sum, run) => sum + run.usd, 0)) : provisional.usd;
 
     if (reply.kind === "refusal") {
-      await finish("refused", reply.category ? `refusal: ${reply.category}` : null);
+      const said = [reply.category && `refusal: ${reply.category}`, reply.detail].filter(Boolean);
+      await finish("refused", said.length > 0 ? said.join("; ") : null);
       return fail("refused");
     }
     if (reply.truncated) {

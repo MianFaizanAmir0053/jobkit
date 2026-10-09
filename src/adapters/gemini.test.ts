@@ -266,18 +266,29 @@ describe("createGeminiLlm", () => {
     });
   });
 
-  it("returns an error response whose body breaks while it is read as a dropped connection", async () => {
-    const api = fakeApi(
-      () =>
-        new Response(recordedBody(['{"error":{"code":503,'], { failWith: new TypeError("terminated") }), {
-          status: 503,
-          headers: { "content-type": "application/json" },
-        }),
-    );
+  it("sorts an error response whose body breaks by its status, so a 4xx is not sent again", async () => {
+    const broken = (status: number) => () =>
+      new Response(recordedBody(['{"error":{"code":'], { failWith: new TypeError("terminated") }), {
+        status,
+        headers: { "content-type": "application/json" },
+      });
+
+    const rejected = await createGeminiLlm({ apiKey: "test-key", fetch: fakeApi(broken(400)).fetch }).call(request());
+    const overloaded = await createGeminiLlm({ apiKey: "test-key", fetch: fakeApi(broken(503)).fetch }).call(request());
+
+    expect(rejected).toMatchObject({ kind: "failure", failure: "client" });
+    expect(overloaded).toMatchObject({ kind: "failure", failure: "server" });
+  });
+
+  it("settles on a refusal that arrived before the stream broke, rather than sending it again", async () => {
+    const api = fakeApi(() => ({
+      chunks: [textChunk("", { finishReason: "SAFETY" })],
+      failWith: new TypeError("terminated"),
+    }));
 
     const reply = await createGeminiLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
 
-    expect(reply).toMatchObject({ kind: "failure", failure: "connection" });
+    expect(reply).toMatchObject({ kind: "refusal", category: "SAFETY" });
   });
 });
 
@@ -337,12 +348,12 @@ describe("fromChunks", () => {
     }
   });
 
-  it("takes any other unexpected ending as a server failure worth one retry, not a cut-off answer", () => {
+  it("leaves any other ending to the wrapper's parse, with its usage, not calling it cut off", () => {
     expect(fromChunks(parsed(textChunk('{"email":', { finishReason: "OTHER" })), MODEL)).toMatchObject({
-      kind: "failure",
-      failure: "server",
-      message: "Gemini stopped for an unexpected reason: OTHER",
-      requestId: "resp_1",
+      kind: "answer",
+      text: '{"email":',
+      truncated: false,
+      usage: [{ model: MODEL }],
     });
   });
 

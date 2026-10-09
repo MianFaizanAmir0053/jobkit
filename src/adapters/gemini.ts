@@ -110,7 +110,11 @@ export function createGeminiLlm(opts: { apiKey: string; fetch?: Fetch }): Llm {
         });
         for await (const chunk of stream) chunks.push(chunk);
       } catch (error) {
-        return fromError(error, request.signal);
+        // Throws a bug; otherwise a finish reason that arrived before the
+        // failure still settles the call, so a refusal is not sent again.
+        const failed = fromError(error, request.signal);
+        const settled = fromChunks(chunks, request.model);
+        return settled.kind === "failure" ? failed : settled;
       }
       return fromChunks(chunks, request.model);
     },
@@ -171,17 +175,6 @@ export function fromChunks(
     };
   }
   if (DECLINED.has(finish)) return declined(finish);
-  if (finish !== FinishReason.STOP && !CUT_OFF.has(finish)) {
-    // OTHER, an unspecified reason or a tool fault: not the answer's length,
-    // so not "cut off"; worth the wrapper's one retry.
-    return {
-      kind: "failure",
-      failure: "server",
-      message: `Gemini stopped for an unexpected reason: ${finish}`,
-      requestId,
-      retryAfterMs: null,
-    };
-  }
 
   const text = chunks
     .flatMap((chunk) => chunk.candidates?.[0]?.content?.parts ?? [])
@@ -193,6 +186,9 @@ export function fromChunks(
     model,
     requestId,
     usage,
+    // Only these cut the answer off. Any other ending, OTHER included, leaves
+    // the answer to the wrapper's parse, which keeps its usage and rejects
+    // one that is incomplete.
     truncated: CUT_OFF.has(finish),
   };
 }

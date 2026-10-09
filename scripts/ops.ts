@@ -45,25 +45,33 @@ export async function askOnTerminal(question: string): Promise<string> {
 }
 
 /**
- * Reads KEY=value lines: an optional `export`, and one pair of quotes around
- * a value removed. A value is otherwise kept exactly as written, `#`
- * included, because a password may hold one and the bootstrap sets the
- * database role's password from this file. So unlike `next dev`, nothing
- * after a value is taken as a comment: these files keep comments on lines
- * of their own.
+ * Reads KEY=value lines, and refuses any line two readers could take
+ * differently, rather than guess. `next dev` ends an unquoted value at a `#`
+ * and a careless parser would not, and the bootstrap sets the database
+ * role's password from these values, so a guess either way could lock
+ * production out. A value that holds `#` must be quoted; a comment may then
+ * follow the closing quote. A value that starts with `#` is empty, followed
+ * by a comment. An optional `export` is dropped. Errors name the line and
+ * the key, never the value.
  */
 export function parseEnvFile(text: string): Record<string, string> {
   const values: Record<string, string> = {};
-  for (const line of text.split(/\r?\n/)) {
+  const problems: string[] = [];
+  text.split(/\r?\n/).forEach((line, index) => {
     const trimmed = line.trim().replace(/^export\s+/, "");
-    if (trimmed === "" || trimmed.startsWith("#")) continue;
+    if (trimmed === "" || trimmed.startsWith("#")) return;
     const eq = trimmed.indexOf("=");
-    if (eq <= 0) continue;
-    values[trimmed.slice(0, eq).trim()] = trimmed
-      .slice(eq + 1)
-      .trim()
-      .replace(/^(["'])(.*)\1$/, "$2");
-  }
+    if (eq <= 0) return;
+    const key = trimmed.slice(0, eq).trim();
+    const raw = trimmed.slice(eq + 1).trim();
+    const quoted = /^(["'])(.*?)\1\s*(#.*)?$/.exec(raw);
+    if (quoted) values[key] = quoted[2]!;
+    else if (/^["']/.test(raw)) problems.push(`line ${index + 1}: ${key}'s quotes do not close, or text follows them`);
+    else if (raw.startsWith("#")) values[key] = "";
+    else if (raw.includes("#")) problems.push(`line ${index + 1}: ${key} holds #, so its value must be in quotes`);
+    else values[key] = raw;
+  });
+  if (problems.length > 0) throw new Error(`This env file needs fixing:\n${problems.join("\n")}`);
   return values;
 }
 

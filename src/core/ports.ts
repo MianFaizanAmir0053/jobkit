@@ -97,6 +97,8 @@ export type LlmReply =
       requestId: string | null;
       usage: LlmUsage[];
       category: string | null;
+      /** What else the provider said about it, for the call log. */
+      detail?: string;
     }
   | {
       kind: "failure";

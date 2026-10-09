@@ -29,15 +29,22 @@ describe("reportingChunks", () => {
     expect(await response.text()).toBe('{"error":"slow down"}');
   });
 
-  it("marks an error response whose body breaks while it is read as ConnectionLost", async () => {
+  it("keeps an error response's status when its body breaks, with a short JSON error in its place", async () => {
     const fetch: Fetch = async () =>
       new Response(recordedBody(['{"error":'], { failWith: new TypeError("terminated") }), {
-        status: 503,
+        status: 400,
       });
 
     const response = await reportingChunks(fetch, () => undefined)(URL_);
 
-    await expect(response.json()).rejects.toBeInstanceOf(ConnectionLost);
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: { code: 400, message: "The error response broke off." } });
+  });
+
+  it("passes a redirect or other non-error status through as it came", async () => {
+    const moved = new Response(null, { status: 304 });
+
+    expect(await reportingChunks(async () => moved, () => undefined)(URL_)).toBe(moved);
   });
 
   it("keeps the status and headers of a streamed response", async () => {

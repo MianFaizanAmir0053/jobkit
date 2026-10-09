@@ -49,13 +49,16 @@ export function answer(
   });
 }
 
-export function refusal(opts: { usage?: LlmUsage[]; category?: string } = {}): FakeStep {
+export function refusal(
+  opts: { usage?: LlmUsage[]; category?: string; detail?: string } = {},
+): FakeStep {
   return (request) => ({
     kind: "refusal",
     model: request.model,
     requestId: "req_fake",
     usage: opts.usage ?? [usageOf(request.model, 1000, 0)],
     category: opts.category ?? null,
+    ...(opts.detail ? { detail: opts.detail } : {}),
   });
 }
 

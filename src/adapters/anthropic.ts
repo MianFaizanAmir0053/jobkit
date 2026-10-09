@@ -52,7 +52,7 @@ const MODELS_WITH_FALLBACKS: ReadonlySet<string> = new Set([
 const COUNT_TIMEOUT_MS = 15_000;
 
 export function createAnthropicLlm(opts: { apiKey: string; fetch?: Fetch }): Llm {
-  const network = withOwnKey(opts.fetch ?? networkFetch, opts.apiKey);
+  const network = withOwnHeaders(opts.fetch ?? networkFetch, opts.apiKey);
   const clientOn = (fetch: Fetch) =>
     new Anthropic({
       apiKey: opts.apiKey,
@@ -85,7 +85,8 @@ export function createAnthropicLlm(opts: { apiKey: string; fetch?: Fetch }): Llm
           system: request.system,
           messages: toMessages(request),
           output_config: { effort: request.effort, format: outputFormat(request.schema) },
-          ...(MODELS_WITH_FALLBACKS.has(request.model)
+          // A dated snapshot takes fallbacks as its model does.
+          ...(MODELS_WITH_FALLBACKS.has(request.model.replace(/-\d{8}$/, ""))
             ? { betas: [FALLBACK_BETA], fallbacks: "default" as const }
             : {}),
         },
@@ -96,25 +97,43 @@ export function createAnthropicLlm(opts: { apiKey: string; fetch?: Fetch }): Llm
       } catch (error) {
         // Throws a bug, which surfaces even after the message ended.
         const failed = fromError(error, stream.request_id ?? null);
-        // A failure after the message ended, such as a connection that broke
-        // then, still left all of it delivered.
-        const received = stream.receivedMessages.at(-1);
-        return received ? fromMessage(received, stream.request_id ?? null, request.model) : failed;
+        // What arrived before the failure can still settle the call: a whole
+        // message, or a refusal whose closing event was lost, which must not
+        // be sent again (B4).
+        const current = stream.currentMessage;
+        const settled =
+          stream.receivedMessages.at(-1) ?? (current?.stop_reason === "refusal" ? current : undefined);
+        return settled ? fromMessage(settled, stream.request_id ?? null, request.model) : failed;
       }
     },
   };
 }
 
+/** Headers the SDK sets itself, kept as they are. */
+const SDK_HEADERS: ReadonlySet<string> = new Set(["accept", "content-type", "user-agent"]);
+const API_VERSION = "2023-06-01";
+const OUR_BETAS: ReadonlySet<string> = new Set([FALLBACK_BETA]);
+
 /**
- * Every request carries this adapter's key and no other credential, whatever
- * headers the SDK took from the environment (ANTHROPIC_CUSTOM_HEADERS is
- * read in its constructor and can name both).
+ * Every request carries this adapter's key, its own API version and betas,
+ * and the SDK's own headers, and nothing else, whatever the SDK took from
+ * the environment: ANTHROPIC_CUSTOM_HEADERS, read in its constructor, can
+ * name any header, a gateway's credential or a cookie included.
  */
-function withOwnKey(fetch: Fetch, apiKey: string): Fetch {
+function withOwnHeaders(fetch: Fetch, apiKey: string): Fetch {
   return (input, init) => {
-    const headers = new Headers(init?.headers);
+    const sent = new Headers(init?.headers);
+    const headers = new Headers();
+    for (const [name, value] of sent) {
+      if (SDK_HEADERS.has(name) || name.startsWith("x-stainless-")) headers.set(name, value);
+    }
+    const betas = (sent.get("anthropic-beta") ?? "")
+      .split(",")
+      .map((beta) => beta.trim())
+      .filter((beta) => OUR_BETAS.has(beta));
+    if (betas.length > 0) headers.set("anthropic-beta", betas.join(","));
+    headers.set("anthropic-version", API_VERSION);
     headers.set("x-api-key", apiKey);
-    headers.delete("authorization");
     return fetch(input, { ...init, headers });
   };
 }
@@ -165,25 +184,16 @@ export function fromMessage(
   const stop = message.stop_reason;
   if (stop === "refusal") {
     // Never retried (B4), even when the fallback model was too busy to run:
-    // a resend would be declined, and billed, again. The owner can Retry the
-    // job later.
+    // a resend would be declined, and billed, again. The log says so, since
+    // the owner's Retry later may then succeed.
+    const busy = message.stop_details?.recommended_model;
     return {
       kind: "refusal",
       model: message.model,
       requestId,
       usage,
       category: message.stop_details?.category ?? null,
-    };
-  }
-  if (stop !== "end_turn" && stop !== "stop_sequence" && !CUT_OFF.has(stop ?? "")) {
-    // pause_turn, tool_use or no stop reason at all: nothing this request
-    // asks for, so not the answer's length; worth the wrapper's one retry.
-    return {
-      kind: "failure",
-      failure: "server",
-      message: `Claude stopped for an unexpected reason: ${stop ?? "none"}`,
-      requestId,
-      retryAfterMs: null,
+      ...(busy ? { detail: `the fallback model was too busy to run; the API suggests ${busy}` } : {}),
     };
   }
   return {
@@ -192,6 +202,9 @@ export function fromMessage(
     model: message.model,
     requestId,
     usage,
+    // Only these cut the answer off. Any other ending, an unexpected one
+    // such as pause_turn included, leaves the answer to the wrapper's parse,
+    // which keeps its usage and rejects one that is incomplete.
     truncated: CUT_OFF.has(stop ?? ""),
   };
 }

@@ -21,9 +21,8 @@ export class ConnectionLost extends Error {
  * wrapper's idle timer hears every sign of life (platform spec B4): the SDKs
  * drop keep-alive pings, which would otherwise make a model that thinks
  * silently look like a dead connection. It also marks network failures as
- * ConnectionLost, an error response's body included, which the SDK reads
- * for the error's details. An abort passes through untouched, for the SDK
- * to recognise as one.
+ * ConnectionLost. An abort passes through untouched, for the SDK to
+ * recognise as one. `onChunk` must not throw.
  */
 export function reportingChunks(fetch: Fetch, onChunk: () => void): Fetch {
   return async (input, init) => {
@@ -34,7 +33,8 @@ export function reportingChunks(fetch: Fetch, onChunk: () => void): Fetch {
       throw isAbort(error) ? error : new ConnectionLost(error);
     }
     onChunk();
-    if (!response.body) return response;
+    if (response.status >= 400) return settledError(response);
+    if (!response.ok || !response.body) return response;
     const reader = response.body.getReader();
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {
@@ -59,6 +59,27 @@ export function reportingChunks(fetch: Fetch, onChunk: () => void): Fetch {
       headers: response.headers,
     });
   };
+}
+
+/**
+ * An error response read whole here, so the SDK always gets its status, and
+ * the error is sorted by it: a body that breaks off is replaced by a short
+ * JSON error, rather than becoming a dropped connection that would get a
+ * 4xx sent again.
+ */
+async function settledError(response: Response): Promise<Response> {
+  let body: ArrayBuffer | string;
+  try {
+    body = await response.arrayBuffer();
+  } catch (error) {
+    if (isAbort(error)) throw error;
+    body = JSON.stringify({ error: { code: response.status, message: "The error response broke off." } });
+  }
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 function isAbort(error: unknown): boolean {

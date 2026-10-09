@@ -232,6 +232,17 @@ describe("callModel", () => {
     expect(await rows()).toMatchObject([{ outcome: "refused", error: "refusal: cyber" }]);
   });
 
+  it("records what else the provider said about a refusal", async () => {
+    await callModel(deps(fakeLlm([refusal({ category: "cyber", detail: "the fallback model was busy" })])), input);
+    await db.exec("update {{schema}}.model_calls set attempt = 2");
+    await callModel(deps(fakeLlm([refusal({ detail: "no category" })])), input);
+
+    expect((await rows()).map((row) => row.error)).toEqual([
+      "no category",
+      "refusal: cyber; the fallback model was busy",
+    ]);
+  });
+
   it("never retries any other client error", async () => {
     const llm = fakeLlm([failure("client")]);
 
