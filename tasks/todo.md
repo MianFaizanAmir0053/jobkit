@@ -60,10 +60,11 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
 
 ## Phase 2: Extraction and first measurement (days 5–9)
 
-- [ ] **Task 15: Extraction core** — Owns: extraction AC1, AC3, AC5, AC8.
-  - Record schema with sentinels (and the start of the schema-counting test), contact checks, phrase backstop, tiling and coordinate mapping.
+- [ ] **Task 15: Extraction core** — Owns: extraction AC1 (all but the oversized-image clause, which is Task 16's), AC3, AC5, AC8.
+  - Record schema with sentinels (and the start of the schema-counting test), contact checks, phrase backstop, tiling and coordinate mapping. Tiles are neutral (image index, top offset, PNG bytes, width and height), with box mapping and the 30 MB request check.
+  - In progress in parallel (2026-10-10): another session builds it test-first on `feat/extraction-core`, in the sibling worktree `../jobkit-extraction`, from 80af566. It touches only new files in src/core/extraction/ and new record fixtures in evals/synthetic/records/, and is merged here after its review.
   - Verify: `npm test`. Depends on: 10, 14. Files: src/core/extraction/{record,contacts,backstop,tiles}.ts and tests. Scope: M.
-- [ ] **Task 16: `extract`, stops, role pick, `extract_questions`** — Owns: extraction AC4, AC6, AC7.
+- [ ] **Task 16: `extract`, stops, role pick, `extract_questions`** — Owns: extraction AC4, AC6, AC7, and AC1's clause that every image block carries `transformations: { oversized_image: "error" }` (the Llm port and the Claude adapter carry it; the SDK has the field on its beta Messages API only).
   - Verify: `npm test` with the fake model and synthetic fixtures. Depends on: 9, 12, 15. Files: src/core/extraction/{extractStage,questionsStage,prompts}.ts, src/app/api/jobs/[id]/role/route.ts. Scope: M.
 - [ ] **Task 17: `address_read`** — Owns: extraction AC9, AC10, AC12.
   - Verify: `npm test` on synthetic images. Depends on: 16. Files: src/core/extraction/{crop,addressRead}.ts. Scope: S.
