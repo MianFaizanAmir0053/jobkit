@@ -1,5 +1,6 @@
 import { claimOne } from "@/core/platform/claim";
 import type { Clock, Db } from "@/core/ports";
+import { isUuid } from "@/lib/uuid";
 
 import { companyKey, companyRoleHash, postFingerprint, roleKey } from "./normalise";
 
@@ -52,6 +53,8 @@ type Deps = { db: Db; clock: Clock };
 
 export interface NewApplication {
   jobId: string;
+  /** The extracted role's ID in its job (SPEC-extraction, roles[].id), so two roles written alike stay apart. */
+  roleId: string;
   company: string;
   role: string;
   address: string | null;
@@ -64,10 +67,10 @@ export interface NewApplication {
 
 /**
  * A role was chosen: the application starts as `open`, with its keys and an
- * audit row. A second tap on the same role gets the same application. A
- * different role of the same post written the same way, such as "Flutter
- * Developer (Lahore)" beside "(Karachi)", is refused loudly rather than
- * merged, until roles carry their own IDs.
+ * audit row. Each role of a post is its own application, by its role ID.
+ * Picking the same role again, after a double tap or a new extraction, gets
+ * the same application, which takes what the extraction read now while no
+ * kit has gone out; once one has, the application stays as it went.
  */
 export async function openApplication(
   deps: Deps,
@@ -75,21 +78,27 @@ export async function openApplication(
   sessionId: string | null,
 ): Promise<string> {
   const now = deps.clock.now();
-  const role = roleKey(application.role);
   return deps.db.tx(async (tx) => {
-    const { rows } = await tx.query<{ id: string }>(
-      `insert into {{schema}}.applications
-         (job_id, company, role, company_key, role_key, company_role_hash, address, route,
+    // xmax is 0 on a row this statement inserted, and set on one it updated.
+    const { rows } = await tx.query<{ id: string; inserted: boolean }>(
+      `insert into {{schema}}.applications as applications
+         (job_id, role_id, company, role, company_key, role_key, company_role_hash, address, route,
           post_fingerprint, status, opened_at, status_changed_at, arm, job_kind)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'open', $10, $10, $11, $12)
-       on conflict (job_id, role_key) do nothing
-       returning id`,
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'open', $11, $11, $12, $13)
+       on conflict (job_id, role_id) do update
+         set company = excluded.company, role = excluded.role, company_key = excluded.company_key,
+             role_key = excluded.role_key, company_role_hash = excluded.company_role_hash,
+             address = excluded.address, route = excluded.route,
+             post_fingerprint = excluded.post_fingerprint
+         where applications.status in ('open', 'kit_ready')
+       returning id, (xmax = 0) as inserted`,
       [
         application.jobId,
+        application.roleId,
         application.company,
         application.role,
         companyKey(application.company),
-        role,
+        roleKey(application.role),
         companyRoleHash(application.company, application.role),
         application.address,
         application.route,
@@ -99,31 +108,16 @@ export async function openApplication(
         application.jobKind,
       ],
     );
-    const id = rows[0]?.id;
-    if (id === undefined) {
-      const existing = await tx.query<{
-        id: string;
-        company: string;
-        role: string;
-        address: string | null;
-      }>(
-        "select id, company, role, address from {{schema}}.applications where job_id = $1 and role_key = $2",
-        [application.jobId, role],
+    const row = rows[0];
+    if (row === undefined) {
+      const sent = await tx.query<{ id: string }>(
+        "select id from {{schema}}.applications where job_id = $1 and role_id = $2",
+        [application.jobId, application.roleId],
       );
-      const row = existing.rows[0]!;
-      const sameTap =
-        row.company === application.company &&
-        row.role === application.role &&
-        row.address === application.address;
-      if (!sameTap) {
-        throw new Error(
-          `Job ${application.jobId} already has an application for a role written like "${application.role}".`,
-        );
-      }
-      return row.id;
+      return sent.rows[0]!.id;
     }
-    await recordChange(tx, id, null, "open", now, sessionId);
-    return id;
+    if (row.inserted) await recordChange(tx, row.id, null, "open", now, sessionId);
+    return row.id;
   });
 }
 
@@ -140,9 +134,28 @@ export async function setRoute(
   applicationId: string,
   route: Route,
 ): Promise<boolean> {
+  if (!isUuid(applicationId)) return false;
   const { rowCount } = await deps.db.query(
     "update {{schema}}.applications set route = $2 where id = $1 and status in ('open', 'kit_ready')",
     [applicationId, route],
+  );
+  return rowCount === 1;
+}
+
+/**
+ * The address the owner confirmed or corrected on the review page, while
+ * no kit has gone out. A new address can find new duplicate matches, which
+ * the owner's earlier "apply again" taps do not cover.
+ */
+export async function setAddress(
+  deps: { db: Db },
+  applicationId: string,
+  address: string,
+): Promise<boolean> {
+  if (!isUuid(applicationId)) return false;
+  const { rowCount } = await deps.db.query(
+    "update {{schema}}.applications set address = $2 where id = $1 and status in ('open', 'kit_ready')",
+    [applicationId, address],
   );
   return rowCount === 1;
 }
@@ -159,6 +172,7 @@ export async function changeStatus(
   to: ApplicationStatus,
   sessionId: string | null,
 ): Promise<StatusChange> {
+  if (!isUuid(applicationId)) return { ok: false, reason: "not-found" };
   const now = deps.clock.now();
   const from = (Object.keys(TRANSITIONS) as ApplicationStatus[]).filter((status) =>
     TRANSITIONS[status].includes(to),
@@ -214,6 +228,7 @@ export async function undoStatus(
   last: { status: ApplicationStatus; at: Date },
   sessionId: string | null,
 ): Promise<StatusChange> {
+  if (!isUuid(applicationId)) return { ok: false, reason: "not-found" };
   const now = deps.clock.now();
   const tapped = Object.hasOwn(UNDO_TO, last.status) ? (last.status as keyof typeof UNDO_TO) : null;
   return deps.db.tx(async (tx) => {

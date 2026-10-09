@@ -5,6 +5,7 @@ import {
   parseEnvFile,
   parseTarget,
   productionRef,
+  refuseSwallowedFlags,
   projectRefFromSupabaseUrl,
   schemaStatements,
 } from "./ops";
@@ -41,17 +42,52 @@ describe("productionRef", () => {
     expect(productionRef({ SUPABASE_URL, DATABASE_URL: pooler("jobkit_app.abcd1234efgh") })).toBe(
       "abcd1234efgh",
     );
-    expect(productionRef({ SUPABASE_URL, DATABASE_URL: pooler("jobkit_app") })).toBe(
-      "abcd1234efgh",
-    );
+    expect(
+      productionRef({
+        SUPABASE_URL,
+        DATABASE_URL: "postgresql://postgres@db.abcd1234efgh.supabase.co:5432/postgres",
+      }),
+    ).toBe("abcd1234efgh");
   });
 
-  it("refuses a DATABASE_URL for another project", () => {
+  it("refuses a DATABASE_URL for another project, by its user or its host", () => {
     expect(() =>
       productionRef({ SUPABASE_URL, DATABASE_URL: pooler("jobkit_app.zzzz9999yyyy") }),
     ).toThrow(
       "DATABASE_URL is for project zzzz9999yyyy, but SUPABASE_URL is for abcd1234efgh: fix .env.ops.local",
     );
+    expect(() =>
+      productionRef({
+        SUPABASE_URL,
+        DATABASE_URL: "postgresql://postgres@db.zzzz9999yyyy.supabase.co:5432/postgres",
+      }),
+    ).toThrow(/is for project zzzz9999yyyy/);
+  });
+
+  it("refuses a DATABASE_URL that names no project, so the typed reference is always the one reached", () => {
+    expect(() => productionRef({ SUPABASE_URL, DATABASE_URL: pooler("jobkit_app") })).toThrow(
+      "DATABASE_URL names no Supabase project (runbook step 5 writes its user as jobkit_app.<project-ref>): fix .env.ops.local",
+    );
+  });
+});
+
+describe("refuseSwallowedFlags", () => {
+  const npmRun = { npm_lifecycle_event: "ledger:import" };
+
+  it("refuses when npm kept one of the script's flags for itself, which it marks with npm_config_", () => {
+    expect(() =>
+      refuseSwallowedFlags(["replace"], { ...npmRun, npm_config_replace_registry_host: "--prod" }),
+    ).toThrow(
+      "npm took --replace for itself, so this did nothing. Put -- before the script's arguments: npm run ledger:import -- <arguments> --replace",
+    );
+    expect(() => refuseSwallowedFlags(["list"], { ...npmRun, npm_config_list: "true" })).toThrow(
+      /npm took --list/,
+    );
+  });
+
+  it("lets a run through when the flags reached the script, or npm did not start it", () => {
+    expect(() => refuseSwallowedFlags(["replace", "list"], npmRun)).not.toThrow();
+    expect(() => refuseSwallowedFlags(["list"], { npm_config_list: "true" })).not.toThrow();
   });
 });
 

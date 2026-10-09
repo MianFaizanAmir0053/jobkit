@@ -11,6 +11,7 @@ import {
   changeStatus,
   type NewApplication,
   openApplication,
+  setAddress,
 } from "./statuses";
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -50,6 +51,7 @@ function newJob(): string {
 
 const application = (overrides: Partial<NewApplication> = {}): NewApplication => ({
   jobId: newJob(),
+  roleId: "P1",
   company: "Acme (Pvt) Ltd",
   role: "Front-End Developer",
   address: "jobs@acme.example",
@@ -104,6 +106,7 @@ describe("duplicatesOf", () => {
         company: "Acme (Pvt) Ltd",
         role: "Front-End Developer",
         at: expect.any(Date),
+        key: expect.stringMatching(/^application:[0-9a-f-]{36}:company-role$/),
       },
     ]);
   });
@@ -166,6 +169,7 @@ describe("duplicatesOf", () => {
         company: "Acme",
         role: "Frontend Developer",
         at: clock.now(),
+        key: expect.stringMatching(/^manual-run:[0-9a-f-]{36}:company-role$/),
       },
       {
         reason: "company-role",
@@ -173,6 +177,7 @@ describe("duplicatesOf", () => {
         company: "Acme Ltd",
         role: "Front End Developer",
         at: new Date("2026-05-04T00:00:00Z"),
+        key: expect.stringMatching(/^earlier:[0-9a-f-]{36}:company-role$/),
       },
     ]);
   });
@@ -352,7 +357,12 @@ describe("findDuplicates", () => {
   });
 });
 
-describe("duplicateGate", () => {
+/** The matches the banner shows for an application, as the keys an "apply again" tap sends back. */
+async function shown(id: string): Promise<string[]> {
+  return (await duplicateGate(db, id))!.matches.map((match) => match.key);
+}
+
+describe("duplicateGate and applyAgain", () => {
   it("holds every match until the owner taps apply again, and lets a clean application through", async () => {
     await earlier("sent");
     const repeat = await newShare();
@@ -366,28 +376,56 @@ describe("duplicateGate", () => {
     expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: false });
     expect(await duplicateGate(db, fresh)).toEqual({ matches: [], cleared: true });
 
-    expect(await applyAgain(deps(), repeat)).toBe(true);
-    expect(await applyAgain(deps(), repeat)).toBe(false);
+    const keys = await shown(repeat);
+    expect(await applyAgain(deps(), repeat, keys)).toBe(true);
+    expect(await applyAgain(deps(), repeat, keys)).toBe(false);
+    expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: true });
+  });
+
+  it("covers only the matches the banner showed, so one that appeared before the tap still holds", async () => {
+    await earlier("sent");
+    const repeat = await newShare();
+    const keys = await shown(repeat);
+    await earlier("sent", { role: "Backend Engineer", requirements: ["Go and Postgres"] });
+
+    await applyAgain(deps(), repeat, keys);
+
+    expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: false });
+    await applyAgain(deps(), repeat, await shown(repeat));
     expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: true });
   });
 
   it("holds again for a match that appears after the tap, until the owner taps again", async () => {
     await earlier("sent");
     const repeat = await newShare();
-    await applyAgain(deps(), repeat);
+    await applyAgain(deps(), repeat, await shown(repeat));
     clock.advance(DAY);
 
     await earlier("sent", { role: "Backend Engineer", requirements: ["Go and Postgres"] });
     expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: false });
 
-    expect(await applyAgain(deps(), repeat)).toBe(true);
+    expect(await applyAgain(deps(), repeat, await shown(repeat))).toBe(true);
     expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: true });
+  });
+
+  it("holds again when the application's own later change finds a new match", async () => {
+    await earlier("sent", {
+      role: "Backend Engineer",
+      address: "hr@acme.example",
+      requirements: [],
+    });
+    const repeat = await newShare({ address: null, requirements: [] });
+    await applyAgain(deps(), repeat, await shown(repeat));
+
+    expect(await setAddress(deps(), repeat, "HR@acme.example")).toBe(true);
+
+    expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: false });
   });
 
   it("holds again for an earlier application imported after the tap, however long ago it was made", async () => {
     await earlier("sent");
     const repeat = await newShare({ address: "jobs@acme.example" });
-    await applyAgain(deps(), repeat);
+    await applyAgain(deps(), repeat, await shown(repeat));
     clock.advance(DAY);
 
     await db.query(
@@ -400,8 +438,21 @@ describe("duplicateGate", () => {
     expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: false });
   });
 
-  it("reports an application that does not exist", async () => {
+  it("holds again when a drafted match is sent, since that is a new match", async () => {
+    const drafted = await earlier("kit_ready", { address: null, requirements: [] });
+    const repeat = await newShare({ address: null, requirements: [] });
+    await applyAgain(deps(), repeat, await shown(repeat));
+
+    await changeStatus(deps(), drafted, "sent", null);
+
+    expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: false });
+  });
+
+  it("reports an application that does not exist, or an ID that is not one", async () => {
     expect(await duplicateGate(db, "22222222-2222-4222-8222-222222222222")).toBeNull();
-    expect(await applyAgain(deps(), "22222222-2222-4222-8222-222222222222")).toBe(false);
+    expect(await applyAgain(deps(), "22222222-2222-4222-8222-222222222222", ["x"])).toBe(false);
+    expect(await duplicateGate(db, "not-an-id")).toBeNull();
+    expect(await duplicatesOf(db, "not-an-id")).toBeNull();
+    expect(await applyAgain(deps(), "not-an-id", ["x"])).toBe(false);
   });
 });

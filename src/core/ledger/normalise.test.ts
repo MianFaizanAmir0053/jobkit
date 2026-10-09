@@ -45,11 +45,18 @@ describe("companyKey", () => {
     ["Acme S.p.A.", "acme"],
     ["Acme Sdn Bhd", "acme"],
     ["M/s Acme", "acme"],
+    ["M/S. Acme", "acme"],
     ["Messrs Acme Traders", "acmetraders"],
+    ["M&S", "ms"],
+    ["M&S Food", "msfood"],
+    ["Acme Ltd (Lahore)", "acme"],
+    ["McKinsey & Company", "mckinsey"],
+    ["McKinsey & Co.", "mckinsey"],
     ["  ACME  ", "acme"],
     ["Ten Pearls", "tenpearls"],
     ["Limited Brands", "limitedbrands"],
     ["Café Ltd", "café"],
+    ["Café Ltd", "café"],
   ])("%j becomes %j", (company, key) => {
     expect(companyKey(company)).toBe(key);
   });
@@ -87,15 +94,52 @@ describe("roleKey", () => {
   });
 
   it.each([
-    ["Software Engineer (Senior)", "softwareengineersenior"],
-    ["Software Engineer (Sr.)", "softwareengineersenior"],
-    ["Developer (Senior, Lahore)", "developersenior"],
-    ["Developer (Backend)", "developerbackend"],
-    ["Developer (Front End)", "developerfrontend"],
-    ["Engineer (Mid-Level)", "engineermidlevel"],
-    ["Engineer (QA)", "engineerqa"],
-  ])("keeps the seniority and discipline words in brackets: %j becomes %j", (role, key) => {
-    expect(roleKey(role)).toBe(key);
+    ["Software Engineer (Senior)", "seniorsoftwareengineer"],
+    ["Software Engineer (Sr.)", "seniorsoftwareengineer"],
+    ["Developer (Senior, Lahore)", "seniordeveloper"],
+    ["Developer (Backend)", "backenddeveloper"],
+    ["Developer (Front End)", "frontenddeveloper"],
+    ["Developer (FE)", "frontenddeveloper"],
+    ["Developer (BE)", "backenddeveloper"],
+    ["Engineer (Mid-Level)", "midlevelengineer"],
+    ["Engineer (QA)", "qaengineer"],
+    ["Software Engineer (II)", "iisoftwareengineer"],
+    ["Software Engineer (L3)", "l3softwareengineer"],
+    ["Software Engineer (Level 2)", "level2softwareengineer"],
+    ["Software Engineer (Team Lead)", "teamleadsoftwareengineer"],
+    ["Software Engineer (Internship)", "internshipsoftwareengineer"],
+    ["Software Engineer (Java)", "javasoftwareengineer"],
+    ["Assistant Director (BPS-17)", "bps17assistantdirector"],
+  ])(
+    "keeps seniority, level, discipline and skill words from brackets, first: %j becomes %j",
+    (role, key) => {
+      expect(roleKey(role)).toBe(key);
+    },
+  );
+
+  it("reads the same role however its parts are ordered or set apart", () => {
+    for (const title of [
+      "React Developer (Senior)",
+      "React Developer - Senior",
+      "React Developer, Senior",
+    ]) {
+      expect([title, roleKey(title)]).toEqual([title, roleKey("Senior React Developer")]);
+    }
+  });
+
+  it.each([
+    "React Developer - Lahore",
+    "React Developer | Lahore",
+    "React Developer, Lahore",
+    "React Developer – Remote",
+    "Urgent Hiring: React Developer",
+    "React Developer - Urgent Hiring",
+  ])("drops a part set apart from the role that names no role: %j", (title) => {
+    expect(roleKey(title)).toBe("reactdeveloper");
+  });
+
+  it("keeps every part of a title whose parts name no role it knows", () => {
+    expect(roleKey("Flutter Wizard - Lahore")).toBe("flutterwizardlahore");
   });
 
   it.each([
@@ -116,10 +160,12 @@ describe("roleKey", () => {
     expect(roleKey(role)).toBe("reactdeveloper");
   });
 
-  it("tells roles apart by the seniority or discipline in their brackets", () => {
+  it("tells roles apart by the seniority, level or discipline in their brackets", () => {
     expect(roleKey("Software Engineer (Senior)")).not.toBe(roleKey("Software Engineer"));
     expect(roleKey("Developer (Backend)")).not.toBe(roleKey("Developer (Frontend)"));
     expect(roleKey("Engineer (AI)")).not.toBe(roleKey("Engineer (QA)"));
+    expect(roleKey("Software Engineer (II)")).not.toBe(roleKey("Software Engineer"));
+    expect(roleKey("Assistant Director (BPS-17)")).not.toBe(roleKey("Assistant Director (BPS-18)"));
   });
 
   it("reads an abbreviation written against the next word", () => {
@@ -161,6 +207,18 @@ describe("addressKey", () => {
     expect(addressKey("0300-1234567")).toBe("3001234567");
     expect(addressKey("0092 300 1234567")).toBe("923001234567");
   });
+
+  it("reads a mailto: link as its address", () => {
+    expect(addressKey("mailto:Jobs@Acme.example")).toBe("jobs@acme.example");
+  });
+
+  it("takes linear time on a long hostile address", () => {
+    const started = performance.now();
+    addressKey("(a".repeat(8_000));
+    addressKey(`+92 ${"(".repeat(8_000)}`);
+
+    expect(performance.now() - started).toBeLessThan(500);
+  });
 });
 
 describe("sameAddress", () => {
@@ -183,6 +241,12 @@ describe("sameAddress", () => {
     "wa.me/923001234567",
     "https://wa.me/923001234567",
     "tel:+923001234567",
+    "WhatsApp: 0300-1234567",
+    "Phone: +92 300 1234567",
+    "0300‎-1234567",
+    "‪+92 300 1234567‬",
+    "۰۳۰۰-۱۲۳۴۵۶۷",
+    "٠٣٠٠-١٢٣٤٥٦٧",
   ];
 
   it.each(PK_FORMS)("takes %j for the same number as +92 300 1234567", (number) => {
@@ -227,10 +291,30 @@ describe("sameAddress", () => {
 });
 
 describe("postFingerprint", () => {
-  it("takes word trigrams from each requirement after the same normalisation", () => {
-    expect(postFingerprint(["3+ years of React.js", "Sr. dev experience", "Git"])).toEqual(
-      new Set(["3 years of", "years of reactjs", "senior developer experience"]),
+  it("takes word trigrams from each requirement, and a line of one or two words whole", () => {
+    expect(
+      postFingerprint(["3+ years of React.js", "Sr. dev experience", "Git", "Node.js / Express"]),
+    ).toEqual(
+      new Set([
+        "3 years of",
+        "years of reactjs",
+        "senior developer experience",
+        "git",
+        "nodejs express",
+      ]),
     );
+  });
+
+  it("tells terse posts with different stacks apart, though they share the same boilerplate", () => {
+    const boilerplate = [
+      "1-2 years experience",
+      "Good communication skills",
+      "Immediate joiners preferred",
+    ];
+    const laravel = postFingerprint(["PHP", "Laravel", "MySQL", ...boilerplate]);
+    const flutter = postFingerprint(["Flutter", "Dart", "Firebase", ...boilerplate]);
+
+    expect(similarity(laravel, flutter)).toBeLessThan(0.6);
   });
 });
 

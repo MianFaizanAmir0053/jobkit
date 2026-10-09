@@ -37,6 +37,7 @@ Fields:
 - `company`: name and website as shown, or empty. `recruiter`: name and title as shown, or empty.
 - `scam_signals` (for the whole post): kind (`national_id`, `bank_details`, `fee`, `personal_messaging_only`, `other`) with the quote.
 - `roles`: one entry per role the post offers. Each role has:
+  - an ID (`P1`, `P2`, …, in the order the post lists the roles), which the ledger keys each application on, so two roles written alike stay apart;
   - `title`, `seniority` (intern to principal, or `unspecified`) and `employment` (full-time, part-time, contract, internship, `unspecified`);
   - `location`: work mode (remote, hybrid, onsite, `unspecified`); places, each with the text as written and its place code from the shared region table (below) or `"unknown"`; remote regions as written; and the time-zone requirement as a zone (IANA name or `"unspecified"`), a minimum overlap in hours (or `-1`) and the text as written;
   - `eligibility`: work-authorisation requirements, each with a place code and the quote; sponsorship (`offered`, `not_offered`, `unspecified`); other limits (citizenship, security clearance and the like) as quotes;
@@ -50,7 +51,7 @@ Fields:
 **Shared vocabularies** in `src/core/shared/`:
 
 - `skills.ts` maps aliases to canonical tags with display names (for example `k8s` to `kubernetes`, shown "Kubernetes"). Extraction normalises requirement tags through it, and the profile seed rejects fact tags it does not know.
-- `regions.ts` maps names and aliases to place codes (ISO country codes, plus region codes such as `EU`, `GCC`, `APAC`, `EMEA`, each with its member countries): "UK" and "United Kingdom" to `GB`, "Germany" and `DE` to `DE` (a member of `EU`), "Europe" to `EUROPE`. Extraction, the profile seed and eligibility all use this one table, so a post's "UK" meets the profile's `GB`.
+- `regions.ts` maps names and aliases to place codes (ISO country codes, plus region codes such as `EU`, `GCC`, `APAC`, `EMEA`, each with its member countries): "UK" and "United Kingdom" to `GB`, "Germany" to `DE` (a member of `EU`), "Europe" to `EUROPE`. A bare two-letter country code is not read as a name ("CA" and "IN" are also US states), a name two places share (Georgia, Hyderabad) names none, and the words around a place ("the UAE", "US only", "Remote, UK") are read past. Extraction, the profile seed and eligibility all use this one table, so a post's "UK" meets the profile's `GB`.
 
 ## Stage `extract`
 

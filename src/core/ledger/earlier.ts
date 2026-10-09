@@ -166,12 +166,51 @@ function readCsv(text: string): {
   return { records, unclosedAt: null };
 }
 
+/** A stored row's key: its company-role hash by today's rules, and its date. */
+function keyOf(row: { company: string; role: string; appliedOn: string }): string {
+  return `${companyRoleHash(row.company, row.role)}|${row.appliedOn}`;
+}
+
+/**
+ * Re-keys the rows stored under older normalisation rules, so a row the
+ * list names again is found again rather than stored twice. Of two rows
+ * that now share a key, the newer goes.
+ */
+async function rekey(db: Db): Promise<void> {
+  const { rows } = await db.query<{
+    id: string;
+    company: string;
+    role: string;
+    company_role_hash: string;
+    applied_on: string;
+  }>(
+    `select id, company, role, company_role_hash, applied_on::text as applied_on
+       from {{schema}}.earlier_applications order by imported_at, id`,
+  );
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const hash = companyRoleHash(row.company, row.role)!;
+    const key = `${hash}|${row.applied_on}`;
+    if (seen.has(key)) {
+      await db.query("delete from {{schema}}.earlier_applications where id = $1", [row.id]);
+      continue;
+    }
+    seen.add(key);
+    if (hash !== row.company_role_hash) {
+      await db.query(
+        "update {{schema}}.earlier_applications set company_role_hash = $2 where id = $1",
+        [row.id, hash],
+      );
+    }
+  }
+}
+
 /**
  * Stores the rows, keyed on company-role hash and date. A row already there
- * is left alone, or corrected when the list now spells its company or role
- * differently or gives another route or address. A row whose address
- * changed counts as imported now, since only a new address can find new
- * matches the owner has not seen.
+ * is left alone, or corrected in place when the list now spells its company
+ * or role differently or gives another route or address. A corrected row
+ * keeps its ID, so the duplicate matches the owner has already seen stay
+ * covered; a new address is a new match.
  */
 export async function importEarlier(
   deps: { db: Db; clock: Clock },
@@ -179,6 +218,7 @@ export async function importEarlier(
 ): Promise<{ inserted: number; updated: number; alreadyThere: number }> {
   const now = deps.clock.now();
   return deps.db.tx(async (tx) => {
+    await rekey(tx);
     let inserted = 0;
     let updated = 0;
     for (const row of rows) {
@@ -189,9 +229,7 @@ export async function importEarlier(
          values ($1, $2, $3, $4, $5, $6, $7)
          on conflict (company_role_hash, applied_on) do update
            set company = excluded.company, role = excluded.role, route = excluded.route,
-               address = excluded.address,
-               imported_at = case when earlier.address is distinct from excluded.address
-                                  then excluded.imported_at else earlier.imported_at end
+               address = excluded.address, imported_at = excluded.imported_at
            where (earlier.company, earlier.role, earlier.route, earlier.address)
                  is distinct from (excluded.company, excluded.role, excluded.route, excluded.address)
          returning (xmax = 0) as inserted`,
@@ -213,17 +251,37 @@ export async function importEarlier(
 }
 
 /**
- * Replaces the whole list with these rows (npm run ledger:import -- <file>
- * --replace), so a row fixed in a way that changes its key leaves no stale
- * copy behind. Every row counts as imported now.
+ * Makes the stored list the file's (npm run ledger:import -- <file>
+ * --replace): removes the rows the file no longer has, such as one whose
+ * company or role was misspelt, and imports the rest as importEarlier does,
+ * so the rows that stay keep their IDs. An empty list is refused: it would
+ * remove every earlier application.
  */
 export async function replaceEarlier(
   deps: { db: Db; clock: Clock },
   rows: readonly EarlierRow[],
-): Promise<{ removed: number; inserted: number }> {
+): Promise<{ removed: number; inserted: number; updated: number; alreadyThere: number }> {
+  if (rows.length === 0)
+    throw new Error("The list is empty, so --replace would remove every earlier application.");
+  const kept = new Set(rows.map(keyOf));
   return deps.db.tx(async (tx) => {
-    const { rowCount: removed } = await tx.query("delete from {{schema}}.earlier_applications");
-    const { inserted } = await importEarlier({ db: tx, clock: deps.clock }, rows);
-    return { removed, inserted };
+    await rekey(tx);
+    const { rows: stored } = await tx.query<{
+      id: string;
+      company: string;
+      role: string;
+      applied_on: string;
+    }>(
+      `select id, company, role, applied_on::text as applied_on from {{schema}}.earlier_applications`,
+    );
+    const gone = stored
+      .filter((row) => !kept.has(keyOf({ ...row, appliedOn: row.applied_on })))
+      .map((row) => row.id);
+    if (gone.length > 0) {
+      await tx.query("delete from {{schema}}.earlier_applications where id = any($1::uuid[])", [
+        gone,
+      ]);
+    }
+    return { removed: gone.length, ...(await importEarlier({ db: tx, clock: deps.clock }, rows)) };
   });
 }

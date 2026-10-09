@@ -37,24 +37,55 @@ export function parseTarget(
 
 /**
  * The production project's reference, from SUPABASE_URL, after checking
- * that DATABASE_URL is for the same project: the pooler's user is written
- * `jobkit_app.<project-ref>` (runbook step 5).
+ * that DATABASE_URL is for the same project, so the reference the owner
+ * types is always the database reached. The pooler's user is written
+ * `jobkit_app.<project-ref>` (runbook step 5); a direct connection's host
+ * is `db.<project-ref>.supabase.co`. A URL naming neither is refused.
  */
 export function productionRef(env: Readonly<Record<string, string | undefined>>): string {
   const ref = projectRefFromSupabaseUrl(env.SUPABASE_URL ?? "");
-  let user = "";
+  let url: URL | null = null;
   try {
-    user = decodeURIComponent(new URL(env.DATABASE_URL ?? "").username);
+    url = new URL(env.DATABASE_URL ?? "");
   } catch {
-    // Not a URL; the database driver says so when it connects.
+    // Not a URL: it names no project either.
   }
-  const databaseRef = user.includes(".") ? user.slice(user.indexOf(".") + 1) : null;
-  if (databaseRef !== null && databaseRef !== ref) {
+  const user = url ? decodeURIComponent(url.username) : "";
+  const databaseRef = user.includes(".")
+    ? user.slice(user.indexOf(".") + 1)
+    : (/^db\.([a-z0-9]+)\.supabase\.co$/.exec(url?.hostname ?? "")?.[1] ?? null);
+  if (databaseRef === null) {
+    throw new Error(
+      "DATABASE_URL names no Supabase project (runbook step 5 writes its user as jobkit_app.<project-ref>): fix .env.ops.local",
+    );
+  }
+  if (databaseRef !== ref) {
     throw new Error(
       `DATABASE_URL is for project ${databaseRef}, but SUPABASE_URL is for ${ref}: fix .env.ops.local`,
     );
   }
   return ref;
+}
+
+/**
+ * Refuses to go on when npm kept one of the script's own flags, which it
+ * does when there is no -- before them: `npm run x --replace` sets
+ * npm_config_replace_registry_host, and `npm run x --list` npm_config_list,
+ * and the script never sees the flag.
+ */
+export function refuseSwallowedFlags(
+  flags: readonly string[],
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): void {
+  if (!env.npm_lifecycle_event) return;
+  for (const flag of flags) {
+    const name = `npm_config_${flag.replaceAll("-", "_")}`;
+    if (Object.keys(env).some((key) => key === name || key.startsWith(`${name}_`))) {
+      throw new Error(
+        `npm took --${flag} for itself, so this did nothing. Put -- before the script's arguments: npm run ${env.npm_lifecycle_event} -- <arguments> --${flag}`,
+      );
+    }
+  }
 }
 
 export function projectRefFromSupabaseUrl(url: string): string {

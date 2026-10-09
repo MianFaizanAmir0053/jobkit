@@ -26,6 +26,7 @@ import {
   loadOpsEnv,
   parseTarget,
   productionRef,
+  refuseSwallowedFlags,
   requireValues,
 } from "./ops";
 
@@ -37,6 +38,7 @@ async function main(): Promise<void> {
       "Name the list: npm run ledger:import private/earlier.csv (add -- before it to use --prod)",
     );
   }
+  refuseSwallowedFlags(["replace"]);
   const replace = args.includes("--replace");
   const target = parseTarget(args.filter((arg) => arg !== path && arg !== "--replace"));
   const { rows, errors } = parseEarlierCsv(readFileSync(path, "utf8"), systemClock.now());
@@ -46,11 +48,21 @@ async function main(): Promise<void> {
       `${errors.length} bad row(s), so nothing was imported. Fix them and run again.`,
     );
   }
+  if (replace && rows.length === 0) {
+    throw new Error(
+      "The list is empty, so --replace would remove every earlier application. Nothing was changed.",
+    );
+  }
   const { db, where } = target === "local" ? await localDb() : await productionDb();
   try {
     if (replace) {
-      const { removed, inserted } = await replaceEarlier({ db, clock: systemClock }, rows);
-      console.log(`In ${where}: replaced ${removed} stored row(s) with the file's ${inserted}.`);
+      const { removed, inserted, updated, alreadyThere } = await replaceEarlier(
+        { db, clock: systemClock },
+        rows,
+      );
+      console.log(
+        `In ${where}: removed ${removed} row(s) the file no longer has, imported ${inserted} new, corrected ${updated}, and ${alreadyThere} were already there.`,
+      );
       return;
     }
     const { inserted, updated, alreadyThere } = await importEarlier(

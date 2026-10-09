@@ -13,6 +13,7 @@ import {
   type NewApplication,
   openApplication,
   TRANSITIONS,
+  setAddress,
   setRoute,
   undoStatus,
 } from "./statuses";
@@ -48,6 +49,7 @@ beforeEach(async () => {
 
 const application = (overrides: Partial<NewApplication> = {}): NewApplication => ({
   jobId: JOB,
+  roleId: "P1",
   company: "Acme (Pvt) Ltd",
   role: "Front-End Developer",
   address: "jobs@acme.example",
@@ -111,13 +113,14 @@ describe("openApplication", () => {
     const id = await openApplication(deps(), application(), null);
 
     const { rows } = await db.query(
-      `select status, company_key, role_key, company_role_hash, post_fingerprint, opened_at,
+      `select status, role_id, company_key, role_key, company_role_hash, post_fingerprint, opened_at,
               status_changed_at, arm, job_kind
          from {{schema}}.applications where id = $1`,
       [id],
     );
     expect(rows[0]).toEqual({
       status: "open",
+      role_id: "P1",
       company_key: "acme",
       role_key: "frontenddeveloper",
       company_role_hash: companyRoleHash("Acme (Pvt) Ltd", "Front-End Developer"),
@@ -141,20 +144,66 @@ describe("openApplication", () => {
     expect(await audit(first)).toHaveLength(1);
   });
 
-  it("refuses, rather than merge, a second role of one post written like the first", async () => {
-    await openApplication(deps(), application({ role: "Flutter Developer (Lahore)" }), null);
+  it("gives each role of one post its own application, though they are written alike", async () => {
+    const lahore = await openApplication(
+      deps(),
+      application({ roleId: "P1", role: "Flutter Developer (Lahore)" }),
+      null,
+    );
+    const karachi = await openApplication(
+      deps(),
+      application({
+        roleId: "P2",
+        role: "Flutter Developer (Karachi)",
+        address: "khi@acme.example",
+      }),
+      null,
+    );
 
-    await expect(
-      openApplication(
-        deps(),
-        application({ role: "Flutter Developer (Karachi)", address: "khi@acme.example" }),
-        null,
-      ),
-    ).rejects.toThrow(/already has an application for a role written like/);
+    expect(karachi).not.toBe(lahore);
+  });
+
+  it("takes what a new extraction read when the same role is picked again, while no kit is out", async () => {
+    const id = await openApplication(deps(), application(), null);
+    clock.advance(1_000);
+
+    const again = await openApplication(
+      deps(),
+      application({
+        role: "Front End Developer",
+        address: "careers@acme.example",
+        requirements: ["Vue"],
+      }),
+      null,
+    );
+
+    expect(again).toBe(id);
+    const { rows } = await db.query(
+      "select role, address, post_fingerprint from {{schema}}.applications where id = $1",
+      [id],
+    );
+    expect(rows[0]).toEqual({
+      role: "Front End Developer",
+      address: "careers@acme.example",
+      post_fingerprint: ["vue"],
+    });
+    expect(await audit(id)).toHaveLength(1);
+  });
+
+  it("keeps an application as it was sent when its role is picked again", async () => {
+    const id = await walked(["kit_ready", "sent"]);
+
+    expect(
+      await openApplication(deps(), application({ address: "other@acme.example" }), null),
+    ).toBe(id);
+    const { rows } = await db.query("select address from {{schema}}.applications where id = $1", [
+      id,
+    ]);
+    expect(rows[0]).toEqual({ address: "jobs@acme.example" });
   });
 });
 
-describe("setRoute", () => {
+describe("setRoute and setAddress", () => {
   it("records the route the owner picked, until the application is sent, submitted or skipped", async () => {
     const id = await inStatus("kit_ready", { route: null });
 
@@ -164,6 +213,23 @@ describe("setRoute", () => {
       changed: true,
     });
     expect(await setRoute(deps(), id, "email")).toBe(false);
+  });
+
+  it("records the address the owner corrected on the review page, until the application is sent", async () => {
+    const id = await inStatus("kit_ready");
+
+    expect(await setAddress(deps(), id, "hr@acme.example")).toBe(true);
+    await changeStatus(deps(), id, "sent", null);
+    expect(await setAddress(deps(), id, "other@acme.example")).toBe(false);
+    const { rows } = await db.query("select address from {{schema}}.applications where id = $1", [
+      id,
+    ]);
+    expect(rows[0]).toEqual({ address: "hr@acme.example" });
+  });
+
+  it("answers no for an ID that is not one", async () => {
+    expect(await setRoute(deps(), "not-an-id", "form")).toBe(false);
+    expect(await setAddress(deps(), "not-an-id", "hr@acme.example")).toBe(false);
   });
 });
 
@@ -304,13 +370,20 @@ describe("changeStatus", () => {
     expect((await audit(id)).map((row) => row.session_id)).toEqual([session.id, session.id]);
   });
 
-  it("reports an application that does not exist", async () => {
+  it("reports an application that does not exist, or an ID that is not one", async () => {
     expect(
       await changeStatus(deps(), "22222222-2222-4222-8222-222222222222", "sent", null),
     ).toEqual({
       ok: false,
       reason: "not-found",
     });
+    expect(await changeStatus(deps(), "not-an-id", "sent", null)).toEqual({
+      ok: false,
+      reason: "not-found",
+    });
+    expect(
+      await undoStatus(deps(), "not-an-id", { status: "sent", at: clock.now() }, null),
+    ).toEqual({ ok: false, reason: "not-found" });
   });
 });
 

@@ -12,7 +12,7 @@ Keep the truth about applications: what was applied for, by which route, when, a
 
 ## Records
 
-- `applications`: one per job and role. A row is created when a role is chosen (automatically for a single-role post, by the owner otherwise). It holds company, role, normalised keys, address or number, route, status, the time of each status change, CV label, profile version, the final draft, the timing arm, and whether the job is an evaluation or test job.
+- `applications`: one per job and role, by the role's ID in the extraction (SPEC-extraction, `roles`), so two roles written alike stay apart. A row is created when a role is chosen (automatically for a single-role post, by the owner otherwise); choosing the same role again, after a new extraction, updates it while no kit has gone out. It holds company, role, normalised keys, address or number, route, status, the time of each status change, the matches the owner's "apply again" taps covered, CV label, profile version, the final draft, the timing arm, and whether the job is an evaluation or test job.
 - `earlier_applications`: applications made before jobkit, imported from the owner's list.
 - `status_changes`: an audit row for every status change, with time and session.
 - `draft_outcomes`: one row per email kit handed off, with the list of changed sentences and fields and `changed_in_gmail`, written by the review module.
@@ -22,9 +22,9 @@ Keep the truth about applications: what was applied for, by which route, when, a
 ## Normalisation and keys
 
 - **Company:** lower case; legal forms removed (Ltd, Limited, LLC, Inc, Corp, Pvt, (Pvt) Ltd, GmbH, BV, FZ-LLC, PLC, the Gulf's W.L.L., DMCC, PJSC and Est., a leading "M/s", and the like); then every character that is not a letter or digit removed. An empty company produces no company key.
-- **Role:** lower case; common abbreviations expanded (sr to senior, jr to junior, eng to engineer, dev to developer, swe to software engineer, fe to front end, be to back end); work-mode words removed ("remote", "hybrid", "onsite"); text in brackets removed except seniority and discipline words, so "(Lahore)", "(Remote - PK)" and "(Urgent hiring)" go while "(Senior)" and "(Backend)" stay; then every character that is not a letter or digit removed, so "Front-End", "Front End" and "Frontend" match. Seniority words stay, because "Senior Engineer" and "Engineer" are different roles.
+- **Role:** lower case; common abbreviations expanded (sr to senior, jr to junior, eng to engineer, dev to developer, swe to software engineer, fe to front end, be to back end); work-mode words removed ("remote", "hybrid", "onsite"); from text in brackets, and from parts set apart by " - ", " | ", ", " or ": ", only seniority, level, discipline and skill words are kept, placed first, so "React Developer (Senior)", "React Developer - Senior" and "Senior React Developer" are one role while "(Lahore)", "- Remote" and "Urgent hiring:" go (a title none of whose parts names a role keeps them all); then every character that is not a letter or digit removed, so "Front-End", "Front End" and "Frontend" match. Seniority words stay, because "Senior Engineer" and "Engineer" are different roles.
 - `company_role_hash`: the SHA-256 of normalised company, a bar, and normalised role; absent when the company is empty.
-- **Post fingerprint:** the set of word trigrams from the role's requirement texts, after the same normalisation.
+- **Post fingerprint:** the set of word trigrams from the role's requirement texts, after the same lower-casing and abbreviations, plus each line of one or two words whole, since a terse list names its stack there.
 
 ## Duplicate check (ADR 0001 entry 11)
 
@@ -32,10 +32,10 @@ Keep the truth about applications: what was applied for, by which route, when, a
 
 - `company-role`: the same company-role hash, which also catches reposts with new text;
 - `address`: the same address or number, a number matching with or without its country code or trunk 0 ("+92 300 1234567" and "0300-1234567"). The banner names the earlier role, because a shared inbox often serves several roles;
-- `post`: post fingerprints with a Jaccard similarity of at least 0.6 and at least 3 trigrams in common, which catches a repost under a reworded title such as "Sr. Front End Developer";
+- `post`: post fingerprints with a Jaccard similarity of at least 0.6 and at least 3 entries in common, which catches a repost under a reworded title such as "Sr. Front End Developer";
 - `drafted`: a kit already exists for the same company-role hash and was never sent.
 
-The banner shows each match with its reason and date.
+The banner shows each match with its reason and date. An "apply again" tap covers the matches its banner showed and no others: a match found later, from a new row or from the application's own corrected address, holds the application again, and so does a drafted kit that is later sent.
 
 ## Statuses
 
@@ -89,7 +89,7 @@ The daily purge deletes extracted records, drafts and recruiter names 180 days a
 
 ## Earlier applications
 
-`npm run ledger:import private/earlier.csv` reads rows of `company, role, applied_on, route, address` (address optional), validates each row, reports errors by line, and inserts rows keyed on company-role hash and date, so running it twice adds nothing; a row already there is corrected in place. With `--replace`, the file replaces the whole stored list.
+`npm run ledger:import private/earlier.csv` reads rows of `company, role, applied_on, route, address` (address optional), validates each row, reports errors by line, and inserts rows keyed on company-role hash and date, so running it twice adds nothing; a row already there is corrected in place. With `--replace`, the stored rows the file no longer has are removed too, so the stored list becomes the file; an empty file is refused.
 
 ## Acceptance criteria
 

@@ -31,6 +31,7 @@ import {
   loadOpsEnv,
   parseTarget,
   productionRef,
+  refuseSwallowedFlags,
   requireValues,
   type Target,
 } from "./ops";
@@ -62,6 +63,7 @@ function parseArgs(args: readonly string[]): { command: Command; rest: string[] 
 }
 
 async function main(): Promise<void> {
+  refuseSwallowedFlags(["list", "activate"]);
   const { command, rest } = parseArgs(process.argv.slice(2));
   const target = parseTarget(rest);
   if (command.kind === "seed") return seed(command.file, target);

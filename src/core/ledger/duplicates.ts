@@ -1,4 +1,5 @@
 import type { Clock, Db } from "@/core/ports";
+import { isUuid } from "@/lib/uuid";
 
 import { companyRoleHash, sameAddress, similarity } from "./normalise";
 
@@ -6,9 +7,10 @@ import { companyRoleHash, sameAddress, similarity } from "./normalise";
  * The duplicate check (ledger spec, "Duplicate check"; ADR 0001 entry 11 and
  * A16). A new application is compared with every earlier one: applications
  * sent or submitted, kits never sent, manual runs and the imported list.
- * Every match holds outbound actions until the owner taps "apply again".
- * Company and role are compared by today's normalisation, never by a key
- * an older row stored, so a change to the rules reaches every row.
+ * Every match holds outbound actions until the owner taps "apply again" on
+ * the banner that shows it. Company and role are compared by today's
+ * normalisation, never by a key an older row stored, so a change to the
+ * rules reaches every row.
  */
 export type DuplicateReason = "company-role" | "address" | "post" | "drafted";
 
@@ -20,6 +22,13 @@ export interface DuplicateMatch {
   role: string;
   /** When it was sent or submitted, drafted, run, or applied for. */
   at: Date;
+  /**
+   * The match itself: the earlier row and the reason. The banner sends the
+   * keys it showed back with the owner's tap, and a match with any other
+   * key holds the application again, a drafted kit that is later sent
+   * included.
+   */
+  key: string;
 }
 
 export interface Candidate {
@@ -41,16 +50,11 @@ export interface Candidate {
 /** Requirement trigrams shared from which two posts count as the same post. */
 export const POST_SIMILARITY = 0.6;
 
-/** Requirement trigrams two posts must share, so one short line in common is never a match. */
+/** Fingerprint tokens two posts must share, so one short line in common is never a match. */
 export const MIN_SHARED_TRIGRAMS = 3;
 
-/** A match, and when jobkit learned of it, which is what an "apply again" tap covers. */
-interface Found {
-  match: DuplicateMatch;
-  foundAt: Date;
-}
-
 type ApplicationRow = {
+  id: string;
   company: string;
   role: string;
   address: string | null;
@@ -62,28 +66,25 @@ type ApplicationRow = {
 
 function samePost(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   let shared = 0;
-  for (const trigram of a) if (b.has(trigram)) shared++;
+  for (const token of a) if (b.has(token)) shared++;
   return shared >= MIN_SHARED_TRIGRAMS && similarity(a, b) >= POST_SIMILARITY;
 }
 
 export async function findDuplicates(db: Db, candidate: Candidate): Promise<DuplicateMatch[]> {
-  return (await found(db, candidate)).map((entry) => entry.match);
-}
-
-async function found(db: Db, candidate: Candidate): Promise<Found[]> {
   const hash = companyRoleHash(candidate.company, candidate.role);
   const sameCompanyRole = (company: string, role: string) =>
     hash !== null && companyRoleHash(company, role) === hash;
   const atAddress = (other: string | null) =>
     candidate.address !== null && other !== null && sameAddress(candidate.address, other);
-  const results: Found[] = [];
-  const add = (match: DuplicateMatch, foundAt = match.at) => results.push({ match, foundAt });
+  const matches: DuplicateMatch[] = [];
+  const add = (match: Omit<DuplicateMatch, "key">, id: string) =>
+    matches.push({ ...match, key: `${match.source}:${id}:${match.reason}` });
 
   // Every application that got as far as a kit: sent, submitted, bounced,
   // or never sent. Open ones are still being read, and test jobs are not
   // applications.
   const applications = await db.query<ApplicationRow>(
-    `select company, role, address, post_fingerprint, kit_ready_at, sent_at, submitted_at
+    `select id, company, role, address, post_fingerprint, kit_ready_at, sent_at, submitted_at
        from {{schema}}.applications
       where kit_ready_at is not null and job_kind = 'real'
         and ($1::uuid is null or id <> $1)
@@ -100,38 +101,41 @@ async function found(db: Db, candidate: Candidate): Promise<Found[]> {
       at: appliedAt ?? row.kit_ready_at,
     };
     if (sameCompanyRole(row.company, row.role)) {
-      add({ ...earlier, reason: appliedAt ? "company-role" : "drafted" });
+      add({ ...earlier, reason: appliedAt ? "company-role" : "drafted" }, row.id);
     }
-    if (atAddress(row.address)) add({ ...earlier, reason: "address" });
-    if (samePost(candidate.fingerprint, new Set(row.post_fingerprint)))
-      add({ ...earlier, reason: "post" });
+    if (atAddress(row.address)) add({ ...earlier, reason: "address" }, row.id);
+    if (samePost(candidate.fingerprint, new Set(row.post_fingerprint))) {
+      add({ ...earlier, reason: "post" }, row.id);
+    }
   }
 
   // Manual runs carry a company and role, typed at Stop, and nothing else.
-  const runs = await db.query<{ company: string; role: string; stopped_at: Date }>(
-    `select company, role, stopped_at from {{schema}}.baseline_runs where stopped_at is not null`,
+  const runs = await db.query<{ id: string; company: string; role: string; stopped_at: Date }>(
+    `select id, company, role, stopped_at from {{schema}}.baseline_runs where stopped_at is not null`,
   );
   for (const run of runs.rows) {
     if (sameCompanyRole(run.company, run.role)) {
-      add({
-        reason: "company-role",
-        source: "manual-run",
-        company: run.company,
-        role: run.role,
-        at: run.stopped_at,
-      });
+      add(
+        {
+          reason: "company-role",
+          source: "manual-run",
+          company: run.company,
+          role: run.role,
+          at: run.stopped_at,
+        },
+        run.id,
+      );
     }
   }
 
-  // An imported application is found when it is imported, however long ago it was made.
   const imported = await db.query<{
+    id: string;
     company: string;
     role: string;
     address: string | null;
     applied_on: string;
-    imported_at: Date;
   }>(
-    `select company, role, address, applied_on::text as applied_on, imported_at
+    `select id, company, role, address, applied_on::text as applied_on
        from {{schema}}.earlier_applications`,
   );
   for (const row of imported.rows) {
@@ -141,13 +145,12 @@ async function found(db: Db, candidate: Candidate): Promise<Found[]> {
       role: row.role,
       at: new Date(`${row.applied_on}T00:00:00Z`),
     };
-    if (sameCompanyRole(row.company, row.role))
-      add({ ...earlier, reason: "company-role" }, row.imported_at);
-    if (atAddress(row.address)) add({ ...earlier, reason: "address" }, row.imported_at);
+    if (sameCompanyRole(row.company, row.role)) add({ ...earlier, reason: "company-role" }, row.id);
+    if (atAddress(row.address)) add({ ...earlier, reason: "address" }, row.id);
   }
 
   // Newest first; the sort keeps each application's reasons in order.
-  return results.sort((a, b) => b.match.at.getTime() - a.match.at.getTime());
+  return matches.sort((a, b) => b.at.getTime() - a.at.getTime());
 }
 
 /** The matches for an application already recorded; null when there is none. */
@@ -156,13 +159,13 @@ export async function duplicatesOf(
   applicationId: string,
 ): Promise<DuplicateMatch[] | null> {
   const own = await ownRow(db, applicationId);
-  return own && own.found.map((entry) => entry.match);
+  return own && own.matches;
 }
 
 /**
  * Whether outbound actions may go ahead for an application: with no
- * matches, or when the owner's last "apply again" tap came after every
- * match was found. Null when there is no such application.
+ * matches, or when the owner's taps covered every one. Null when there is
+ * no such application.
  */
 export async function duplicateGate(
   db: Db,
@@ -170,52 +173,55 @@ export async function duplicateGate(
 ): Promise<{ matches: DuplicateMatch[]; cleared: boolean } | null> {
   const own = await ownRow(db, applicationId);
   if (!own) return null;
-  return { matches: own.found.map((entry) => entry.match), cleared: isCleared(own) };
+  const covered = new Set(own.covers);
+  return { matches: own.matches, cleared: own.matches.every((match) => covered.has(match.key)) };
 }
 
 /**
- * The owner's "apply again" tap. It covers every match found so far; one
- * found later holds the application again until the next tap. A tap with
- * nothing to cover, such as the second of a double tap, changes nothing.
+ * The owner's "apply again" tap, with the keys of the matches its banner
+ * showed: it covers those, and only those. One statement, so two taps at
+ * once cover the same set; a tap that covers nothing new, such as the
+ * second of a double tap, changes nothing and answers false.
  */
 export async function applyAgain(
   deps: { db: Db; clock: Clock },
   applicationId: string,
+  shown: readonly string[],
 ): Promise<boolean> {
-  const own = await ownRow(deps.db, applicationId);
-  if (!own || isCleared(own)) return false;
-  await deps.db.query("update {{schema}}.applications set apply_again_at = $2 where id = $1", [
-    applicationId,
-    deps.clock.now(),
-  ]);
-  return true;
-}
-
-function isCleared(own: { found: Found[]; applyAgainAt: Date | null }): boolean {
-  const tap = own.applyAgainAt;
-  return own.found.every((entry) => tap !== null && entry.foundAt <= tap);
+  if (!isUuid(applicationId)) return false;
+  const { rows } = await deps.db.query(
+    `update {{schema}}.applications
+        set apply_again_covers = array(
+              select distinct unnest(apply_again_covers || $2::text[]) order by 1),
+            apply_again_at = $3
+      where id = $1 and not ($2::text[] <@ apply_again_covers)
+      returning id`,
+    [applicationId, [...shown], deps.clock.now()],
+  );
+  return rows.length === 1;
 }
 
 async function ownRow(
   db: Db,
   applicationId: string,
-): Promise<{ found: Found[]; applyAgainAt: Date | null } | null> {
+): Promise<{ matches: DuplicateMatch[]; covers: string[] } | null> {
+  if (!isUuid(applicationId)) return null;
   const { rows } = await db.query<{
     company: string;
     role: string;
     address: string | null;
     post_fingerprint: string[];
     opened_at: Date;
-    apply_again_at: Date | null;
+    apply_again_covers: string[];
   }>(
-    `select company, role, address, post_fingerprint, opened_at, apply_again_at
+    `select company, role, address, post_fingerprint, opened_at, apply_again_covers
        from {{schema}}.applications where id = $1`,
     [applicationId],
   );
   const row = rows[0];
   if (!row) return null;
   return {
-    found: await found(db, {
+    matches: await findDuplicates(db, {
       company: row.company,
       role: row.role,
       address: row.address,
@@ -223,6 +229,6 @@ async function ownRow(
       applicationId,
       openedAt: row.opened_at,
     }),
-    applyAgainAt: row.apply_again_at,
+    covers: row.apply_again_covers,
   };
 }

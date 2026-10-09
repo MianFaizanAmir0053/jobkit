@@ -80,39 +80,56 @@ describe("importEarlier", () => {
     ]);
   });
 
-  it("keeps a corrected row's import time unless its address changed, since only that can find new matches", async () => {
-    await importEarlier(deps(), parseEarlierCsv(CSV, clock.now()).rows);
-    const importedAt = clock.now();
-    clock.advance(60_000);
-    const corrected = CSV.replace(
-      "Globex,Designer,2026-06-01,form",
-      "Globex,Designer,2026-06-01,message",
+  it("re-keys a row stored under older rules, so importing it again adds nothing", async () => {
+    await db.query(
+      `insert into {{schema}}.earlier_applications
+         (company, role, company_role_hash, applied_on, route, address, imported_at)
+       values ('Acme Ltd', 'Frontend Developer', 'stale', '2026-05-04', 'email', 'jobs@acme.example', $1)`,
+      [clock.now()],
     );
 
-    expect(await importEarlier(deps(), parseEarlierCsv(corrected, clock.now()).rows)).toMatchObject(
-      { updated: 1 },
+    expect(await importEarlier(deps(), parseEarlierCsv(CSV, clock.now()).rows)).toEqual({
+      inserted: 1,
+      updated: 0,
+      alreadyThere: 1,
+    });
+    const { rows } = await db.query<{ company_role_hash: string }>(
+      "select company_role_hash from {{schema}}.earlier_applications where applied_on = '2026-05-04'",
     );
-    const { rows } = await db.query(
-      `select route, imported_at from {{schema}}.earlier_applications where applied_on = '2026-06-01'`,
-    );
-    expect(rows).toEqual([{ route: "message", imported_at: importedAt }]);
+    expect(rows).toEqual([
+      { company_role_hash: companyRoleHash("Acme Ltd", "Frontend Developer") },
+    ]);
   });
 });
 
 describe("replaceEarlier", () => {
-  it("replaces the whole list, so a row fixed in a way that changes its key leaves no stale copy", async () => {
+  it("removes the rows the file no longer has and keeps the rest as they were", async () => {
     await importEarlier(
       deps(),
       parseEarlierCsv(CSV.replace("Frontend Developer", "Fronted Developer"), clock.now()).rows,
     );
+    const before = await db.query<{ id: string }>(
+      "select id from {{schema}}.earlier_applications where company = 'Globex'",
+    );
 
     expect(await replaceEarlier(deps(), parseEarlierCsv(CSV, clock.now()).rows)).toEqual({
-      removed: 2,
-      inserted: 2,
+      removed: 1,
+      inserted: 1,
+      updated: 0,
+      alreadyThere: 1,
     });
-    const { rows } = await db.query<{ role: string }>(
-      "select role from {{schema}}.earlier_applications order by applied_on",
+    const { rows } = await db.query<{ id: string; role: string }>(
+      "select id, role from {{schema}}.earlier_applications order by applied_on",
     );
     expect(rows.map((row) => row.role)).toEqual(["Frontend Developer", "Designer"]);
+    expect(rows[1]!.id).toBe(before.rows[0]!.id);
+  });
+
+  it("refuses an empty list, which would remove every earlier application", async () => {
+    await importEarlier(deps(), parseEarlierCsv(CSV, clock.now()).rows);
+
+    await expect(replaceEarlier(deps(), [])).rejects.toThrow(/empty/);
+    const { rows } = await db.query("select 1 from {{schema}}.earlier_applications");
+    expect(rows).toHaveLength(2);
   });
 });

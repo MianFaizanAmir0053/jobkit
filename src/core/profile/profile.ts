@@ -1,4 +1,5 @@
 import type { Db } from "@/core/ports";
+import { isUuid } from "@/lib/uuid";
 
 import type { Fact, FixedAnswers, GapTemplate, KnownGap, ProfileDocument } from "./schema";
 
@@ -32,9 +33,6 @@ type Row = {
 
 const COLUMNS = "id, created_at, document, style_examples, cv_path, cv_label";
 
-/** A version ID; anything else names no version, and Postgres would refuse it as a uuid. */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 /**
  * Versions are kept for good, for citation lookups, and their documents
  * were checked when they were seeded, so they are read as stored. A change
@@ -67,7 +65,7 @@ export async function getActiveProfile(db: Db): Promise<Profile | null> {
 
 /** An older version, for citation lookups and evaluation runs. */
 export async function getProfileVersion(db: Db, versionId: string): Promise<Profile | null> {
-  if (!UUID.test(versionId)) return null;
+  if (!isUuid(versionId)) return null;
   const { rows } = await db.query<Row>(
     `select ${COLUMNS} from {{schema}}.profile_versions where id = $1`,
     [versionId],
@@ -125,7 +123,7 @@ export interface ProfileCounts {
  * shows, so a seed in between cannot mix two versions on one page.
  */
 export async function profileCounts(db: Db, versionId: string): Promise<ProfileCounts | null> {
-  if (!UUID.test(versionId)) return null;
+  if (!isUuid(versionId)) return null;
   const { rows } = await db.query<{ hash: string; document: ProfileDocument }>(
     "select hash, document from {{schema}}.profile_versions where id = $1",
     [versionId],
