@@ -55,8 +55,43 @@ describe("createContainer", () => {
 
   it("in production, refuses to start and names every missing variable", async () => {
     await expect(createContainer({ JOBKIT_ENV: "production" })).rejects.toThrow(
-      /DATABASE_URL.*SUPABASE_URL.*SUPABASE_SECRET_KEY/,
+      /^Missing environment variables for production: DATABASE_URL, SUPABASE_URL, SUPABASE_SECRET_KEY$/,
     );
+  });
+
+  it("in production, starts without a model key, and only the models that need it fail", async () => {
+    container = await createContainer({
+      JOBKIT_ENV: "production",
+      DATABASE_URL: "postgresql://jobkit_app@db.example.test:6543/postgres",
+      SUPABASE_URL: "https://project.supabase.example",
+      SUPABASE_SECRET_KEY: "secret-value",
+      GEMINI_API_KEY: "app-key",
+    });
+
+    expect(container.kind).toBe("production");
+    expect(container.llmFor("gemini-3.8-flash")).toMatchObject({ call: expect.any(Function) });
+    expect(() => container!.llmFor("claude-opus-5-5")).toThrow(/ANTHROPIC_API_KEY is not set/);
+  });
+
+  it("in test, has no model to call, whatever keys the shell holds", async () => {
+    container = await createContainer({ JOBKIT_ENV: "test", ANTHROPIC_EVALS_API_KEY: "evals-key" });
+
+    expect(() => container!.llmFor("claude-opus-5-5")).toThrow(/no models/);
+  });
+
+  it("refuses a local run that holds a production value, even one the dev server reloaded after starting", async () => {
+    await expect(
+      createContainer({ JOBKIT_ENV: "test", GEMINI_API_KEY: "app-key" }),
+    ).rejects.toThrow(/^A local run refuses to start: GEMINI_API_KEY is set/);
+    await expect(
+      createContainer({
+        NODE_ENV: "development",
+        JOBKIT_ENV: "production",
+        DATABASE_URL: "postgresql://jobkit_app@db.example.test:6543/postgres",
+        SUPABASE_URL: "https://project.supabase.example",
+        SUPABASE_SECRET_KEY: "secret-value",
+      }),
+    ).rejects.toThrow(/^A local run refuses to start: DATABASE_URL points at another machine/);
   });
 
   it("refuses an unknown environment", async () => {

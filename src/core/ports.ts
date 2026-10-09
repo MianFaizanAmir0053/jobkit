@@ -63,7 +63,10 @@ export interface LlmRequest {
   maxTokens: number;
   /** Aborted by the caller's idle and total timeouts. */
   signal: AbortSignal;
-  /** Called on every event the stream delivers, so a silent stream can be told apart. */
+  /**
+   * Called whenever the provider sends anything, keep-alive pings included, so
+   * a dead connection can be told apart from a model that is thinking.
+   */
   onEvent: () => void;
 }
 

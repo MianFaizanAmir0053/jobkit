@@ -82,7 +82,10 @@ export function costOf(entry: UsageEntry, at: Date): { usd: number; known: boole
 /**
  * The upper bound an attempt is charged until its real usage arrives, and for
  * good if it never does: its counted input at the input rate, plus the whole
- * max_tokens at the output rate (B4).
+ * max_tokens at the output rate (B4). It bounds one run of the requested
+ * model. With refusal fallbacks on, a declined run plus its fallback can cost
+ * more; their usage arrives with the final message, so only an attempt that
+ * falls back and then breaks off is undercounted, by at most its fallback run.
  */
 export function provisionalCost(
   model: string,

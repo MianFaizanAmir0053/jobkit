@@ -14,9 +14,11 @@ import { createPgDb } from "@/adapters/pg";
 import { createPgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { createSupabaseStorage } from "@/adapters/supabaseStorage";
-import type { Clock, Db, Random, Storage } from "@/core/ports";
+import type { Clock, Db, Llm, Random, Storage } from "@/core/ports";
 import { applyMigrations, bootstrapForTests, loadMigrations } from "@/server/db/migrate";
 import { onVercelDeployment } from "@/server/deployEnv";
+import { assertLocalOnly, isLocalRun } from "@/server/localOnly";
+import { modelsFor } from "@/server/models";
 
 export const SCHEMA = "jobkit";
 export const BUCKET = "jobkit-private";
@@ -27,6 +29,8 @@ export interface Container {
   storage: Storage;
   clock: Clock;
   random: Random;
+  /** The model behind a model ID; throws when this environment has no key for it. */
+  llmFor(model: string): Llm;
   close(): Promise<void>;
 }
 
@@ -53,8 +57,13 @@ export async function createContainer(
       `This is a Vercel ${env.VERCEL_ENV} deployment, so JOBKIT_ENV must be production, not ${JSON.stringify(env.JOBKIT_ENV)}`,
     );
   }
+  // Checked here as well as at server start: the dev server reloads edited
+  // .env files, and a container that failed to start is built again (B8).
+  if (isLocalRun(env)) assertLocalOnly(env, "A local run");
   switch (env.JOBKIT_ENV) {
     case "production": {
+      // The model keys are not required here: a missing one fails only the
+      // stages that need it, while sign-in, pairing and the keep-alive go on.
       const v = required(env, ["DATABASE_URL", "SUPABASE_URL", "SUPABASE_SECRET_KEY"]);
       const db = createPgDb({ connectionString: v.DATABASE_URL!, schema: SCHEMA });
       const storage = createSupabaseStorage({
@@ -62,7 +71,8 @@ export async function createContainer(
         secretKey: v.SUPABASE_SECRET_KEY!,
         bucket: BUCKET,
       });
-      return { kind: "production", db, storage, ...SYSTEM, close: () => db.close() };
+      const llmFor = modelsFor("production", env);
+      return { kind: "production", db, storage, ...SYSTEM, llmFor, close: () => db.close() };
     }
     case "development":
     case "test": {
@@ -80,7 +90,8 @@ export async function createContainer(
         root: join(dataDir, "storage"),
         origin: env.APP_ORIGIN ?? "http://localhost:3000",
       });
-      return { kind: env.JOBKIT_ENV, db, storage, ...SYSTEM, close: () => db.close() };
+      const llmFor = modelsFor(env.JOBKIT_ENV, env);
+      return { kind: env.JOBKIT_ENV, db, storage, ...SYSTEM, llmFor, close: () => db.close() };
     }
     default:
       throw new Error(

@@ -38,6 +38,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
   - Verify: `npm test` with fake stages and a fake clock. Depends on: 3. Files: src/core/platform/{runner,jobStates,times}.ts, src/app/api/jobs/[id]/advance/route.ts, db/migrations/NNNN_jobs.sql. Scope: M.
 - [ ] **Task 10: Model wrapper** — Owns: platform AC11, AC12, AC13.
   - Streaming with idle timeout, one row per attempt, provisional costs, guard hook, retries, refusals, price table; the local-only check used by the dev server and the evaluation composition.
+  - Code done: the wrapper, the price table and call log, the Claude and Gemini adapters (tested on recorded streams), the local-only check at server start and in the container, and the container's models (app keys in production, each loaded on first use; evaluation keys in development). The live contract tests wait for the owner's keys and go-ahead (docs/runbook/testing.md). The evaluation runner's own check is Task 20's; the test server's scripted models are Task 26's.
   - Verify: `npm test`; adapter contract tests behind `JOBKIT_LIVE=1`, with the owner's approval for a few cents. Depends on: 3. Files: src/core/platform/{models,prices}.ts, src/adapters/{anthropic,gemini,fake-llm}.ts, src/server/localOnly.ts. Scope: M.
 - [ ] **Task 11: Ledger core** — Owns: ledger AC1, AC2, AC3, AC7, AC8, AC10.
   - Normalisation, duplicate check with fuzzy post match, statuses and audit, arm assignment, trust-gate state, spend cap guard wired into the wrapper, CSV import.
@@ -69,6 +70,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
   - Verify: `npm test`; the labelling page returns 404 in a production build. Depends on: 15, 16. Files: scripts/eval-import.ts, scripts/eval-pull.ts, src/app/dev/label/*, evals/render.ts. Scope: M.
 - [ ] **Task 20: Evaluation tooling B** — Owns: evals AC3, AC4, AC5, AC6.
   - Split, scorer (exact match, Wilson, precision and recall, McNemar), runner with budget on the evaluation keys and a local database, reports and aggregate summary.
+  - The runner calls `assertLocalOnly` (src/server/localOnly.ts) on both `process.env` and `loadLocalEnv()` before anything else (platform AC13), and takes its models from `modelsFor("development", …)`.
   - Verify: `npm test`. Depends on: 10, 19. Files: evals/{split,score,run,summary}.ts and tests. Scope: M.
 - [ ] **Task 21: Live extraction evaluation** — Owns: none.
   - Runs on the dev split only, after the owner approves the estimated spend; records accuracy, per-stage latency and cost.
@@ -89,6 +91,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
   - Verify: `npm test` with a fake DNS. Depends on: 9. Files: src/core/review/addressChecks.ts, src/adapters/dns.ts. Scope: S.
 - [ ] **Task 26: Thin kit page** — Owns: review AC1; ledger AC4; platform AC19.
   - Job page for email kits: progress, the manual-run screen with Stop, the contact panel with retype, flags with "I checked this", basic block editing with confirmation, `canHandOff` in the browser and on the server, polling rules; the jobs list.
+  - First gives the test server scripted models, per stage, for the end-to-end tests (platform spec A3, B10): until then `modelsFor("test", …)` has none (src/server/models.ts).
   - Verify: `npm test`; Playwright with the fake models. Depends on: 11, 24, 25. Files: src/app/(app)/jobs/[id]/*, src/app/(app)/jobs/page.tsx, src/core/review/canHandOff.ts. Scope: M.
 - [ ] **Task 27: Gmail handoff and Mark sent** — Owns: review AC3, AC7, AC10; ledger AC6.
   - The mechanism chosen in Task 8, built inside the click; Mark sent with the Gmail question; draft outcomes and factual edits; Skip.

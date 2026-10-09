@@ -44,17 +44,22 @@ export async function askOnTerminal(question: string): Promise<string> {
   }
 }
 
+/**
+ * Reads an env file the way Next's dotenv does for the forms these files
+ * use: an optional `export`, a value in quotes kept whole, and an unquoted
+ * value ending at the first `#`, so a trailing comment never becomes part of
+ * a key. Variable expansion is not supported.
+ */
 export function parseEnvFile(text: string): Record<string, string> {
   const values: Record<string, string> = {};
   for (const line of text.split(/\r?\n/)) {
-    const trimmed = line.trim();
+    const trimmed = line.trim().replace(/^export\s+/, "");
     if (trimmed === "" || trimmed.startsWith("#")) continue;
     const eq = trimmed.indexOf("=");
     if (eq <= 0) continue;
-    values[trimmed.slice(0, eq).trim()] = trimmed
-      .slice(eq + 1)
-      .trim()
-      .replace(/^(["'])(.*)\1$/, "$2");
+    const raw = trimmed.slice(eq + 1).trim();
+    const quoted = /^(["'])(.*?)\1/.exec(raw);
+    values[trimmed.slice(0, eq).trim()] = quoted ? quoted[2]! : raw.split("#")[0]!.trim();
   }
   return values;
 }
@@ -63,6 +68,13 @@ export function parseEnvFile(text: string): Record<string, string> {
 export function loadOpsEnv(cwd = process.cwd()): Record<string, string> {
   const path = join(cwd, ".env.ops.local");
   if (!existsSync(path)) throw new Error(".env.ops.local is missing: see docs/runbook/setup.md");
+  return parseEnvFile(readFileSync(path, "utf8"));
+}
+
+/** `.env.local`, for the live model tests and the evaluations, which run outside `next dev`. */
+export function loadLocalEnv(cwd = process.cwd()): Record<string, string> {
+  const path = join(cwd, ".env.local");
+  if (!existsSync(path)) throw new Error(".env.local is missing: see docs/runbook/setup.md");
   return parseEnvFile(readFileSync(path, "utf8"));
 }
 

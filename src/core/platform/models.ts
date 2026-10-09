@@ -196,10 +196,15 @@ export async function callModel<T>(
       continue;
     }
 
+    // A reply the provider sent without usage keeps the attempt's provisional
+    // cost, so a missing count never reads as free (B4).
     const priced = reply.usage.map((usage) => ({ ...usage, ...costOf(usage, deps.clock.now()) }));
     const finish = (outcome: string, error: string | null) =>
-      finishWithUsage(deps, id, outcome, reply.model, reply.requestId, priced, error);
-    const costUsd = roundUsd(priced.reduce((sum, run) => sum + run.usd, 0));
+      priced.length > 0
+        ? finishWithUsage(deps, id, outcome, reply.model, reply.requestId, priced, error)
+        : finishWithoutUsage(deps, id, outcome, reply.requestId, error, reply.model);
+    const costUsd =
+      priced.length > 0 ? roundUsd(priced.reduce((sum, run) => sum + run.usd, 0)) : provisional.usd;
 
     if (reply.kind === "refusal") {
       await finish("refused", reply.category ? `refusal: ${reply.category}` : null);
@@ -339,12 +344,13 @@ async function finishWithoutUsage(
   outcome: string,
   requestId: string | null,
   error: string | null,
+  answeredModel: string | null = null,
 ): Promise<void> {
   await deps.db.query(
     `update {{schema}}.model_calls
-        set ended_at = $2, outcome = $3, request_id = $4, error = $5
+        set ended_at = $2, outcome = $3, request_id = $4, error = $5, answered_model = $6
       where id = $1`,
-    [id, deps.clock.now(), outcome, requestId, error],
+    [id, deps.clock.now(), outcome, requestId, error, answeredModel],
   );
 }
 

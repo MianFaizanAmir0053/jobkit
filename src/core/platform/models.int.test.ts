@@ -67,12 +67,13 @@ interface CallRow {
   price_known: boolean;
   ended_at: Date | null;
   iterations: unknown;
+  error: string | null;
 }
 
 async function rows(): Promise<CallRow[]> {
   const result = await db.query<CallRow & Record<string, unknown>>(
     `select attempt, outcome, answered_model, request_id, input_tokens, output_tokens,
-            cost_usd::float8 as cost, cost_provisional, price_known, ended_at, iterations
+            cost_usd::float8 as cost, cost_provisional, price_known, ended_at, iterations, error
        from {{schema}}.model_calls order by attempt`,
   );
   return result.rows;
@@ -204,8 +205,31 @@ describe("callModel", () => {
     });
     expect(llm.calls).toHaveLength(1);
     expect(await rows()).toMatchObject([
-      { outcome: "refused", cost: 0.004, cost_provisional: false },
+      { outcome: "refused", cost: 0.004, cost_provisional: false, error: null },
     ]);
+  });
+
+  it("keeps the provisional cost of an answer that came without usage", async () => {
+    const llm = fakeLlm([answer({ title: "x", count: 1 }, { usage: [], model: "claude-opus-5-5-x" })], {
+      inputTokens: 10_000,
+    });
+
+    expect(await callModel(deps(llm), input)).toMatchObject({ ok: true, costUsd: 0.36 });
+    expect(await rows()).toMatchObject([
+      { outcome: "ok", answered_model: "claude-opus-5-5-x", cost: 0.36, cost_provisional: true },
+    ]);
+  });
+
+  it("keeps the provisional cost of a refusal that came without usage", async () => {
+    await callModel(deps(fakeLlm([refusal({ usage: [] })], { inputTokens: 10_000 })), input);
+
+    expect(await rows()).toMatchObject([{ outcome: "refused", cost: 0.36, cost_provisional: true }]);
+  });
+
+  it("records the policy category a refusal names", async () => {
+    await callModel(deps(fakeLlm([refusal({ category: "cyber" })])), input);
+
+    expect(await rows()).toMatchObject([{ outcome: "refused", error: "refusal: cyber" }]);
   });
 
   it("never retries any other client error", async () => {
@@ -223,6 +247,14 @@ describe("callModel", () => {
     expect(await rows()).toMatchObject([
       { outcome: "timeout", cost: 0.36, cost_provisional: true },
     ]);
+  });
+
+  it("takes an abort the adapter reports first as this wrapper's own timeout", async () => {
+    const llm = fakeLlm([failure("aborted"), answer({ title: "x", count: 1 })]);
+
+    expect(await callModel(deps(llm), input)).toMatchObject({ ok: false, reason: "timeout" });
+    expect(llm.calls).toHaveLength(1);
+    expect(await rows()).toMatchObject([{ outcome: "timeout", cost_provisional: true }]);
   });
 
   it("lets a slow but live stream finish, and stops one that runs past the total limit", async () => {

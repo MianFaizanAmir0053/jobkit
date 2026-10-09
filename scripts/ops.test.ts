@@ -47,6 +47,12 @@ describe("parseEnvFile", () => {
       C: "3",
     });
   });
+
+  it("drops an export prefix and a trailing comment, as Next's dotenv does", () => {
+    expect(
+      parseEnvFile(["export A=1", "B=two # a note", 'C="has # inside" # note', "D=#"].join("\n")),
+    ).toEqual({ A: "1", B: "two", C: "has # inside", D: "" });
+  });
 });
 
 describe("schemaStatements", () => {
