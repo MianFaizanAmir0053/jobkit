@@ -43,7 +43,7 @@ describe("Claude through the adapter", () => {
     const counted = await llm.countInputTokens(request());
     const reply = await llm.call(request());
 
-    expect(reply.kind).toBe("answer");
+    expect(reply).toMatchObject({ kind: "answer", truncated: false });
     if (reply.kind !== "answer") return;
     expect(capital.parse(JSON.parse(reply.text))).toMatchObject({ city: "Paris" });
     expect(reply.model).toBe("claude-opus-5-5");
@@ -78,7 +78,7 @@ describe("Claude through the adapter", () => {
     const gaps = arrivals.slice(1).map((at, i) => at - arrivals[i]!);
     const longest = Math.max(0, ...gaps);
     console.info(`${arrivals.length - 1} arrivals, longest silence ${longest} ms`);
-    expect(reply.kind).toBe("answer");
+    expect(reply).toMatchObject({ kind: "answer", truncated: false });
     // The wrapper abandons a stream silent for 45 seconds (platform spec B4).
     expect(longest).toBeLessThan(45_000);
   }, 150_000);

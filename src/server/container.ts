@@ -57,8 +57,9 @@ export async function createContainer(
       `This is a Vercel ${env.VERCEL_ENV} deployment, so JOBKIT_ENV must be production, not ${JSON.stringify(env.JOBKIT_ENV)}`,
     );
   }
-  // Checked here as well as at server start: the dev server reloads edited
-  // .env files, and a container that failed to start is built again (B8).
+  // Checked on every build as well as at server start: the dev server
+  // reloads edited .env files, and a container that failed to start is built
+  // again from them (B8). One already built keeps the keys it read then.
   if (isLocalRun(env)) assertLocalOnly(env, "A local run");
   switch (env.JOBKIT_ENV) {
     case "production": {

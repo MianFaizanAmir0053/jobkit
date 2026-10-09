@@ -11,7 +11,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
   - Fixture keys are built at run time, never committed in a key-like form.
   - Verify: `npm test`; a dry commit of a planted path is refused. Depends on: 1. Files: scripts/guard.ts, scripts/guard.test.ts, .githooks/pre-commit, .github/workflows/ci.yml. Scope: M.
 - [x] **Task 3: Database, storage and composition** — Owns: platform AC16.
-  - `Db` and `Storage` ports; PGlite, pg, local-storage and Supabase-storage adapters; `{{schema}}` placeholder; migration runner and bootstrap (local by default, `--prod` with typed confirmation, bucket creation); atomic-claim helper; `src/server/container.ts`; live contract test behind `JOBKIT_LIVE=1`.
+  - `Db` and `Storage` ports; PGlite, pg, local-storage and Supabase-storage adapters; `{{schema}}` placeholder; migration runner and bootstrap (local by default, `--prod` with typed confirmation, bucket creation); atomic-claim helper; `src/server/container.ts`; live contract test in `--mode live`.
   - Verify: `npm test`; migrations twice on PGlite. Depends on: 1. Files: src/core/ports.ts, src/adapters/{pglite,pg,local-storage,supabase-storage}.ts, scripts/{migrate,bootstrap}.ts, db/migrations/0001_platform.sql, src/server/container.ts. Scope: M (two commits if needed).
 - [x] **Task 4: Google sign-in, sessions and app shell** — Owns: platform AC2, AC3, AC4, AC9, AC10.
   - App shell and navigation, with a `/jobs` page that loads (empty) data through `requireSession`.
@@ -39,7 +39,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
 - [ ] **Task 10: Model wrapper** — Owns: platform AC11, AC12, AC13.
   - Streaming with idle timeout, one row per attempt, provisional costs, guard hook, retries, refusals, price table; the local-only check used by the dev server and the evaluation composition.
   - Code done: the wrapper, the price table and call log, the Claude and Gemini adapters (tested on recorded streams), the local-only check at server start and in the container, and the container's models (app keys in production, each loaded on first use; evaluation keys in development). The live contract tests wait for the owner's keys and go-ahead (docs/runbook/testing.md). The evaluation runner's own check is Task 20's; the test server's scripted models are Task 26's.
-  - Verify: `npm test`; adapter contract tests behind `JOBKIT_LIVE=1`, with the owner's approval for a few cents. Depends on: 3. Files: src/core/platform/{models,prices}.ts, src/adapters/{anthropic,gemini,fake-llm}.ts, src/server/localOnly.ts. Scope: M.
+  - Verify: `npm test`; adapter contract tests in `--mode live`, with the owner's approval for a few cents. Depends on: 3. Files: src/core/platform/{models,prices}.ts, src/adapters/{anthropic,gemini,fake-llm}.ts, src/server/localOnly.ts. Scope: M.
 - [ ] **Task 11: Ledger core** — Owns: ledger AC1, AC2, AC3, AC7, AC8, AC10.
   - Normalisation, duplicate check with fuzzy post match, statuses and audit, arm assignment, trust-gate state, spend cap guard wired into the wrapper, CSV import.
   - Verify: `npm test`. Depends on: 3, 10. Files: src/core/ledger/{normalise,duplicates,statuses,arms,trustGate,spend}.ts, scripts/ledger-import.ts, db/migrations/NNNN_ledger.sql. Scope: M (two commits).
@@ -71,6 +71,7 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
 - [ ] **Task 20: Evaluation tooling B** — Owns: evals AC3, AC4, AC5, AC6.
   - Split, scorer (exact match, Wilson, precision and recall, McNemar), runner with budget on the evaluation keys and a local database, reports and aggregate summary.
   - The runner calls `assertLocalOnly` (src/server/localOnly.ts) on both `process.env` and `loadLocalEnv()` before anything else (platform AC13), and takes its models from `modelsFor("development", …)`.
+  - Before comparing models older than the 5.x family (Claude Haiku 4.5 in ADR entry 2), check the Claude adapter's request shape against them: it sends `output_config.effort` and no `thinking` parameter, which suits the 5.x models; an older one may reject the effort setting or need thinking set.
   - Verify: `npm test`. Depends on: 10, 19. Files: evals/{split,score,run,summary}.ts and tests. Scope: M.
 - [ ] **Task 21: Live extraction evaluation** — Owns: none.
   - Runs on the dev split only, after the owner approves the estimated spend; records accuracy, per-stage latency and cost.

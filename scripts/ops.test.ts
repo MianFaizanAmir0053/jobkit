@@ -48,10 +48,15 @@ describe("parseEnvFile", () => {
     });
   });
 
-  it("drops an export prefix and a trailing comment, as Next's dotenv does", () => {
-    expect(
-      parseEnvFile(["export A=1", "B=two # a note", 'C="has # inside" # note', "D=#"].join("\n")),
-    ).toEqual({ A: "1", B: "two", C: "has # inside", D: "" });
+  it("keeps a value exactly as written, # included, since a password may hold one", () => {
+    expect(parseEnvFile(["JOBKIT_APP_DB_PASSWORD=Xk3#pQ9", 'B="quoted # too"'].join("\n"))).toEqual({
+      JOBKIT_APP_DB_PASSWORD: "Xk3#pQ9",
+      B: "quoted # too",
+    });
+  });
+
+  it("drops an export prefix", () => {
+    expect(parseEnvFile("export A=1")).toEqual({ A: "1" });
   });
 });
 

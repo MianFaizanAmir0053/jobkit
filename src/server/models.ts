@@ -42,13 +42,18 @@ export function modelsFor(kind: keyof typeof KEY_NAMES, env: Env): (model: strin
 
 /**
  * A model that loads its adapter, and the provider's SDK, on first use, so
- * pages and routes that call no model do not pay for loading them. None
- * without a key.
+ * pages and routes that call no model do not pay for loading them. A load
+ * that fails is tried again on the next call, as a container that failed to
+ * start is. None without a key.
  */
-function lazyLlm(apiKey: string | undefined, load: (apiKey: string) => Promise<Llm>): Llm | null {
+export function lazyLlm(apiKey: string | undefined, load: (apiKey: string) => Promise<Llm>): Llm | null {
   if (!apiKey) return null;
   let loaded: Promise<Llm> | undefined;
-  const llm = () => (loaded ??= load(apiKey));
+  const llm = () =>
+    (loaded ??= load(apiKey).catch((error: unknown) => {
+      loaded = undefined;
+      throw error;
+    }));
   return {
     countInputTokens: async (request) => (await llm()).countInputTokens(request),
     call: async (request) => (await llm()).call(request),

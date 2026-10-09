@@ -220,13 +220,23 @@ describe("createAnthropicLlm", () => {
   it("sends only its own key to Anthropic's address, whatever the shell says", async () => {
     vi.stubEnv("ANTHROPIC_BASE_URL", "https://proxy.example.test");
     vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "token-from-the-shell");
-    const api = fakeApi(() => ({ chunks: answerOf('{"a":1}') }));
+    vi.stubEnv("ANTHROPIC_CUSTOM_HEADERS", "Authorization: Bearer shell-token\nx-api-key: shell-key");
+    const api = fakeApi((sent) =>
+      sent.url.pathname.endsWith("count_tokens")
+        ? Response.json({ input_tokens: 1, context_management: null })
+        : { chunks: answerOf('{"a":1}') },
+    );
+    const llm = createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch });
 
-    await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    await llm.countInputTokens(request());
+    await llm.call(request());
 
-    expect(api.sent[0]!.url.origin).toBe("https://api.anthropic.com");
-    expect(api.sent[0]!.headers.get("x-api-key")).toBe("test-key");
-    expect(api.sent[0]!.headers.get("authorization")).toBeNull();
+    for (const sent of api.sent) {
+      expect(sent.url.origin).toBe("https://api.anthropic.com");
+      expect(sent.headers.get("x-api-key")).toBe("test-key");
+      expect(sent.headers.get("authorization")).toBeNull();
+    }
+    expect(api.sent).toHaveLength(2);
   });
 
   it("joins an answer a fallback model finished after the first model declined mid-stream", async () => {
@@ -318,7 +328,7 @@ describe("createAnthropicLlm", () => {
     expect(reply).toMatchObject({ kind: "refusal", category: "cyber", requestId: "req_stream" });
   });
 
-  it("returns a refusal whose fallback model was unavailable as an outage worth one retry", async () => {
+  it("keeps a refusal whose fallback model was too busy to run as a refusal, with what it cost", async () => {
     const api = fakeApi(() => ({
       chunks: [
         messageStart(),
@@ -332,7 +342,11 @@ describe("createAnthropicLlm", () => {
 
     const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
 
-    expect(reply).toMatchObject({ kind: "failure", failure: "server", requestId: "req_stream" });
+    expect(reply).toMatchObject({
+      kind: "refusal",
+      category: "cyber",
+      usage: [{ model: "claude-opus-5-5", inputTokens: 1200, outputTokens: 300 }],
+    });
   });
 
   it("returns an answer cut off at max_tokens as truncated, not as a failure", async () => {
@@ -448,6 +462,21 @@ describe("createAnthropicLlm", () => {
     const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
 
     expect(reply).toMatchObject({ kind: "answer", text: '{"a":1}', truncated: false });
+  });
+
+  it("throws a bug that breaks the stream after the message ended, rather than hiding it", async () => {
+    const chunks = [...answerOf('{"a":1}'), ping];
+    let events = 0;
+    const onEvent = () => {
+      // The response, then each chunk: the last call is the ping after message_stop.
+      if (++events === chunks.length + 1) throw new RangeError("a bug in the caller");
+    };
+
+    await expect(
+      createAnthropicLlm({ apiKey: "test-key", fetch: fakeApi(() => ({ chunks })).fetch }).call(
+        request({ onEvent }),
+      ),
+    ).rejects.toThrow("a bug in the caller");
   });
 
   it("throws a fault inside the stream that is not the network's, since that is a bug", async () => {
@@ -591,9 +620,9 @@ describe("fromMessage", () => {
     });
   });
 
-  it("takes any ending but the model's own as a cut-off answer", () => {
-    for (const stop_reason of ["model_context_window_exceeded", "pause_turn", null] as const) {
-      expect(fromMessage(message({ stop_reason }), null, "claude-opus-5-5"), String(stop_reason)).toMatchObject({
+  it("takes max_tokens and a full context window as a cut-off answer", () => {
+    for (const stop_reason of ["max_tokens", "model_context_window_exceeded"] as const) {
+      expect(fromMessage(message({ stop_reason }), null, "claude-opus-5-5"), stop_reason).toMatchObject({
         kind: "answer",
         truncated: true,
       });
@@ -601,6 +630,16 @@ describe("fromMessage", () => {
     expect(fromMessage(message({ stop_reason: "stop_sequence" }), null, "claude-opus-5-5")).toMatchObject({
       truncated: false,
     });
+  });
+
+  it("takes any other ending as a server failure worth one retry, not a cut-off answer", () => {
+    for (const stop_reason of ["pause_turn", null] as const) {
+      expect(fromMessage(message({ stop_reason }), "req_1", "claude-opus-5-5"), String(stop_reason)).toMatchObject({
+        kind: "failure",
+        failure: "server",
+        requestId: "req_1",
+      });
+    }
   });
 });
 

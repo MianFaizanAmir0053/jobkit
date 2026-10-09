@@ -28,7 +28,7 @@ The record schema is a zod schema, also sent as the structured-output format.
 
 - **Within the limits:** structured outputs allow at most 24 optional and 16 union-typed parameters per request (a nullable field counts as a union) and `minItems` of 0 or 1 only. The schema therefore uses sentinel values instead of nulls: empty strings, `-1` for an unknown number, `"unspecified"` enum members and empty arrays.
 - **No bounds the API ignores:** the schema holds no regular expressions or length limits, because the SDK's zod helper would enforce them after parsing and fail the stage. Those checks run afterwards as flags (below).
-- **Tests:** a unit test counts optional and union-typed parameters in every structured schema of this module and of drafting, and fails above 20 and 12. A live smoke test (`JOBKIT_LIVE=1`) sends each schema once, to catch "schema too complex" errors the counts cannot predict.
+- **Tests:** a unit test counts optional and union-typed parameters in every structured schema of this module and of drafting, and fails above 20 and 12. A live smoke test (`--mode live`, by hand) sends each schema once, to catch "schema too complex" errors the counts cannot predict.
 - **Quotes** are trimmed by the prompt to at most 120 characters each, to keep output short.
 
 Fields:

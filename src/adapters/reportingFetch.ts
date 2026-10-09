@@ -21,8 +21,9 @@ export class ConnectionLost extends Error {
  * wrapper's idle timer hears every sign of life (platform spec B4): the SDKs
  * drop keep-alive pings, which would otherwise make a model that thinks
  * silently look like a dead connection. It also marks network failures as
- * ConnectionLost. An abort passes through untouched, for the SDK to
- * recognise as one.
+ * ConnectionLost, an error response's body included, which the SDK reads
+ * for the error's details. An abort passes through untouched, for the SDK
+ * to recognise as one.
  */
 export function reportingChunks(fetch: Fetch, onChunk: () => void): Fetch {
   return async (input, init) => {
@@ -33,7 +34,7 @@ export function reportingChunks(fetch: Fetch, onChunk: () => void): Fetch {
       throw isAbort(error) ? error : new ConnectionLost(error);
     }
     onChunk();
-    if (!response.ok || !response.body) return response;
+    if (!response.body) return response;
     const reader = response.body.getReader();
     const body = new ReadableStream<Uint8Array>({
       async pull(controller) {

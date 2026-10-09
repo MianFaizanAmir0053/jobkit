@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { modelsFor } from "./models";
+import { fakeLlm } from "@/adapters/fakeLlm";
+
+import { lazyLlm, modelsFor } from "./models";
+
+const countable = {
+  model: "claude-opus-5-5",
+  system: "s",
+  content: [],
+  schema: z.object({}),
+  effort: "low" as const,
+  maxTokens: 10,
+};
 
 describe("modelsFor", () => {
   it("in production, runs Claude and Gemini on the app's keys", () => {
@@ -43,6 +54,20 @@ describe("modelsFor", () => {
 
   it("refuses a model no provider serves", () => {
     expect(() => modelsFor("production", {})("gpt-5")).toThrow(/No provider serves/);
+  });
+
+  it("tries a load that failed again on the next call, rather than keeping the failure", async () => {
+    let loads = 0;
+    const llm = lazyLlm("app-key", async () => {
+      loads += 1;
+      if (loads === 1) throw new Error("the chunk was locked");
+      return fakeLlm([], { inputTokens: 42 });
+    });
+
+    await expect(llm!.countInputTokens(countable)).rejects.toThrow("the chunk was locked");
+    expect(await llm!.countInputTokens(countable)).toBe(42);
+    expect(await llm!.countInputTokens(countable)).toBe(42);
+    expect(loads).toBe(2);
   });
 
   it("loads the adapter on first use, and a fault in the request then surfaces from the call", async () => {

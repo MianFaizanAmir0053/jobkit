@@ -56,7 +56,8 @@ const HIGHEST: Rates = Object.values(PRICES)
   );
 
 function ratesFor(model: string, at: Date): { rates: Rates; known: boolean } {
-  const periods = PRICES[model];
+  // A dated snapshot such as claude-opus-4-8-20260301 is priced as its model.
+  const periods = PRICES[model] ?? PRICES[model.replace(/-\d{8}$/, "")];
   if (!periods) return { rates: HIGHEST, known: false };
   const current = periods.filter((p) => !p.from || new Date(p.from).getTime() <= at.getTime());
   return { rates: current[current.length - 1]!.rates, known: true };

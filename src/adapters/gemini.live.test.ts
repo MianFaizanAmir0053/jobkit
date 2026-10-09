@@ -67,7 +67,7 @@ describe("Gemini through the adapter", () => {
     const counted = await llm.countInputTokens(request());
     const reply = await llm.call(request());
 
-    expect(reply.kind).toBe("answer");
+    expect(reply).toMatchObject({ kind: "answer", truncated: false });
     if (reply.kind !== "answer") return;
     expect(capital.parse(JSON.parse(reply.text))).toMatchObject({ city: "Paris" });
     expect(reply.model).toMatch(/^gemini-3\.8-flash/);
@@ -90,14 +90,15 @@ describe("Gemini through the adapter", () => {
         ],
         schema: colour,
         effort: "high",
-        maxTokens: 4000,
+        // Thinking counts towards the output limit, so leave it room.
+        maxTokens: 8000,
         onEvent: () => arrivals.push(Date.now()),
       }),
     );
 
     const longest = Math.max(...arrivals.slice(1).map((at, i) => at - arrivals[i]!));
     console.info(`${arrivals.length - 1} arrivals, longest silence ${longest} ms`);
-    expect(reply.kind).toBe("answer");
+    expect(reply).toMatchObject({ kind: "answer", truncated: false });
     if (reply.kind !== "answer") return;
     expect(colour.parse(JSON.parse(reply.text))).toEqual({ colour: "red" });
     // The wrapper abandons a stream silent for 45 seconds (platform spec B4).

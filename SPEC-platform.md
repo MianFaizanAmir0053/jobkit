@@ -116,7 +116,7 @@ export function findDuplicates(
 - **Unit tests** sit beside the code in `src/core/**` and do no input or output.
 - **Integration tests** (`*.int.test.ts`) drive route handlers and server actions against PGlite, local storage and fake adapters.
 - **End-to-end tests** (Playwright, `e2e/`) cover pairing and approval, upload to kit with the fake models, review and handoff, and an accessibility check with axe.
-- **No test calls** a real model, DNS or Supabase. Adapter contract tests run only when `JOBKIT_LIVE=1` is set, by hand.
+- **No test calls** a real model, DNS or Supabase. Adapter contract tests are named `*.live.test.ts` and run only by hand, through `npm run test:live` (Vitest's `--mode live`), or one file at a time with `npx vitest run --mode live <file>`.
 - **Coverage:** `src/core/**` at least 90% of lines and branches, enforced in CI.
 - **Fixtures:** synthetic posts, screenshots and recorded model outputs live in `evals/synthetic/` and are public. Real data lives only in `private/`.
 - **Evaluations** (live model calls) are separate from tests and run only through `npm run eval`, after the owner approves the spend.
@@ -159,7 +159,7 @@ export function findDuplicates(
 - **Bootstrap (once, from the laptop):** `npm run db:bootstrap` connects with `DATABASE_BOOTSTRAP_URL` (the project's `postgres` role, kept only in the laptop's `.env.ops.local`, see B8) and creates the role `jobkit_app` with the password from `JOBKIT_APP_DB_PASSWORD`, and the schema `jobkit` owned by that role. The password never appears in a migration or in git. Tests run the PGlite equivalent (create the schema) before migrating.
 - **Migrations run as `jobkit_app`**, so it owns every jobkit table. Every table has row-level security enabled with no policies: Supabase's `anon` and `authenticated` roles have no grants on the schema and read nothing even if the Data API were exposed, while the owning role is unaffected. The Data API's exposed schemas stay at the default (`public` only).
 - **Atomic claims:** every check-then-act on shared rows (redeeming a pairing token, approving a session, claiming a job's lease) is one conditional `UPDATE … WHERE … RETURNING`, never a read followed by a write, because PGlite's single connection would hide a race in tests.
-- A live contract test (`JOBKIT_LIVE=1`, by hand) uses the bootstrap connection to create a throwaway schema owned by `jobkit_app`, runs the migrations into it as `jobkit_app`, checks that `jobkit_app` can read and write, that `anon` cannot, and that two concurrent claims on one row let exactly one win, then drops the schema.
+- A live contract test (`--mode live`, by hand) uses the bootstrap connection to create a throwaway schema owned by `jobkit_app`, runs the migrations into it as `jobkit_app`, checks that `jobkit_app` can read and write, that `anon` cannot, and that two concurrent claims on one row let exactly one win, then drops the schema.
 - Platform owns these tables: `owner`, `sessions`, `pairing_tokens`, `pending_pairings` (a redeemed phone waiting for its code: the approving session, the code's hash and the tries spent), `jobs` (state, pending stage and lease columns), `job_state_changes`, `job_stage_runs`, `model_calls`, `heartbeat` and `schema_migrations`. Other modules add theirs in their own migrations.
 
 ### B2. Owner sign-in and sessions

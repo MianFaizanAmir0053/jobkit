@@ -40,6 +40,10 @@ describe("costOf", () => {
     );
   });
 
+  it("prices a dated snapshot as its model", () => {
+    expect(costOf(usage("claude-opus-4-8-20260301", M, M), OCT_2026)).toEqual({ usd: 30, known: true });
+  });
+
   it("rounds to a millionth of a dollar", () => {
     expect(costOf(usage("claude-opus-5-5", 1, 1), OCT_2026).usd).toBe(0.000024);
   });

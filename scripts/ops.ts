@@ -45,10 +45,12 @@ export async function askOnTerminal(question: string): Promise<string> {
 }
 
 /**
- * Reads an env file the way Next's dotenv does for the forms these files
- * use: an optional `export`, a value in quotes kept whole, and an unquoted
- * value ending at the first `#`, so a trailing comment never becomes part of
- * a key. Variable expansion is not supported.
+ * Reads KEY=value lines: an optional `export`, and one pair of quotes around
+ * a value removed. A value is otherwise kept exactly as written, `#`
+ * included, because a password may hold one and the bootstrap sets the
+ * database role's password from this file. So unlike `next dev`, nothing
+ * after a value is taken as a comment: these files keep comments on lines
+ * of their own.
  */
 export function parseEnvFile(text: string): Record<string, string> {
   const values: Record<string, string> = {};
@@ -57,9 +59,10 @@ export function parseEnvFile(text: string): Record<string, string> {
     if (trimmed === "" || trimmed.startsWith("#")) continue;
     const eq = trimmed.indexOf("=");
     if (eq <= 0) continue;
-    const raw = trimmed.slice(eq + 1).trim();
-    const quoted = /^(["'])(.*?)\1/.exec(raw);
-    values[trimmed.slice(0, eq).trim()] = quoted ? quoted[2]! : raw.split("#")[0]!.trim();
+    values[trimmed.slice(0, eq).trim()] = trimmed
+      .slice(eq + 1)
+      .trim()
+      .replace(/^(["'])(.*)\1$/, "$2");
   }
   return values;
 }

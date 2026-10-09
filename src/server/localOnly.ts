@@ -16,7 +16,11 @@ const PRODUCTION_ONLY: readonly string[] = [
  * Whether this process is a local run that must hold no production value:
  * the dev server, whatever its JOBKIT_ENV, and anything not configured as
  * production. It does not rely on Vercel's system variables, which a project
- * setting can hide, so production never refuses itself.
+ * setting can hide, so production never refuses itself. A production build
+ * started on the laptop with JOBKIT_ENV=production is therefore not caught;
+ * B8 asks this of the dev server and the evaluation runner. The adapters
+ * never read a credential from the environment, so names such as
+ * GOOGLE_API_KEY or ANTHROPIC_AUTH_TOKEN do not need checking.
  */
 export function isLocalRun(env: Env): boolean {
   return env.NODE_ENV === "development" || env.JOBKIT_ENV !== "production";

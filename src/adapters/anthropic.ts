@@ -18,12 +18,17 @@ import { ConnectionLost, type Fetch, networkFetch, reportingChunks } from "./rep
  *   its `output_config.effort`; thinking stays at Claude Opus 5.5's
  *   always-on adaptive default, so it is not sent;
  * - server-side refusal fallbacks in their default form, where the API picks
- *   the fallback model by refusal category, on the models that accept them;
+ *   the fallback model by refusal category, on the models that accept them.
+ *   The migration guide (the claude-api skill's shared/model-migration.md,
+ *   read on 2026-10-09) says a mid-stream fallback keeps the declined
+ *   model's partial text and continues it, so the answer joins every text
+ *   block; the first live test checks that the API takes fallbacks together
+ *   with structured outputs;
  * - the SDK's own retries off: the wrapper retries once itself;
- * - the endpoint, the credential and the log level fixed here, so variables
- *   such as ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN or ANTHROPIC_LOG in the
- *   shell cannot send the key elsewhere, add a second credential, or log a
- *   post's text.
+ * - the endpoint, the credential and logging fixed here, so variables such
+ *   as ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN, ANTHROPIC_CUSTOM_HEADERS or
+ *   ANTHROPIC_LOG in the shell cannot send another key, send this one
+ *   elsewhere, or log a post's text.
  * Failures come back as values: the API's by kind, and a network failure or
  * a stream that stops early as a dropped connection. Anything else is a bug
  * in the SDK or here, and is thrown.
@@ -32,10 +37,9 @@ const API_BASE = "https://api.anthropic.com";
 const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 
 /**
- * The models that take `fallbacks: "default"`, from the Claude API migration
- * guide (the claude-api skill's shared/model-migration.md) on 2026-10-09.
- * Claude Haiku 5.5 has no server-side fallback, so its requests must not
- * carry the parameter.
+ * The models that take `fallbacks: "default"`, from the same guide on
+ * 2026-10-09. Claude Haiku 5.5 has no server-side fallback, so its requests
+ * must not carry the parameter.
  */
 const MODELS_WITH_FALLBACKS: ReadonlySet<string> = new Set([
   "claude-opus-5-5",
@@ -44,17 +48,17 @@ const MODELS_WITH_FALLBACKS: ReadonlySet<string> = new Set([
   "claude-sonnet-5-5",
 ]);
 
-/** The wrapper stops waiting for a count after ten seconds; this ends the request soon after. */
+/** The wrapper stops waiting for a count after ten seconds; the request itself ends by this. */
 const COUNT_TIMEOUT_MS = 15_000;
 
 export function createAnthropicLlm(opts: { apiKey: string; fetch?: Fetch }): Llm {
-  const network = opts.fetch ?? networkFetch;
+  const network = withOwnKey(opts.fetch ?? networkFetch, opts.apiKey);
   const clientOn = (fetch: Fetch) =>
     new Anthropic({
       apiKey: opts.apiKey,
       authToken: null,
       baseURL: API_BASE,
-      logLevel: "warn",
+      logLevel: "off",
       maxRetries: 0,
       fetch,
     });
@@ -67,7 +71,8 @@ export function createAnthropicLlm(opts: { apiKey: string; fetch?: Fetch }): Llm
           messages: toMessages(request),
           output_config: { format: outputFormat(request.schema) },
         },
-        { timeout: COUNT_TIMEOUT_MS },
+        // The SDK's own timeout stops at the headers; the signal covers the body too.
+        { timeout: COUNT_TIMEOUT_MS, signal: AbortSignal.timeout(COUNT_TIMEOUT_MS) },
       );
       return counted.input_tokens;
     },
@@ -89,12 +94,28 @@ export function createAnthropicLlm(opts: { apiKey: string; fetch?: Fetch }): Llm
       try {
         return fromMessage(await stream.finalMessage(), stream.request_id ?? null, request.model);
       } catch (error) {
-        // A connection that broke after the message ended still delivered all of it.
+        // Throws a bug, which surfaces even after the message ended.
+        const failed = fromError(error, stream.request_id ?? null);
+        // A failure after the message ended, such as a connection that broke
+        // then, still left all of it delivered.
         const received = stream.receivedMessages.at(-1);
-        if (received) return fromMessage(received, stream.request_id ?? null, request.model);
-        return fromError(error, stream.request_id ?? null);
+        return received ? fromMessage(received, stream.request_id ?? null, request.model) : failed;
       }
     },
+  };
+}
+
+/**
+ * Every request carries this adapter's key and no other credential, whatever
+ * headers the SDK took from the environment (ANTHROPIC_CUSTOM_HEADERS is
+ * read in its constructor and can name both).
+ */
+function withOwnKey(fetch: Fetch, apiKey: string): Fetch {
+  return (input, init) => {
+    const headers = new Headers(init?.headers);
+    headers.set("x-api-key", apiKey);
+    headers.delete("authorization");
+    return fetch(input, { ...init, headers });
   };
 }
 
@@ -126,6 +147,9 @@ export function toMessages(request: Pick<LlmRequest, "content">): BetaMessagePar
   ];
 }
 
+/** Stop reasons that leave the answer unfinished. */
+const CUT_OFF: ReadonlySet<string> = new Set(["max_tokens", "model_context_window_exceeded"]);
+
 /**
  * The final message as the port's reply. After a mid-stream fallback the
  * fallback model continues the declined model's partial text, so the answer
@@ -138,22 +162,29 @@ export function fromMessage(
   requestedModel: string,
 ): LlmReply {
   const usage = usageOf(message, requestedModel);
-  if (message.stop_reason === "refusal") {
-    const details = message.stop_details;
-    if (details?.recommended_model) {
-      // The fallback model was rate-limited or overloaded, so no fallback
-      // ran: an outage worth the wrapper's one retry, not a verdict on the
-      // post. The declined run's usage is lost, so the attempt keeps its
-      // provisional cost.
-      return {
-        kind: "failure",
-        failure: "server",
-        message: `Declined (${details.category ?? "no category"}) while the fallback model was unavailable`,
-        requestId,
-        retryAfterMs: null,
-      };
-    }
-    return { kind: "refusal", model: message.model, requestId, usage, category: details?.category ?? null };
+  const stop = message.stop_reason;
+  if (stop === "refusal") {
+    // Never retried (B4), even when the fallback model was too busy to run:
+    // a resend would be declined, and billed, again. The owner can Retry the
+    // job later.
+    return {
+      kind: "refusal",
+      model: message.model,
+      requestId,
+      usage,
+      category: message.stop_details?.category ?? null,
+    };
+  }
+  if (stop !== "end_turn" && stop !== "stop_sequence" && !CUT_OFF.has(stop ?? "")) {
+    // pause_turn, tool_use or no stop reason at all: nothing this request
+    // asks for, so not the answer's length; worth the wrapper's one retry.
+    return {
+      kind: "failure",
+      failure: "server",
+      message: `Claude stopped for an unexpected reason: ${stop ?? "none"}`,
+      requestId,
+      retryAfterMs: null,
+    };
   }
   return {
     kind: "answer",
@@ -161,9 +192,7 @@ export function fromMessage(
     model: message.model,
     requestId,
     usage,
-    // Only a turn the model ended itself is complete; max_tokens, a full
-    // context window or a missing stop reason all cut the answer off.
-    truncated: message.stop_reason !== "end_turn" && message.stop_reason !== "stop_sequence",
+    truncated: CUT_OFF.has(stop ?? ""),
   };
 }
 

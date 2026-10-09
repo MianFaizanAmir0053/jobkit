@@ -243,7 +243,7 @@ describe("createGeminiLlm", () => {
     expect(reply).toMatchObject({ kind: "failure", failure: "aborted" });
   });
 
-  it("counts the system prompt as text, since the API counts no system instruction", async () => {
+  it("counts the system prompt and the response schema as text, since the API counts neither here", async () => {
     const api = fakeApi(() => Response.json({ totalTokens: 1234 }));
 
     const counted = await createGeminiLlm({ apiKey: "test-key", fetch: api.fetch }).countInputTokens(
@@ -253,8 +253,31 @@ describe("createGeminiLlm", () => {
     expect(counted).toBe(1234);
     expect(api.sent[0]!.url.pathname).toMatch(/:countTokens$/);
     expect(api.sent[0]!.body).toMatchObject({
-      contents: [{ parts: [{ text: "Read the contact box." }, { text: "The crop:" }, { inlineData: {} }] }],
+      contents: [
+        {
+          parts: [
+            { text: "Read the contact box." },
+            { text: JSON.stringify(jsonSchemaOf(request().schema)) },
+            { text: "The crop:" },
+            { inlineData: {} },
+          ],
+        },
+      ],
     });
+  });
+
+  it("returns an error response whose body breaks while it is read as a dropped connection", async () => {
+    const api = fakeApi(
+      () =>
+        new Response(recordedBody(['{"error":{"code":503,'], { failWith: new TypeError("terminated") }), {
+          status: 503,
+          headers: { "content-type": "application/json" },
+        }),
+    );
+
+    const reply = await createGeminiLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+
+    expect(reply).toMatchObject({ kind: "failure", failure: "connection" });
   });
 });
 
@@ -305,13 +328,30 @@ describe("fromChunks", () => {
     ).toMatchObject({ kind: "answer", text: '{"email":null}', usage: [] });
   });
 
-  it("takes any ending but STOP as an unfinished answer", () => {
-    for (const finishReason of ["MAX_TOKENS", "CONTINUATION", "OTHER"]) {
+  it("takes MAX_TOKENS and CONTINUATION as an unfinished answer", () => {
+    for (const finishReason of ["MAX_TOKENS", "CONTINUATION"]) {
       expect(fromChunks(parsed(textChunk('{"email":', { finishReason })), MODEL), finishReason).toMatchObject({
         kind: "answer",
         truncated: true,
       });
     }
+  });
+
+  it("takes any other unexpected ending as a server failure worth one retry, not a cut-off answer", () => {
+    expect(fromChunks(parsed(textChunk('{"email":', { finishReason: "OTHER" })), MODEL)).toMatchObject({
+      kind: "failure",
+      failure: "server",
+      message: "Gemini stopped for an unexpected reason: OTHER",
+      requestId: "resp_1",
+    });
+  });
+
+  it("never counts fewer than no input tokens", () => {
+    const usage = { cachedContentTokenCount: 300, candidatesTokenCount: 6 };
+
+    expect(fromChunks(parsed(textChunk("{}", { finishReason: "STOP", usage })), MODEL)).toMatchObject({
+      usage: [{ inputTokens: 0, cacheReadTokens: 300, outputTokens: 6 }],
+    });
   });
 
   it("reports a safety stop as a refusal, with no usage when none came", () => {

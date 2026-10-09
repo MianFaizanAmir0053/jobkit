@@ -18,11 +18,26 @@ describe("reportingChunks", () => {
     expect(onChunk).toHaveBeenCalledTimes(chunks.length + 1);
   });
 
-  it("hands an error response back as it came, for the SDK to read", async () => {
-    const failed = new Response('{"error":"slow down"}', { status: 429 });
-    const fetch: Fetch = async () => failed;
+  it("keeps an error response's status, headers and body for the SDK to read", async () => {
+    const fetch: Fetch = async () =>
+      new Response('{"error":"slow down"}', { status: 429, headers: { "retry-after": "3" } });
 
-    expect(await reportingChunks(fetch, () => undefined)(URL_)).toBe(failed);
+    const response = await reportingChunks(fetch, () => undefined)(URL_);
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("3");
+    expect(await response.text()).toBe('{"error":"slow down"}');
+  });
+
+  it("marks an error response whose body breaks while it is read as ConnectionLost", async () => {
+    const fetch: Fetch = async () =>
+      new Response(recordedBody(['{"error":'], { failWith: new TypeError("terminated") }), {
+        status: 503,
+      });
+
+    const response = await reportingChunks(fetch, () => undefined)(URL_);
+
+    await expect(response.json()).rejects.toBeInstanceOf(ConnectionLost);
   });
 
   it("keeps the status and headers of a streamed response", async () => {

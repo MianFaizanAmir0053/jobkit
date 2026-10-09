@@ -79,7 +79,7 @@ describe("createContainer", () => {
     expect(() => container!.llmFor("claude-opus-5-5")).toThrow(/no models/);
   });
 
-  it("refuses a local run that holds a production value, even one the dev server reloaded after starting", async () => {
+  it("checks every local build, as when the dev server builds again after an edited .env file", async () => {
     await expect(
       createContainer({ JOBKIT_ENV: "test", GEMINI_API_KEY: "app-key" }),
     ).rejects.toThrow(/^A local run refuses to start: GEMINI_API_KEY is set/);

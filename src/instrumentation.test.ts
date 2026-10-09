@@ -24,6 +24,17 @@ describe("register", () => {
     expect(() => register()).toThrow(/GEMINI_API_KEY is set/);
   });
 
+  it("leaves a Vercel deployment to the container, which names a wrong JOBKIT_ENV instead", () => {
+    vi.stubEnv("NEXT_RUNTIME", "nodejs");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("VERCEL", "1");
+    vi.stubEnv("VERCEL_ENV", "production");
+    vi.stubEnv("JOBKIT_ENV", "");
+    vi.stubEnv("GEMINI_API_KEY", "app-key-value-0123");
+
+    expect(() => register()).not.toThrow();
+  });
+
   it("lets the production server start with the app's keys, which it needs", () => {
     vi.stubEnv("NEXT_RUNTIME", "nodejs");
     vi.stubEnv("NODE_ENV", "production");

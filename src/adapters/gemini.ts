@@ -46,6 +46,9 @@ const DECLINED: ReadonlySet<string> = new Set([
   FinishReason.IMAGE_RECITATION,
 ]);
 
+/** Finish reasons that leave the answer unfinished. */
+const CUT_OFF: ReadonlySet<string> = new Set([FinishReason.MAX_TOKENS, FinishReason.CONTINUATION]);
+
 /** What the SDK reports when a stream simply stops partway. */
 const ENDED_EARLY: readonly string[] = ["Incomplete JSON segment at the end", "Response body is empty"];
 
@@ -66,8 +69,18 @@ export function createGeminiLlm(opts: { apiKey: string; fetch?: Fetch }): Llm {
     async countInputTokens(request) {
       const counted = await ai.models.countTokens({
         model: request.model,
-        // The Gemini API counts no system instruction, so it is counted as text.
-        contents: [{ role: "user", parts: [{ text: request.system }, ...toParts(request.content)] }],
+        // The Gemini API counts no system instruction or response schema
+        // here, so both are counted as text: the bound errs high, not low.
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: request.system },
+              { text: JSON.stringify(jsonSchemaOf(request.schema)) },
+              ...toParts(request.content),
+            ],
+          },
+        ],
         config: { httpOptions: { timeout: COUNT_TIMEOUT_MS } },
       });
       if (counted.totalTokens === undefined) throw new Error("The Gemini API returned no count");
@@ -158,6 +171,17 @@ export function fromChunks(
     };
   }
   if (DECLINED.has(finish)) return declined(finish);
+  if (finish !== FinishReason.STOP && !CUT_OFF.has(finish)) {
+    // OTHER, an unspecified reason or a tool fault: not the answer's length,
+    // so not "cut off"; worth the wrapper's one retry.
+    return {
+      kind: "failure",
+      failure: "server",
+      message: `Gemini stopped for an unexpected reason: ${finish}`,
+      requestId,
+      retryAfterMs: null,
+    };
+  }
 
   const text = chunks
     .flatMap((chunk) => chunk.candidates?.[0]?.content?.parts ?? [])
@@ -169,9 +193,7 @@ export function fromChunks(
     model,
     requestId,
     usage,
-    // Only a stop the model chose is complete; MAX_TOKENS, CONTINUATION or
-    // OTHER all leave the answer unfinished.
-    truncated: finish !== FinishReason.STOP,
+    truncated: CUT_OFF.has(finish),
   };
 }
 
@@ -188,7 +210,7 @@ function usageOf(chunks: readonly GenerateContentResponse[], requestedModel: str
   return [
     {
       model: requestedModel,
-      inputTokens: (counts.promptTokenCount ?? 0) - cached,
+      inputTokens: Math.max(0, (counts.promptTokenCount ?? 0) - cached),
       outputTokens: (counts.candidatesTokenCount ?? 0) + (counts.thoughtsTokenCount ?? 0),
       cacheReadTokens: cached,
       cacheWriteTokens: 0,
