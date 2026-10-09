@@ -158,6 +158,16 @@ describe("seedProfile", () => {
     expect(await storage.stat(path)).toEqual({ size: checked.cv.length });
   });
 
+  it("puts a CV that went missing from storage back, when the same files are seeded again", async () => {
+    const checked = valid();
+    const path = `profile/cv-${createHash("sha256").update(checked.cv).digest("hex")}.pdf`;
+    await seedProfile(deps(), checked);
+    await storage.remove([path]);
+
+    expect(await seedProfile(deps(), checked)).toMatchObject({ status: "unchanged" });
+    expect(await storage.stat(path)).toEqual({ size: checked.cv.length });
+  });
+
   it("stores one version when two seeds of the same files run at once", async () => {
     const results = await Promise.all([seedProfile(deps(), valid()), seedProfile(deps(), valid())]);
 
@@ -265,6 +275,24 @@ describe("profileCounts", () => {
 });
 
 describe("listVersions and activateByHash", () => {
+  it("leaves exactly one version active when two activations run at once", async () => {
+    await seeded(valid());
+    clock.advance(DAY);
+    await seeded(valid(SAMPLE.replace("approved: false", "approved: true")));
+    const [newer, older] = await listVersions(db);
+
+    const results = await Promise.all([
+      activateByHash(db, older!.hash.slice(0, 8)),
+      activateByHash(db, newer!.hash.slice(0, 8)),
+    ]);
+
+    // One after the other: the older version goes active, then the newer again.
+    expect(results.map((result) => result.status)).toEqual(["reactivated", "reactivated"]);
+    const active = (await versions()).filter((version) => version.active);
+    expect(active).toEqual([{ id: (await listVersions(db))[0]!.versionId, active: true }]);
+    expect(active[0]!.id).toBe(newer!.versionId);
+  });
+
   it("lists every stored version, newest first, with its hash and counts", async () => {
     const first = await seeded(valid());
     clock.advance(DAY);

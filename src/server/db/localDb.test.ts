@@ -40,6 +40,14 @@ describe("lockLocalData", () => {
     expect(existsSync(lockFile())).toBe(false);
   });
 
+  it("lets go of its exit handler when released, so holds and releases do not pile up handlers", () => {
+    const before = process.listenerCount("exit");
+
+    for (let i = 0; i < 15; i++) lockLocalData(dir, "a test")();
+
+    expect(process.listenerCount("exit")).toBe(before);
+  });
+
   it("refuses a second hold in the same process, which would open the database twice", () => {
     const release = lockLocalData(dir, "a test");
 

@@ -29,11 +29,13 @@ const SECRET_NAME = /(SECRET|_KEY|PASSWORD|TOKEN|DATABASE_URL|BOOTSTRAP_URL)$/;
 
 export function checkPath(path: string): string | null {
   const normalised = path.replace(/\\/g, "/");
-  if (normalised === "private" || normalised.startsWith("private/")) {
+  // At any depth and in any case: a script run from another folder makes its own .data/.
+  const folders = normalised.toLowerCase().split("/");
+  if (folders.includes("private")) {
     return `${path}: files under private/ never enter git`;
   }
   // The local database and its files hold copies of the owner's profile and CV.
-  if (normalised === ".data" || normalised.startsWith(".data/")) {
+  if (folders.includes(".data")) {
     return `${path}: files under .data/ never enter git`;
   }
   const base = normalised.split("/").pop() ?? normalised;

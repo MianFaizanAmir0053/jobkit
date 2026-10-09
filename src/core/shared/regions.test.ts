@@ -7,6 +7,7 @@ import {
   placeCode,
   placeContains,
   placeName,
+  placesOverlap,
 } from "./regions";
 
 describe("placeCode", () => {
@@ -65,6 +66,7 @@ describe("placeCode", () => {
   it("knows no place for a name two places share", () => {
     expect(placeCode("Hyderabad")).toBeNull();
     expect(placeCode("Georgia")).toBeNull();
+    expect(placeCode("Congo")).toBeNull();
     expect(placeCode("Tbilisi")).toBe("GE");
     expect(placeName("GE")).toBe("Georgia");
   });
@@ -87,6 +89,16 @@ describe("isPlaceCode, isCountryCode and placeName", () => {
     expect(isUnclearRegion("EMEA")).toBe(true);
     expect(isUnclearRegion("EU")).toBe(false);
     expect(isUnclearRegion("PK")).toBe(false);
+  });
+
+  it("tells whether two places share a country, which containment alone misses", () => {
+    expect(placesOverlap("NORTH_AMERICA", "LATAM")).toBe(true);
+    expect(placesOverlap("MIDDLE_EAST", "MENAP")).toBe(true);
+    expect(placesOverlap("EU", "DE")).toBe(true);
+    expect(placesOverlap("EU", "GB")).toBe(false);
+    expect(placesOverlap("PK", "US")).toBe(false);
+    expect(placesOverlap("EMEA", "PK")).toBe("unknown");
+    expect(placesOverlap("ATLANTIS", "PK")).toBe("unknown");
   });
 
   it("knows MENAP, which includes Pakistan, apart from MENA, whose countries are unclear", () => {

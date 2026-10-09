@@ -332,6 +332,102 @@ describe("validateProfile", () => {
     ]);
   });
 
+  it("refuses work-authorisation regions that share a country but answer otherwise, or differ on sponsorship", () => {
+    const text = SAMPLE.replace(
+      "    - { place: GB, authorised: false",
+      [
+        "    - { place: NORTH_AMERICA, authorised: true }",
+        "    - { place: LATAM, authorised: false }",
+        "    - { place: EU, authorised: false, sponsorship_needed: false }",
+        "    - { place: DE, authorised: false, sponsorship_needed: true }",
+        "    - { place: GB, authorised: false",
+      ].join("\n"),
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "NORTH_AMERICA"),
+        message:
+          "fixed_answers.work_authorisation[2].place: overlaps an earlier entry that answers otherwise",
+      },
+      {
+        line: lineOf(text, "LATAM"),
+        message:
+          "fixed_answers.work_authorisation[3].place: overlaps an earlier entry that answers otherwise",
+      },
+      {
+        line: lineOf(text, "{ place: DE"),
+        message:
+          "fixed_answers.work_authorisation[5].place: overlaps an earlier entry that answers otherwise",
+      },
+    ]);
+  });
+
+  it("refuses a relocation place that is a region whose countries are unclear", () => {
+    const text = SAMPLE.replace("places: [AE]", "places: [AE, EMEA]");
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "EMEA"),
+        message:
+          "fixed_answers.relocation.places[1]: is a region whose countries are unclear; name countries or a clear region",
+      },
+    ]);
+  });
+
+  it("refuses a line break in a one-line value, and C1 controls and direction marks in any value", () => {
+    const text = SAMPLE.replace("  name: Sam Rivera\n", '  name: "Sam\\nRivera"\n')
+      .replace('notice_period: "One month"', 'notice_period: "One\\u0080 month"')
+      .replace(
+        'availability: "Can start one month after an offer"',
+        'availability: "Can start \\u202E soon"',
+      );
+
+    expect(problemsOf(text)).toEqual([
+      { line: lineOf(text, "Sam\\nRivera"), message: "owner.name: holds a line break" },
+      {
+        line: lineOf(text, "notice_period"),
+        message: "fixed_answers.notice_period: holds a control character",
+      },
+      {
+        line: lineOf(text, "availability"),
+        message: "fixed_answers.availability: holds a direction mark",
+      },
+    ]);
+  });
+
+  it("refuses a link holding a space or a line break, which the URL parser would quietly drop", () => {
+    const text = SAMPLE.replace(
+      "portfolio: https://portfolio.example.com\n",
+      'portfolio: "https://portfolio.example.com/\\nBcc: x"\n',
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "portfolio:"),
+        message: "links.portfolio: holds a space or a line break",
+      },
+    ]);
+  });
+
+  it("wants .txt style examples and a .pdf CV, and no stream name in a path", () => {
+    const text = SAMPLE.replace("  - style/sample-1.txt\n", "  - profile.sample.yaml\n").replace(
+      "  - style/sample-2.txt\n",
+      "  - style/sample-2.txt::$DATA\n",
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "- profile.sample.yaml"),
+        message: "style_examples[0]: must be a .txt file",
+      },
+      {
+        line: lineOf(text, "::$DATA"),
+        message: "style_examples[1]: must name a file in the profile file's folder or below it",
+      },
+    ]);
+  });
+
   it("rejects an empty answer, a working window of no length, and contradictory work authorisation", () => {
     const text = SAMPLE.replace('notice_period: "One month"', 'notice_period: ""')
       .replace('start_utc: "04:00", end_utc: "13:00"', 'start_utc: "04:00", end_utc: "04:00"')

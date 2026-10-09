@@ -36,6 +36,7 @@ export function lockLocalData(dataDir: string, holder: string): () => void {
       try {
         linkSync(draft, file);
         const release = () => {
+          process.off("exit", release);
           if (heldBy(file)?.pid === process.pid) rmSync(file, { force: true });
         };
         process.once("exit", release);
@@ -43,8 +44,10 @@ export function lockLocalData(dataDir: string, holder: string): () => void {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       }
+      // Let go between the link and this look: try the link again.
+      if (modifiedAt(file) === null) continue;
       const held = heldBy(file);
-      if (held === null && Date.now() - modifiedAt(file) < FRESH_LOCK_MS) {
+      if (held === null && Date.now() - modifiedAt(file)! < FRESH_LOCK_MS) {
         throw new Error(
           `The local database's lock is being taken by another program. Try again in a moment; if this keeps happening, delete ${file}.`,
         );
@@ -66,8 +69,8 @@ export function lockLocalData(dataDir: string, holder: string): () => void {
   }
 }
 
-function modifiedAt(file: string): number {
-  return statSync(file, { throwIfNoEntry: false })?.mtimeMs ?? 0;
+function modifiedAt(file: string): number | null {
+  return statSync(file, { throwIfNoEntry: false })?.mtimeMs ?? null;
 }
 
 /** The local database, opened under the lock, which closing it lets go. */

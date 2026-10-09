@@ -15,16 +15,23 @@ export type SeedResult =
 
 type Deps = { db: Db; storage: Storage; clock: Clock };
 
+/** One seed or activation at a time changes the versions (platform spec B1). */
+const VERSIONS_LOCK = "jobkit.profile_versions";
+
 const LABEL_TAKEN: SeedResult = {
   status: "refused",
   message: "cv.label already names a different CV in an earlier version; give this CV a new label",
 };
 
 export async function seedProfile(deps: Deps, input: CheckedProfile): Promise<SeedResult> {
-  const existing = await versionWithHash(deps.db, input.hash);
-  if (existing) return adopt(deps.db, existing);
-
   const cvPath = `profile/cv-${createHash("sha256").update(input.cv).digest("hex")}.pdf`;
+  const existing = await versionWithHash(deps.db, input.hash);
+  if (existing) {
+    // The same files: put the CV back if it went missing from storage.
+    await storeCv(deps.storage, cvPath, input.cv);
+    return adopt(deps.db, existing);
+  }
+
   const label = input.profile.cv.label;
   // Checked here to spare the upload, and again where the version is stored.
   if (await labelTaken(deps.db, label, cvPath)) return LABEL_TAKEN;
@@ -32,7 +39,7 @@ export async function seedProfile(deps: Deps, input: CheckedProfile): Promise<Se
 
   const outcome = await deps.db.tx(async (tx) => {
     // One seed at a time takes a label and stores a version, so a label never names two CVs.
-    await tx.query("select pg_advisory_xact_lock(hashtext($1))", ["jobkit.profile_versions"]);
+    await tx.query("select pg_advisory_xact_lock(hashtext($1))", [VERSIONS_LOCK]);
     if (await labelTaken(tx, label, cvPath)) return "label-taken" as const;
     const inserted = await tx.query<{ id: string }>(
       `insert into {{schema}}.profile_versions
@@ -123,24 +130,28 @@ async function versionWithHash(
   return rows[0];
 }
 
-async function adopt(db: Db, version: { id: string; active: boolean }): Promise<SeedResult> {
-  if (version.active) return { status: "unchanged", versionId: version.id };
-  await activate(db, version.id);
-  return { status: "reactivated", versionId: version.id };
+async function adopt(db: Db, version: { id: string }): Promise<SeedResult> {
+  return { status: await activate(db, version.id), versionId: version.id };
 }
 
-/** The one active version; the old one is let go first, as the unique index on active wants. */
-export async function activate(db: Db, versionId: string): Promise<void> {
-  await db.tx(async (tx) => {
-    await tx.query(
-      "update {{schema}}.profile_versions set active = false where active and id <> $1",
+/**
+ * Makes a version the one active version, behind the lock the seed takes,
+ * so activations never interleave; says whether it already was. The old
+ * version is let go first, as the unique index on active wants.
+ */
+export async function activate(db: Db, versionId: string): Promise<"reactivated" | "unchanged"> {
+  return db.tx(async (tx) => {
+    await tx.query("select pg_advisory_xact_lock(hashtext($1))", [VERSIONS_LOCK]);
+    const { rows } = await tx.query<{ active: boolean }>(
+      "select active from {{schema}}.profile_versions where id = $1",
       [versionId],
     );
-    const { rowCount } = await tx.query(
-      "update {{schema}}.profile_versions set active = true where id = $1",
-      [versionId],
-    );
-    // Rolls the deactivation back too, so a profile is never left without an active version.
-    if (rowCount !== 1) throw new Error(`There is no profile version ${versionId}.`);
+    if (!rows[0]) throw new Error(`There is no profile version ${versionId}.`);
+    if (rows[0].active) return "unchanged";
+    await tx.query("update {{schema}}.profile_versions set active = false where active");
+    await tx.query("update {{schema}}.profile_versions set active = true where id = $1", [
+      versionId,
+    ]);
+    return "reactivated";
   });
 }

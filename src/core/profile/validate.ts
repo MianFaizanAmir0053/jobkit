@@ -39,7 +39,7 @@ export type ValidatedProfile = CheckedProfile | { ok: false; problems: ProfilePr
 
 const MAX_CV_BYTES = 5 * 1024 * 1024;
 const MAX_STYLE_WORDS = 1500;
-const CONTROL_CHARACTER = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+const CONTROL_CHARACTER = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/;
 
 /** YAML errors by code: the library's own messages quote the file. */
 const YAML_PROBLEMS: Readonly<Record<string, string>> = {
@@ -148,11 +148,12 @@ function readFiles(
   at: Report,
 ): { cv: Uint8Array | null; styleExamples: string[]; styleBytes: Uint8Array[] } {
   const root = asRecord(data);
-  const readable = (path: unknown): path is string =>
+  const readable = (path: unknown, extension: ".pdf" | ".txt"): path is string =>
     typeof path === "string" &&
     path.trim() !== "" &&
     !CONTROL_CHARACTER.test(path) &&
-    isPathBelow(path.trim());
+    isPathBelow(path.trim()) &&
+    path.trim().toLowerCase().endsWith(extension);
   const read = (path: string, where: Path): Uint8Array | null | "unreadable" => {
     try {
       return files.read(path.trim());
@@ -164,7 +165,7 @@ function readFiles(
 
   let cv: Uint8Array | null = null;
   const cvFile = asRecord(root?.cv)?.file;
-  if (readable(cvFile)) {
+  if (readable(cvFile, ".pdf")) {
     const bytes = read(cvFile, ["cv", "file"]);
     cv = bytes === "unreadable" ? null : bytes;
     if (bytes === null) at(["cv", "file"], "there is no such file");
@@ -179,7 +180,7 @@ function readFiles(
   const styleBytes: Uint8Array[] = [];
   const seen = new Set<string>();
   asList(root?.style_examples).forEach((path, i) => {
-    if (!readable(path) || seen.has(samePathKey(path))) return;
+    if (!readable(path, ".txt") || seen.has(samePathKey(path))) return;
     seen.add(samePathKey(path));
     const bytes = read(path, ["style_examples", i]);
     if (bytes === "unreadable") return;

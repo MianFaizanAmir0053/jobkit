@@ -24,6 +24,13 @@ describe("checkPath", () => {
     expect(checkPath(".data\\pglite\\base")).toMatch(/\.data/);
   });
 
+  it("blocks a private/ or .data/ folder at any depth and in any case, as a script run elsewhere makes", () => {
+    expect(checkPath("scripts/.data/storage/profile/cv.pdf")).toMatch(/\.data/);
+    expect(checkPath(".Data/pglite/base")).toMatch(/\.data/);
+    expect(checkPath("evals/Private/profile.yaml")).toMatch(/private/);
+    expect(checkPath("src/core/privateness.ts")).toBeNull();
+  });
+
   it("blocks .env files but allows .env.example", () => {
     expect(checkPath(".env.local")).toMatch(/env/);
     expect(checkPath(".env.ops.local")).toMatch(/env/);

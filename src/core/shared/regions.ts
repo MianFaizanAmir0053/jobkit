@@ -326,10 +326,10 @@ function lookupKey(text: string): string {
 
 /**
  * Names two places share, which name neither: Georgia is a country and a
- * US state. (Hyderabad, a city in both India and Pakistan, is simply not
- * listed.)
+ * US state, and Congo two countries. (Hyderabad, a city in both India and
+ * Pakistan, is simply not listed.)
  */
-const SHARED_NAMES: ReadonlySet<string> = new Set(["georgia"]);
+const SHARED_NAMES: ReadonlySet<string> = new Set(["georgia", "congo"]);
 
 interface PlaceEntry {
   code: string;
@@ -410,6 +410,19 @@ export function placeContains(place: string, other: string): boolean | "unknown"
 }
 
 /** A place's countries; null for an ambiguous region, undefined for an unknown code. */
+/**
+ * Whether two places share a country, as the EU and Germany do, and as North
+ * America and Latin America do through Mexico, though neither takes in the
+ * other. "unknown" for a code the table does not know or an unclear region.
+ */
+export function placesOverlap(one: string, other: string): boolean | "unknown" {
+  const a = membersOf(one);
+  const b = membersOf(other);
+  if (a === undefined || b === undefined || a === null || b === null) return "unknown";
+  for (const country of a) if (b.has(country)) return true;
+  return false;
+}
+
 function membersOf(code: string): ReadonlySet<string> | null | undefined {
   const entry = PLACES.get(code);
   if (!entry) return undefined;

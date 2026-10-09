@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { isCountryCode, isPlaceCode, isUnclearRegion, placeContains } from "@/core/shared/regions";
+import { isCountryCode, isPlaceCode, isUnclearRegion, placesOverlap } from "@/core/shared/regions";
 import { isSkillTag } from "@/core/shared/skills";
 
 /**
@@ -13,13 +13,15 @@ import { isSkillTag } from "@/core/shared/skills";
  */
 
 /**
- * Any value: no control characters and no half of a surrogate pair, which
+ * Any value: no control characters, no direction overrides (which make text
+ * read otherwise than it runs) and no half of a surrogate pair, which
  * Postgres cannot store and no answer needs.
  */
 const str = () =>
   z
     .string()
-    .regex(/^[^\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]*$/, "holds a control character")
+    .regex(/^[^\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]*$/, "holds a control character")
+    .regex(/^[^\u202A-\u202E\u2066-\u2069]*$/, "holds a direction mark")
     .regex(/^(?:[^\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])*$/, "holds a broken character");
 
 const id = (prefix: string) =>
@@ -27,7 +29,15 @@ const id = (prefix: string) =>
     .string()
     .regex(new RegExp(`^${prefix}-[a-z0-9-]+$`), `must look like ${prefix}-lower-case-words`);
 
-const text = (what: string) => str().trim().min(1, `${what} is empty`);
+/** A one-line value: drafts put these inside sentences and subject lines. */
+const text = (what: string) =>
+  str()
+    .trim()
+    .min(1, `${what} is empty`)
+    .regex(/^[^\r\n\u2028\u2029]*$/, "holds a line break");
+
+/** A value that may run over several lines: the signature only. */
+const lines = (what: string) => str().trim().min(1, `${what} is empty`);
 
 const time = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "must be a time such as 04:00");
 
@@ -38,12 +48,20 @@ const skill = str().refine(
 
 const place = str().refine(isPlaceCode, "is not in the region table (src/core/shared/regions.ts)");
 
+/** A place eligibility can match a country against: not a region whose countries are unclear. */
+const clearPlace = place.refine(
+  (code) => !isUnclearRegion(code),
+  "is a region whose countries are unclear; name countries or a clear region",
+);
+
 /**
  * A path the seed may read: relative, inside the profile file's folder or
  * below it, so a typo can never send another file to storage or a model.
+ * No colon either: a drive letter, or a Windows stream name such as
+ * "a.txt::$DATA", which reads a file under another spelling.
  */
 export function isPathBelow(path: string): boolean {
-  if (/^[\\/]|^[a-zA-Z]:/.test(path)) return false;
+  if (/^[\\/]/.test(path) || path.includes(":")) return false;
   return !path.split(/[\\/]/).includes("..");
 }
 
@@ -58,11 +76,27 @@ export function samePathKey(path: string): string {
     .toLowerCase();
 }
 
-const filePath = (what: string) =>
-  text(what).refine(isPathBelow, "must name a file in the profile file's folder or below it");
+/** A file the seed reads, of one kind: the CV a .pdf, a style example a .txt (never the profile file). */
+const filePath = (what: string, extension: ".pdf" | ".txt") =>
+  text(what).superRefine((path, ctx) => {
+    if (!isPathBelow(path)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "must name a file in the profile file's folder or below it",
+      });
+    } else if (!path.toLowerCase().endsWith(extension)) {
+      ctx.addIssue({ code: "custom", message: `must be a ${extension} file` });
+    }
+  });
 
-/** A web address: a link in a message to a recruiter must open a page. */
-const webLink = str().pipe(z.url({ protocol: /^https?$/ }));
+/**
+ * A web address: a link in a message to a recruiter must open a page. A
+ * space or a line break is refused rather than left to the URL parser,
+ * which drops some silently.
+ */
+const webLink = str()
+  .regex(/^\S+$/, "holds a space or a line break")
+  .pipe(z.url({ protocol: /^https?$/ }));
 
 /**
  * An IANA zone written as the database names it, such as Asia/Karachi, and
@@ -124,7 +158,7 @@ export const gapTemplateSchema = z.strictObject({
 
 const workAuthorisationSchema = z
   .strictObject({
-    place,
+    place: clearPlace,
     authorised: z.boolean(),
     sponsorship_needed: z.boolean().optional(),
     text: text("the text").optional(),
@@ -134,30 +168,32 @@ const workAuthorisationSchema = z
     path: ["sponsorship_needed"],
   });
 
+type Authorisation = { place: string; authorised: boolean; sponsorship_needed?: boolean };
+
 /**
- * Work-authorisation entries that eligibility can read one way: no region
- * whose countries are unclear, such as EMEA, no place twice, and no place
- * that takes in, or lies in, an earlier entry's place with the other answer
- * (PK authorised with SOUTH_ASIA not).
+ * Work-authorisation entries that eligibility can read one way: no place
+ * twice, and no two places sharing a country (PK and SOUTH_ASIA, or North
+ * and Latin America through Mexico) that answer otherwise, in being
+ * authorised or, where neither is, in needing sponsorship.
  */
-function oneAnswerPerPlace(
-  entries: readonly { place: string; authorised: boolean }[],
-  ctx: z.RefinementCtx,
-): void {
+function oneAnswerPerPlace(entries: readonly Authorisation[], ctx: z.RefinementCtx): void {
   entries.forEach((entry, i) => {
     const at = (message: string) => ctx.addIssue({ code: "custom", message, path: [i, "place"] });
-    if (isUnclearRegion(entry.place)) {
-      return at("is a region whose countries are unclear; name countries or a clear region");
-    }
     const earlier = entries.slice(0, i);
     if (earlier.some((other) => other.place === entry.place)) {
       return at("names the same place as an earlier entry");
     }
-    const overlaps = (other: { place: string; authorised: boolean }) =>
-      other.authorised !== entry.authorised &&
-      (placeContains(other.place, entry.place) === true ||
-        placeContains(entry.place, other.place) === true);
-    if (earlier.some(overlaps)) at("overlaps an earlier entry that answers otherwise");
+    const answersOtherwise = (other: Authorisation) =>
+      other.authorised !== entry.authorised ||
+      (!entry.authorised &&
+        (other.sponsorship_needed ?? null) !== (entry.sponsorship_needed ?? null));
+    if (
+      earlier.some(
+        (other) => placesOverlap(other.place, entry.place) === true && answersOtherwise(other),
+      )
+    ) {
+      at("overlaps an earlier entry that answers otherwise");
+    }
   });
 }
 
@@ -189,7 +225,7 @@ export const fixedAnswersSchema = z.strictObject({
     }),
   relocation: z.strictObject({
     open: z.boolean(),
-    places: z.array(place),
+    places: z.array(clearPlace),
     text: text("the relocation answer"),
   }),
   work_authorisation: z.array(workAuthorisationSchema).superRefine(oneAnswerPerPlace),
@@ -231,13 +267,13 @@ export const profileSchema = z.strictObject({
     linkedin: webLink.optional(),
     github: webLink.optional(),
   }),
-  signature: text("the signature"),
-  cv: z.strictObject({ file: filePath("the CV file"), label: text("the CV label") }),
+  signature: lines("the signature"),
+  cv: z.strictObject({ file: filePath("the CV file", ".pdf"), label: text("the CV label") }),
   facts: z.array(factSchema),
   gaps: z.strictObject({ templates: z.array(gapTemplateSchema), known: z.array(knownGapSchema) }),
   fixed_answers: fixedAnswersSchema,
   style_examples: z
-    .array(filePath("a style example path"))
+    .array(filePath("a style example path", ".txt"))
     .min(3, "needs 3 to 5 style examples")
     .max(5, "needs 3 to 5 style examples")
     .superRefine(noRepeats(samePathKey, null, "names the same file as an earlier style example")),
