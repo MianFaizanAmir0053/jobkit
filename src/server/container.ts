@@ -15,6 +15,7 @@ import { createPgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { createSupabaseStorage } from "@/adapters/supabaseStorage";
 import type { Clock, Db, Llm, Random, Storage } from "@/core/ports";
+import { openLocalDb } from "@/server/db/localDb";
 import { applyMigrations, bootstrapForTests, loadMigrations } from "@/server/db/migrate";
 import { onVercelDeployment } from "@/server/deployEnv";
 import { assertLocalOnly, isLocalRun } from "@/server/localOnly";
@@ -81,10 +82,11 @@ export async function createContainer(
         env.JOBKIT_ENV === "development"
           ? (opts.dataDir ?? join(process.cwd(), ".data"))
           : (opts.dataDir ?? mkdtempSync(join(tmpdir(), "jobkit-test-")));
-      const db = await createPgliteDb({
-        schema: SCHEMA,
-        dataDir: env.JOBKIT_ENV === "development" ? join(dataDir, "pglite") : undefined,
-      });
+      // The development database is kept under a lock that the scripts' local mode respects.
+      const db =
+        env.JOBKIT_ENV === "development"
+          ? await openLocalDb(dataDir, { schema: SCHEMA, holder: "the dev server" })
+          : await createPgliteDb({ schema: SCHEMA });
       await bootstrapForTests(db);
       await applyMigrations(db, loadMigrations(join(process.cwd(), "db", "migrations")));
       const storage = createLocalStorage({

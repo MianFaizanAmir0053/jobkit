@@ -59,20 +59,20 @@ describe("validateProfile", () => {
     ]);
   });
 
-  it("rejects a duplicate ID at its second use, and a malformed one", () => {
+  it("rejects a duplicate ID at its second use, and a malformed one, in one pass", () => {
     const text = SAMPLE.replace("id: F-node-apis", "id: F-react-production").replace(
       "id: F-python-side",
       "id: F_python",
     );
 
     expect(problemsOf(text)).toEqual([
-      { line: lineOf(text, "id: F_python"), message: "facts[2].id: must look like F-lower-case-words" },
-    ]);
-    const duplicate = SAMPLE.replace("id: F-node-apis", "id: F-react-production");
-    expect(problemsOf(duplicate)).toEqual([
       {
-        line: lineOf(duplicate, "id: F-react-production", "statement: \"I have built"),
-        message: "facts[1].id: F-react-production is used more than once",
+        line: lineOf(text, "id: F-react-production", 'statement: "I have built'),
+        message: "facts[1].id: is used more than once",
+      },
+      {
+        line: lineOf(text, "id: F_python"),
+        message: "facts[2].id: must look like F-lower-case-words",
       },
     ]);
   });
@@ -89,6 +89,14 @@ describe("validateProfile", () => {
     ]);
   });
 
+  it("says a key is missing whatever kind of value it should hold", () => {
+    const text = SAMPLE.replace("    kind: experience\n", "");
+
+    expect(problemsOf(text)).toEqual([
+      { line: lineOf(text, "id: F-react-production"), message: "facts[0].kind: is missing" },
+    ]);
+  });
+
   it("rejects a skill outside the vocabulary and a place outside the region table", () => {
     const text = SAMPLE.replace("skills: [python, fastapi]", "skills: [python, cobol]").replace(
       "places: [AE]",
@@ -98,23 +106,35 @@ describe("validateProfile", () => {
     expect(problemsOf(text)).toEqual([
       {
         line: lineOf(text, "cobol"),
-        message: "facts[2].skills[1]: cobol is not in the skill vocabulary (src/core/shared/skills.ts)",
+        message: "facts[2].skills[1]: is not in the skill vocabulary (src/core/shared/skills.ts)",
       },
       {
         line: lineOf(text, "ATLANTIS"),
-        message: "fixed_answers.relocation.places[1]: ATLANTIS is not in the region table (src/core/shared/regions.ts)",
+        message:
+          "fixed_answers.relocation.places[1]: is not in the region table (src/core/shared/regions.ts)",
+      },
+    ]);
+  });
+
+  it("wants a country, not a region, for where the owner lives", () => {
+    const text = SAMPLE.replace("country: PK", "country: SOUTH_ASIA");
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "SOUTH_ASIA"),
+        message:
+          "owner.location.country: is not a country code in the region table (src/core/shared/regions.ts)",
       },
     ]);
   });
 
   it("rejects a missing signature", () => {
-    const text = SAMPLE.replace(
-      /signature: \|\n(  .*\n)+/,
-      "",
-    );
+    const text = SAMPLE.replace(/signature: \|\n(  .*\n)+/, "");
 
     // A missing key is reported at the start of the map that should hold it.
-    expect(problemsOf(text)).toEqual([{ line: lineOf(text, "schema: 1"), message: "signature: is missing" }]);
+    expect(problemsOf(text)).toEqual([
+      { line: lineOf(text, "schema: 1"), message: "signature: is missing" },
+    ]);
   });
 
   it("rejects a CV that is missing, not a PDF, or over 5 MB", () => {
@@ -123,11 +143,11 @@ describe("validateProfile", () => {
     big.set(new TextEncoder().encode("%PDF-"));
 
     expect(problemsOf(SAMPLE, sampleFiles({ "cv.sample.pdf": null }))).toEqual([
-      { line, message: "cv.file: cv.sample.pdf does not exist" },
+      { line, message: "cv.file: there is no such file" },
     ]);
-    expect(problemsOf(SAMPLE, sampleFiles({ "cv.sample.pdf": new TextEncoder().encode("hello") }))).toEqual([
-      { line, message: "cv.file: the CV is not a PDF" },
-    ]);
+    expect(
+      problemsOf(SAMPLE, sampleFiles({ "cv.sample.pdf": new TextEncoder().encode("hello") })),
+    ).toEqual([{ line, message: "cv.file: the CV is not a PDF" }]);
     expect(problemsOf(SAMPLE, sampleFiles({ "cv.sample.pdf": big }))).toEqual([
       { line, message: "cv.file: the CV is larger than 5 MB" },
     ]);
@@ -137,19 +157,117 @@ describe("validateProfile", () => {
     const two = SAMPLE.replace("  - style/sample-3.txt\n", "");
     const six = SAMPLE.replace(
       "  - style/sample-3.txt\n",
-      "  - style/sample-3.txt\n  - style/sample-1.txt\n  - style/sample-2.txt\n  - style/sample-3.txt\n",
+      "  - style/sample-3.txt\n  - style/a.txt\n  - style/b.txt\n  - style/c.txt\n",
     );
     const long = new TextEncoder().encode("word ".repeat(1500));
 
     expect(problemsOf(two)).toEqual([
-      { line: lineOf(two, "- style/sample-1.txt"), message: "style_examples: needs 3 to 5 style examples" },
+      {
+        line: lineOf(two, "- style/sample-1.txt"),
+        message: "style_examples: needs 3 to 5 style examples",
+      },
     ]);
-    expect(problemsOf(six)).toMatchObject([{ message: "style_examples: needs 3 to 5 style examples" }]);
+    expect(problemsOf(six)).toContainEqual(
+      expect.objectContaining({ message: "style_examples: needs 3 to 5 style examples" }),
+    );
     expect(problemsOf(SAMPLE, sampleFiles({ "style/sample-1.txt": long }))).toEqual([
       {
         line: lineOf(SAMPLE, "- style/sample-1.txt"),
-        message: expect.stringMatching(/^style_examples: the style examples have \d+ words; at most 1500 in total$/),
+        message: expect.stringMatching(
+          /^style_examples: the style examples have \d+ words; at most 1500 in total$/,
+        ),
       },
+    ]);
+  });
+
+  it("takes files only from the profile file's folder or below it, each style example once", () => {
+    const text = SAMPLE.replace("  - style/sample-1.txt\n", "  - ../.env.local\n")
+      .replace("  - style/sample-2.txt\n", "  - C:/Users/someone/tsconfig.json\n")
+      .replace("  file: cv.sample.pdf\n", "  file: /etc/cv.pdf\n");
+    const repeated = SAMPLE.replace("  - style/sample-2.txt\n", "  - ./style/sample-1.txt\n");
+    const outside = "must name a file in the profile file's folder or below it";
+
+    expect(problemsOf(text)).toEqual([
+      { line: lineOf(text, "/etc/cv.pdf"), message: `cv.file: ${outside}` },
+      { line: lineOf(text, "../.env.local"), message: `style_examples[0]: ${outside}` },
+      { line: lineOf(text, "tsconfig.json"), message: `style_examples[1]: ${outside}` },
+    ]);
+    expect(problemsOf(repeated)).toEqual([
+      {
+        line: lineOf(repeated, "./style/sample-1.txt"),
+        message: "style_examples[1]: names the same file as an earlier style example",
+      },
+    ]);
+  });
+
+  it("rejects a style example that is not plain UTF-8 text", () => {
+    const utf16 = new Uint8Array([0xff, 0xfe, 0x48, 0x00, 0x69, 0x00]);
+    const withNul = new TextEncoder().encode("Hi\u0000there");
+
+    expect(problemsOf(SAMPLE, sampleFiles({ "style/sample-1.txt": utf16 }))).toEqual([
+      {
+        line: lineOf(SAMPLE, "- style/sample-1.txt"),
+        message: "style_examples[0]: is not UTF-8 text; save it as UTF-8",
+      },
+    ]);
+    expect(problemsOf(SAMPLE, sampleFiles({ "style/sample-2.txt": withNul }))).toEqual([
+      {
+        line: lineOf(SAMPLE, "- style/sample-2.txt"),
+        message: "style_examples[1]: holds a control character, so it is not plain text",
+      },
+    ]);
+  });
+
+  it("rejects a control character in any value", () => {
+    const text = SAMPLE.replace('notice_period: "One month"', 'notice_period: "One\\0month"');
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "notice_period"),
+        message: "fixed_answers.notice_period: holds a control character",
+      },
+    ]);
+  });
+
+  it("rejects an empty answer, a working window of no length, and contradictory work authorisation", () => {
+    const text = SAMPLE.replace('notice_period: "One month"', 'notice_period: ""')
+      .replace('start_utc: "04:00", end_utc: "13:00"', 'start_utc: "04:00", end_utc: "04:00"')
+      .replace(
+        "- { place: PK, authorised: true }",
+        "- { place: PK, authorised: true, sponsorship_needed: true }",
+      )
+      .replace("- { place: GB, authorised: false", "- { place: PK, authorised: false");
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "notice_period"),
+        message: "fixed_answers.notice_period: the notice period is empty",
+      },
+      {
+        line: lineOf(text, "working_window"),
+        message: "fixed_answers.working_window.end_utc: is the same as the start",
+      },
+      {
+        line: lineOf(text, "sponsorship_needed: true }"),
+        message:
+          "fixed_answers.work_authorisation[0].sponsorship_needed: contradicts authorised: true",
+      },
+      {
+        line: lineOf(text, "- { place: PK, authorised: false"),
+        message:
+          "fixed_answers.work_authorisation[2].place: names the same place as an earlier entry",
+      },
+    ]);
+  });
+
+  it("takes only web links", () => {
+    const text = SAMPLE.replace(
+      "portfolio: https://portfolio.example.com",
+      "portfolio: javascript:alert(1)",
+    );
+
+    expect(problemsOf(text)).toEqual([
+      { line: lineOf(text, "javascript:"), message: expect.stringMatching(/^links\.portfolio: /) },
     ]);
   });
 
@@ -160,11 +278,33 @@ describe("validateProfile", () => {
     );
 
     expect(problemsOf(text)).toEqual([
-      { line: lineOf(text, "Asia/Lahore"), message: "owner.location.timezone: is not a time zone such as Asia/Karachi" },
+      {
+        line: lineOf(text, "Asia/Lahore"),
+        message: "owner.location.timezone: is not a time zone such as Asia/Karachi",
+      },
       {
         line: lineOf(text, "{nearest}"),
-        message: "gaps.templates[0].text: uses {nearest}; templates may use only {skill} and {related}",
+        message: "gaps.templates[0].text: may use only the placeholders {skill} and {related}",
       },
+    ]);
+  });
+
+  it.each(["{related.", "{skill}}"])("rejects a template with a stray brace: %j", (broken) => {
+    const text = SAMPLE.replace("{related}.", broken);
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "G-not-professional") + 1,
+        message: "gaps.templates[0].text: may use only the placeholders {skill} and {related}",
+      },
+    ]);
+  });
+
+  it.each(["+05:00", "asia/karachi", "EST", "PST8PDT"])("rejects %j as a time zone", (zone) => {
+    expect(
+      problemsOf(SAMPLE.replace("timezone: Asia/Karachi", `timezone: "${zone}"`)),
+    ).toMatchObject([
+      { message: "owner.location.timezone: is not a time zone such as Asia/Karachi" },
     ]);
   });
 
@@ -172,9 +312,25 @@ describe("validateProfile", () => {
     const repeated = SAMPLE.replace("schema: 1\n", "schema: 1\nschema: 1\n");
 
     expect(problemsOf(repeated)).toEqual([
-      { line: lineOf(repeated, "schema: 1") + 1, message: expect.stringContaining("unique") },
+      { line: lineOf(repeated, "schema: 1") + 1, message: "the file repeats a key here" },
     ]);
     expect(problemsOf("owner: [unclosed")).toMatchObject([{ line: 1 }]);
+  });
+
+  it("reports a value read as a YAML alias at its line, rather than failing", () => {
+    const text = SAMPLE.replace('notice_period: "One month"', "notice_period: *negotiable*");
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "*negotiable*"),
+        message: "a value starts with *, which YAML reads as an alias; put the value in quotes",
+      },
+    ]);
+  });
+
+  it("names line 1 for a file with nothing in it", () => {
+    expect(problemsOf("")).toEqual([{ line: 1, message: "the file is empty" }]);
+    expect(problemsOf("# only a comment\n")).toEqual([{ line: 1, message: "the file is empty" }]);
   });
 
   it("names the whole file when it is not a map of keys at all", () => {
@@ -183,16 +339,30 @@ describe("validateProfile", () => {
     ]);
   });
 
-  it("reports every problem in one pass", () => {
+  it("never repeats the file's own text in a problem, and stops after a few for a broken file", () => {
+    const broken = SAMPLE.replace("timezone: Asia/Karachi }", "timezone: Asia/Karachi }}");
+    const placed = SAMPLE.replace("places: [AE]", 'places: ["Pakistan (private note)"]');
+
+    const problems = [...problemsOf(broken), ...problemsOf(placed)];
+
+    expect(problemsOf(broken).length).toBeLessThanOrEqual(5);
+    for (const { message } of problems) {
+      expect(message).not.toMatch(/WhatsApp|202 555|USD 5,000|Prefer not|private note|Sam Rivera/);
+    }
+  });
+
+  it("reports every problem in one pass, files included", () => {
     const text = SAMPLE.replace("skills: [docker]", "skills: [dockerr]").replace(
       "relocation: { open: true, places: [AE]",
       "relocation: { open: true, places: [UAE]",
     );
 
-    expect(problemsOf(text, sampleFiles({ "style/sample-2.txt": null })).map((p) => p.message)).toEqual([
-      "facts[3].skills[0]: dockerr is not in the skill vocabulary (src/core/shared/skills.ts)",
-      "fixed_answers.relocation.places[0]: UAE is not in the region table (src/core/shared/regions.ts)",
-      "style_examples[1]: style/sample-2.txt does not exist",
+    expect(
+      problemsOf(text, sampleFiles({ "style/sample-2.txt": null })).map((p) => p.message),
+    ).toEqual([
+      "facts[3].skills[0]: is not in the skill vocabulary (src/core/shared/skills.ts)",
+      "fixed_answers.relocation.places[0]: is not in the region table (src/core/shared/regions.ts)",
+      "style_examples[1]: there is no such file",
     ]);
   });
 });

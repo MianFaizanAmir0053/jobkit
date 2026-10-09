@@ -18,7 +18,7 @@ const KIND_NAMES: Record<Fact["kind"], string> = {
 };
 
 const HOW_TO_CHANGE =
-  "To change anything, edit private/profile.yaml on the laptop and run npm run profile:seed.";
+  "To change anything, edit private/profile.yaml on the laptop and seed it again: npm run profile:seed checks it locally, and npm run profile:seed -- --prod seeds production (runbook step 13).";
 
 /**
  * The profile, read-only (profile spec, "Profile page"): the active

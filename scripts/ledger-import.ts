@@ -12,10 +12,10 @@ import { join } from "node:path";
 
 import { systemClock } from "@/adapters/clock";
 import { createPgDb } from "@/adapters/pg";
-import { createPgliteDb } from "@/adapters/pglite";
 import { importEarlier, parseEarlierCsv } from "@/core/ledger/earlier";
 import type { Db } from "@/core/ports";
 import { SCHEMA } from "@/server/container";
+import { openLocalDb } from "@/server/db/localDb";
 import { applyMigrations, bootstrapForTests, loadMigrations } from "@/server/db/migrate";
 
 import {
@@ -23,7 +23,7 @@ import {
   confirmProduction,
   loadOpsEnv,
   parseTarget,
-  projectRefFromSupabaseUrl,
+  productionRef,
   requireValues,
 } from "./ops";
 
@@ -58,9 +58,9 @@ async function main(): Promise<void> {
 }
 
 async function localDb(): Promise<{ db: Db & { close(): Promise<void> }; where: string }> {
-  const db = await createPgliteDb({
+  const db = await openLocalDb(join(process.cwd(), ".data"), {
     schema: SCHEMA,
-    dataDir: join(process.cwd(), ".data", "pglite"),
+    holder: "npm run ledger:import",
   });
   await bootstrapForTests(db);
   await applyMigrations(db, loadMigrations(join(process.cwd(), "db", "migrations")));
@@ -70,7 +70,7 @@ async function localDb(): Promise<{ db: Db & { close(): Promise<void> }; where: 
 async function productionDb(): Promise<{ db: Db & { close(): Promise<void> }; where: string }> {
   const env = loadOpsEnv();
   requireValues(env, ["DATABASE_URL", "SUPABASE_URL"]);
-  const ref = projectRefFromSupabaseUrl(env.SUPABASE_URL!);
+  const ref = productionRef(env);
   await confirmProduction(ref, askOnTerminal);
   const db = createPgDb({ connectionString: env.DATABASE_URL!, schema: SCHEMA, max: 1 });
   return { db, where: `production (${ref})` };

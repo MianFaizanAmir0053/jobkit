@@ -6,8 +6,8 @@
 import { join } from "node:path";
 
 import { createPgDb } from "@/adapters/pg";
-import { createPgliteDb } from "@/adapters/pglite";
 import { createSupabaseStorage } from "@/adapters/supabaseStorage";
+import { openLocalDb } from "@/server/db/localDb";
 import { bootstrapForTests } from "@/server/db/migrate";
 import { BUCKET, SCHEMA } from "@/server/container";
 
@@ -25,9 +25,9 @@ const ROLE = "jobkit_app";
 
 async function main(): Promise<void> {
   if (parseTarget(process.argv.slice(2)) === "local") {
-    const db = await createPgliteDb({
+    const db = await openLocalDb(join(process.cwd(), ".data"), {
       schema: SCHEMA,
-      dataDir: join(process.cwd(), ".data", "pglite"),
+      holder: "npm run db:bootstrap",
     });
     await bootstrapForTests(db);
     await db.close();

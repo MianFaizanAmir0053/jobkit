@@ -18,6 +18,11 @@ const testOnly =
 
 const nextConfig: NextConfig = {
   pageExtensions: ["tsx", "ts", "jsx", "js", ...testOnly],
+  // PGlite finds its WebAssembly files with new URL(…, import.meta.url), which
+  // breaks once Turbopack bundles it: a persistent database (JOBKIT_ENV=
+  // development) then fails to open. Node's own import keeps the URLs right.
+  // node_modules/next/dist/docs/01-app/03-api-reference/05-config/01-next-config-js/serverExternalPackages.md
+  serverExternalPackages: ["@electric-sql/pglite"],
   // The headers Next's PWA guide recommends (docs/runbook/next16-notes.md).
   async headers() {
     return [

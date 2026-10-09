@@ -104,13 +104,13 @@ After the profile is approved: in the Gmail app on the phone (Settings, your acc
 ## 12. Earlier applications
 
 1. Type the applications you made before jobkit into `private/earlier.csv`, one per line: `company,role,applied_on,route,address`. The date is written like `2026-05-04`; the route is `email`, `form` or `message`; the address (an email address or a phone number) may be left out. A header line with those names is fine, and a field that holds a comma goes in double quotes.
-2. With `npm run dev` stopped (the local database serves one program at a time), check the file against it: `npm run ledger:import private/earlier.csv`. A bad row is reported by its line, and nothing is imported until every row is right.
+2. With `npm run dev` stopped (the local database serves one program at a time, and the script stops if the dev server holds it), check the file against it: `npm run ledger:import private/earlier.csv`. A bad row is reported by its line, and nothing is imported until every row is right.
 3. Then import it into production: `npm run ledger:import -- private/earlier.csv --prod`, typing the project reference when asked. Running it again adds nothing new, so a longer list can be imported later.
 
 ## 13. Profile
 
-1. Claude drafts `private/profile.yaml` from your CV and portfolio, with every fact set to `approved: false` (profile spec, "Drafting the first version"). Read each fact; edit it or delete it, and set `approved: true` on the ones you stand behind. Then write the gap templates, the known gap lines, the fixed answers and the signature. The CV PDF and 3 to 5 style examples (messages you wrote yourself, as `.txt` files) go next to the file, under `private/`, named in it relative to it.
-2. With `npm run dev` stopped (the local database serves one program at a time), check it against the local database: `npm run profile:seed`. Every problem is reported with its line, and nothing is seeded until the file is right. Start `npm run dev` again to see it on the Profile page.
+1. Claude drafts `private/profile.yaml` from your CV and portfolio, with every fact set to `approved: false` (profile spec, "Drafting the first version"). Read each fact; edit it or delete it, and set `approved: true` on the ones you stand behind. Then write the gap templates, the known gap lines, the fixed answers and the signature. The CV PDF and 3 to 5 style examples (messages you wrote yourself, as `.txt` files saved as UTF-8) go next to the file, under `private/`, named in it relative to it.
+2. With `npm run dev` stopped (the local database serves one program at a time, and the script stops if the dev server holds it), check it against the local database: `npm run profile:seed`. Every problem is reported with its line, and nothing is seeded until the file is right. Start `npm run dev` again to see it on the Profile page.
 3. Seed production: `npm run profile:seed -- --prod`, typing the project reference when asked.
 
-To change anything later, edit the file and run steps 2 and 3 again. Seeding an earlier copy of the file makes its version active again, which is how you roll back.
+To change anything later, edit the file and run steps 2 and 3 again. To roll back, list the stored versions with `npm run profile:seed -- --list --prod`, then make one active again with `npm run profile:seed -- --activate <the start of its hash> --prod`. Seeding an earlier copy of the file, with the same CV and style examples, does the same.

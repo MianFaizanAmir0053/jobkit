@@ -23,6 +23,12 @@ describe("skillTag", () => {
   it("knows nothing it was not told", () => {
     expect(skillTag("cobol")).toBeNull();
   });
+
+  it("knows no tag for a name that means something else too", () => {
+    // RTL is right-to-left layout in Arabic-market posts; AngularJS is the old 1.x framework.
+    expect(skillTag("RTL")).toBeNull();
+    expect(skillTag("AngularJS")).toBeNull();
+  });
 });
 
 describe("the vocabulary", () => {

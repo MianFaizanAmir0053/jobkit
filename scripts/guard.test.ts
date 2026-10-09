@@ -19,6 +19,11 @@ describe("checkPath", () => {
     expect(checkPath("private/profile.yaml")).toMatch(/private/);
   });
 
+  it("blocks anything under .data/, where the local database keeps the owner's profile and CV", () => {
+    expect(checkPath(".data/storage/profile/cv-0123.pdf")).toMatch(/\.data/);
+    expect(checkPath(".data\\pglite\\base")).toMatch(/\.data/);
+  });
+
   it("blocks .env files but allows .env.example", () => {
     expect(checkPath(".env.local")).toMatch(/env/);
     expect(checkPath(".env.ops.local")).toMatch(/env/);

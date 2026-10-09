@@ -32,6 +32,28 @@ export function parseTarget(
   );
 }
 
+/**
+ * The production project's reference, from SUPABASE_URL, after checking
+ * that DATABASE_URL is for the same project: the pooler's user is written
+ * `jobkit_app.<project-ref>` (runbook step 5).
+ */
+export function productionRef(env: Readonly<Record<string, string | undefined>>): string {
+  const ref = projectRefFromSupabaseUrl(env.SUPABASE_URL ?? "");
+  let user = "";
+  try {
+    user = decodeURIComponent(new URL(env.DATABASE_URL ?? "").username);
+  } catch {
+    // Not a URL; the database driver says so when it connects.
+  }
+  const databaseRef = user.includes(".") ? user.slice(user.indexOf(".") + 1) : null;
+  if (databaseRef !== null && databaseRef !== ref) {
+    throw new Error(
+      `DATABASE_URL is for project ${databaseRef}, but SUPABASE_URL is for ${ref}: fix .env.ops.local`,
+    );
+  }
+  return ref;
+}
+
 export function projectRefFromSupabaseUrl(url: string): string {
   const match = /^https:\/\/([a-z0-9]+)\.supabase\.co\/?$/.exec(url.trim());
   if (!match?.[1]) throw new Error("SUPABASE_URL must look like https://<project-ref>.supabase.co");

@@ -17,6 +17,8 @@ import {
 
 // Rendered by src/app/(app)/test/data/page.testonly.tsx for live, approved sessions.
 const MARKER = "jobkit-e2e-owner-data-marker";
+// A fixed answer from the sample profile, which only Google sessions may see.
+const FIXED_ANSWER = "USD 5,000 a month";
 // Everything the dev server prints (e2e/devServer.mjs).
 const SERVER_LOG = ".data/e2e/server.log";
 
@@ -101,11 +103,14 @@ test("a phone waiting for approval gets none of the owner's data, from pages or 
   const owner = await laptop(browser);
   const mobile = await phone(browser);
   const { code } = await scan(owner, mobile);
-  // The check below means something only if the page does show data to an approved session.
+  // The checks below mean something only if the pages do show data to an approved session.
+  expect((await owner.page.request.post("/api/test/profile")).status()).toBe(204);
   await owner.page.goto("/test/data");
   await expect(owner.page.getByText(MARKER)).toBeVisible();
+  await owner.page.goto("/profile");
+  await expect(owner.page.getByText(FIXED_ANSWER)).toBeVisible();
 
-  for (const path of ["/jobs", "/test/data", "/devices"]) {
+  for (const path of ["/jobs", "/test/data", "/devices", "/profile"]) {
     await mobile.page.goto(path);
     await expect(mobile.page).toHaveURL(/\/pair$/);
     const bodies = await mobile.page.evaluate(async (target) => {
@@ -113,7 +118,10 @@ test("a phone waiting for approval gets none of the owner's data, from pages or 
       const payload = await (await fetch(target, { headers: { RSC: "1" } })).text();
       return [html, payload];
     }, path);
-    for (const body of bodies) expect(body).not.toContain(MARKER);
+    for (const body of bodies) {
+      expect(body).not.toContain(MARKER);
+      expect(body).not.toContain(FIXED_ANSWER);
+    }
   }
   // Only the waiting screen, with the phone's code still on it.
   await expect(mobile.page.getByLabel(/^Code /)).toBeVisible();
@@ -125,7 +133,7 @@ test("a phone waiting for approval gets none of the owner's data, from pages or 
   await expect(mobile.page.getByText(MARKER)).toBeVisible();
 });
 
-test("a paired phone cannot reach Devices, and once revoked it is sent to sign in", async ({
+test("a paired phone cannot reach Devices or the Profile, and once revoked it is sent to sign in", async ({
   browser,
 }) => {
   const owner = await laptop(browser);
@@ -133,10 +141,20 @@ test("a paired phone cannot reach Devices, and once revoked it is sent to sign i
   const { code } = await scan(owner, mobile);
   await approve(owner, code);
   await expect(mobile.page).toHaveURL(/\/jobs$/);
+  expect((await owner.page.request.post("/api/test/profile")).status()).toBe(204);
 
   await expect(mobile.page.getByRole("link", { name: "Devices" })).toHaveCount(0);
-  await mobile.page.goto("/devices");
-  await expect(mobile.page).toHaveURL(/\/jobs$/);
+  await expect(mobile.page.getByRole("link", { name: "Profile" })).toHaveCount(0);
+  for (const path of ["/devices", "/profile"]) {
+    await mobile.page.goto(path);
+    await expect(mobile.page).toHaveURL(/\/jobs$/);
+  }
+  // Nor in the page's payloads: the owner's fixed answers stay off paired phones.
+  const bodies = await mobile.page.evaluate(async () => [
+    await (await fetch("/profile")).text(),
+    await (await fetch("/profile", { headers: { RSC: "1" } })).text(),
+  ]);
+  for (const body of bodies) expect(body).not.toContain(FIXED_ANSWER);
 
   await owner.page.reload();
   owner.page.once("dialog", (dialog) => void dialog.accept());

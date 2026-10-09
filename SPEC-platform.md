@@ -214,7 +214,7 @@ Rules:
 ### B5. App shell and PWA
 
 - Mobile-first layout with 16-pixel side gutters, dark theme, lime accent.
-- Navigation: Jobs, New job, Stats, Spend, Profile (read-only view of approved facts) and Devices (`google` sessions only).
+- Navigation: Jobs, New job, Stats and Spend for every session; Profile (a read-only view of approved facts and the fixed answers) and Devices for `google` sessions only, so salary, work-authorisation and equal-opportunity answers stay off paired phones.
 - The web app manifest has the name "jobkit", 192- and 512-pixel icons, `start_url` `/jobs`, `display: standalone`, and the `share_target` defined in the intake spec. It is served outside the session check.
 - A minimal service worker exists because installability and the share target need one. It handles the share-target POST (intake spec) and caches nothing that holds personal data.
 

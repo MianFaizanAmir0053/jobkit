@@ -7,7 +7,7 @@ import { requireSession } from "@/server/dal";
 const NAV: readonly { href: string; label: string; googleOnly?: boolean }[] = [
   { href: "/jobs", label: "Jobs" },
   { href: "/baseline", label: "Baseline" },
-  // The owner's fixed answers stay on the laptop.
+  // The owner's fixed answers stay off paired phones.
   { href: "/profile", label: "Profile", googleOnly: true },
   // Paired phones cannot pair, approve or revoke (platform spec B3).
   { href: "/devices", label: "Devices", googleOnly: true },

@@ -89,7 +89,7 @@ export const baselineForViewer = cache(async (): Promise<BaselineSummary> => {
 
 /**
  * The Profile page (profile spec): the active version's approved items and
- * how many wait. Laptop sessions only: it holds the owner's fixed answers.
+ * how many wait. Google sessions only: it holds the owner's fixed answers.
  */
 export const profileForViewer = cache(
   async (): Promise<{ profile: Profile; counts: ProfileCounts } | null> => {

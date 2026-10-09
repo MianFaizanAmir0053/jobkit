@@ -1,139 +1,210 @@
 import { createHash } from "node:crypto";
 
-import { isMap, isScalar, LineCounter, parseDocument, type Document } from "yaml";
+import { isMap, isScalar, LineCounter, parseDocument, visit, type Document } from "yaml";
 
-import { isPlaceCode } from "@/core/shared/regions";
-import { isSkillTag } from "@/core/shared/skills";
-
-import { type ProfileDocument, profileSchema } from "./schema";
+import { isPathBelow, type ProfileDocument, profileSchema, samePathKey } from "./schema";
 
 /**
  * Checks a profile file the way the seed does (profile spec, "Seeding"):
- * the strict schema, then what the schema cannot see, then the CV and the
- * style example files. Every problem is reported, each with its line.
+ * the YAML, the strict schema with the shared tables, IDs across the file,
+ * then the CV and the style example files. Every problem is reported in one
+ * pass, each with its line, and no message repeats a value from the file,
+ * which holds the owner's personal data.
  */
 export interface ProfileFiles {
-  /** A file named relative to the profile file; null when there is none. */
+  /** A regular file named relative to the profile file; null when there is none. */
   read(path: string): Uint8Array | null;
 }
 
 export interface ProfileProblem {
-  line: number | null;
+  line: number;
   message: string;
 }
 
-export type ValidatedProfile =
-  | {
-      ok: true;
-      profile: ProfileDocument;
-      cv: Uint8Array;
-      styleExamples: string[];
-      /** SHA-256 of the file, the CV and the style examples together. */
-      hash: string;
-    }
-  | { ok: false; problems: ProfileProblem[] };
+declare const checked: unique symbol;
+
+/** A profile the validator passed. The seed takes nothing else, so a hash always matches its files. */
+export type CheckedProfile = {
+  ok: true;
+  profile: ProfileDocument;
+  cv: Uint8Array;
+  styleExamples: string[];
+  /** SHA-256 of the file, the CV and the style examples together. */
+  hash: string;
+  readonly [checked]: true;
+};
+
+export type ValidatedProfile = CheckedProfile | { ok: false; problems: ProfileProblem[] };
 
 const MAX_CV_BYTES = 5 * 1024 * 1024;
 const MAX_STYLE_WORDS = 1500;
-const PLACEHOLDERS: ReadonlySet<string> = new Set(["skill", "related"]);
+const CONTROL_CHARACTER = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/;
+
+/** YAML errors by code: the library's own messages quote the file. */
+const YAML_PROBLEMS: Readonly<Record<string, string>> = {
+  DUPLICATE_KEY: "the file repeats a key here",
+  TAB_AS_INDENT: "a tab indents this line; indent with spaces",
+  BAD_INDENT: "the indentation is off here",
+  MISSING_CHAR: "a quote or a bracket is not closed",
+  MULTIPLE_DOCS: "the file holds more than one YAML document",
+};
+
+/** One broken bracket can upset every later line; the first few say where to look. */
+const MAX_YAML_PROBLEMS = 5;
+
+const ALIAS = "a value starts with *, which YAML reads as an alias; put the value in quotes";
 
 type Path = readonly (string | number)[];
+type Report = (path: Path, message: string, key?: string) => void;
 
 export function validateProfile(text: string, files: ProfileFiles): ValidatedProfile {
   const counter = new LineCounter();
   const doc = parseDocument(text, { lineCounter: counter, uniqueKeys: true });
-  if (doc.errors.length > 0) {
-    return {
-      ok: false,
-      problems: doc.errors.map((error) => ({
-        line: error.linePos?.[0].line ?? null,
-        message: error.message.split("\n")[0]!,
-      })),
-    };
-  }
-  const problems: ProfileProblem[] = [];
-  const at = (path: Path, message: string, key?: string) =>
-    problems.push({ line: lineOf(doc, counter, path, key), message: `${pathText(path, key)}: ${message}` });
+  if (doc.errors.length > 0) return { ok: false, problems: yamlProblems(doc) };
+  if (doc.contents === null)
+    return { ok: false, problems: [{ line: 1, message: "the file is empty" }] };
+  // An alias is never needed in a profile, and an unknown one throws.
+  const aliases = aliasLines(doc, counter);
+  if (aliases.length > 0)
+    return { ok: false, problems: aliases.map((line) => ({ line, message: ALIAS })) };
+  const data: unknown = doc.toJS();
 
-  const parsed = profileSchema.safeParse(doc.toJS());
+  const problems: ProfileProblem[] = [];
+  const at: Report = (path, message, key) =>
+    problems.push({
+      line: lineOf(doc, counter, path, key),
+      message: `${pathText(path, key)}: ${message}`,
+    });
+
+  const parsed = profileSchema.safeParse(data);
   if (!parsed.success) {
     for (const issue of parsed.error.issues) {
       const path = issue.path as Path;
       if (issue.code === "unrecognized_keys") {
         for (const key of issue.keys) at(path, "is not a key the profile knows", key);
-      } else if (issue.code === "invalid_type" && issue.message.endsWith("received undefined")) {
+      } else if (path.length > 0 && !doc.hasIn(path)) {
         at(path, "is missing");
+      } else if (issue.code === "invalid_key") {
+        at(path, issue.issues[0]?.message ?? issue.message);
       } else {
         at(path, issue.message);
       }
     }
-    return { ok: false, problems: sorted(problems) };
   }
-  const profile = parsed.data;
+  checkIds(data, at);
+  const read = readFiles(data, files, at);
 
-  // IDs are unique across the file and never reused.
-  const seen = new Set<string>();
-  const ids: [Path, string][] = [
-    ...profile.facts.map((fact, i): [Path, string] => [["facts", i, "id"], fact.id]),
-    ...profile.gaps.templates.map((t, i): [Path, string] => [["gaps", "templates", i, "id"], t.id]),
-    ...profile.gaps.known.map((k, i): [Path, string] => [["gaps", "known", i, "id"], k.id]),
+  if (!parsed.success || problems.length > 0 || read.cv === null) {
+    return { ok: false, problems: problems.sort((a, b) => a.line - b.line) };
+  }
+  return {
+    ok: true,
+    profile: parsed.data,
+    cv: read.cv,
+    styleExamples: read.styleExamples,
+    hash: hashOf([new TextEncoder().encode(text), read.cv, ...read.styleBytes]),
+  } as CheckedProfile;
+}
+
+/** IDs are unique across the file and never reused. */
+function checkIds(data: unknown, at: Report): void {
+  const root = asRecord(data);
+  const gaps = asRecord(root?.gaps);
+  const groups: [Path, unknown][] = [
+    [["facts"], root?.facts],
+    [["gaps", "templates"], gaps?.templates],
+    [["gaps", "known"], gaps?.known],
   ];
-  for (const [path, value] of ids) {
-    if (seen.has(value)) at(path, `${value} is used more than once`);
-    seen.add(value);
+  const seen = new Set<string>();
+  for (const [base, items] of groups) {
+    asList(items).forEach((item, i) => {
+      const id = asRecord(item)?.id;
+      if (typeof id !== "string") return;
+      if (seen.has(id)) at([...base, i, "id"], "is used more than once");
+      seen.add(id);
+    });
+  }
+}
+
+/**
+ * The CV and the style examples, read even when the rest of the file has
+ * problems, so the owner hears about everything at once. A path the schema
+ * refuses is never read.
+ */
+function readFiles(
+  data: unknown,
+  files: ProfileFiles,
+  at: Report,
+): { cv: Uint8Array | null; styleExamples: string[]; styleBytes: Uint8Array[] } {
+  const root = asRecord(data);
+  const readable = (path: unknown): path is string =>
+    typeof path === "string" && path.trim() !== "" && isPathBelow(path.trim());
+
+  let cv: Uint8Array | null = null;
+  const cvFile = asRecord(root?.cv)?.file;
+  if (readable(cvFile)) {
+    cv = files.read(cvFile.trim());
+    if (cv === null) at(["cv", "file"], "there is no such file");
+    else if (cv.length > MAX_CV_BYTES) at(["cv", "file"], "the CV is larger than 5 MB");
+    else if (new TextDecoder().decode(cv.subarray(0, 5)) !== "%PDF-")
+      at(["cv", "file"], "the CV is not a PDF");
   }
 
-  // Skills from the shared vocabulary, places from the region table.
-  const skill = (path: Path, tag: string) => {
-    if (!isSkillTag(tag)) at(path, `${tag} is not in the skill vocabulary (src/core/shared/skills.ts)`);
-  };
-  const place = (path: Path, code: string) => {
-    if (!isPlaceCode(code)) at(path, `${code} is not in the region table (src/core/shared/regions.ts)`);
-  };
-  profile.facts.forEach((fact, i) => fact.skills.forEach((tag, j) => skill(["facts", i, "skills", j], tag)));
-  profile.gaps.known.forEach((gap, i) => gap.skills.forEach((tag, j) => skill(["gaps", "known", i, "skills", j], tag)));
-  for (const tag of Object.keys(profile.fixed_answers.years_per_stack)) {
-    skill(["fixed_answers", "years_per_stack", tag], tag);
-  }
-  place(["owner", "location", "country"], profile.owner.location.country);
-  profile.fixed_answers.relocation.places.forEach((code, i) =>
-    place(["fixed_answers", "relocation", "places", i], code),
-  );
-  profile.fixed_answers.work_authorisation.forEach((entry, i) =>
-    place(["fixed_answers", "work_authorisation", i, "place"], entry.place),
-  );
-
-  if (!isTimeZone(profile.owner.location.timezone)) {
-    at(["owner", "location", "timezone"], "is not a time zone such as Asia/Karachi");
-  }
-  profile.gaps.templates.forEach((template, i) => {
-    for (const [, name] of template.text.matchAll(/\{([^}]*)\}/g)) {
-      if (!PLACEHOLDERS.has(name!)) {
-        at(["gaps", "templates", i, "text"], `uses {${name}}; templates may use only {skill} and {related}`);
-      }
-    }
-  });
-
-  // The CV and the style examples.
-  const cv = files.read(profile.cv.file);
-  if (cv === null) at(["cv", "file"], `${profile.cv.file} does not exist`);
-  else if (cv.length > MAX_CV_BYTES) at(["cv", "file"], "the CV is larger than 5 MB");
-  else if (new TextDecoder().decode(cv.subarray(0, 5)) !== "%PDF-") at(["cv", "file"], "the CV is not a PDF");
-
+  const styleExamples: string[] = [];
   const styleBytes: Uint8Array[] = [];
-  profile.style_examples.forEach((path, i) => {
-    const bytes = files.read(path);
-    if (bytes === null) at(["style_examples", i], `${path} does not exist`);
-    else styleBytes.push(bytes);
+  const seen = new Set<string>();
+  asList(root?.style_examples).forEach((path, i) => {
+    if (!readable(path) || seen.has(samePathKey(path))) return;
+    seen.add(samePathKey(path));
+    const bytes = files.read(path.trim());
+    if (bytes === null) return at(["style_examples", i], "there is no such file");
+    let example: string;
+    try {
+      example = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      return at(["style_examples", i], "is not UTF-8 text; save it as UTF-8");
+    }
+    if (CONTROL_CHARACTER.test(example)) {
+      return at(["style_examples", i], "holds a control character, so it is not plain text");
+    }
+    styleExamples.push(example);
+    styleBytes.push(bytes);
   });
-  const styleExamples = styleBytes.map((bytes) => new TextDecoder().decode(bytes));
-  const words = styleExamples.reduce((sum, example) => sum + example.split(/\s+/).filter(Boolean).length, 0);
+  const words = styleExamples.reduce(
+    (sum, example) => sum + example.split(/\s+/).filter(Boolean).length,
+    0,
+  );
   if (words > MAX_STYLE_WORDS) {
-    at(["style_examples"], `the style examples have ${words} words; at most ${MAX_STYLE_WORDS} in total`);
+    at(
+      ["style_examples"],
+      `the style examples have ${words} words; at most ${MAX_STYLE_WORDS} in total`,
+    );
   }
+  return { cv, styleExamples, styleBytes };
+}
 
-  if (problems.length > 0 || cv === null) return { ok: false, problems: sorted(problems) };
-  return { ok: true, profile, cv, styleExamples, hash: hashOf([new TextEncoder().encode(text), cv, ...styleBytes]) };
+function yamlProblems(doc: Document): ProfileProblem[] {
+  const problems: ProfileProblem[] = [];
+  for (const error of doc.errors) {
+    const line = error.linePos?.[0].line ?? 1;
+    if (problems.some((problem) => problem.line === line)) continue;
+    problems.push({
+      line,
+      message: YAML_PROBLEMS[error.code] ?? `the file is not valid YAML here (${error.code})`,
+    });
+    if (problems.length === MAX_YAML_PROBLEMS) break;
+  }
+  return problems;
+}
+
+function aliasLines(doc: Document, counter: LineCounter): number[] {
+  const lines: number[] = [];
+  visit(doc, {
+    Alias(_key, node) {
+      lines.push(node.range ? counter.linePos(node.range[0]).line : 1);
+    },
+  });
+  return lines;
 }
 
 /** Each part with its length first, so no two different sets of files hash alike. */
@@ -143,17 +214,18 @@ function hashOf(parts: readonly Uint8Array[]): string {
   return hash.digest("hex");
 }
 
-function isTimeZone(zone: string): boolean {
-  try {
-    new Intl.DateTimeFormat("en", { timeZone: zone });
-    return zone !== "";
-  } catch {
-    return false;
-  }
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
-/** The line of the deepest node on the path that exists, or of the named key in it. */
-function lineOf(doc: Document, counter: LineCounter, path: Path, key?: string): number | null {
+function asList(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/** The line of the deepest node on the path that exists, or of the named key in it; else line 1. */
+function lineOf(doc: Document, counter: LineCounter, path: Path, key?: string): number {
   for (let depth = path.length; depth >= 0; depth--) {
     const node: unknown = depth === 0 ? doc.contents : doc.getIn(path.slice(0, depth), true);
     if (key !== undefined && depth === path.length && isMap(node)) {
@@ -164,17 +236,16 @@ function lineOf(doc: Document, counter: LineCounter, path: Path, key?: string): 
     const range = (node as { range?: [number, number, number] } | null)?.range;
     if (range) return counter.linePos(range[0]).line;
   }
-  return null;
+  return 1;
 }
 
 function pathText(path: Path, key?: string): string {
   const parts = key === undefined ? path : [...path, key];
-  return parts.reduce<string>(
-    (text, part) => (typeof part === "number" ? `${text}[${part}]` : text ? `${text}.${part}` : part),
-    "",
-  ) || "the file";
-}
-
-function sorted(problems: ProfileProblem[]): ProfileProblem[] {
-  return problems.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+  return (
+    parts.reduce<string>(
+      (text, part) =>
+        typeof part === "number" ? `${text}[${part}]` : text ? `${text}.${part}` : part,
+      "",
+    ) || "the file"
+  );
 }

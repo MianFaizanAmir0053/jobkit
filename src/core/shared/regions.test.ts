@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isPlaceCode, placeCode, placeContains, placeName } from "./regions";
+import { isCountryCode, isPlaceCode, placeCode, placeContains, placeName } from "./regions";
 
 describe("placeCode", () => {
   it.each([
@@ -9,10 +9,11 @@ describe("placeCode", () => {
     ["U.K.", "GB"],
     ["London", "GB"],
     ["Germany", "DE"],
-    ["DE", "DE"],
     ["Europe", "EUROPE"],
     ["European Union", "EU"],
+    ["EU", "EU"],
     ["USA", "US"],
+    ["US", "US"],
     ["United States of America", "US"],
     ["U.S.", "US"],
     ["Dubai", "AE"],
@@ -32,19 +33,50 @@ describe("placeCode", () => {
     expect(placeCode(text)).toBe(code);
   });
 
+  it.each([
+    ["US only", "US"],
+    ["UK only", "GB"],
+    ["the UAE", "AE"],
+    ["Remote US", "US"],
+    ["Remote, UK only", "GB"],
+    ["US-based", "US"],
+  ])("reads past the words around a place: %j is %j", (text, code) => {
+    expect(placeCode(text)).toBe(code);
+  });
+
   it("looks a name up whole, never as part of another", () => {
-    expect(placeCode("US only")).toBeNull();
+    expect(placeCode("US and Canada")).toBeNull();
     expect(placeCode("Atlantis")).toBeNull();
+    expect(placeCode("Remote")).toBeNull();
+  });
+
+  it("does not read a bare country code as a place, since CA, IN and IT are also states and words", () => {
+    for (const text of ["DE", "CA", "IN", "IT", "GA", "LA", "QA", "AI"])
+      expect(placeCode(text)).toBeNull();
+  });
+
+  it("knows no place for a name two places share", () => {
+    expect(placeCode("Hyderabad")).toBeNull();
+    expect(placeCode("Georgia")).toBeNull();
+    expect(placeCode("Tbilisi")).toBe("GE");
+    expect(placeName("GE")).toBe("Georgia");
   });
 });
 
-describe("isPlaceCode and placeName", () => {
+describe("isPlaceCode, isCountryCode and placeName", () => {
   it("knows every country and region code, by name", () => {
     expect(isPlaceCode("PK")).toBe(true);
     expect(isPlaceCode("EU")).toBe(true);
     expect(isPlaceCode("XX")).toBe(false);
     expect(placeName("GB")).toBe("United Kingdom");
     expect(placeName("XX")).toBe("XX");
+  });
+
+  it("tells countries from regions", () => {
+    expect(isCountryCode("PK")).toBe(true);
+    expect(isCountryCode("EU")).toBe(false);
+    expect(isCountryCode("WORLDWIDE")).toBe(false);
+    expect(isCountryCode("XX")).toBe(false);
   });
 });
 
@@ -59,6 +91,22 @@ describe("placeContains", () => {
     expect(placeContains("PK", "PK")).toBe(true);
     expect(placeContains("US", "PK")).toBe(false);
     expect(placeContains("EMEA", "PK")).toBe("unknown");
-    expect(placeContains("ATLANTIS", "PK")).toBe(false);
+  });
+
+  it("says unknown, not no, for a place or country the table does not know", () => {
+    expect(placeContains("ATLANTIS", "PK")).toBe("unknown");
+    expect(placeContains("unknown", "PK")).toBe("unknown");
+    expect(placeContains("PK", "pk")).toBe("unknown");
+  });
+
+  it("takes a region in when it holds every member of it", () => {
+    expect(placeContains("EU", "EU")).toBe(true);
+    expect(placeContains("EEA", "EU")).toBe(true);
+    expect(placeContains("EUROPE", "EU")).toBe(true);
+    expect(placeContains("WORLDWIDE", "EU")).toBe(true);
+    expect(placeContains("EU", "EUROPE")).toBe(false);
+    expect(placeContains("PK", "SOUTH_ASIA")).toBe(false);
+    expect(placeContains("EMEA", "EU")).toBe("unknown");
+    expect(placeContains("EU", "EMEA")).toBe("unknown");
   });
 });

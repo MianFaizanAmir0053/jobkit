@@ -7,8 +7,8 @@ owner:
   location: { city: Lahore, country: PK, timezone: Asia/Karachi }
 links:
   portfolio: https://portfolio.example.com
-  linkedin: https://www.linkedin.com/in/example
-  github: https://github.com/example
+  linkedin: https://linkedin.example/in/sam-rivera
+  github: https://github.example/sam-rivera
 signature: |
   Sam Rivera
   Portfolio: https://portfolio.example.com

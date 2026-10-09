@@ -112,7 +112,7 @@ ID|Indonesia|jakarta
 IE|Ireland|dublin
 IL|Israel|tel aviv
 IM|Isle of Man
-IN|India|bangalore|bengaluru|mumbai|delhi|new delhi|hyderabad|pune|chennai
+IN|India|bangalore|bengaluru|mumbai|delhi|new delhi|pune|chennai
 IO|British Indian Ocean Territory
 IQ|Iraq
 IR|Iran
@@ -297,16 +297,32 @@ const REGIONS: readonly { code: string; name: string; members: string | null; al
   { code: "APAC", name: "Asia-Pacific", members: null, aliases: ["asia pacific"] },
 ];
 
-/** Lower case, without accents, dots or apostrophes, and with any other punctuation as a space. */
+/**
+ * Lower case, without accents, dots or apostrophes, with any other
+ * punctuation as a space, and without the words a post puts around a
+ * place: "the UAE", "US only", "Remote, UK" and "US-based" name a place.
+ */
 function lookupKey(text: string): string {
-  return text
+  let key = text
     .normalize("NFKD")
     .replace(/\p{M}/gu, "")
     .toLowerCase()
     .replace(/[.'’]/g, "")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
+  for (let previous = ""; previous !== key; ) {
+    previous = key;
+    key = key.replace(/^(?:the|remote) /, "").replace(/ (?:only|based)$/, "");
+  }
+  return key;
 }
+
+/**
+ * Names two places share, which name neither: Georgia is a country and a
+ * US state. (Hyderabad, a city in both India and Pakistan, is simply not
+ * listed.)
+ */
+const SHARED_NAMES: ReadonlySet<string> = new Set(["georgia"]);
 
 interface PlaceEntry {
   code: string;
@@ -320,6 +336,7 @@ const BY_KEY = new Map<string, string>();
 
 function addName(name: string, code: string): void {
   const key = lookupKey(name);
+  if (SHARED_NAMES.has(key)) return;
   const taken = BY_KEY.get(key);
   if (taken !== undefined && taken !== code) {
     throw new Error(`"${name}" names both ${taken} and ${code} in the region table`);
@@ -327,10 +344,13 @@ function addName(name: string, code: string): void {
   BY_KEY.set(key, code);
 }
 
+// A bare country code is not a name: in a post, "CA", "IN" and "GA" are as
+// likely US states, and "IT", "QA" and "AI" words. "US" and "UK" are
+// listed as aliases.
 for (const line of COUNTRIES.trim().split("\n")) {
   const [code, name, ...aliases] = line.split("|") as [string, string, ...string[]];
   PLACES.set(code, { code, name });
-  for (const alias of [code, name, ...aliases]) addName(alias, code);
+  for (const alias of [name, ...aliases]) addName(alias, code);
 }
 const ALL_COUNTRIES = [...PLACES.keys()];
 for (const region of REGIONS) {
@@ -351,18 +371,35 @@ export function isPlaceCode(code: string): boolean {
   return PLACES.has(code);
 }
 
+/** A country's code, as opposed to a region's. */
+export function isCountryCode(code: string): boolean {
+  const entry = PLACES.get(code);
+  return entry !== undefined && entry.members === undefined;
+}
+
 export function placeName(code: string): string {
   return PLACES.get(code)?.name ?? code;
 }
 
 /**
- * Whether a place takes in a country: a country takes in itself, a region
- * its members. "unknown" for a region whose membership is ambiguous.
+ * Whether a place takes in another, a country or a region: a country takes
+ * in itself, and a region its members and any region made only of them.
+ * "unknown" for a code the table does not know, and for a region whose
+ * membership is ambiguous, such as EMEA.
  */
-export function placeContains(place: string, country: string): boolean | "unknown" {
-  const entry = PLACES.get(place);
-  if (!entry) return false;
-  if (entry.members === undefined) return place === country;
-  if (entry.members === null) return "unknown";
-  return entry.members.has(country);
+export function placeContains(place: string, other: string): boolean | "unknown" {
+  const outer = membersOf(place);
+  const inner = membersOf(other);
+  if (outer === undefined || inner === undefined) return "unknown";
+  if (place === other) return true;
+  if (outer === null || inner === null) return "unknown";
+  for (const country of inner) if (!outer.has(country)) return false;
+  return true;
+}
+
+/** A place's countries; null for an ambiguous region, undefined for an unknown code. */
+function membersOf(code: string): ReadonlySet<string> | null | undefined {
+  const entry = PLACES.get(code);
+  if (!entry) return undefined;
+  return entry.members === undefined ? new Set([code]) : entry.members;
 }

@@ -4,6 +4,7 @@ import {
   confirmProduction,
   parseEnvFile,
   parseTarget,
+  productionRef,
   projectRefFromSupabaseUrl,
   schemaStatements,
 } from "./ops";
@@ -26,6 +27,29 @@ describe("parseTarget", () => {
     );
     expect(parseTarget(["--prod"], { ...npmRun, NODE_ENV: "production" })).toBe("prod");
     expect(parseTarget([], { NODE_ENV: "production" })).toBe("local");
+  });
+});
+
+describe("productionRef", () => {
+  const SUPABASE_URL = "https://abcd1234efgh.supabase.co";
+  const pooler = (user: string) =>
+    `postgresql://${user}@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres`;
+
+  it("reads the project reference, when DATABASE_URL is for the same project", () => {
+    expect(productionRef({ SUPABASE_URL, DATABASE_URL: pooler("jobkit_app.abcd1234efgh") })).toBe(
+      "abcd1234efgh",
+    );
+    expect(productionRef({ SUPABASE_URL, DATABASE_URL: pooler("jobkit_app") })).toBe(
+      "abcd1234efgh",
+    );
+  });
+
+  it("refuses a DATABASE_URL for another project", () => {
+    expect(() =>
+      productionRef({ SUPABASE_URL, DATABASE_URL: pooler("jobkit_app.zzzz9999yyyy") }),
+    ).toThrow(
+      "DATABASE_URL is for project zzzz9999yyyy, but SUPABASE_URL is for abcd1234efgh: fix .env.ops.local",
+    );
   });
 });
 

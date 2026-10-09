@@ -32,6 +32,10 @@ export function checkPath(path: string): string | null {
   if (normalised === "private" || normalised.startsWith("private/")) {
     return `${path}: files under private/ never enter git`;
   }
+  // The local database and its files hold copies of the owner's profile and CV.
+  if (normalised === ".data" || normalised.startsWith(".data/")) {
+    return `${path}: files under .data/ never enter git`;
+  }
   const base = normalised.split("/").pop() ?? normalised;
   if (base.startsWith(".env") && base !== ".env.example") {
     return `${path}: .env files never enter git (only .env.example)`;

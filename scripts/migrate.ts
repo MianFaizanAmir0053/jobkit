@@ -5,7 +5,7 @@
 import { join } from "node:path";
 
 import { createPgDb } from "@/adapters/pg";
-import { createPgliteDb } from "@/adapters/pglite";
+import { openLocalDb } from "@/server/db/localDb";
 import { applyMigrations, bootstrapForTests, loadMigrations } from "@/server/db/migrate";
 import { SCHEMA } from "@/server/container";
 
@@ -21,9 +21,9 @@ import {
 async function main(): Promise<void> {
   const migrations = loadMigrations(join(process.cwd(), "db", "migrations"));
   if (parseTarget(process.argv.slice(2)) === "local") {
-    const db = await createPgliteDb({
+    const db = await openLocalDb(join(process.cwd(), ".data"), {
       schema: SCHEMA,
-      dataDir: join(process.cwd(), ".data", "pglite"),
+      holder: "npm run db:migrate",
     });
     await bootstrapForTests(db);
     report(await applyMigrations(db, migrations));
