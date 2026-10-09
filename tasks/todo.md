@@ -51,7 +51,8 @@ Every task is test-first and ends with `npm run check` green (platform AC1 holds
   - Encoding and tile counts, limits, resume, the New job page, the share-target page with the service worker's refusals and the server switch.
   - Verify: `npm test`; Playwright upload and synthetic-share tests. Depends on: 8, 12. Files: src/core/intake/{encode,tiles,limits}.ts, src/app/(app)/jobs/new/*, public/sw.js, e2e/upload.spec.ts. Scope: M.
 - [ ] **Task 14: Profile** — Owns: profile AC1–AC7.
-  - Schema, shared skill vocabulary and region table, seed with rollback (local by default, `--prod` for production), access API, Profile page, the public sample in CI. In parallel, the owner reviews `private/profile.draft.yaml`, approves facts and writes the rest; it is then seeded with `--prod`.
+  - Schema, shared skill vocabulary and region table, seed with rollback (local by default, `--prod` for production), access API, Profile page, the public sample in CI. In parallel, the owner reviews `private/profile.yaml` (profile spec, "Drafting the first version"), approves facts and writes the rest; it is then seeded with `--prod`.
+  - Code done: the schema and its line-numbered checks, the skill vocabulary and region table, the seed with rollback, the access API, the Profile page and the sample's checks. Claude drafts `private/profile.yaml`, which is never committed; the owner's review and the `--prod` seed are runbook step 13.
   - Verify: `npm test`; `npm run profile:seed` on the sample profile locally. Depends on: 3. Files: src/core/profile/*, src/core/shared/{skills,regions}.ts, scripts/profile-seed.ts, src/app/(app)/profile/page.tsx. Scope: M.
 - [ ] **Checkpoint B (day 5)** — a phone upload on the live site creates a job and stores its images; the spend cap guards every model call; the profile is seeded.
 

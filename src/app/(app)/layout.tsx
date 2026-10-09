@@ -3,10 +3,12 @@ import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
 import { requireSession } from "@/server/dal";
 
-// Each later task adds its page here: New job, Stats, Spend, Profile.
+// Each later task adds its page here: New job, Stats, Spend.
 const NAV: readonly { href: string; label: string; googleOnly?: boolean }[] = [
   { href: "/jobs", label: "Jobs" },
   { href: "/baseline", label: "Baseline" },
+  // The owner's fixed answers stay on the laptop.
+  { href: "/profile", label: "Profile", googleOnly: true },
   // Paired phones cannot pair, approve or revoke (platform spec B3).
   { href: "/devices", label: "Devices", googleOnly: true },
 ];

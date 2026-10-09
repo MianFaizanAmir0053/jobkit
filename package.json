@@ -19,7 +19,8 @@
     "test:e2e": "playwright test",
     "db:bootstrap": "tsx scripts/bootstrap.ts",
     "db:migrate": "tsx scripts/migrate.ts",
-    "ledger:import": "tsx scripts/ledger-import.ts"
+    "ledger:import": "tsx scripts/ledger-import.ts",
+    "profile:seed": "tsx scripts/profile-seed.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",

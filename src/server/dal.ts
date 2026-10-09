@@ -8,6 +8,12 @@ import { baselineSummary, type BaselineSummary } from "@/core/ledger/baseline";
 import { listDevices, type Device } from "@/core/platform/devices";
 import { waitingPhones, type WaitingPhone } from "@/core/platform/pairing";
 import {
+  getActiveProfile,
+  type Profile,
+  profileCounts,
+  type ProfileCounts,
+} from "@/core/profile/profile";
+import {
   checkRequirements,
   findSession,
   type Session,
@@ -80,3 +86,17 @@ export const baselineForViewer = cache(async (): Promise<BaselineSummary> => {
   await requireSession();
   return baselineSummary(await getContainer());
 });
+
+/**
+ * The Profile page (profile spec): the active version's approved items and
+ * how many wait. Laptop sessions only: it holds the owner's fixed answers.
+ */
+export const profileForViewer = cache(
+  async (): Promise<{ profile: Profile; counts: ProfileCounts } | null> => {
+    await requireSession({ kind: "google" });
+    const { db } = await getContainer();
+    const profile = await getActiveProfile(db);
+    const counts = profile && (await profileCounts(db, profile.versionId));
+    return profile && counts ? { profile, counts } : null;
+  },
+);

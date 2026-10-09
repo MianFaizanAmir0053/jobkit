@@ -18,6 +18,7 @@ export async function POST() {
     delete from {{schema}}.sessions;
     delete from {{schema}}.owner;
     delete from {{schema}}.baseline_runs;
+    delete from {{schema}}.profile_versions;
   `);
   return new NextResponse(null, { status: 204 });
 }
