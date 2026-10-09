@@ -15,9 +15,30 @@ describe("parseEarlierCsv", () => {
 
     expect(parseEarlierCsv(text, TODAY)).toEqual({
       rows: [
-        { line: 2, company: "Acme Ltd", role: "Frontend Developer", appliedOn: "2026-05-04", route: "email", address: "jobs@acme.example" },
-        { line: 3, company: "Globex", role: "Designer", appliedOn: "2026-06-01", route: "form", address: null },
-        { line: 4, company: "Initech", role: "Backend Engineer", appliedOn: "2026-06-02", route: "message", address: "+92 300 1234567" },
+        {
+          line: 2,
+          company: "Acme Ltd",
+          role: "Frontend Developer",
+          appliedOn: "2026-05-04",
+          route: "email",
+          address: "jobs@acme.example",
+        },
+        {
+          line: 3,
+          company: "Globex",
+          role: "Designer",
+          appliedOn: "2026-06-01",
+          route: "form",
+          address: null,
+        },
+        {
+          line: 4,
+          company: "Initech",
+          role: "Backend Engineer",
+          appliedOn: "2026-06-02",
+          route: "message",
+          address: "+92 300 1234567",
+        },
       ],
       errors: [],
     });
@@ -25,12 +46,27 @@ describe("parseEarlierCsv", () => {
   });
 
   it("reads quoted fields with commas and quotes, Windows line ends, blank lines and a byte-order mark", () => {
-    const text = '﻿"Acme, Inc.",Senior "Platform" Engineer,2026-05-04,email,\r\n\r\n"Say ""hi"" Ltd",Dev,2026-05-05,form\r\n';
+    const text =
+      '﻿"Acme, Inc.",Senior "Platform" Engineer,2026-05-04,email,\r\n\r\n"Say ""hi"" Ltd",Dev,2026-05-05,form\r\n';
 
     expect(parseEarlierCsv(text, TODAY)).toEqual({
       rows: [
-        { line: 1, company: "Acme, Inc.", role: 'Senior "Platform" Engineer', appliedOn: "2026-05-04", route: "email", address: null },
-        { line: 3, company: 'Say "hi" Ltd', role: "Dev", appliedOn: "2026-05-05", route: "form", address: null },
+        {
+          line: 1,
+          company: "Acme, Inc.",
+          role: 'Senior "Platform" Engineer',
+          appliedOn: "2026-05-04",
+          route: "email",
+          address: null,
+        },
+        {
+          line: 3,
+          company: 'Say "hi" Ltd',
+          role: "Dev",
+          appliedOn: "2026-05-05",
+          route: "form",
+          address: null,
+        },
       ],
       errors: [],
     });
@@ -45,16 +81,23 @@ describe("parseEarlierCsv", () => {
       "Acme,,2026-05-04,email",
       "Acme,Developer,2026-02-30,email",
       "Acme,Developer,May 4,email",
-      "Acme,Developer,2026-10-16,email",
+      "Acme,Developer,2026-10-17,email",
       "Acme,Developer,2026-05-04,linkedin",
       "Acme,Developer,2026-05-04,email,not an address",
+      "Acme,(Remote),2026-05-04,email",
+      "Acme,Developer,1999-12-31,email",
+      "Acme,Developer,0000-01-01,email",
     ].join("\n");
 
     const parsed = parseEarlierCsv(text, TODAY);
 
     expect(parsed.rows.map((row) => row.line)).toEqual([1]);
     expect(parsed.errors).toEqual([
-      { line: 2, message: "expected company, role, applied_on, route and an optional address, but found 3 fields" },
+      {
+        line: 2,
+        message:
+          "expected company, role, applied_on, route and an optional address, but found 3 fields",
+      },
       { line: 3, message: "company is empty" },
       { line: 4, message: "company has no name besides its legal form" },
       { line: 5, message: "role is empty" },
@@ -62,7 +105,30 @@ describe("parseEarlierCsv", () => {
       { line: 7, message: 'applied_on must be a date such as 2026-05-04, not "May 4"' },
       { line: 8, message: "applied_on is after today" },
       { line: 9, message: 'route must be email, form or message, not "linkedin"' },
-      { line: 10, message: 'address must be an email address or a phone number, not "not an address"' },
+      {
+        line: 10,
+        message: 'address must be an email address or a phone number, not "not an address"',
+      },
+      { line: 11, message: "role has no title besides a place or a work mode" },
+      { line: 12, message: "applied_on is before 2000" },
+      { line: 13, message: "applied_on is before 2000" },
+    ]);
+  });
+
+  it("takes a date that is already today somewhere in the world", () => {
+    // 12:00 UTC on 15 October is already 16 October from UTC+12 eastwards.
+    expect(parseEarlierCsv("Acme,Developer,2026-10-16,email", TODAY)).toMatchObject({ errors: [] });
+  });
+
+  it("reports a row that repeats an earlier line's company, role and date, however written", () => {
+    const text = [
+      "Acme Ltd,Front-End Developer,2026-05-04,email",
+      "Globex,Designer,2026-06-01,form",
+      "ACME,Frontend Developer,2026-05-04,form",
+    ].join("\n");
+
+    expect(parseEarlierCsv(text, TODAY).errors).toEqual([
+      { line: 3, message: "the same company, role and date as line 1" },
     ]);
   });
 
@@ -76,8 +142,9 @@ describe("parseEarlierCsv", () => {
   });
 
   it("reports a quote that is never closed", () => {
-    expect(parseEarlierCsv('Acme,Developer,2026-05-04,email\n"Globex,Designer,2026-06-01,form', TODAY).errors).toEqual([
-      { line: 2, message: "a quoted field is never closed" },
-    ]);
+    expect(
+      parseEarlierCsv('Acme,Developer,2026-05-04,email\n"Globex,Designer,2026-06-01,form', TODAY)
+        .errors,
+    ).toEqual([{ line: 2, message: "a quoted field is never closed" }]);
   });
 });

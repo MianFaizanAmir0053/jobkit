@@ -13,9 +13,12 @@ import {
   type NewApplication,
   openApplication,
   TRANSITIONS,
+  undoStatus,
 } from "./statuses";
 
 const JOB = "11111111-1111-4111-8111-111111111111";
+const OTHER_JOB = "33333333-3333-4333-8333-333333333333";
+const THIRD_JOB = "44444444-4444-4444-8444-444444444444";
 const STATUSES: readonly ApplicationStatus[] = [
   "open",
   "kit_ready",
@@ -71,10 +74,35 @@ async function audit(id: string): Promise<AuditRow[]> {
 }
 
 /** Puts an application straight into a status, as a fixture. */
-async function inStatus(status: ApplicationStatus): Promise<string> {
-  const id = await openApplication(deps(), application(), null);
+async function inStatus(
+  status: ApplicationStatus,
+  overrides: Partial<NewApplication> = {},
+): Promise<string> {
+  const id = await openApplication(deps(), application(overrides), null);
   await db.query("update {{schema}}.applications set status = $2 where id = $1", [id, status]);
   return id;
+}
+
+/** Walks an application through the real statuses, as the owner's taps would. */
+async function walked(
+  steps: readonly ApplicationStatus[],
+  overrides: Partial<NewApplication> = {},
+): Promise<string> {
+  const id = await openApplication(deps(), application(overrides), null);
+  for (const step of steps) {
+    clock.advance(60_000);
+    expect(await changeStatus(deps(), id, step, null)).toMatchObject({ ok: true, changed: true });
+  }
+  return id;
+}
+
+async function stamps(id: string): Promise<Record<string, unknown>> {
+  const { rows } = await db.query<Record<string, unknown>>(
+    `select status, kit_ready_at, sent_at, submitted_at, skipped_at, bounced_at
+       from {{schema}}.applications where id = $1`,
+    [id],
+  );
+  return rows[0]!;
 }
 
 describe("openApplication", () => {
@@ -102,12 +130,23 @@ describe("openApplication", () => {
       { from_status: null, to_status: "open", changed_at: clock.now(), session_id: null },
     ]);
   });
+
+  it("gives a second tap on the same role the same application, with one audit row", async () => {
+    const first = await openApplication(deps(), application(), null);
+    clock.advance(1_000);
+    const second = await openApplication(deps(), application({ role: "Frontend Developer" }), null);
+
+    expect(second).toBe(first);
+    expect(await audit(first)).toHaveLength(1);
+  });
 });
 
 describe("changeStatus", () => {
   const allowed = STATUSES.flatMap((from) => TRANSITIONS[from].map((to) => [from, to] as const));
   const refused = STATUSES.flatMap((from) =>
-    STATUSES.filter((to) => to !== from && !TRANSITIONS[from].includes(to)).map((to) => [from, to] as const),
+    STATUSES.filter((to) => to !== from && !TRANSITIONS[from].includes(to)).map(
+      (to) => [from, to] as const,
+    ),
   );
 
   it("allows exactly the transitions in the spec's table", () => {
@@ -121,44 +160,113 @@ describe("changeStatus", () => {
     ]);
   });
 
-  it.each(allowed)("accepts %s to %s, stamps its time and writes an audit row", async (from, to) => {
-    const id = await inStatus(from);
-    clock.advance(60_000);
+  it.each(allowed)(
+    "accepts %s to %s, stamps its time and writes an audit row",
+    async (from, to) => {
+      const id = await inStatus(from, { route: to === "submitted" ? "form" : "email" });
+      clock.advance(60_000);
 
-    expect(await changeStatus(deps(), id, to, null)).toEqual({ ok: true, changed: true, status: to });
+      expect(await changeStatus(deps(), id, to, null)).toEqual({
+        ok: true,
+        changed: true,
+        status: to,
+      });
 
-    const { rows } = await db.query<Record<string, unknown>>(
-      `select status, status_changed_at, ${to}_at as stamped from {{schema}}.applications where id = $1`,
-      [id],
-    );
-    expect(rows[0]).toEqual({ status: to, status_changed_at: clock.now(), stamped: clock.now() });
-    expect((await audit(id)).at(-1)).toMatchObject({ from_status: from, to_status: to });
-  });
+      const { rows } = await db.query<Record<string, unknown>>(
+        `select status, status_changed_at, ${to}_at as stamped from {{schema}}.applications where id = $1`,
+        [id],
+      );
+      expect(rows[0]).toEqual({ status: to, status_changed_at: clock.now(), stamped: clock.now() });
+      expect((await audit(id)).at(-1)).toMatchObject({ from_status: from, to_status: to });
+    },
+  );
 
   it.each(refused)("refuses %s to %s and writes nothing", async (from, to) => {
     const id = await inStatus(from);
 
-    expect(await changeStatus(deps(), id, to, null)).toEqual({ ok: false, reason: "refused", status: from });
+    expect(await changeStatus(deps(), id, to, null)).toEqual({
+      ok: false,
+      reason: "refused",
+      status: from,
+    });
     expect(await audit(id)).toHaveLength(1);
   });
 
   it("moves an open application to skipped when the owner skips before a kit exists", async () => {
     const id = await openApplication(deps(), application(), null);
 
-    expect(await changeStatus(deps(), id, "skipped", null)).toMatchObject({ ok: true, status: "skipped" });
+    expect(await changeStatus(deps(), id, "skipped", null)).toMatchObject({
+      ok: true,
+      status: "skipped",
+    });
   });
 
   it("records a double tap once", async () => {
     const id = await inStatus("kit_ready");
 
     expect(await changeStatus(deps(), id, "sent", null)).toMatchObject({ changed: true });
-    expect(await changeStatus(deps(), id, "sent", null)).toEqual({ ok: true, changed: false, status: "sent" });
+    expect(await changeStatus(deps(), id, "sent", null)).toEqual({
+      ok: true,
+      changed: false,
+      status: "sent",
+    });
     expect((await audit(id)).filter((row) => row.to_status === "sent")).toHaveLength(1);
+  });
+
+  it("marks an email kit sent, and a form or message kit submitted, never the other way round", async () => {
+    const email = await inStatus("kit_ready", { route: "email" });
+    const form = await inStatus("kit_ready", { jobId: OTHER_JOB, route: "form" });
+    const message = await inStatus("kit_ready", { jobId: THIRD_JOB, route: "message" });
+
+    expect(await changeStatus(deps(), email, "submitted", null)).toEqual({
+      ok: false,
+      reason: "refused",
+      status: "kit_ready",
+    });
+    expect(await changeStatus(deps(), form, "sent", null)).toEqual({
+      ok: false,
+      reason: "refused",
+      status: "kit_ready",
+    });
+    expect(await changeStatus(deps(), email, "sent", null)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+    expect(await changeStatus(deps(), form, "submitted", null)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+    expect(await changeStatus(deps(), message, "submitted", null)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
+  });
+
+  it("refuses to mark a kit sent or submitted before its route is known", async () => {
+    const id = await inStatus("kit_ready", { route: null });
+
+    expect(await changeStatus(deps(), id, "sent", null)).toEqual({
+      ok: false,
+      reason: "refused",
+      status: "kit_ready",
+    });
+    expect(await changeStatus(deps(), id, "submitted", null)).toEqual({
+      ok: false,
+      reason: "refused",
+      status: "kit_ready",
+    });
+    expect(await changeStatus(deps(), id, "skipped", null)).toMatchObject({
+      ok: true,
+      changed: true,
+    });
   });
 
   it("records which session made the change", async () => {
     const random = cryptoRandom;
-    const { session } = await issueSession({ db, clock, random }, { kind: "google", label: "laptop" });
+    const { session } = await issueSession(
+      { db, clock, random },
+      { kind: "google", label: "laptop" },
+    );
     const id = await openApplication(deps(), application(), session.id);
 
     await changeStatus(deps(), id, "skipped", session.id);
@@ -167,7 +275,89 @@ describe("changeStatus", () => {
   });
 
   it("reports an application that does not exist", async () => {
-    expect(await changeStatus(deps(), "22222222-2222-4222-8222-222222222222", "sent", null)).toEqual({
+    expect(
+      await changeStatus(deps(), "22222222-2222-4222-8222-222222222222", "sent", null),
+    ).toEqual({
+      ok: false,
+      reason: "not-found",
+    });
+  });
+});
+
+describe("undoStatus", () => {
+  it("takes back a mistaken Mark sent: back to kit_ready, its time cleared, with an audit row", async () => {
+    const id = await walked(["kit_ready", "sent"]);
+    clock.advance(60_000);
+
+    expect(await undoStatus(deps(), id, "sent", null)).toEqual({
+      ok: true,
+      changed: true,
+      status: "kit_ready",
+    });
+    expect(await stamps(id)).toMatchObject({
+      status: "kit_ready",
+      kit_ready_at: expect.any(Date),
+      sent_at: null,
+    });
+    expect((await audit(id)).at(-1)).toMatchObject({
+      from_status: "sent",
+      to_status: "kit_ready",
+      changed_at: clock.now(),
+    });
+  });
+
+  it("takes back a skip to where it came from: open before a kit, kit_ready after one", async () => {
+    const early = await walked(["skipped"]);
+    const late = await walked(["kit_ready", "skipped"], { jobId: OTHER_JOB });
+
+    expect(await undoStatus(deps(), early, "skipped", null)).toMatchObject({ status: "open" });
+    expect(await undoStatus(deps(), late, "skipped", null)).toMatchObject({ status: "kit_ready" });
+    expect(await stamps(late)).toMatchObject({ skipped_at: null });
+  });
+
+  it("takes back Mark submitted and Mark bounced, one tap at a time", async () => {
+    const submitted = await walked(["kit_ready", "submitted"], { route: "form" });
+    const bounced = await walked(["kit_ready", "sent", "bounced"], { jobId: OTHER_JOB });
+
+    expect(await undoStatus(deps(), submitted, "submitted", null)).toMatchObject({
+      status: "kit_ready",
+    });
+    expect(await undoStatus(deps(), bounced, "bounced", null)).toMatchObject({ status: "sent" });
+    expect(await stamps(bounced)).toMatchObject({ sent_at: expect.any(Date), bounced_at: null });
+    expect(await undoStatus(deps(), bounced, "sent", null)).toMatchObject({ status: "kit_ready" });
+  });
+
+  it("records a double tap once", async () => {
+    const id = await walked(["kit_ready", "sent"]);
+
+    expect(await undoStatus(deps(), id, "sent", null)).toMatchObject({ changed: true });
+    expect(await undoStatus(deps(), id, "sent", null)).toEqual({
+      ok: true,
+      changed: false,
+      status: "kit_ready",
+    });
+    expect((await audit(id)).filter((row) => row.from_status === "sent")).toHaveLength(1);
+  });
+
+  it("refuses to take back a status no tap made, or one the application has moved on from", async () => {
+    const id = await walked(["kit_ready", "sent", "bounced"]);
+
+    expect(await undoStatus(deps(), id, "kit_ready", null)).toEqual({
+      ok: false,
+      reason: "refused",
+      status: "bounced",
+    });
+    expect(await undoStatus(deps(), id, "open", null)).toEqual({
+      ok: false,
+      reason: "refused",
+      status: "bounced",
+    });
+    expect(await undoStatus(deps(), id, "skipped", null)).toEqual({
+      ok: false,
+      reason: "refused",
+      status: "bounced",
+    });
+    expect(await undoStatus(deps(), "22222222-2222-4222-8222-222222222222", "sent", null)).toEqual({
       ok: false,
       reason: "not-found",
     });

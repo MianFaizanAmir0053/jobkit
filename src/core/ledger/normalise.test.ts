@@ -8,6 +8,7 @@ import {
   companyRoleHash,
   postFingerprint,
   roleKey,
+  sameAddress,
   similarity,
 } from "./normalise";
 
@@ -65,6 +66,31 @@ describe("roleKey", () => {
     expect(roleKey("Senior Engineer")).not.toBe(roleKey("Engineer"));
     expect(roleKey("Sr Engineer")).toBe(roleKey("Senior Engineer"));
   });
+
+  it.each([
+    ["Software Engineer (Senior)", "softwareengineersenior"],
+    ["Software Engineer (Sr.)", "softwareengineersenior"],
+    ["Developer (Backend, Lahore)", "developerbackend"],
+    ["React Developer (Lahore - Hybrid)", "reactdeveloper"],
+    ["React Developer (Remote / UK)", "reactdeveloper"],
+  ])("drops only places and work modes from brackets: %j becomes %j", (role, key) => {
+    expect(roleKey(role)).toBe(key);
+  });
+
+  it("tells roles apart by what their brackets say besides a place", () => {
+    expect(roleKey("Software Engineer (Senior)")).not.toBe(roleKey("Software Engineer"));
+    expect(roleKey("Developer (Backend)")).not.toBe(roleKey("Developer (Frontend)"));
+  });
+
+  it("reads a bare pair of letters as a word, though QA and AI are also country codes", () => {
+    expect(roleKey("Engineer (QA)")).toBe("engineerqa");
+    expect(roleKey("Engineer (AI)")).not.toBe(roleKey("Engineer (QA)"));
+    expect(roleKey("Engineer (US)")).toBe("engineer");
+  });
+
+  it("is empty for a title that names only a place or a work mode", () => {
+    expect(roleKey("(Remote)")).toBe("");
+  });
 });
 
 describe("companyRoleHash", () => {
@@ -90,6 +116,53 @@ describe("addressKey", () => {
     expect(addressKey("+92 300 123-4567")).toBe(addressKey("923001234567"));
     expect(addressKey("")).toBeNull();
     expect(addressKey(" ( - ) ")).toBeNull();
+  });
+
+  it("drops a number's leading zeros, the trunk and international prefixes", () => {
+    expect(addressKey("0300-1234567")).toBe("3001234567");
+    expect(addressKey("0092 300 1234567")).toBe("923001234567");
+  });
+});
+
+describe("sameAddress", () => {
+  it("compares emails without case or surrounding spaces", () => {
+    expect(sameAddress(" Jobs@Acme.example ", "jobs@acme.example")).toBe(true);
+    expect(sameAddress("jobs@acme.example", "hr@acme.example")).toBe(false);
+  });
+
+  it.each([
+    "+92 300 1234567",
+    "0300-1234567",
+    "0092 300 1234567",
+    "+92 (0)300 1234567",
+    "300 1234567",
+  ])("takes %j for the same number as +92 300 1234567", (number) => {
+    expect(sameAddress(number, "+92 300 1234567")).toBe(true);
+    expect(sameAddress("+92 300 1234567", number)).toBe(true);
+  });
+
+  it.each([
+    ["+971 50 123 4567", "050 123 4567"],
+    ["+974 3312 3456", "3312 3456"],
+    ["+1 (212) 555-1234", "212 555 1234"],
+  ])("matches %j written at home as %j", (international, national) => {
+    expect(sameAddress(international, national)).toBe(true);
+  });
+
+  it("tells different numbers apart, even ones that share their last digits", () => {
+    expect(sameAddress("+92 300 1234567", "+92 300 7654321")).toBe(false);
+    expect(sameAddress("+92 300 1234567", "+93 300 1234567")).toBe(false);
+    expect(sameAddress("(212) 555-1234", "(312) 555-1234")).toBe(false);
+  });
+
+  it("needs eight digits before a shorter number can match the end of a longer one", () => {
+    expect(sameAddress("123 4567", "0300 1234567")).toBe(false);
+    expect(sameAddress("123 4567", "1234567")).toBe(true);
+  });
+
+  it("never matches an email with a number, or an empty address", () => {
+    expect(sameAddress("923001234567@example.com", "+92 300 1234567")).toBe(false);
+    expect(sameAddress("", "")).toBe(false);
   });
 });
 
@@ -126,6 +199,8 @@ describe("similarity", () => {
       "Nice to have: Next.js",
     ];
 
-    expect(similarity(postFingerprint(requirements), postFingerprint(repost))).toBeGreaterThanOrEqual(0.6);
+    expect(
+      similarity(postFingerprint(requirements), postFingerprint(repost)),
+    ).toBeGreaterThanOrEqual(0.6);
   });
 });

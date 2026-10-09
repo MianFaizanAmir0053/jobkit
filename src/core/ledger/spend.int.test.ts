@@ -36,7 +36,13 @@ async function call(
        (stage, attempt, provider, requested_model, started_at, outcome, cost_usd,
         cost_provisional, price_known)
      values ('extract', 1, 'anthropic', 'claude-opus-5-5', $1, $2, $3, $4, $5)`,
-    [new Date(startedAt), fields.outcome ?? "ok", usd, fields.provisional ?? false, fields.priceKnown ?? true],
+    [
+      new Date(startedAt),
+      fields.outcome ?? "ok",
+      usd,
+      fields.provisional ?? false,
+      fields.priceKnown ?? true,
+    ],
   );
 }
 
@@ -46,6 +52,7 @@ describe("monthToDateCost", () => {
     await call(0.36, "2026-10-14T09:00:00Z", { outcome: "started", provisional: true });
     await call(0.2, "2026-10-01T00:00:00Z");
     await call(9, "2026-09-30T23:59:59Z");
+    await call(7, "2026-11-01T00:00:00Z");
 
     expect(await monthToDateCost(db, clock.now())).toBe(2.06);
   });
@@ -78,7 +85,13 @@ describe("spendState", () => {
     // A million tokens each way: $24 at Claude Opus 5.5's rates, and more at the
     // highest rates, which is what the wrapper logs for an unknown model.
     const unknown = costOf(
-      { model: "claude-unknown", inputTokens: 1e6, outputTokens: 1e6, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      {
+        model: "claude-unknown",
+        inputTokens: 1e6,
+        outputTokens: 1e6,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      },
       clock.now(),
     );
     await call(unknown.usd, "2026-10-10T09:00:00Z", { priceKnown: false });
@@ -92,7 +105,14 @@ describe("spendGuard", () => {
   it("lets calls run below $26, so a job already running can finish", async () => {
     await call(25.99);
 
-    expect(await spendGuard(deps())({ stage: "extract", jobId: null, model: "claude-opus-5-5", provisionalCostUsd: 0.4 })).toEqual({
+    expect(
+      await spendGuard(deps())({
+        stage: "extract",
+        jobId: null,
+        model: "claude-opus-5-5",
+        provisionalCostUsd: 0.4,
+      }),
+    ).toEqual({
       ok: true,
     });
   });
@@ -100,7 +120,14 @@ describe("spendGuard", () => {
   it("refuses every call from $26", async () => {
     await call(26);
 
-    expect(await spendGuard(deps())({ stage: "draft", jobId: null, model: "claude-opus-5-5", provisionalCostUsd: 0.4 })).toEqual({
+    expect(
+      await spendGuard(deps())({
+        stage: "draft",
+        jobId: null,
+        model: "claude-opus-5-5",
+        provisionalCostUsd: 0.4,
+      }),
+    ).toEqual({
       ok: false,
       message: expect.stringMatching(/\$26/),
     });

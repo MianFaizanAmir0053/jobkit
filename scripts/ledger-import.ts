@@ -31,35 +31,49 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const path = args.find((arg) => !arg.startsWith("--"));
   if (!path) {
-    throw new Error("Name the list: npm run ledger:import private/earlier.csv (add -- before it to use --prod)");
+    throw new Error(
+      "Name the list: npm run ledger:import private/earlier.csv (add -- before it to use --prod)",
+    );
   }
   const target = parseTarget(args.filter((arg) => arg !== path));
   const { rows, errors } = parseEarlierCsv(readFileSync(path, "utf8"), systemClock.now());
   if (errors.length > 0) {
     for (const { line, message } of errors) console.error(`line ${line}: ${message}`);
-    throw new Error(`${errors.length} bad row(s), so nothing was imported. Fix them and run again.`);
+    throw new Error(
+      `${errors.length} bad row(s), so nothing was imported. Fix them and run again.`,
+    );
   }
-  const db = target === "local" ? await localDb() : await productionDb();
+  const { db, where } = target === "local" ? await localDb() : await productionDb();
   try {
-    const { inserted, alreadyThere } = await importEarlier({ db, clock: systemClock }, rows);
-    console.log(`Imported ${inserted} row(s); ${alreadyThere} were already there.`);
+    const { inserted, updated, alreadyThere } = await importEarlier(
+      { db, clock: systemClock },
+      rows,
+    );
+    console.log(
+      `Into ${where}: imported ${inserted} new row(s), corrected ${updated}, and ${alreadyThere} were already there.`,
+    );
   } finally {
     await db.close();
   }
 }
 
-async function localDb(): Promise<Db & { close(): Promise<void> }> {
-  const db = await createPgliteDb({ schema: SCHEMA, dataDir: join(process.cwd(), ".data", "pglite") });
+async function localDb(): Promise<{ db: Db & { close(): Promise<void> }; where: string }> {
+  const db = await createPgliteDb({
+    schema: SCHEMA,
+    dataDir: join(process.cwd(), ".data", "pglite"),
+  });
   await bootstrapForTests(db);
   await applyMigrations(db, loadMigrations(join(process.cwd(), "db", "migrations")));
-  return db;
+  return { db, where: "the local database" };
 }
 
-async function productionDb(): Promise<Db & { close(): Promise<void> }> {
+async function productionDb(): Promise<{ db: Db & { close(): Promise<void> }; where: string }> {
   const env = loadOpsEnv();
   requireValues(env, ["DATABASE_URL", "SUPABASE_URL"]);
-  await confirmProduction(projectRefFromSupabaseUrl(env.SUPABASE_URL!), askOnTerminal);
-  return createPgDb({ connectionString: env.DATABASE_URL!, schema: SCHEMA, max: 1 });
+  const ref = projectRefFromSupabaseUrl(env.SUPABASE_URL!);
+  await confirmProduction(ref, askOnTerminal);
+  const db = createPgDb({ connectionString: env.DATABASE_URL!, schema: SCHEMA, max: 1 });
+  return { db, where: `production (${ref})` };
 }
 
 main().catch((error: unknown) => {

@@ -55,16 +55,28 @@ describe("importEarlier", () => {
   it("adds nothing when the same list is imported twice", async () => {
     const rows = parseEarlierCsv(CSV, clock.now()).rows;
 
-    expect(await importEarlier(deps(), rows)).toEqual({ inserted: 2, alreadyThere: 0 });
-    expect(await importEarlier(deps(), rows)).toEqual({ inserted: 0, alreadyThere: 2 });
+    expect(await importEarlier(deps(), rows)).toEqual({ inserted: 2, updated: 0, alreadyThere: 0 });
+    expect(await importEarlier(deps(), rows)).toEqual({ inserted: 0, updated: 0, alreadyThere: 2 });
   });
 
-  it("keeps one row when a list names the same company, role and date twice, however written", async () => {
-    const rows = parseEarlierCsv(
-      ["Acme Ltd,Front-End Developer,2026-05-04,email", "ACME,Frontend Developer,2026-05-04,form"].join("\n"),
-      clock.now(),
-    ).rows;
+  it("corrects a row when a later list changes its route, address or spelling, as of the new import", async () => {
+    await importEarlier(deps(), parseEarlierCsv(CSV, clock.now()).rows);
+    clock.advance(60_000);
+    const corrected = CSV.replace(
+      "Globex,Designer,2026-06-01,form",
+      "GLOBEX,Designer,2026-06-01,email,hr@globex.example",
+    );
 
-    expect(await importEarlier(deps(), rows)).toEqual({ inserted: 1, alreadyThere: 1 });
+    expect(await importEarlier(deps(), parseEarlierCsv(corrected, clock.now()).rows)).toEqual({
+      inserted: 0,
+      updated: 1,
+      alreadyThere: 1,
+    });
+    const { rows } = await db.query(
+      `select company, route, address, imported_at from {{schema}}.earlier_applications where applied_on = '2026-06-01'`,
+    );
+    expect(rows).toEqual([
+      { company: "GLOBEX", route: "email", address: "hr@globex.example", imported_at: clock.now() },
+    ]);
   });
 });

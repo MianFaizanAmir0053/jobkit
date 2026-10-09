@@ -1,6 +1,6 @@
 import type { Clock, Db } from "@/core/ports";
 
-import { companyKey, companyRoleHash } from "./normalise";
+import { companyKey, companyRoleHash, roleKey } from "./normalise";
 import type { Route } from "./statuses";
 
 /**
@@ -28,6 +28,12 @@ export interface ImportProblem {
 const ROUTES: readonly string[] = ["email", "form", "message"];
 const HEADER = ["company", "role", "applied_on", "route", "address"];
 
+/** The furthest any time zone runs ahead of UTC (UTC+14), so a date that is today anywhere is not in the future. */
+const AHEAD_OF_UTC_MS = 14 * 60 * 60 * 1000;
+
+/** Applications before this are typing slips, such as 0026 for 2026. */
+const EARLIEST_DATE = "2000-01-01";
+
 export function parseEarlierCsv(
   text: string,
   today: Date,
@@ -35,14 +41,28 @@ export function parseEarlierCsv(
   const { records, unclosedAt } = readCsv(text.replace(/^﻿/, ""));
   const rows: EarlierRow[] = [];
   const errors: ImportProblem[] = [];
+  // One row per company, role and date, the key the import stores rows by.
+  const seen = new Map<string, number>();
   const first = records[0]?.fields.map((field) => field.trim().toLowerCase());
-  const body = first && HEADER.slice(0, first.length).join() === first.join() ? records.slice(1) : records;
+  const body =
+    first && HEADER.slice(0, first.length).join() === first.join() ? records.slice(1) : records;
   for (const { line, fields } of body) {
     const checked = checkRow(fields, today);
-    if (typeof checked === "string") errors.push({ line, message: checked });
-    else rows.push({ line, ...checked });
+    if (typeof checked === "string") {
+      errors.push({ line, message: checked });
+      continue;
+    }
+    const key = `${companyRoleHash(checked.company, checked.role)}|${checked.appliedOn}`;
+    const earlierLine = seen.get(key);
+    if (earlierLine !== undefined) {
+      errors.push({ line, message: `the same company, role and date as line ${earlierLine}` });
+      continue;
+    }
+    seen.set(key, line);
+    rows.push({ line, ...checked });
   }
-  if (unclosedAt !== null) errors.push({ line: unclosedAt, message: "a quoted field is never closed" });
+  if (unclosedAt !== null)
+    errors.push({ line: unclosedAt, message: "a quoted field is never closed" });
   return { rows, errors };
 }
 
@@ -60,17 +80,26 @@ function checkRow(fields: readonly string[], today: Date): Omit<EarlierRow, "lin
   if (company === "") return "company is empty";
   if (companyKey(company) === null) return "company has no name besides its legal form";
   if (role === "") return "role is empty";
+  if (roleKey(role) === "") return "role has no title besides a place or a work mode";
   if (!isCalendarDate(appliedOn)) {
     return `applied_on must be a date such as 2026-05-04, not ${JSON.stringify(appliedOn)}`;
   }
-  if (appliedOn > today.toISOString().slice(0, 10)) return "applied_on is after today";
+  if (appliedOn < EARLIEST_DATE) return "applied_on is before 2000";
+  const latestToday = new Date(today.getTime() + AHEAD_OF_UTC_MS).toISOString().slice(0, 10);
+  if (appliedOn > latestToday) return "applied_on is after today";
   if (!ROUTES.includes(route)) {
     return `route must be email, form or message, not ${JSON.stringify(route)}`;
   }
   if (address !== "" && !looksLikeAddress(address)) {
     return `address must be an email address or a phone number, not ${JSON.stringify(address)}`;
   }
-  return { company, role, appliedOn, route: route as Route, address: address === "" ? null : address };
+  return {
+    company,
+    role,
+    appliedOn,
+    route: route as Route,
+    address: address === "" ? null : address,
+  };
 }
 
 function isCalendarDate(text: string): boolean {
@@ -137,24 +166,45 @@ function readCsv(text: string): {
   return { records, unclosedAt: null };
 }
 
-/** Stores the rows; a row already there, by company-role hash and date, is left alone. */
+/**
+ * Stores the rows, keyed on company-role hash and date. A row already there
+ * is left alone, or corrected when the list now spells its company or role
+ * differently or gives another route or address; a corrected row counts as
+ * imported now, so the duplicate check treats what changed as new.
+ */
 export async function importEarlier(
   deps: { db: Db; clock: Clock },
   rows: readonly EarlierRow[],
-): Promise<{ inserted: number; alreadyThere: number }> {
+): Promise<{ inserted: number; updated: number; alreadyThere: number }> {
   const now = deps.clock.now();
   return deps.db.tx(async (tx) => {
     let inserted = 0;
+    let updated = 0;
     for (const row of rows) {
-      const { rowCount } = await tx.query(
-        `insert into {{schema}}.earlier_applications
+      // xmax is 0 on a row this statement inserted, and set on one it updated.
+      const { rows: written } = await tx.query<{ inserted: boolean }>(
+        `insert into {{schema}}.earlier_applications as earlier
            (company, role, company_role_hash, applied_on, route, address, imported_at)
          values ($1, $2, $3, $4, $5, $6, $7)
-         on conflict (company_role_hash, applied_on) do nothing`,
-        [row.company, row.role, companyRoleHash(row.company, row.role), row.appliedOn, row.route, row.address, now],
+         on conflict (company_role_hash, applied_on) do update
+           set company = excluded.company, role = excluded.role, route = excluded.route,
+               address = excluded.address, imported_at = excluded.imported_at
+           where (earlier.company, earlier.role, earlier.route, earlier.address)
+                 is distinct from (excluded.company, excluded.role, excluded.route, excluded.address)
+         returning (xmax = 0) as inserted`,
+        [
+          row.company,
+          row.role,
+          companyRoleHash(row.company, row.role),
+          row.appliedOn,
+          row.route,
+          row.address,
+          now,
+        ],
       );
-      inserted += rowCount;
+      if (written[0]?.inserted === true) inserted++;
+      else if (written[0]) updated++;
     }
-    return { inserted, alreadyThere: rows.length - inserted };
+    return { inserted, updated, alreadyThere: rows.length - inserted - updated };
   });
 }

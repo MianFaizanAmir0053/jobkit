@@ -9,13 +9,23 @@ import {
 } from "./ops";
 
 describe("parseTarget", () => {
+  const npmRun = { npm_lifecycle_event: "ledger:import" };
+
   it("works on the local database unless --prod is given", () => {
-    expect(parseTarget([])).toBe("local");
-    expect(parseTarget(["--prod"])).toBe("prod");
+    expect(parseTarget([], npmRun)).toBe("local");
+    expect(parseTarget(["--prod"], npmRun)).toBe("prod");
   });
 
   it("refuses anything else, so a typo never means production", () => {
-    expect(() => parseTarget(["--production"])).toThrow(/--prod/);
+    expect(() => parseTarget(["--production"], npmRun)).toThrow(/--prod/);
+  });
+
+  it("refuses to run locally when npm took --prod for itself, which it marks with NODE_ENV=production", () => {
+    expect(() => parseTarget([], { ...npmRun, NODE_ENV: "production" })).toThrow(
+      "npm took --prod for itself, so this did nothing. Put -- before the script's arguments: npm run ledger:import -- <arguments> --prod",
+    );
+    expect(parseTarget(["--prod"], { ...npmRun, NODE_ENV: "production" })).toBe("prod");
+    expect(parseTarget([], { NODE_ENV: "production" })).toBe("local");
   });
 });
 
@@ -50,13 +60,19 @@ describe("parseEnvFile", () => {
 
   it("keeps a quoted value whole, # included, and lets a comment follow the closing quote", () => {
     expect(
-      parseEnvFile(['JOBKIT_APP_DB_PASSWORD="Xk3#pQ9" # rotated', "B='single # too'", "C= # removed"].join("\n")),
+      parseEnvFile(
+        ['JOBKIT_APP_DB_PASSWORD="Xk3#pQ9" # rotated', "B='single # too'", "C= # removed"].join(
+          "\n",
+        ),
+      ),
     ).toEqual({ JOBKIT_APP_DB_PASSWORD: "Xk3#pQ9", B: "single # too", C: "" });
   });
 
   it("refuses what next dev would read differently, naming the line and key but never the value", () => {
     const read = () =>
-      parseEnvFile(["A=1", "JOBKIT_APP_DB_PASSWORD=Xk3#pQ9", 'KEY="unclosed', 'D="x" trailing'].join("\n"));
+      parseEnvFile(
+        ["A=1", "JOBKIT_APP_DB_PASSWORD=Xk3#pQ9", 'KEY="unclosed', 'D="x" trailing'].join("\n"),
+      );
 
     expect(read).toThrow(
       [

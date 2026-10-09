@@ -1,3 +1,4 @@
+import { placeCode } from "@/core/shared/regions";
 import { sha256Hex } from "@/lib/encoding";
 
 /**
@@ -64,14 +65,40 @@ function wordsOf(text: string): string[] {
 }
 
 /**
- * A role title's words: text in brackets dropped (it names places, such as
- * "(Lahore)", or work modes), abbreviations expanded, work-mode words
- * dropped. Seniority stays, since a senior role is a different role.
+ * Two-letter place codes a title uses for a place. Any other bare pair of
+ * letters is read as a word, since "QA", "AI", "IT" and "Sr" are also the
+ * codes of Qatar, Anguilla, Italy and Suriname.
+ */
+const TWO_LETTER_PLACES: ReadonlySet<string> = new Set(["uk", "us", "eu"]);
+
+/** Whether a bracketed part of a title, such as "Lahore" or "Remote / UK", names a place. */
+function isPlace(part: string): boolean {
+  const letters = part.replace(/[^\p{L}]/gu, "").toLowerCase();
+  if (letters.length <= 2 && !TWO_LETTER_PLACES.has(letters)) return false;
+  return placeCode(part) !== null;
+}
+
+/** A bracket's text without its parts that name a place. */
+function withoutPlaces(text: string): string {
+  return text
+    .split(/[,/|;–—]|\s-\s/)
+    .filter((part) => !isPlace(part.trim()))
+    .join(" ");
+}
+
+/**
+ * A role title's words: the bracketed parts that name a place, such as
+ * "(Lahore)" or "[Karachi, Pakistan]", dropped; abbreviations expanded;
+ * work-mode words dropped. Every other word stays, seniority included, so
+ * "Engineer (Senior)" is not "Engineer".
  */
 function roleWords(text: string): string[] {
-  const words = wordsOf(text.replace(/\([^)]*\)|\[[^\]]*\]/g, " ")).flatMap(
-    (word) => ABBREVIATIONS.get(word) ?? [word],
+  const unplaced = text.replace(
+    /\(([^)]*)\)|\[([^\]]*)\]/g,
+    (_bracket, round: string | undefined, square: string | undefined) =>
+      ` ${withoutPlaces(round ?? square ?? "")} `,
   );
+  const words = wordsOf(unplaced).flatMap((word) => ABBREVIATIONS.get(word) ?? [word]);
   const kept: string[] = [];
   for (let i = 0; i < words.length; i++) {
     if (WORK_MODES.has(words[i]!)) continue;
@@ -103,16 +130,37 @@ export function companyRoleHash(company: string, role: string): string | null {
 }
 
 /**
- * An email address compared without case or surrounding spaces, and a phone
- * number by its digits alone, so "+92 300 123-4567" is "923001234567".
+ * An email address without case or surrounding spaces; a phone number as
+ * its digits without leading zeros, so the trunk prefix ("0300…"), the
+ * international one ("0092…") and a "(0)" after the country code all go:
+ * "+92 300 123-4567" is "923001234567" and "0300-1234567" is "3001234567".
  */
 export function addressKey(address: string): string | null {
   const trimmed = address.trim().toLowerCase();
   if (trimmed === "") return null;
   if (!trimmed.includes("@") && /^[+\d\s().-]+$/.test(trimmed)) {
-    return trimmed.replace(/\D/g, "") || null;
+    return trimmed.replaceAll("(0)", "").replace(/\D/g, "").replace(/^0+/, "") || null;
   }
   return trimmed;
+}
+
+/** The fewest digits of a number written without its country code. */
+const MIN_NATIONAL_DIGITS = 8;
+
+/**
+ * Whether two addresses are the same email address or phone number. A
+ * number may be written with its country code or without it, so one key
+ * may end with the other: "+92 300 1234567" and "0300-1234567" are one
+ * number, as are "+971 50 123 4567" and "050 123 4567".
+ */
+export function sameAddress(a: string, b: string): boolean {
+  const x = addressKey(a);
+  const y = addressKey(b);
+  if (x === null || y === null) return false;
+  if (x === y) return true;
+  if (!/^\d+$/.test(x) || !/^\d+$/.test(y)) return false;
+  const [shorter, longer] = x.length < y.length ? [x, y] : [y, x];
+  return shorter.length >= MIN_NATIONAL_DIGITS && longer.endsWith(shorter);
 }
 
 /** The set of word trigrams across a role's requirement texts, after the role normalisation. */

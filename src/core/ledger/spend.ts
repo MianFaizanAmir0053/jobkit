@@ -29,10 +29,11 @@ type Deps = { db: Db; clock: Clock };
 
 export async function monthToDateCost(db: Db, now: Date): Promise<number> {
   const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const nextMonthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
   const { rows } = await db.query<{ total: number }>(
     `select coalesce(sum(cost_usd), 0)::float8 as total
-       from {{schema}}.model_calls where started_at >= $1`,
-    [monthStart],
+       from {{schema}}.model_calls where started_at >= $1 and started_at < $2`,
+    [monthStart, nextMonthStart],
   );
   return roundUsd(rows[0]!.total);
 }
@@ -47,7 +48,14 @@ export async function spendState(deps: Deps): Promise<SpendState> {
   };
 }
 
-/** The guard the composition hands the model-call wrapper (platform spec B4). */
+/**
+ * The guard the composition hands the model-call wrapper (platform spec B4).
+ * It reads the month's total, and the wrapper then logs the attempt at its
+ * provisional cost before calling the model, so an attempt in flight counts
+ * against the next guard. Only attempts whose guards run at the same moment
+ * can both pass, overshooting by at most their provisional costs; the
+ * workspace's own $30 limit (runbook step 6) is the hard stop.
+ */
 export function spendGuard(deps: Deps): ModelCallGuard {
   return async () => {
     const { callsAllowed } = await spendState(deps);

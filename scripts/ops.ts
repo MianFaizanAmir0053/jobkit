@@ -11,8 +11,21 @@ import { assertSchemaName } from "@/server/db/schemaName";
 
 export type Target = "local" | "prod";
 
-export function parseTarget(argv: readonly string[]): Target {
-  if (argv.length === 0) return "local";
+export function parseTarget(
+  argv: readonly string[],
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): Target {
+  if (argv.length === 0) {
+    // npm reads `npm run x --prod` as its own --production: it keeps the flag
+    // from the script and sets NODE_ENV=production, so the script would
+    // quietly work on the local database while the owner meant production.
+    if (env.npm_lifecycle_event && env.NODE_ENV === "production") {
+      throw new Error(
+        `npm took --prod for itself, so this did nothing. Put -- before the script's arguments: npm run ${env.npm_lifecycle_event} -- <arguments> --prod`,
+      );
+    }
+    return "local";
+  }
   if (argv.length === 1 && argv[0] === "--prod") return "prod";
   throw new Error(
     `Unknown arguments ${JSON.stringify(argv)}: run with no arguments, or with --prod`,
@@ -66,9 +79,11 @@ export function parseEnvFile(text: string): Record<string, string> {
     const raw = trimmed.slice(eq + 1).trim();
     const quoted = /^(["'])(.*?)\1\s*(#.*)?$/.exec(raw);
     if (quoted) values[key] = quoted[2]!;
-    else if (/^["']/.test(raw)) problems.push(`line ${index + 1}: ${key}'s quotes do not close, or text follows them`);
+    else if (/^["']/.test(raw))
+      problems.push(`line ${index + 1}: ${key}'s quotes do not close, or text follows them`);
     else if (raw.startsWith("#")) values[key] = "";
-    else if (raw.includes("#")) problems.push(`line ${index + 1}: ${key} holds #, so its value must be in quotes`);
+    else if (raw.includes("#"))
+      problems.push(`line ${index + 1}: ${key} holds #, so its value must be in quotes`);
     else values[key] = raw;
   });
   if (problems.length > 0) throw new Error(`This env file needs fixing:\n${problems.join("\n")}`);
