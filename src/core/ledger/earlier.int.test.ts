@@ -4,7 +4,7 @@ import { fakeClock, type FakeClock } from "@/adapters/clock";
 import type { PgliteDb } from "@/adapters/pglite";
 import { createTestDb } from "@/server/db/testDb";
 
-import { importEarlier, parseEarlierCsv } from "./earlier";
+import { importEarlier, parseEarlierCsv, replaceEarlier } from "./earlier";
 import { companyRoleHash } from "./normalise";
 
 let db: PgliteDb;
@@ -78,5 +78,41 @@ describe("importEarlier", () => {
     expect(rows).toEqual([
       { company: "GLOBEX", route: "email", address: "hr@globex.example", imported_at: clock.now() },
     ]);
+  });
+
+  it("keeps a corrected row's import time unless its address changed, since only that can find new matches", async () => {
+    await importEarlier(deps(), parseEarlierCsv(CSV, clock.now()).rows);
+    const importedAt = clock.now();
+    clock.advance(60_000);
+    const corrected = CSV.replace(
+      "Globex,Designer,2026-06-01,form",
+      "Globex,Designer,2026-06-01,message",
+    );
+
+    expect(await importEarlier(deps(), parseEarlierCsv(corrected, clock.now()).rows)).toMatchObject(
+      { updated: 1 },
+    );
+    const { rows } = await db.query(
+      `select route, imported_at from {{schema}}.earlier_applications where applied_on = '2026-06-01'`,
+    );
+    expect(rows).toEqual([{ route: "message", imported_at: importedAt }]);
+  });
+});
+
+describe("replaceEarlier", () => {
+  it("replaces the whole list, so a row fixed in a way that changes its key leaves no stale copy", async () => {
+    await importEarlier(
+      deps(),
+      parseEarlierCsv(CSV.replace("Frontend Developer", "Fronted Developer"), clock.now()).rows,
+    );
+
+    expect(await replaceEarlier(deps(), parseEarlierCsv(CSV, clock.now()).rows)).toEqual({
+      removed: 2,
+      inserted: 2,
+    });
+    const { rows } = await db.query<{ role: string }>(
+      "select role from {{schema}}.earlier_applications order by applied_on",
+    );
+    expect(rows.map((row) => row.role)).toEqual(["Frontend Developer", "Designer"]);
   });
 });

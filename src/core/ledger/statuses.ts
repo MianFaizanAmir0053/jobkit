@@ -38,18 +38,14 @@ const ROUTES_FOR: Partial<Record<ApplicationStatus, readonly Route[]>> = {
 /**
  * The statuses the owner's own taps make, each with the status the tap
  * found the application in, so a mistaken tap can be taken back. A skip
- * came from `kit_ready` when a kit was made, and from `open` before one.
+ * before a kit closed its job (platform spec B9), so only a skip after the
+ * kit can be.
  */
-const TAPPED_FROM: Readonly<
-  Record<
-    "sent" | "submitted" | "bounced" | "skipped",
-    (kitReadyAt: Date | null) => ApplicationStatus
-  >
-> = {
-  sent: () => "kit_ready",
-  submitted: () => "kit_ready",
-  bounced: () => "sent",
-  skipped: (kitReadyAt) => (kitReadyAt === null ? "open" : "kit_ready"),
+const UNDO_TO: Readonly<Record<"sent" | "submitted" | "bounced" | "skipped", ApplicationStatus>> = {
+  sent: "kit_ready",
+  submitted: "kit_ready",
+  bounced: "sent",
+  skipped: "kit_ready",
 };
 
 type Deps = { db: Db; clock: Clock };
@@ -68,7 +64,10 @@ export interface NewApplication {
 
 /**
  * A role was chosen: the application starts as `open`, with its keys and an
- * audit row. A second tap on the same role gets the same application.
+ * audit row. A second tap on the same role gets the same application. A
+ * different role of the same post written the same way, such as "Flutter
+ * Developer (Lahore)" beside "(Karachi)", is refused loudly rather than
+ * merged, until roles carry their own IDs.
  */
 export async function openApplication(
   deps: Deps,
@@ -102,11 +101,26 @@ export async function openApplication(
     );
     const id = rows[0]?.id;
     if (id === undefined) {
-      const existing = await tx.query<{ id: string }>(
-        "select id from {{schema}}.applications where job_id = $1 and role_key = $2",
+      const existing = await tx.query<{
+        id: string;
+        company: string;
+        role: string;
+        address: string | null;
+      }>(
+        "select id, company, role, address from {{schema}}.applications where job_id = $1 and role_key = $2",
         [application.jobId, role],
       );
-      return existing.rows[0]!.id;
+      const row = existing.rows[0]!;
+      const sameTap =
+        row.company === application.company &&
+        row.role === application.role &&
+        row.address === application.address;
+      if (!sameTap) {
+        throw new Error(
+          `Job ${application.jobId} already has an application for a role written like "${application.role}".`,
+        );
+      }
+      return row.id;
     }
     await recordChange(tx, id, null, "open", now, sessionId);
     return id;
@@ -116,7 +130,22 @@ export async function openApplication(
 export type StatusChange =
   | { ok: true; changed: boolean; status: ApplicationStatus }
   | { ok: false; reason: "not-found" }
-  | { ok: false; reason: "refused"; status: ApplicationStatus };
+  | { ok: false; reason: "refused"; status: ApplicationStatus }
+  /** "Mark sent" on a kit whose route is not email, or "Mark submitted" on an email one, or either before a route is known. */
+  | { ok: false; reason: "wrong-route"; status: ApplicationStatus; route: Route | null };
+
+/** The route the owner picked for the kit, while the application is open or its kit ready. */
+export async function setRoute(
+  deps: { db: Db },
+  applicationId: string,
+  route: Route,
+): Promise<boolean> {
+  const { rowCount } = await deps.db.query(
+    "update {{schema}}.applications set route = $2 where id = $1 and status in ('open', 'kit_ready')",
+    [applicationId, route],
+  );
+  return rowCount === 1;
+}
 
 /**
  * Moves an application to `to` if the table allows it from where it is,
@@ -156,52 +185,63 @@ export async function changeStatus(
         return { ok: true, changed: true, status: to };
       }
     }
-    const { rows } = await tx.query<{ status: ApplicationStatus }>(
-      "select status from {{schema}}.applications where id = $1",
+    const { rows } = await tx.query<{ status: ApplicationStatus; route: Route | null }>(
+      "select status, route from {{schema}}.applications where id = $1",
       [applicationId],
     );
-    const current = rows[0]?.status;
+    const current = rows[0];
     if (current === undefined) return { ok: false, reason: "not-found" };
-    if (current === to) return { ok: true, changed: false, status: to };
-    return { ok: false, reason: "refused", status: current };
+    if (current.status === to) return { ok: true, changed: false, status: to };
+    if (from.includes(current.status) && ROUTES_FOR[to] !== undefined) {
+      return { ok: false, reason: "wrong-route", status: current.status, route: current.route };
+    }
+    return { ok: false, reason: "refused", status: current.status };
   });
 }
 
 /**
  * Takes back a mistaken tap from the job's menu (ledger spec, "Statuses"):
  * the application goes back to the status the tap found it in, the tap's
- * time is cleared, and an audit row records the change. `from` is the
- * status the owner is taking back, so a second tap changes nothing, and
- * only the owner's own taps can be taken back.
+ * time is cleared, and an audit row records the change. `last` is the
+ * change the menu showed, its status and time, so a second tap, or a late
+ * one after the owner has tapped again, changes nothing. It is one
+ * conditional update; times come from the app's clock in whole
+ * milliseconds, so they compare exactly.
  */
 export async function undoStatus(
   deps: Deps,
   applicationId: string,
-  from: ApplicationStatus,
+  last: { status: ApplicationStatus; at: Date },
   sessionId: string | null,
 ): Promise<StatusChange> {
   const now = deps.clock.now();
+  const tapped = Object.hasOwn(UNDO_TO, last.status) ? (last.status as keyof typeof UNDO_TO) : null;
   return deps.db.tx(async (tx) => {
-    const { rows } = await tx.query<{ status: ApplicationStatus; kit_ready_at: Date | null }>(
-      "select status, kit_ready_at from {{schema}}.applications where id = $1 for update",
+    if (tapped !== null) {
+      const undone = await claimOne<{ id: string }>(
+        tx,
+        `update {{schema}}.applications
+            set status = $2, status_changed_at = $5, ${TIME_COLUMN[tapped]} = null
+          where id = $1 and status = $3 and status_changed_at = $4
+            and ($3 <> 'skipped' or kit_ready_at is not null)
+          returning id`,
+        [applicationId, UNDO_TO[tapped], tapped, last.at, now],
+      );
+      if (undone) {
+        await recordChange(tx, applicationId, tapped, UNDO_TO[tapped], now, sessionId);
+        return { ok: true, changed: true, status: UNDO_TO[tapped] };
+      }
+    }
+    const { rows } = await tx.query<{ status: ApplicationStatus }>(
+      "select status from {{schema}}.applications where id = $1",
       [applicationId],
     );
-    const row = rows[0];
-    if (!row) return { ok: false, reason: "not-found" };
-    if (!Object.hasOwn(TAPPED_FROM, from))
-      return { ok: false, reason: "refused", status: row.status };
-    const tapped = from as keyof typeof TAPPED_FROM;
-    const back = TAPPED_FROM[tapped](row.kit_ready_at);
-    if (row.status === back) return { ok: true, changed: false, status: back };
-    if (row.status !== tapped) return { ok: false, reason: "refused", status: row.status };
-    await tx.query(
-      `update {{schema}}.applications
-          set status = $2, status_changed_at = $3, ${TIME_COLUMN[tapped]} = null
-        where id = $1`,
-      [applicationId, back, now],
-    );
-    await recordChange(tx, applicationId, tapped, back, now, sessionId);
-    return { ok: true, changed: true, status: back };
+    const current = rows[0]?.status;
+    if (current === undefined) return { ok: false, reason: "not-found" };
+    if (tapped !== null && current === UNDO_TO[tapped] && current !== tapped) {
+      return { ok: true, changed: false, status: current };
+    }
+    return { ok: false, reason: "refused", status: current };
   });
 }
 

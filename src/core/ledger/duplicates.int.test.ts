@@ -237,7 +237,7 @@ describe("duplicatesOf", () => {
     ]);
   });
 
-  it("needs eight requirement trigrams on each side before two posts can match", async () => {
+  it("needs three requirement trigrams in common before two posts can match", async () => {
     await earlier("sent", {
       company: "Globex",
       role: "Designer",
@@ -247,6 +247,44 @@ describe("duplicatesOf", () => {
     const id = await newShare({ address: null, requirements: ["Good written English", "Figma"] });
 
     expect(await duplicatesOf(db, id)).toEqual([]);
+  });
+
+  it("matches a terse post repeated under another title on post", async () => {
+    const terse = [
+      "Proficient in React.js",
+      "Node.js / Express",
+      "MongoDB",
+      "REST APIs",
+      "Git",
+      "1-2 years experience",
+      "Good communication skills",
+      "Immediate joiners preferred",
+    ];
+    await earlier("sent", {
+      company: "Globex",
+      role: "MERN Developer",
+      address: null,
+      requirements: terse,
+    });
+    const id = await newShare({
+      company: "Initech",
+      role: "Full Stack Engineer",
+      address: null,
+      requirements: terse,
+    });
+
+    expect((await duplicatesOf(db, id))!.map((match) => match.reason)).toEqual(["post"]);
+  });
+
+  it("holds back exactly one of two kits for one post opened at the same moment", async () => {
+    const one = await newShare();
+    const two = await newShare();
+    await changeStatus(deps(), one, "kit_ready", null);
+    await changeStatus(deps(), two, "kit_ready", null);
+
+    const gates = [await duplicateGate(db, one), await duplicateGate(db, two)];
+
+    expect(gates.map((gate) => gate!.cleared).sort()).toEqual([false, true]);
   });
 
   it("compares company and role by today's rules, whatever key an older row stored", async () => {

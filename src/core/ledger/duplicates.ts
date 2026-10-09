@@ -30,8 +30,10 @@ export interface Candidate {
   /** The candidate's own application, which is not its own duplicate. */
   applicationId?: string;
   /**
-   * When the candidate's application was opened. A kit opened after it and
-   * never sent does not hold it back; one that was sent does.
+   * When the candidate's application was opened, given with its ID. A kit
+   * opened after it and never sent does not hold it back; one that was
+   * sent does. Two opened at the same moment are ordered by ID, so exactly
+   * one of them waits for the other.
    */
   openedAt?: Date;
 }
@@ -39,8 +41,8 @@ export interface Candidate {
 /** Requirement trigrams shared from which two posts count as the same post. */
 export const POST_SIMILARITY = 0.6;
 
-/** The fewest requirement trigrams a post needs on each side before it can match on post. */
-export const MIN_POST_TRIGRAMS = 8;
+/** Requirement trigrams two posts must share, so one short line in common is never a match. */
+export const MIN_SHARED_TRIGRAMS = 3;
 
 /** A match, and when jobkit learned of it, which is what an "apply again" tap covers. */
 interface Found {
@@ -59,11 +61,9 @@ type ApplicationRow = {
 };
 
 function samePost(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
-  return (
-    a.size >= MIN_POST_TRIGRAMS &&
-    b.size >= MIN_POST_TRIGRAMS &&
-    similarity(a, b) >= POST_SIMILARITY
-  );
+  let shared = 0;
+  for (const trigram of a) if (b.has(trigram)) shared++;
+  return shared >= MIN_SHARED_TRIGRAMS && similarity(a, b) >= POST_SIMILARITY;
 }
 
 export async function findDuplicates(db: Db, candidate: Candidate): Promise<DuplicateMatch[]> {
@@ -88,7 +88,7 @@ async function found(db: Db, candidate: Candidate): Promise<Found[]> {
       where kit_ready_at is not null and job_kind = 'real'
         and ($1::uuid is null or id <> $1)
         and (sent_at is not null or submitted_at is not null
-             or $2::timestamptz is null or opened_at < $2)`,
+             or $2::timestamptz is null or (opened_at, id) < ($2::timestamptz, $1::uuid))`,
     [candidate.applicationId ?? null, candidate.openedAt ?? null],
   );
   for (const row of applications.rows) {

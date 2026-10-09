@@ -21,18 +21,18 @@ Keep the truth about applications: what was applied for, by which route, when, a
 
 ## Normalisation and keys
 
-- **Company:** lower case; legal suffixes removed (Ltd, Limited, LLC, Inc, Corp, Pvt, (Pvt) Ltd, GmbH, BV, FZ-LLC, PLC and the like); then every character that is not a letter or digit removed. An empty company produces no company key.
-- **Role:** lower case; common abbreviations expanded (sr to senior, jr to junior, eng to engineer, dev to developer, swe to software engineer, fe to front end, be to back end); location and work-mode words removed ("remote", "hybrid", "onsite", place names in brackets); then every character that is not a letter or digit removed, so "Front-End", "Front End" and "Frontend" match. Seniority words stay, because "Senior Engineer" and "Engineer" are different roles.
+- **Company:** lower case; legal forms removed (Ltd, Limited, LLC, Inc, Corp, Pvt, (Pvt) Ltd, GmbH, BV, FZ-LLC, PLC, the Gulf's W.L.L., DMCC, PJSC and Est., a leading "M/s", and the like); then every character that is not a letter or digit removed. An empty company produces no company key.
+- **Role:** lower case; common abbreviations expanded (sr to senior, jr to junior, eng to engineer, dev to developer, swe to software engineer, fe to front end, be to back end); work-mode words removed ("remote", "hybrid", "onsite"); text in brackets removed except seniority and discipline words, so "(Lahore)", "(Remote - PK)" and "(Urgent hiring)" go while "(Senior)" and "(Backend)" stay; then every character that is not a letter or digit removed, so "Front-End", "Front End" and "Frontend" match. Seniority words stay, because "Senior Engineer" and "Engineer" are different roles.
 - `company_role_hash`: the SHA-256 of normalised company, a bar, and normalised role; absent when the company is empty.
 - **Post fingerprint:** the set of word trigrams from the role's requirement texts, after the same normalisation.
 
 ## Duplicate check (ADR 0001 entry 11)
 
-`findDuplicates(candidate)` compares a new application with sent and submitted applications, applications with a kit that was never sent, manual baseline runs, and earlier applications. Every match needs the owner's "apply again" tap before any outbound action:
+`findDuplicates(candidate)` compares a new application with sent and submitted applications, applications opened before it with a kit that was never sent, manual baseline runs, and earlier applications. Company and role are compared by the current normalisation, whatever an older row stored. Every match needs the owner's "apply again" tap before any outbound action:
 
 - `company-role`: the same company-role hash, which also catches reposts with new text;
-- `address`: the same address or number. The banner names the earlier role, because a shared inbox often serves several roles;
-- `post`: post fingerprints with a Jaccard similarity of at least 0.6, which catches a repost under a reworded title such as "Sr. Front End Developer";
+- `address`: the same address or number, a number matching with or without its country code or trunk 0 ("+92 300 1234567" and "0300-1234567"). The banner names the earlier role, because a shared inbox often serves several roles;
+- `post`: post fingerprints with a Jaccard similarity of at least 0.6 and at least 3 trigrams in common, which catches a repost under a reworded title such as "Sr. Front End Developer";
 - `drafted`: a kit already exists for the same company-role hash and was never sent.
 
 The banner shows each match with its reason and date.
@@ -49,7 +49,7 @@ The banner shows each match with its reason and date.
 | `kit_ready` | `skipped` | the owner taps Skip |
 | `sent` | `bounced` | the owner taps "Mark bounced" |
 
-Any other transition is refused. The owner can correct a mistaken tap from the job's menu, which writes an audit row like any other change. A second tap on the same button changes nothing, so a double tap cannot record twice.
+Any other transition is refused, and "Mark sent" needs the email route while "Mark submitted" needs a form or message route. The owner can correct a mistaken tap from the job's menu: the last tap is taken back, which writes an audit row like any other change, except a skip made before the kit, which closed the job. A second tap on the same button changes nothing, so a double tap cannot record twice.
 
 ## The timing comparison (amendment A8)
 
@@ -89,7 +89,7 @@ The daily purge deletes extracted records, drafts and recruiter names 180 days a
 
 ## Earlier applications
 
-`npm run ledger:import private/earlier.csv` reads rows of `company, role, applied_on, route, address` (address optional), validates each row, reports errors by line, and inserts rows keyed on company-role hash and date, so running it twice adds nothing.
+`npm run ledger:import private/earlier.csv` reads rows of `company, role, applied_on, route, address` (address optional), validates each row, reports errors by line, and inserts rows keyed on company-role hash and date, so running it twice adds nothing; a row already there is corrected in place. With `--replace`, the file replaces the whole stored list.
 
 ## Acceptance criteria
 

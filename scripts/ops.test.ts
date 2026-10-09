@@ -23,7 +23,9 @@ describe("parseTarget", () => {
 
   it("refuses to run locally when npm took --prod for itself, which it marks with NODE_ENV=production", () => {
     expect(() => parseTarget([], { ...npmRun, NODE_ENV: "production" })).toThrow(
-      "npm took --prod for itself, so this did nothing. Put -- before the script's arguments: npm run ledger:import -- <arguments> --prod",
+      "NODE_ENV is production, which npm sets when it takes --prod for itself, so this did nothing. " +
+        "To reach production, put -- before the script's arguments: npm run ledger:import -- <arguments> --prod. " +
+        "To work locally, unset NODE_ENV.",
     );
     expect(parseTarget(["--prod"], { ...npmRun, NODE_ENV: "production" })).toBe("prod");
     expect(parseTarget([], { NODE_ENV: "production" })).toBe("local");

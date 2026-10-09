@@ -27,6 +27,25 @@ describe("companyKey", () => {
     ["Acme B.V.", "acme"],
     ["Acme FZ-LLC", "acme"],
     ["Acme PLC", "acme"],
+    ["Acme W.L.L.", "acme"],
+    ["Acme WLL", "acme"],
+    ["Acme DMCC", "acme"],
+    ["Acme PJSC", "acme"],
+    ["Acme SPC", "acme"],
+    ["Acme K.S.C.C.", "acme"],
+    ["Acme Q.P.S.C.", "acme"],
+    ["Acme B.S.C.", "acme"],
+    ["Acme Est.", "acme"],
+    ["Acme GmbH & Co. KG", "acme"],
+    ["Acme L.P.", "acme"],
+    ["Acme S.L.", "acme"],
+    ["Acme AB", "acme"],
+    ["Acme Oy", "acme"],
+    ["Acme SE", "acme"],
+    ["Acme S.p.A.", "acme"],
+    ["Acme Sdn Bhd", "acme"],
+    ["M/s Acme", "acme"],
+    ["Messrs Acme Traders", "acmetraders"],
     ["  ACME  ", "acme"],
     ["Ten Pearls", "tenpearls"],
     ["Limited Brands", "limitedbrands"],
@@ -70,22 +89,42 @@ describe("roleKey", () => {
   it.each([
     ["Software Engineer (Senior)", "softwareengineersenior"],
     ["Software Engineer (Sr.)", "softwareengineersenior"],
-    ["Developer (Backend, Lahore)", "developerbackend"],
-    ["React Developer (Lahore - Hybrid)", "reactdeveloper"],
-    ["React Developer (Remote / UK)", "reactdeveloper"],
-  ])("drops only places and work modes from brackets: %j becomes %j", (role, key) => {
+    ["Developer (Senior, Lahore)", "developersenior"],
+    ["Developer (Backend)", "developerbackend"],
+    ["Developer (Front End)", "developerfrontend"],
+    ["Engineer (Mid-Level)", "engineermidlevel"],
+    ["Engineer (QA)", "engineerqa"],
+  ])("keeps the seniority and discipline words in brackets: %j becomes %j", (role, key) => {
     expect(roleKey(role)).toBe(key);
   });
 
-  it("tells roles apart by what their brackets say besides a place", () => {
-    expect(roleKey("Software Engineer (Senior)")).not.toBe(roleKey("Software Engineer"));
-    expect(roleKey("Developer (Backend)")).not.toBe(roleKey("Developer (Frontend)"));
+  it.each([
+    "React Developer (Johar Town, Lahore)",
+    "React Developer (DHA Phase 5, Lahore)",
+    "React Developer (Lahore & Islamabad)",
+    "React Developer (Onsite Lahore)",
+    "React Developer (Hyderabad)",
+    "React Developer (Remote - PK)",
+    "React Developer (Pakistan only)",
+    "React Developer (Urgent Hiring)",
+    "React Developer (Full Time)",
+    "React Developer (Contract)",
+    "React Developer (m/w/d)",
+    "React Developer (WFH)",
+    "React Developer (US)",
+  ])("drops everything else in brackets, places and labels alike: %j", (role) => {
+    expect(roleKey(role)).toBe("reactdeveloper");
   });
 
-  it("reads a bare pair of letters as a word, though QA and AI are also country codes", () => {
-    expect(roleKey("Engineer (QA)")).toBe("engineerqa");
+  it("tells roles apart by the seniority or discipline in their brackets", () => {
+    expect(roleKey("Software Engineer (Senior)")).not.toBe(roleKey("Software Engineer"));
+    expect(roleKey("Developer (Backend)")).not.toBe(roleKey("Developer (Frontend)"));
     expect(roleKey("Engineer (AI)")).not.toBe(roleKey("Engineer (QA)"));
-    expect(roleKey("Engineer (US)")).toBe("engineer");
+  });
+
+  it("reads an abbreviation written against the next word", () => {
+    expect(roleKey("Sr.React Developer")).toBe(roleKey("Sr. React Developer"));
+    expect(roleKey("Jr.Dev")).toBe("juniordeveloper");
   });
 
   it("is empty for a title that names only a place or a work mode", () => {
@@ -130,23 +169,44 @@ describe("sameAddress", () => {
     expect(sameAddress("jobs@acme.example", "hr@acme.example")).toBe(false);
   });
 
-  it.each([
+  const PK_FORMS = [
     "+92 300 1234567",
     "0300-1234567",
     "0092 300 1234567",
     "+92 (0)300 1234567",
     "300 1234567",
-  ])("takes %j for the same number as +92 300 1234567", (number) => {
+    "+92 0300 1234567",
+    "+920300-1234567",
+    "0092 0300 1234567",
+    "0300–1234567",
+    "0300 1234567 (WhatsApp)",
+    "wa.me/923001234567",
+    "https://wa.me/923001234567",
+    "tel:+923001234567",
+  ];
+
+  it.each(PK_FORMS)("takes %j for the same number as +92 300 1234567", (number) => {
     expect(sameAddress(number, "+92 300 1234567")).toBe(true);
     expect(sameAddress("+92 300 1234567", number)).toBe(true);
   });
 
+  it("matches every form of one number with every other", () => {
+    for (const a of PK_FORMS)
+      for (const b of PK_FORMS) expect([a, b, sameAddress(a, b)]).toEqual([a, b, true]);
+  });
+
   it.each([
     ["+971 50 123 4567", "050 123 4567"],
+    ["+971 050 123 4567", "+971 50 123 4567"],
+    ["+44 020 7946 0000", "+44 20 7946 0000"],
     ["+974 3312 3456", "3312 3456"],
     ["+1 (212) 555-1234", "212 555 1234"],
-  ])("matches %j written at home as %j", (international, national) => {
-    expect(sameAddress(international, national)).toBe(true);
+  ])("matches %j written another way as %j", (one, other) => {
+    expect(sameAddress(one, other)).toBe(true);
+  });
+
+  it("keeps the 0 an Italian number has after its country code", () => {
+    expect(addressKey("+39 06 1234 5678")).toBe("390612345678");
   });
 
   it("tells different numbers apart, even ones that share their last digits", () => {

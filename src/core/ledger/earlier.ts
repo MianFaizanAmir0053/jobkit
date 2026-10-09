@@ -169,8 +169,9 @@ function readCsv(text: string): {
 /**
  * Stores the rows, keyed on company-role hash and date. A row already there
  * is left alone, or corrected when the list now spells its company or role
- * differently or gives another route or address; a corrected row counts as
- * imported now, so the duplicate check treats what changed as new.
+ * differently or gives another route or address. A row whose address
+ * changed counts as imported now, since only a new address can find new
+ * matches the owner has not seen.
  */
 export async function importEarlier(
   deps: { db: Db; clock: Clock },
@@ -188,7 +189,9 @@ export async function importEarlier(
          values ($1, $2, $3, $4, $5, $6, $7)
          on conflict (company_role_hash, applied_on) do update
            set company = excluded.company, role = excluded.role, route = excluded.route,
-               address = excluded.address, imported_at = excluded.imported_at
+               address = excluded.address,
+               imported_at = case when earlier.address is distinct from excluded.address
+                                  then excluded.imported_at else earlier.imported_at end
            where (earlier.company, earlier.role, earlier.route, earlier.address)
                  is distinct from (excluded.company, excluded.role, excluded.route, excluded.address)
          returning (xmax = 0) as inserted`,
@@ -206,5 +209,21 @@ export async function importEarlier(
       else if (written[0]) updated++;
     }
     return { inserted, updated, alreadyThere: rows.length - inserted - updated };
+  });
+}
+
+/**
+ * Replaces the whole list with these rows (npm run ledger:import -- <file>
+ * --replace), so a row fixed in a way that changes its key leaves no stale
+ * copy behind. Every row counts as imported now.
+ */
+export async function replaceEarlier(
+  deps: { db: Db; clock: Clock },
+  rows: readonly EarlierRow[],
+): Promise<{ removed: number; inserted: number }> {
+  return deps.db.tx(async (tx) => {
+    const { rowCount: removed } = await tx.query("delete from {{schema}}.earlier_applications");
+    const { inserted } = await importEarlier({ db: tx, clock: deps.clock }, rows);
+    return { removed, inserted };
   });
 }

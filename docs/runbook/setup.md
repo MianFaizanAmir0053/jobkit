@@ -105,7 +105,7 @@ After the profile is approved: in the Gmail app on the phone (Settings, your acc
 
 1. Type the applications you made before jobkit into `private/earlier.csv`, one per line: `company,role,applied_on,route,address`. The date is written like `2026-05-04`; the route is `email`, `form` or `message`; the address (an email address or a phone number) may be left out. A header line with those names is fine, and a field that holds a comma goes in double quotes.
 2. With `npm run dev` stopped (the local database serves one program at a time, and the script stops if the dev server holds it), check the file against it: `npm run ledger:import private/earlier.csv`. A bad row is reported by its line, and nothing is imported until every row is right.
-3. Then import it into production: `npm run ledger:import -- private/earlier.csv --prod`, typing the project reference when asked. Running it again adds nothing new, so a longer list can be imported later.
+3. Then import it into production: `npm run ledger:import -- private/earlier.csv --prod`, typing the project reference when asked. Running it again adds nothing new, so a longer list can be imported later, and a row whose company, role and date are unchanged is corrected in place. If you fixed a company or role name, run it with `--replace` as well (`npm run ledger:import -- private/earlier.csv --replace --prod`), so the old spelling does not stay behind.
 
 ## 13. Profile
 

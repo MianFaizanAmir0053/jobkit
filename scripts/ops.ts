@@ -19,9 +19,12 @@ export function parseTarget(
     // npm reads `npm run x --prod` as its own --production: it keeps the flag
     // from the script and sets NODE_ENV=production, so the script would
     // quietly work on the local database while the owner meant production.
+    // NODE_ENV is the only trace npm leaves, and a shell can set it too.
     if (env.npm_lifecycle_event && env.NODE_ENV === "production") {
       throw new Error(
-        `npm took --prod for itself, so this did nothing. Put -- before the script's arguments: npm run ${env.npm_lifecycle_event} -- <arguments> --prod`,
+        "NODE_ENV is production, which npm sets when it takes --prod for itself, so this did nothing. " +
+          `To reach production, put -- before the script's arguments: npm run ${env.npm_lifecycle_event} -- <arguments> --prod. ` +
+          "To work locally, unset NODE_ENV.",
       );
     }
     return "local";

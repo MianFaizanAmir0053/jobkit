@@ -1,4 +1,3 @@
-import { placeCode } from "@/core/shared/regions";
 import { sha256Hex } from "@/lib/encoding";
 
 /**
@@ -32,7 +31,34 @@ const LEGAL_SUFFIXES: ReadonlySet<string> = new Set([
   "fze",
   "fzco",
   "smc",
+  // The Gulf: W.L.L., DMCC, PJSC, S.P.C., K.S.C.C., Q.P.S.C., B.S.C. and Est.
+  "wll",
+  "dmcc",
+  "pjsc",
+  "psc",
+  "spc",
+  "ksc",
+  "kscc",
+  "qpsc",
+  "qsc",
+  "bsc",
+  "est",
+  // Europe and Asia: "GmbH & Co. KG", L.P., S.L., AB, Oy, SE, S.p.A., SARL, SAS, Sdn Bhd.
+  "kg",
+  "lp",
+  "sl",
+  "ab",
+  "oy",
+  "se",
+  "spa",
+  "sarl",
+  "sas",
+  "sdn",
+  "bhd",
 ]);
+
+/** Words that open a company name in Pakistani posts: "M/s Acme", "Messrs Acme". */
+const LEGAL_PREFIXES: readonly (readonly string[])[] = [["m", "s"], ["messrs"]];
 
 /** Abbreviations in role titles and requirements, expanded before comparing. */
 const ABBREVIATIONS: ReadonlyMap<string, readonly string[]> = new Map([
@@ -54,51 +80,54 @@ const WORK_MODES: ReadonlySet<string> = new Set(["remote", "hybrid", "onsite"]);
 /**
  * Lower-case words, split at anything that is not a letter or digit. Dots
  * are dropped first, so "Sr." is "sr", "B.V." is "bv" and "React.js" is
- * "reactjs".
+ * "reactjs"; an abbreviation's dot written against the next word, as in
+ * "Sr.React", parts them.
  */
 function wordsOf(text: string): string[] {
   return text
     .toLowerCase()
+    .replace(/\b(sr|snr|jr|jnr|eng|engr)\.(?=\p{L})/gu, "$1 ")
     .replaceAll(".", "")
     .split(/[^\p{L}\p{N}]+/u)
     .filter((word) => word !== "");
 }
 
 /**
- * Two-letter place codes a title uses for a place. Any other bare pair of
- * letters is read as a word, since "QA", "AI", "IT" and "Sr" are also the
- * codes of Qatar, Anguilla, Italy and Suriname.
+ * The words a title's brackets may add to the role: its seniority, which
+ * makes another role, and its discipline. Brackets otherwise hold places,
+ * work modes and labels such as "(Urgent hiring)" or "(Full time)", which
+ * a repost changes freely.
  */
-const TWO_LETTER_PLACES: ReadonlySet<string> = new Set(["uk", "us", "eu"]);
+const BRACKET_WORDS: ReadonlySet<string> = new Set([
+  ...["senior", "sr", "snr", "junior", "jr", "jnr", "lead", "principal", "staff", "head"],
+  ...["mid", "level", "entry", "intern", "trainee", "associate"],
+  ...["frontend", "front", "backend", "back", "end", "fullstack", "full", "stack"],
+  ...["mobile", "android", "ios", "web", "devops", "qa", "data", "ml", "ai"],
+]);
 
-/** Whether a bracketed part of a title, such as "Lahore" or "Remote / UK", names a place. */
-function isPlace(part: string): boolean {
-  const letters = part.replace(/[^\p{L}]/gu, "").toLowerCase();
-  if (letters.length <= 2 && !TWO_LETTER_PLACES.has(letters)) return false;
-  return placeCode(part) !== null;
-}
-
-/** A bracket's text without its parts that name a place. */
-function withoutPlaces(text: string): string {
+/** A bracket's parts made only of seniority and discipline words, such as "Senior" in "(Senior, Lahore)". */
+function bracketRole(text: string): string {
   return text
     .split(/[,/|;–—]|\s-\s/)
-    .filter((part) => !isPlace(part.trim()))
+    .filter((part) => {
+      const words = wordsOf(part);
+      return words.length > 0 && words.every((word) => BRACKET_WORDS.has(word));
+    })
     .join(" ");
 }
 
 /**
- * A role title's words: the bracketed parts that name a place, such as
- * "(Lahore)" or "[Karachi, Pakistan]", dropped; abbreviations expanded;
- * work-mode words dropped. Every other word stays, seniority included, so
- * "Engineer (Senior)" is not "Engineer".
+ * A role title's words: from brackets only seniority and discipline, so
+ * "(Lahore)" and "(Urgent hiring)" go while "(Senior)" stays;
+ * abbreviations expanded; work-mode words dropped.
  */
 function roleWords(text: string): string[] {
-  const unplaced = text.replace(
+  const unbracketed = text.replace(
     /\(([^)]*)\)|\[([^\]]*)\]/g,
     (_bracket, round: string | undefined, square: string | undefined) =>
-      ` ${withoutPlaces(round ?? square ?? "")} `,
+      ` ${bracketRole(round ?? square ?? "")} `,
   );
-  const words = wordsOf(unplaced).flatMap((word) => ABBREVIATIONS.get(word) ?? [word]);
+  const words = wordsOf(unbracketed).flatMap((word) => ABBREVIATIONS.get(word) ?? [word]);
   const kept: string[] = [];
   for (let i = 0; i < words.length; i++) {
     if (WORK_MODES.has(words[i]!)) continue;
@@ -113,7 +142,10 @@ function roleWords(text: string): string[] {
 
 /** The company without case, legal suffixes or punctuation; none for an empty name. */
 export function companyKey(company: string): string | null {
-  const words = wordsOf(company);
+  let words = wordsOf(company);
+  for (const prefix of LEGAL_PREFIXES) {
+    if (prefix.every((word, i) => words[i] === word)) words = words.slice(prefix.length);
+  }
   while (words.length > 0 && LEGAL_SUFFIXES.has(words.at(-1)!)) words.pop();
   return words.length > 0 ? words.join("") : null;
 }
@@ -130,18 +162,49 @@ export function companyRoleHash(company: string, role: string): string | null {
 }
 
 /**
+ * Calling codes after which an international number may repeat its trunk
+ * 0, as in "+92 0300 1234567". Italy keeps that 0 in every form, so it is
+ * not listed. Calling codes are prefix-free, so at most one fits.
+ */
+const CALLING_CODES: ReadonlySet<string> = new Set([
+  ...["1", "7", "20", "27", "30", "31", "32", "33", "34", "36", "40", "41", "43", "44", "45"],
+  ...["46", "47", "48", "49", "51", "52", "53", "54", "55", "56", "57", "58", "60", "61", "62"],
+  ...["63", "64", "65", "66", "81", "82", "84", "86", "90", "91", "92", "93", "94", "95", "98"],
+  ...["212", "213", "216", "218", "234", "254", "351", "352", "353", "354", "356", "357", "358"],
+  ...["359", "370", "371", "372", "380", "381", "385", "386", "420", "421", "880", "960", "961"],
+  ...["962", "963", "964", "965", "966", "967", "968", "970", "971", "972", "973", "974", "975"],
+  "977",
+]);
+
+/**
  * An email address without case or surrounding spaces; a phone number as
- * its digits without leading zeros, so the trunk prefix ("0300…"), the
- * international one ("0092…") and a "(0)" after the country code all go:
- * "+92 300 123-4567" is "923001234567" and "0300-1234567" is "3001234567".
+ * its digits, in one form: without a tel: or wa.me/ prefix, a label such
+ * as "(WhatsApp)", leading zeros (the trunk 0, and the 00 of "0092…"), or
+ * a trunk 0 repeated after the country code, as in "+92 (0)300…" and
+ * "+92 0300…". So "+92 300 123-4567" is "923001234567" and "0300-1234567"
+ * is "3001234567". Anything else is kept as written.
  */
 export function addressKey(address: string): string | null {
   const trimmed = address.trim().toLowerCase();
   if (trimmed === "") return null;
-  if (!trimmed.includes("@") && /^[+\d\s().-]+$/.test(trimmed)) {
-    return trimmed.replaceAll("(0)", "").replace(/\D/g, "").replace(/^0+/, "") || null;
+  if (trimmed.includes("@")) return trimmed;
+  const number = trimmed
+    .replace(/^(?:tel:|(?:https?:\/\/)?wa\.me\/)/, "")
+    .replace(/\([^)]*\p{L}[^)]*\)/gu, " ")
+    .replace(/[‐-―−]/g, "-")
+    .replaceAll("(0)", "")
+    .trim();
+  if (!/^[+\d\s().-]+$/.test(number)) return trimmed;
+  let digits = number.replace(/\D/g, "").replace(/^0+/, "");
+  if (number.startsWith("+") || number.startsWith("00") || digits.length >= 12) {
+    for (const length of [1, 2, 3]) {
+      const code = digits.slice(0, length);
+      if (!CALLING_CODES.has(code)) continue;
+      if (digits[length] === "0") digits = code + digits.slice(length + 1);
+      break;
+    }
   }
-  return trimmed;
+  return digits || null;
 }
 
 /** The fewest digits of a number written without its country code. */
