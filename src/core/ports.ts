@@ -3,6 +3,7 @@
  * src/adapters implement them; tests use PGlite, the local file system and
  * fakes, so no test touches the network.
  */
+import type { ZodType } from "zod";
 
 export type Row = Record<string, unknown>;
 
@@ -40,4 +41,70 @@ export interface Clock {
 
 export interface Random {
   bytes(length: number): Uint8Array;
+}
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export type LlmInput =
+  | { type: "text"; text: string }
+  | { type: "image"; mediaType: "image/png" | "image/jpeg" | "image/webp"; base64: string };
+
+/**
+ * One model request as a provider adapter sees it (platform spec B4). It has
+ * no field for tools: no stage can hand a model tools while it reads post text.
+ */
+export interface LlmRequest {
+  model: string;
+  system: string;
+  content: readonly LlmInput[];
+  /** The output's shape; the adapter sends it as the provider's structured-output format. */
+  schema: ZodType;
+  effort: Effort;
+  maxTokens: number;
+  /** Aborted by the caller's idle and total timeouts. */
+  signal: AbortSignal;
+  /** Called on every event the stream delivers, so a silent stream can be told apart. */
+  onEvent: () => void;
+}
+
+/** What one model run reported; a fallback after a refusal adds a second entry (B4). */
+export interface LlmUsage {
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+}
+
+export type LlmFailureKind = "rate-limit" | "server" | "connection" | "client" | "aborted";
+
+export type LlmReply =
+  | {
+      kind: "answer";
+      text: string;
+      model: string;
+      requestId: string | null;
+      usage: LlmUsage[];
+      /** The answer stopped at max_tokens, so it is incomplete. */
+      truncated: boolean;
+    }
+  | {
+      kind: "refusal";
+      model: string;
+      requestId: string | null;
+      usage: LlmUsage[];
+      category: string | null;
+    }
+  | {
+      kind: "failure";
+      failure: LlmFailureKind;
+      message: string;
+      requestId: string | null;
+      retryAfterMs: number | null;
+    };
+
+export interface Llm {
+  /** The request's input tokens as the provider counts them, before sending. */
+  countInputTokens(request: Omit<LlmRequest, "signal" | "onEvent">): Promise<number>;
+  call(request: LlmRequest): Promise<LlmReply>;
 }
