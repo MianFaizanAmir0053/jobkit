@@ -1,0 +1,11 @@
+Subject: Next.js Developer – Sam Rivera
+
+Hi team,
+
+Applying for the Next.js Developer role. I've shipped production Next.js sites since the pages router, and moved two of them to the App Router this year.
+
+The post lists Docker. I package my services with Docker and deploy them to managed platforms; I haven't run Kubernetes in production.
+
+CV attached. Thanks for considering me.
+
+Sam

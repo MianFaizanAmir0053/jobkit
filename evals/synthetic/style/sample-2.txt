@@ -1,0 +1,12 @@
+Subject: Full-stack Engineer (Node.js) – Sam Rivera
+
+Hello,
+
+I'd like to apply for the Full-stack Engineer position. I run REST APIs in Node.js and Express against PostgreSQL in production, and I build the React front ends that use them.
+
+The role is remote with a four-hour overlap with UK time. I work 09:00 to 18:00 Pakistan time, which covers it.
+
+I've attached my CV. Happy to talk whenever suits you.
+
+Best,
+Sam Rivera

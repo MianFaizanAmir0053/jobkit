@@ -1,0 +1,14 @@
+Subject: Frontend Developer application – Sam Rivera
+
+Hi Ayesha,
+
+I'm applying for the Frontend Developer role you posted. For the last five years I've built production React and Next.js apps, most recently a booking dashboard used by about forty clinics.
+
+Your post asks for TypeScript and testing. I write all new code in TypeScript and cover the risky paths with Jest and Testing Library.
+
+You also mention GraphQL. I haven't used it professionally; the closest is five years of REST APIs in Node.js.
+
+My CV is attached, and my work is at https://portfolio.example.com.
+
+Thanks for reading,
+Sam
