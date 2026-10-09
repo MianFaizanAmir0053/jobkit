@@ -217,6 +217,29 @@ describe("POST /api/pair/redeem", () => {
     logged.mockRestore();
   });
 
+  it("answers a failure while looking up the session the browser holds with the same message", async () => {
+    const token = await newToken(await laptop());
+    const failing = {
+      ...deps,
+      db: {
+        ...db,
+        query: async () => {
+          throw new Error("connection lost");
+        },
+      },
+    };
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await redeem(
+      request("/api/pair/redeem", { body: { token }, cookie: "some-old-session" }),
+      failing,
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: REDEEM_FAILURE });
+    logged.mockRestore();
+  });
+
   it("leaves a browser signed in with Google alone, and the token usable by the phone", async () => {
     const laptopCookie = await laptop();
     const token = await newToken(laptopCookie);

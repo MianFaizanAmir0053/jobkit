@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 // Test-only routes live under these paths and nowhere else.
-const TEST_ONLY_PREFIXES = ["/api/test/", "/test/"];
+export const TEST_ONLY_PREFIXES = ["/api/test/", "/test/"];
 
 export function checkBuildRoutes(
   manifest: Readonly<Record<string, string>>,

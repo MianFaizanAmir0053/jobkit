@@ -7,10 +7,11 @@ import { sessionCookie } from "@/server/sessionCookie";
 
 /**
  * A stand-in for Google sign-in, for the end-to-end tests (platform spec B2).
- * Only builds made with JOBKIT_ENV=test treat this file as a route
- * (next.config.ts), and scripts/checkBuild.ts fails any other build that
- * contains it. It also refuses to run against anything but the test
- * container, whose database lives in memory.
+ * Only the dev server those tests start, with JOBKIT_ENV=test, treats this
+ * file as a route (next.config.ts); no build contains it, and
+ * scripts/checkBuild.ts fails any build that does. testRoutesAllowed is the
+ * second lock: it answers only in that dev server, with the in-memory
+ * test database.
  */
 export async function POST() {
   const container = await getContainer();

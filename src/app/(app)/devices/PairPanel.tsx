@@ -2,7 +2,7 @@
 
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -10,6 +10,8 @@ import { cn } from "@/lib/utils";
 export interface WaitingPhoneView {
   pairingId: string;
   label: string;
+  /** When the phone opened the code's link, ISO 8601: what tells two phones apart. */
+  redeemedAt: string;
 }
 
 type Qr = { dataUri: string; deadline: number };
@@ -33,9 +35,14 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
   const [needsSignIn, setNeedsSignIn] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [signedOut, setSignedOut] = useState(false);
+  // Bumped by every approve and reject, so a poll sent before one cannot
+  // bring back a phone it has already settled.
+  const generation = useRef(0);
 
   const showing = qr !== null && now < qr.deadline;
-  const watching = (qr !== null && now < qr.deadline + LATE_REDEEM_MS) || waiting.length > 0;
+  const watching =
+    !signedOut && ((qr !== null && now < qr.deadline + LATE_REDEEM_MS) || waiting.length > 0);
 
   useEffect(() => {
     if (!qr) return;
@@ -47,8 +54,14 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
     if (!watching) return;
     const timer = window.setInterval(async () => {
       if (document.hidden) return;
+      const sent = generation.current;
       const response = await fetch("/api/pair/waiting", { cache: "no-store" });
-      if (!response.ok) return;
+      if (response.status === 401) {
+        setSignedOut(true);
+        setNotice("Your session has ended. Sign in again.");
+        return;
+      }
+      if (!response.ok || sent !== generation.current) return;
       const { phones } = (await response.json()) as { phones: WaitingPhoneView[] };
       setWaiting(phones);
       // A waiting phone has used the code, so it is no longer worth showing.
@@ -104,8 +117,7 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
       } else if (body.error === "stale-google-auth") {
         setNeedsSignIn(true);
       } else if (response.status === 410) {
-        forget(pairingId);
-        setNotice("That phone's request has ended. Make a new code to try again.");
+        settled(pairingId);
       } else {
         setNotice(
           signedOutOr(response.status, "Could not approve. Reload the page and try again."),
@@ -125,8 +137,7 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
         forget(pairingId);
         setNotice("Rejected. That phone is not paired.");
       } else if (response.status === 410) {
-        forget(pairingId);
-        setNotice("That phone's request had already ended. It is not paired.");
+        settled(pairingId);
       } else {
         // The phone is still waiting: say so, rather than let the owner believe it is gone.
         setNotice(signedOutOr(response.status, "Could not reject that phone. Try again."));
@@ -137,7 +148,19 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
   }
 
   function forget(pairingId: string) {
+    generation.current += 1;
     setWaiting((phones) => phones.filter((p) => p.pairingId !== pairingId));
+  }
+
+  /**
+   * 410: the phone is no longer waiting, but this page cannot tell why:
+   * timed out, rejected, or approved in another tab. The device list shows
+   * which, once refreshed.
+   */
+  function settled(pairingId: string) {
+    forget(pairingId);
+    setNotice("That phone is no longer waiting. The list below shows whether it is paired.");
+    router.refresh();
   }
 
   return (
@@ -218,6 +241,7 @@ function PhoneApproval({
 }) {
   const [code, setCode] = useState("");
   const inputId = `pair-code-${phone.pairingId}`;
+  const scanned = useLocalTime(phone.redeemedAt);
 
   return (
     <form
@@ -226,7 +250,10 @@ function PhoneApproval({
         onApprove(code);
       }}
     >
-      <p>A phone is waiting ({phone.label}). Type the code it shows.</p>
+      <p>
+        A phone is waiting ({phone.label}
+        {scanned && `, scanned at ${scanned}`}). Type the code it shows.
+      </p>
       <label htmlFor={inputId} className="mt-3 block text-sm text-muted-foreground">
         Code from the phone
       </label>
@@ -248,6 +275,25 @@ function PhoneApproval({
         </Button>
       </div>
     </form>
+  );
+}
+
+const noSubscription = () => () => undefined;
+
+/**
+ * The laptop's own clock time of an ISO instant. The server renders nothing
+ * for it and the browser fills it in, so hydration never sees two times.
+ */
+function useLocalTime(iso: string): string | null {
+  return useSyncExternalStore(
+    noSubscription,
+    () =>
+      new Date(iso).toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    () => null,
   );
 }
 

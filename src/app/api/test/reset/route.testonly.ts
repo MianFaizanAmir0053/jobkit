@@ -5,8 +5,8 @@ import { testRoutesAllowed } from "@/server/testOnly";
 
 /**
  * Empties the test database between end-to-end tests. Like the test sign-in
- * route, only JOBKIT_ENV=test builds contain it, and it refuses any container
- * but the in-memory test one.
+ * route, it exists only in the dev server those tests start, and answers only
+ * with the in-memory test database.
  */
 export async function POST() {
   const container = await getContainer();

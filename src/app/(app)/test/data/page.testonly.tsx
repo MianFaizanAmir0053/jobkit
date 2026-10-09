@@ -1,4 +1,8 @@
+import { notFound } from "next/navigation";
+
+import { getContainer } from "@/server/container";
 import { requireSession } from "@/server/dal";
+import { testRoutesAllowed } from "@/server/testOnly";
 
 /**
  * A page that shows the owner's data, for the end-to-end tests only
@@ -7,6 +11,7 @@ import { requireSession } from "@/server/dal";
  * e2e/pairing.spec.ts looks for the marker below.
  */
 export default async function TestDataPage() {
+  if (!testRoutesAllowed(process.env, (await getContainer()).kind)) notFound();
   await requireSession();
   return <p>jobkit-e2e-owner-data-marker</p>;
 }

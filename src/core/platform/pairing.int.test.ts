@@ -180,6 +180,18 @@ describe("redeemPairingToken", () => {
     expect(await redeemPairingToken(deps(), made.token, "phone")).toEqual({ ok: false });
   });
 
+  it("draws again when a draw would favour some codes, so every code is equally likely", async () => {
+    const made = await createPairingToken(deps(), await laptop());
+    if (!made.ok) throw new Error("expected a token");
+    // 0xFFFFFFFF lies past the last whole million of 32-bit values, so it is thrown back.
+    const draws = [new Uint8Array([0xff, 0xff, 0xff, 0xff]), new Uint8Array([0, 0, 0, 42])];
+    const random = { bytes: (n: number) => (n === 4 ? draws.shift()! : cryptoRandom.bytes(n)) };
+
+    const redeemed = await redeemPairingToken({ db, clock, random }, made.token, "phone");
+
+    expect(redeemed).toMatchObject({ ok: true, code: "000042" });
+  });
+
   it("gives every failure the same answer, revealing nothing about which check failed", async () => {
     const results = await Promise.all([
       redeemPairingToken(deps(), "not-a-token", "phone"),

@@ -38,6 +38,11 @@ export async function createPairingToken(
   const token = base64url(deps.random.bytes(32));
   const expiresAt = new Date(now.getTime() + PAIRING_TOKEN_LIFETIME_MS);
   await deps.db.tx(async (tx) => {
+    // The session's own row first: two codes made at the same moment then
+    // queue, and the second one's delete sees, and cancels, the first.
+    await tx.query("select id from {{schema}}.sessions where id = $1 for no key update", [
+      creator.id,
+    ]);
     // A new code cancels the session's earlier unused ones, so a QR code
     // caught in an older screenshot stops working as soon as the owner moves on.
     await tx.query(
@@ -56,10 +61,16 @@ export async function createPairingToken(
 /** Every failure looks the same, so a guesser learns nothing about which check failed. */
 export type Redemption = { ok: true; issued: IssuedSession; code: string } | { ok: false };
 
+/**
+ * `replacing` is a session token the redeeming browser already holds (a
+ * phone pairing again): it is deleted in the same transaction, so a failed
+ * redemption keeps it and a successful one never leaves both behind.
+ */
 export async function redeemPairingToken(
   deps: SessionDeps,
   token: string,
   label: string,
+  replacing?: string,
 ): Promise<Redemption> {
   const now = deps.clock.now();
   return deps.db.tx(async (tx) => {
@@ -86,6 +97,11 @@ export async function redeemPairingToken(
       [hashToken(token), now],
     );
     if (!claimed) return { ok: false };
+    if (replacing) {
+      await tx.query("delete from {{schema}}.sessions where token_hash = $1", [
+        hashToken(replacing),
+      ]);
+    }
     const issued = await issueSession({ ...deps, db: tx }, { kind: "paired", label });
     const code = sixDigitCode(deps.random);
     await tx.query(
@@ -137,7 +153,14 @@ export async function approvePairing(
       [pairingId, approver.id, cutoff, MAX_CODE_ATTEMPTS, hashCode(pairingId, code)],
     );
     if (!tried) {
-      await expirePendingPairings(tx, now);
+      // Its five minutes may be up: delete this phone, under the lock already
+      // held. Sweeping the other phones too would take their locks and could
+      // deadlock with their own status polls.
+      await tx.query(
+        `delete from {{schema}}.sessions
+          where id = $1 and kind = 'paired' and approved_at is null and created_at <= $2`,
+        [pairingId, cutoff],
+      );
       return { ok: false, reason: "gone" };
     }
     if (tried.matched) {

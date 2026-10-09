@@ -16,6 +16,7 @@ import { cryptoRandom } from "@/adapters/random";
 import { createSupabaseStorage } from "@/adapters/supabaseStorage";
 import type { Clock, Db, Random, Storage } from "@/core/ports";
 import { applyMigrations, bootstrapForTests, loadMigrations } from "@/server/db/migrate";
+import { onVercelDeployment } from "@/server/deployEnv";
 
 export const SCHEMA = "jobkit";
 export const BUCKET = "jobkit-private";
@@ -47,9 +48,9 @@ export async function createContainer(
 ): Promise<Container> {
   // Vercel holds only production, so a wrong JOBKIT_ENV there must stop the
   // app rather than give it an in-memory database and the test routes.
-  if (env.VERCEL && env.JOBKIT_ENV !== "production") {
+  if (onVercelDeployment(env) && env.JOBKIT_ENV !== "production") {
     throw new Error(
-      `On Vercel, JOBKIT_ENV must be production, not ${JSON.stringify(env.JOBKIT_ENV)}`,
+      `This is a Vercel ${env.VERCEL_ENV} deployment, so JOBKIT_ENV must be production, not ${JSON.stringify(env.JOBKIT_ENV)}`,
     );
   }
   switch (env.JOBKIT_ENV) {

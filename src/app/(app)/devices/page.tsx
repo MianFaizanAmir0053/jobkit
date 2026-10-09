@@ -27,7 +27,13 @@ export default async function DevicesPage() {
       <h1 id="devices-heading" className="text-2xl font-semibold tracking-tight">
         Devices
       </h1>
-      <PairPanel initialWaiting={waiting.map(({ pairingId, label }) => ({ pairingId, label }))} />
+      <PairPanel
+        initialWaiting={waiting.map(({ pairingId, label, redeemedAt }) => ({
+          pairingId,
+          label,
+          redeemedAt: redeemedAt.toISOString(),
+        }))}
+      />
       <h2 className="mt-8 font-medium">Signed in</h2>
       <ul className="mt-2 divide-y divide-border">
         {devices.map((device) => (

@@ -1,6 +1,9 @@
+import { readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
-import { checkBuildRoutes } from "./checkBuild";
+import { checkBuildRoutes, TEST_ONLY_PREFIXES } from "./checkBuild";
 
 const production = {
   "/(app)/jobs/page": "/jobs",
@@ -23,5 +26,23 @@ describe("checkBuildRoutes", () => {
       ok: false,
       routes: ["/api/test/signin", "/test/data"],
     });
+  });
+});
+
+describe("the test-only files", () => {
+  it("all sit under a prefix the check looks for, so a misplaced one cannot slip through", () => {
+    const appDir = join(process.cwd(), "src", "app");
+    const files = readdirSync(appDir, { recursive: true, encoding: "utf8" }).filter((file) =>
+      /\.testonly\.tsx?$/.test(file),
+    );
+
+    expect(files.length).toBeGreaterThan(0);
+    for (const file of files) {
+      // Route groups such as (app) are not part of the URL.
+      // readdirSync joins with the platform's separator: a backslash on Windows.
+      const segments = dirname(file).split(/[\\/]/).filter((s) => !/^\(.*\)$/.test(s));
+      const url = `/${segments.join("/")}/`;
+      expect(TEST_ONLY_PREFIXES.some((prefix) => url.startsWith(prefix)), file).toBe(true);
+    }
   });
 });

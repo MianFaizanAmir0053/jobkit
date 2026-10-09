@@ -6,7 +6,7 @@ Every command runs from the `jobkit` folder.
 |---|---|---|
 | `npm run check` | lint, typecheck, then every unit and integration test | none |
 | `npm run test:coverage` | the same tests with the 90% coverage bar on `src/core/**` (as CI does) | none |
-| `npm run build` | `next build`, then `scripts/checkBuild.ts`, which fails any build outside `JOBKIT_ENV=test` that contains a test-only route | none |
+| `npm run build` | `next build`, then `scripts/checkBuild.ts`, which fails any build that contains a test-only route | none |
 | `npm run test:e2e` | Playwright end-to-end tests against a dev server in test mode | none |
 | `npm run test:live` | contract tests against the real Supabase project, by hand only | Supabase; needs `.env.ops.local` |
 

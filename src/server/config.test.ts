@@ -43,12 +43,14 @@ describe("readAppConfig", () => {
     );
   });
 
-  it("on Vercel, refuses anything but production instead of relaxing its checks", () => {
-    expect(() => readAppConfig({ ...production, VERCEL: "1", JOBKIT_ENV: "test" })).toThrow(
-      /Vercel/,
-    );
-    expect(readAppConfig({ ...production, VERCEL: "1" }).appOrigin).toBe(
-      "https://jobkit.example.com",
-    );
+  it("on a Vercel deployment, refuses anything but production instead of relaxing its checks", () => {
+    const deployed = { ...production, VERCEL: "1", VERCEL_ENV: "production" };
+
+    expect(() => readAppConfig({ ...deployed, JOBKIT_ENV: "test" })).toThrow(/Vercel production deployment/);
+    expect(readAppConfig(deployed).appOrigin).toBe("https://jobkit.example.com");
+    // A local file from `vercel env pull` carries VERCEL=1 too, with VERCEL_ENV=development.
+    expect(
+      readAppConfig({ VERCEL: "1", VERCEL_ENV: "development", JOBKIT_ENV: "development" }).appOrigin,
+    ).toBe("http://localhost:3000");
   });
 });

@@ -9,12 +9,10 @@ import {
   pairingStatus,
   redeemPairingToken,
   rejectPairing,
-  type Redemption,
   waitingPhones,
 } from "@/core/platform/pairing";
 import {
   deviceLabel,
-  endSession,
   findSession,
   remainingSeconds,
   type SessionDeps,
@@ -71,31 +69,35 @@ export async function redeem(request: NextRequest, deps: PairingDeps): Promise<N
   const body = redeemBody.safeParse(await jsonBody(request));
   if (!body.success) return fail();
 
-  const held = heldToken(request);
-  if (held) {
-    const found = await findSession(deps, held);
-    // A browser signed in with Google keeps that session, and the token stays usable by the phone.
-    if (found.ok && found.session.kind === "google") return fail();
-  }
-  let redemption: Redemption;
   try {
-    redemption = await redeemPairingToken(deps, body.data.token, deviceLabel(userAgent(request)));
+    const held = heldToken(request);
+    if (held) {
+      const found = await findSession(deps, held);
+      // A browser signed in with Google keeps that session, and the token stays usable by the phone.
+      if (found.ok && found.session.kind === "google") return fail();
+    }
+    // A phone pairing again replaces the session it held, in the same transaction.
+    const redemption = await redeemPairingToken(
+      deps,
+      body.data.token,
+      deviceLabel(userAgent(request)),
+      held,
+    );
+    if (!redemption.ok) return fail();
+
+    const response = NextResponse.json({ code: redemption.code }, { headers: NO_STORE });
+    const { issued } = redemption;
+    response.cookies.set(
+      sessionCookie(issued.token, remainingSeconds(issued.session, deps.clock.now())),
+    );
+    return response;
   } catch (error) {
-    // A deadlock or a dropped connection answers like any other failure; the
-    // log gets the error's message, never the token.
-    console.error("Pairing redemption failed:", error instanceof Error ? error.message : error);
+    // A deadlock, a dropped connection or a bug answers like any other
+    // failure. The log keeps the whole error, which never holds the token:
+    // database errors carry no query parameters.
+    console.error("Pairing redemption failed:", error);
     return fail();
   }
-  if (!redemption.ok) return fail();
-  // A phone pairing again replaces the session it held.
-  if (held) await endSession(deps.db, held);
-
-  const response = NextResponse.json({ code: redemption.code }, { headers: NO_STORE });
-  const { issued } = redemption;
-  response.cookies.set(
-    sessionCookie(issued.token, remainingSeconds(issued.session, deps.clock.now())),
-  );
-  return response;
 }
 
 /** GET /api/pair/status: what the phone polls while it shows its code. */

@@ -63,10 +63,20 @@ describe("createContainer", () => {
     await expect(createContainer({ JOBKIT_ENV: "staging" })).rejects.toThrow(/JOBKIT_ENV/);
   });
 
-  it("on Vercel, refuses anything but production, so no test or development container runs there", async () => {
-    for (const JOBKIT_ENV of ["test", "development", undefined]) {
-      await expect(createContainer({ VERCEL: "1", JOBKIT_ENV })).rejects.toThrow(/Vercel/);
+  it("on a Vercel deployment, refuses anything but production, so no test or development container runs there", async () => {
+    for (const VERCEL_ENV of ["production", "preview"]) {
+      for (const JOBKIT_ENV of ["test", "development", undefined]) {
+        await expect(createContainer({ VERCEL: "1", VERCEL_ENV, JOBKIT_ENV })).rejects.toThrow(
+          /Vercel .* deployment/,
+        );
+      }
     }
+  });
+
+  it("is not fooled by VERCEL=1 in a local file, which `vercel env pull` writes with VERCEL_ENV=development", async () => {
+    container = await createContainer({ VERCEL: "1", VERCEL_ENV: "development", JOBKIT_ENV: "test" });
+
+    expect(container.kind).toBe("test");
   });
 });
 

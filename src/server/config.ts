@@ -1,3 +1,5 @@
+import { onVercelDeployment } from "@/server/deployEnv";
+
 /**
  * The values the app reads per request (platform spec B8), checked once.
  * Production fails closed: without its origin or Google client it refuses to
@@ -14,8 +16,8 @@ export interface AppConfig {
 type Env = Readonly<Record<string, string | undefined>>;
 
 export function readAppConfig(env: Env): AppConfig {
-  if (env.VERCEL && env.JOBKIT_ENV !== "production") {
-    throw new Error("On Vercel, JOBKIT_ENV must be production");
+  if (onVercelDeployment(env) && env.JOBKIT_ENV !== "production") {
+    throw new Error(`This is a Vercel ${env.VERCEL_ENV} deployment, so JOBKIT_ENV must be production`);
   }
   const production = env.JOBKIT_ENV === "production";
   const appOrigin = env.APP_ORIGIN || (production ? "" : "http://localhost:3000");

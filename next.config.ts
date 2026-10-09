@@ -1,12 +1,18 @@
 import type { NextConfig } from "next";
 
-// Test-only routes (files named route.testonly.ts or page.testonly.tsx, under
-// /api/test/ and /test/) exist only in the dev server the end-to-end tests
-// start with JOBKIT_ENV=test (platform spec B2). Next sets NODE_ENV to
-// production for every build before reading this file, so no build contains
-// them; scripts/checkBuild.ts checks every build anyway.
+import { onVercelDeployment } from "./src/server/deployEnv";
+
+// Test-only routes (files named route.testonly.ts or page.testonly.tsx, only
+// under /api/test/ and /test/) exist only in the dev server the end-to-end
+// tests start with JOBKIT_ENV=test (platform spec B2). `next dev` sets
+// NODE_ENV to development before reading this file, and a build to
+// production unless the shell presets another value; requiring development
+// keeps them out of every build either way. scripts/checkBuild.ts checks
+// every build too.
 const testOnly =
-  process.env.JOBKIT_ENV === "test" && process.env.NODE_ENV !== "production" && !process.env.VERCEL
+  process.env.JOBKIT_ENV === "test" &&
+  process.env.NODE_ENV === "development" &&
+  !onVercelDeployment(process.env)
     ? ["testonly.ts", "testonly.tsx"]
     : [];
 
