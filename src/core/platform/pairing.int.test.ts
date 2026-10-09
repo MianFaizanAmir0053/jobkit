@@ -80,6 +80,16 @@ describe("createPairingToken", () => {
     expect(JSON.stringify(rows)).not.toContain(made.token);
   });
 
+  it("cancels the session's earlier unused codes, so only the newest QR code works", async () => {
+    const approver = await laptop();
+    const first = await createPairingToken(deps(), approver);
+    const second = await createPairingToken(deps(), approver);
+    if (!first.ok || !second.ok) throw new Error("expected tokens");
+
+    expect(await redeemPairingToken(deps(), first.token, "phone")).toEqual({ ok: false });
+    expect((await redeemPairingToken(deps(), second.token, "phone")).ok).toBe(true);
+  });
+
   it("refuses a google session whose last Google sign-in is more than five minutes old", async () => {
     const approver = await laptop();
     clock.advance(5 * MINUTE + 1);
@@ -139,9 +149,9 @@ describe("redeemPairingToken", () => {
   });
 
   it("works for two minutes and not a moment longer", async () => {
-    const approver = await laptop();
-    const early = await createPairingToken(deps(), approver);
-    const late = await createPairingToken(deps(), approver);
+    // Two laptops, since a new code cancels the same session's earlier ones.
+    const early = await createPairingToken(deps(), await laptop());
+    const late = await createPairingToken(deps(), await laptop());
     if (!early.ok || !late.ok) throw new Error("expected tokens");
 
     clock.advance(2 * MINUTE - 1);
@@ -216,6 +226,14 @@ describe("approvePairing", () => {
       ok: false,
       reason: "gone",
     });
+  });
+
+  it("still accepts the right code on the fifth and last try", async () => {
+    const { approver, phoneToken, pairingId, code } = await redeemed();
+    for (let i = 0; i < 4; i++) await approvePairing(deps(), approver, pairingId, wrong(code));
+
+    expect(await approvePairing(deps(), approver, pairingId, code)).toEqual({ ok: true });
+    expect(await findSession(deps(), phoneToken)).toMatchObject({ ok: true });
   });
 
   it("lets no other session approve, and counts nothing against the real one", async () => {

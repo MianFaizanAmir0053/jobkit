@@ -33,7 +33,9 @@ describe("createContainer", () => {
     expect(heartbeat.rows).toEqual([{ id: 1 }]);
     await container.storage.put("probe/a.txt", new TextEncoder().encode("a"), "text/plain");
     expect(await container.storage.stat("probe/a.txt")).toEqual({ size: 1 });
-  });
+    // The only test that writes a whole PGlite data directory to disk: about
+    // 10 seconds alone, and well past 30 while other files boot in parallel.
+  }, 60_000);
 
   it("in test, uses an in-memory database", async () => {
     container = await createContainer({ JOBKIT_ENV: "test", APP_ORIGIN: "http://localhost:3000" });
@@ -59,6 +61,12 @@ describe("createContainer", () => {
 
   it("refuses an unknown environment", async () => {
     await expect(createContainer({ JOBKIT_ENV: "staging" })).rejects.toThrow(/JOBKIT_ENV/);
+  });
+
+  it("on Vercel, refuses anything but production, so no test or development container runs there", async () => {
+    for (const JOBKIT_ENV of ["test", "development", undefined]) {
+      await expect(createContainer({ VERCEL: "1", JOBKIT_ENV })).rejects.toThrow(/Vercel/);
+    }
   });
 });
 

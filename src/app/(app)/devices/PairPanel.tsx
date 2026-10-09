@@ -16,11 +16,14 @@ type Qr = { dataUri: string; deadline: number };
 
 // Pairing needs a Google sign-in from the last five minutes (platform spec B3).
 const SIGN_IN_AGAIN = "/api/auth/google/start?next=/devices";
+// A phone that redeems in the code's last seconds still reaches the server;
+// polling goes on this long after the countdown so the laptop sees it.
+const LATE_REDEEM_MS = 15_000;
 
 /**
  * The laptop's side of QR pairing: make a code, show it with its countdown,
- * then type the code the phone shows. It polls for a waiting phone only while
- * one could be waiting, and not while the page is hidden.
+ * then type the code each waiting phone shows. It polls for waiting phones
+ * only while one could be waiting, and not while the page is hidden.
  */
 export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView[] }) {
   const router = useRouter();
@@ -30,10 +33,9 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
   const [needsSignIn, setNeedsSignIn] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [code, setCode] = useState("");
 
   const showing = qr !== null && now < qr.deadline;
-  const watching = showing || waiting.length > 0;
+  const watching = (qr !== null && now < qr.deadline + LATE_REDEEM_MS) || waiting.length > 0;
 
   useEffect(() => {
     if (!qr) return;
@@ -80,7 +82,7 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
     }
   }
 
-  async function approve(pairingId: string) {
+  async function approve(pairingId: string, code: string) {
     setBusy(true);
     setNotice(null);
     try {
@@ -101,9 +103,13 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
         );
       } else if (body.error === "stale-google-auth") {
         setNeedsSignIn(true);
-      } else {
+      } else if (response.status === 410) {
         forget(pairingId);
         setNotice("That phone's request has ended. Make a new code to try again.");
+      } else {
+        setNotice(
+          signedOutOr(response.status, "Could not approve. Reload the page and try again."),
+        );
       }
     } finally {
       setBusy(false);
@@ -112,10 +118,19 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
 
   async function reject(pairingId: string) {
     setBusy(true);
+    setNotice(null);
     try {
-      await post("/api/pair/reject", { pairingId });
-      forget(pairingId);
-      setNotice("Rejected. That phone is not paired.");
+      const response = await post("/api/pair/reject", { pairingId });
+      if (response.status === 204) {
+        forget(pairingId);
+        setNotice("Rejected. That phone is not paired.");
+      } else if (response.status === 410) {
+        forget(pairingId);
+        setNotice("That phone's request had already ended. It is not paired.");
+      } else {
+        // The phone is still waiting: say so, rather than let the owner believe it is gone.
+        setNotice(signedOutOr(response.status, "Could not reject that phone. Try again."));
+      }
     } finally {
       setBusy(false);
     }
@@ -123,10 +138,8 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
 
   function forget(pairingId: string) {
     setWaiting((phones) => phones.filter((p) => p.pairingId !== pairingId));
-    setCode("");
   }
 
-  const phone = waiting[0];
   return (
     <section aria-labelledby="pair-heading" className="mt-6 rounded-lg border border-border p-4">
       <h2 id="pair-heading" className="font-medium">
@@ -142,41 +155,24 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
             Sign in with Google again
           </a>
         </div>
-      ) : phone ? (
-        <form
-          className="mt-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void approve(phone.pairingId);
-          }}
-        >
-          <p>A phone is waiting ({phone.label}). Type the code it shows.</p>
-          <label htmlFor="pair-code" className="mt-3 block text-sm text-muted-foreground">
-            Code from the phone
-          </label>
-          <input
-            id="pair-code"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            maxLength={7}
-            value={code}
-            onChange={(event) => setCode(event.target.value)}
-            className="mt-1 w-40 rounded-lg border border-input bg-transparent px-3 py-2 font-mono text-2xl tracking-widest outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
-          />
-          <div className="mt-3 flex gap-2">
-            <Button type="submit" disabled={busy || code.replace(/\s/g, "").length !== 6}>
-              Approve
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              disabled={busy}
-              onClick={() => void reject(phone.pairingId)}
-            >
-              Reject
-            </Button>
-          </div>
-        </form>
+      ) : waiting.length > 0 ? (
+        <div className="mt-3 space-y-4">
+          {waiting.length > 1 && (
+            <p role="alert" className="text-sm">
+              {waiting.length} phones are waiting. If you scanned the code with only one phone,
+              reject the others.
+            </p>
+          )}
+          {waiting.map((phone) => (
+            <PhoneApproval
+              key={phone.pairingId}
+              phone={phone}
+              busy={busy}
+              onApprove={(code) => void approve(phone.pairingId, code)}
+              onReject={() => void reject(phone.pairingId)}
+            />
+          ))}
+        </div>
       ) : showing ? (
         <div className="mt-3">
           <Image
@@ -207,6 +203,56 @@ export function PairPanel({ initialWaiting }: { initialWaiting: WaitingPhoneView
       )}
     </section>
   );
+}
+
+function PhoneApproval({
+  phone,
+  busy,
+  onApprove,
+  onReject,
+}: {
+  phone: WaitingPhoneView;
+  busy: boolean;
+  onApprove: (code: string) => void;
+  onReject: () => void;
+}) {
+  const [code, setCode] = useState("");
+  const inputId = `pair-code-${phone.pairingId}`;
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onApprove(code);
+      }}
+    >
+      <p>A phone is waiting ({phone.label}). Type the code it shows.</p>
+      <label htmlFor={inputId} className="mt-3 block text-sm text-muted-foreground">
+        Code from the phone
+      </label>
+      <input
+        id={inputId}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        maxLength={7}
+        value={code}
+        onChange={(event) => setCode(event.target.value)}
+        className="mt-1 w-40 rounded-lg border border-input bg-transparent px-3 py-2 font-mono text-2xl tracking-widest outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+      />
+      <div className="mt-3 flex gap-2">
+        <Button type="submit" disabled={busy || code.replace(/\s/g, "").length !== 6}>
+          Approve
+        </Button>
+        <Button type="button" variant="outline" disabled={busy} onClick={onReject}>
+          Reject
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function signedOutOr(status: number, otherwise: string): string {
+  return status === 401 ? "Your session has ended. Sign in again." : otherwise;
 }
 
 function post(url: string, body: object): Promise<Response> {

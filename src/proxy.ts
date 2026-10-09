@@ -13,8 +13,9 @@ export function proxy(request: NextRequest): NextResponse {
 }
 
 export const config = {
-  // Pages only: not /login or /pair, not the API (its routes answer for
-  // themselves), not Next's own paths (they start with _), and no file with
-  // an extension (the manifest, icons, the service worker).
-  matcher: ["/((?!_|api/|login|pair|.*\\.).*)"],
+  // Pages only: not /login or /pair (exactly, or below them), not the API
+  // (its routes answer for themselves), not Next's own paths (they start
+  // with _), and no path containing a dot: the manifest, the icons and the
+  // service worker. No page of the app has a dot in its path.
+  matcher: ["/((?!_|api/|login(?:/|$)|pair(?:/|$)|.*\\.).*)"],
 };

@@ -15,20 +15,13 @@ const withTestRoute = {
 
 describe("checkBuildRoutes", () => {
   it("passes a build without test-only routes", () => {
-    expect(checkBuildRoutes(production, undefined)).toEqual({ ok: true });
-    expect(checkBuildRoutes(production, "production")).toEqual({ ok: true });
+    expect(checkBuildRoutes(production)).toEqual({ ok: true });
   });
 
-  it("fails any build outside JOBKIT_ENV=test that contains a test-only route", () => {
-    for (const env of [undefined, "production", "development"]) {
-      expect(checkBuildRoutes(withTestRoute, env)).toEqual({
-        ok: false,
-        routes: ["/api/test/signin", "/test/data"],
-      });
-    }
-  });
-
-  it("lets a test build contain them", () => {
-    expect(checkBuildRoutes(withTestRoute, "test")).toEqual({ ok: true });
+  it("fails every build that contains a test-only route, since only the dev server may have them", () => {
+    expect(checkBuildRoutes(withTestRoute)).toEqual({
+      ok: false,
+      routes: ["/api/test/signin", "/test/data"],
+    });
   });
 });

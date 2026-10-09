@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { issueSession, remainingSeconds } from "@/core/platform/sessions";
 import { getContainer } from "@/server/container";
+import { testRoutesAllowed } from "@/server/testOnly";
 import { sessionCookie } from "@/server/sessionCookie";
 
 /**
@@ -13,7 +14,9 @@ import { sessionCookie } from "@/server/sessionCookie";
  */
 export async function POST() {
   const container = await getContainer();
-  if (container.kind !== "test") return new NextResponse(null, { status: 404 });
+  if (!testRoutesAllowed(process.env, container.kind)) {
+    return new NextResponse(null, { status: 404 });
+  }
   const issued = await issueSession(container, { kind: "google", label: "Test browser" });
   const response = new NextResponse(null, { status: 204 });
   response.cookies.set(

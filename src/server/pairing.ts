@@ -9,6 +9,7 @@ import {
   pairingStatus,
   redeemPairingToken,
   rejectPairing,
+  type Redemption,
   waitingPhones,
 } from "@/core/platform/pairing";
 import {
@@ -19,7 +20,14 @@ import {
   type SessionDeps,
 } from "@/core/platform/sessions";
 import type { AppConfig } from "@/server/config";
-import { heldToken, jsonBody, NO_STORE, refusal, sessionForChange } from "@/server/http";
+import {
+  heldToken,
+  jsonBody,
+  NO_STORE,
+  refusal,
+  sessionForChange,
+  sessionForRead,
+} from "@/server/http";
 import { isSameOrigin } from "@/server/origin";
 import { sessionCookie } from "@/server/sessionCookie";
 
@@ -36,7 +44,7 @@ export const REDEEM_FAILURE = "This code has expired. Make a new one on your lap
 
 /** POST /api/pair/tokens: a QR code for /pair#t=<token>, from a google session. */
 export async function createToken(request: NextRequest, deps: PairingDeps): Promise<NextResponse> {
-  const actor = await sessionForChange(request, deps);
+  const actor = await sessionForChange(request, deps, { kind: "google" });
   if (!actor.ok) return actor.response;
   const made = await createPairingToken(deps, actor.session);
   if (!made.ok) return refusal(403, made.reason);
@@ -69,11 +77,15 @@ export async function redeem(request: NextRequest, deps: PairingDeps): Promise<N
     // A browser signed in with Google keeps that session, and the token stays usable by the phone.
     if (found.ok && found.session.kind === "google") return fail();
   }
-  const redemption = await redeemPairingToken(
-    deps,
-    body.data.token,
-    deviceLabel(userAgent(request)),
-  );
+  let redemption: Redemption;
+  try {
+    redemption = await redeemPairingToken(deps, body.data.token, deviceLabel(userAgent(request)));
+  } catch (error) {
+    // A deadlock or a dropped connection answers like any other failure; the
+    // log gets the error's message, never the token.
+    console.error("Pairing redemption failed:", error instanceof Error ? error.message : error);
+    return fail();
+  }
   if (!redemption.ok) return fail();
   // A phone pairing again replaces the session it held.
   if (held) await endSession(deps.db, held);
@@ -94,10 +106,9 @@ export async function status(request: NextRequest, deps: PairingDeps): Promise<N
 
 /** GET /api/pair/waiting: the phones waiting for this google session to type their code. */
 export async function waiting(request: NextRequest, deps: PairingDeps): Promise<NextResponse> {
-  const found = await findSession(deps, heldToken(request));
-  if (!found.ok) return refusal(401, "signed-out");
-  if (found.session.kind !== "google") return refusal(403, "wrong-kind");
-  const phones = await waitingPhones(deps, found.session);
+  const viewer = await sessionForRead(request, deps, { kind: "google" });
+  if (!viewer.ok) return viewer.response;
+  const phones = await waitingPhones(deps, viewer.session);
   return NextResponse.json(
     { phones: phones.map((p) => ({ ...p, redeemedAt: p.redeemedAt.toISOString() })) },
     { headers: NO_STORE },
@@ -108,7 +119,7 @@ const approveBody = z.object({ pairingId: z.uuid(), code: z.string().max(20) });
 
 /** POST /api/pair/approve: the laptop types the phone's code. */
 export async function approve(request: NextRequest, deps: PairingDeps): Promise<NextResponse> {
-  const actor = await sessionForChange(request, deps);
+  const actor = await sessionForChange(request, deps, { kind: "google" });
   if (!actor.ok) return actor.response;
   const body = approveBody.safeParse(await jsonBody(request));
   if (!body.success) return refusal(400, "bad-request");
@@ -125,9 +136,8 @@ const rejectBody = z.object({ pairingId: z.uuid() });
 
 /** POST /api/pair/reject: deletes the waiting phone's session. */
 export async function reject(request: NextRequest, deps: PairingDeps): Promise<NextResponse> {
-  const actor = await sessionForChange(request, deps);
+  const actor = await sessionForChange(request, deps, { kind: "google" });
   if (!actor.ok) return actor.response;
-  if (actor.session.kind !== "google") return refusal(403, "wrong-kind");
   const body = rejectBody.safeParse(await jsonBody(request));
   if (!body.success) return refusal(400, "bad-request");
   const rejected = await rejectPairing(deps, actor.session, body.data.pairingId);

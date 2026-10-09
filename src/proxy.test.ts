@@ -10,8 +10,16 @@ import { config, proxy } from "./proxy";
 const ORIGIN = "http://localhost:3000";
 
 describe("which requests the proxy sees", () => {
-  it("runs on the app's pages", () => {
-    for (const url of ["/", "/jobs", "/jobs/123", "/devices", "/baseline"]) {
+  it("runs on the app's pages, including any whose name merely starts like an exempt one", () => {
+    for (const url of [
+      "/",
+      "/jobs",
+      "/jobs/123",
+      "/devices",
+      "/baseline",
+      "/pairing-history",
+      "/logins",
+    ]) {
       expect(doesProxyMatch({ config, url })).toBe(true);
     }
   });

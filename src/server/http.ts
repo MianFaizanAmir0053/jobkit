@@ -1,6 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-import { findSession, type Session, type SessionDeps } from "@/core/platform/sessions";
+import {
+  checkRequirements,
+  findSession,
+  type Session,
+  type SessionDeps,
+  type SessionRequirements,
+} from "@/core/platform/sessions";
 import type { AppConfig } from "@/server/config";
 import { isSameOrigin } from "@/server/origin";
 import { SESSION_COOKIE } from "@/server/sessionCookie";
@@ -16,21 +22,36 @@ export function heldToken(request: NextRequest): string | undefined {
   return request.cookies.get(SESSION_COOKIE)?.value;
 }
 
+type Checked = { ok: true; session: Session } | { ok: false; response: NextResponse };
+type Deps = Pick<SessionDeps, "db" | "clock">;
+
 /**
- * What every state-changing route checks first (platform spec B2): the
- * request comes from the app's own origin and carries a live, approved
- * session. Routes then check what the action itself needs.
+ * The route handlers' twin of `requireSession` (platform spec B2): the same
+ * lookup and the same `checkRequirements`, answering 401 or 403 instead of
+ * redirecting. Every route that reads the owner's data calls it.
  */
+export async function sessionForRead(
+  request: NextRequest,
+  deps: Deps,
+  require: SessionRequirements = {},
+): Promise<Checked> {
+  const found = await findSession(deps, heldToken(request));
+  if (!found.ok) return { ok: false, response: refusal(401, "signed-out") };
+  const met = checkRequirements(found.session, deps.clock.now(), require);
+  if (!met.ok) return { ok: false, response: refusal(403, met.reason) };
+  return { ok: true, session: met.session };
+}
+
+/** For routes that change state: the app's own Origin first, then the same checks. */
 export async function sessionForChange(
   request: NextRequest,
-  deps: Pick<SessionDeps, "db" | "clock"> & { config: AppConfig },
-): Promise<{ ok: true; session: Session } | { ok: false; response: NextResponse }> {
+  deps: Deps & { config: AppConfig },
+  require: SessionRequirements = {},
+): Promise<Checked> {
   if (!isSameOrigin(request, deps.config.appOrigin)) {
     return { ok: false, response: refusal(403, "forbidden") };
   }
-  const found = await findSession(deps, heldToken(request));
-  if (!found.ok) return { ok: false, response: refusal(401, "signed-out") };
-  return { ok: true, session: found.session };
+  return sessionForRead(request, deps, require);
 }
 
 /** The request's JSON body, or null when it is missing or not JSON. */

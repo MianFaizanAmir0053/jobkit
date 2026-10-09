@@ -16,9 +16,8 @@ export async function revoke(
   request: NextRequest,
   deps: { db: Db; clock: Clock; config: AppConfig },
 ): Promise<NextResponse> {
-  const actor = await sessionForChange(request, deps);
+  const actor = await sessionForChange(request, deps, { kind: "google" });
   if (!actor.ok) return actor.response;
-  if (actor.session.kind !== "google") return refusal(403, "wrong-kind");
   const body = revokeBody.safeParse(await jsonBody(request));
   if (!body.success) return refusal(400, "bad-request");
   const revoked = await revokeSession(deps, actor.session, body.data.sessionId);

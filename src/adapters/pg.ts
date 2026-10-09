@@ -33,9 +33,21 @@ function wrap(client: Client, schema: string, tx: Db["tx"]): Db {
   };
 }
 
+/**
+ * When an idle client loses its connection (the pooler restarts, the network
+ * drops), the pool removes it and then emits "error"; with no listener that
+ * emit throws and takes the process down. The next query gets a new client.
+ * https://node-postgres.com/apis/pool#error
+ */
+export function createPool(opts: { connectionString: string; max?: number }): pg.Pool {
+  const pool = new pg.Pool({ connectionString: opts.connectionString, max: opts.max ?? 3 });
+  pool.on("error", (error) => console.error("Postgres pool:", error.message));
+  return pool;
+}
+
 export function createPgDb(opts: { connectionString: string; schema: string; max?: number }): PgDb {
   assertSchemaName(opts.schema);
-  const pool = new pg.Pool({ connectionString: opts.connectionString, max: opts.max ?? 3 });
+  const pool = createPool(opts);
 
   const db = wrap(pool, opts.schema, async (fn) => {
     const client = await pool.connect();

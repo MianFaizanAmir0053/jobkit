@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
 import type { PgliteDb } from "@/adapters/pglite";
@@ -194,6 +194,27 @@ describe("POST /api/pair/redeem", () => {
     expect(
       (await redeem(request("/api/pair/redeem", { body: { token: fresh } }), deps)).status,
     ).toBe(200);
+  });
+
+  it("answers a database failure, such as a deadlock, with the same message", async () => {
+    const token = await newToken(await laptop());
+    const failing = {
+      ...deps,
+      db: {
+        ...db,
+        tx: async () => {
+          throw new Error("deadlock detected");
+        },
+      },
+    };
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const response = await redeem(request("/api/pair/redeem", { body: { token } }), failing);
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: REDEEM_FAILURE });
+    expect(logged.mock.calls.flat().join(" ")).not.toContain(token);
+    logged.mockRestore();
   });
 
   it("leaves a browser signed in with Google alone, and the token usable by the phone", async () => {

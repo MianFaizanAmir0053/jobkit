@@ -45,6 +45,13 @@ export async function createContainer(
   env: Env,
   opts: { dataDir?: string } = {},
 ): Promise<Container> {
+  // Vercel holds only production, so a wrong JOBKIT_ENV there must stop the
+  // app rather than give it an in-memory database and the test routes.
+  if (env.VERCEL && env.JOBKIT_ENV !== "production") {
+    throw new Error(
+      `On Vercel, JOBKIT_ENV must be production, not ${JSON.stringify(env.JOBKIT_ENV)}`,
+    );
+  }
   switch (env.JOBKIT_ENV) {
     case "production": {
       const v = required(env, ["DATABASE_URL", "SUPABASE_URL", "SUPABASE_SECRET_KEY"]);

@@ -9,6 +9,13 @@ const CODE_KEY = "jobkit_pair_code";
 
 type View = { step: "pairing" } | { step: "code"; code: string } | { step: "failed" };
 
+declare global {
+  interface Window {
+    /** Set by the pairing page's inline script; read once, then deleted. */
+    __jobkitPairToken?: string;
+  }
+}
+
 export function PairPhone() {
   const router = useRouter();
   const [view, setView] = useState<View>({ step: "pairing" });
@@ -18,8 +25,11 @@ export function PairPhone() {
   useEffect(() => {
     if (started.current) return;
     started.current = true;
-    const token = new URLSearchParams(window.location.hash.slice(1)).get("t");
-    // The token leaves the address bar at once, so it stays out of history and screenshots.
+    // The page's inline script has already taken the token from the address bar;
+    // the fragment is the fallback for a page whose HTML arrived without it.
+    const token =
+      window.__jobkitPairToken ?? new URLSearchParams(window.location.hash.slice(1)).get("t");
+    delete window.__jobkitPairToken;
     if (window.location.hash) window.history.replaceState(null, "", "/pair");
     // Without a token, this is a reload while waiting: show the code kept for it, if any.
     const code = token

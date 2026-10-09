@@ -37,11 +37,19 @@ export async function createPairingToken(
   if (!allowed.ok) return { ok: false, reason: allowed.reason as PairingRefusal };
   const token = base64url(deps.random.bytes(32));
   const expiresAt = new Date(now.getTime() + PAIRING_TOKEN_LIFETIME_MS);
-  await deps.db.query(
-    `insert into {{schema}}.pairing_tokens (token_hash, created_by, created_at, expires_at)
-     values ($1, $2, $3, $4)`,
-    [hashToken(token), creator.id, now, expiresAt],
-  );
+  await deps.db.tx(async (tx) => {
+    // A new code cancels the session's earlier unused ones, so a QR code
+    // caught in an older screenshot stops working as soon as the owner moves on.
+    await tx.query(
+      "delete from {{schema}}.pairing_tokens where created_by = $1 and used_at is null",
+      [creator.id],
+    );
+    await tx.query(
+      `insert into {{schema}}.pairing_tokens (token_hash, created_by, created_at, expires_at)
+       values ($1, $2, $3, $4)`,
+      [hashToken(token), creator.id, now, expiresAt],
+    );
+  });
   return { ok: true, token, expiresAt };
 }
 
@@ -55,6 +63,16 @@ export async function redeemPairingToken(
 ): Promise<Redemption> {
   const now = deps.clock.now();
   return deps.db.tx(async (tx) => {
+    // Lock the creating session's row before the token's: signing out or
+    // revoking that session locks it first too, then deletes its tokens, so
+    // the two wait for each other instead of deadlocking.
+    await tx.query(
+      `select s.id from {{schema}}.sessions s
+         join {{schema}}.pairing_tokens t on t.created_by = s.id
+        where t.token_hash = $1
+          for key share of s`,
+      [hashToken(token)],
+    );
     const claimed = await claimOne<{ created_by: string }>(
       tx,
       `update {{schema}}.pairing_tokens t
@@ -87,8 +105,9 @@ export type Approval =
 
 /**
  * Only the session that made the token approves, with the phone's code, and
- * only while its own Google sign-in is recent. Five wrong codes delete the
- * phone's session; so does the end of its five minutes.
+ * only while its own Google sign-in is recent. Each try, right or wrong,
+ * spends one of five; the fifth wrong code deletes the phone's session, and
+ * so does the end of its five minutes.
  */
 export async function approvePairing(
   deps: SessionDeps,
@@ -103,40 +122,37 @@ export async function approvePairing(
   const cutoff = new Date(now.getTime() - PAIRING_WINDOW_MS);
 
   return deps.db.tx(async (tx): Promise<Approval> => {
-    const matched = await claimOne(
+    // The phone's row first, the order Reject, Revoke and the timeout take.
+    await tx.query("select id from {{schema}}.sessions where id = $1 for no key update", [
+      pairingId,
+    ]);
+    // One conditional update spends a try and tests the code, so concurrent
+    // guesses queue on the row and cannot share a count.
+    const tried = await claimOne<{ attempts: number; matched: boolean }>(
       tx,
-      `delete from {{schema}}.pending_pairings
+      `update {{schema}}.pending_pairings set attempts = attempts + 1
         where session_id = $1 and approver_session_id = $2 and created_at > $3
-          and attempts < $4 and code_hash = $5
-        returning session_id`,
+          and attempts < $4
+        returning attempts, code_hash = $5 as matched`,
       [pairingId, approver.id, cutoff, MAX_CODE_ATTEMPTS, hashCode(pairingId, code)],
     );
-    if (matched) {
-      // A pending row exists only for an unapproved session, so this always lands.
+    if (!tried) {
+      await expirePendingPairings(tx, now);
+      return { ok: false, reason: "gone" };
+    }
+    if (tried.matched) {
+      await tx.query("delete from {{schema}}.pending_pairings where session_id = $1", [pairingId]);
       await tx.query("update {{schema}}.sessions set approved_at = $2 where id = $1", [
         pairingId,
         now,
       ]);
       return { ok: true };
     }
-
-    const counted = await claimOne<{ attempts: number }>(
-      tx,
-      `update {{schema}}.pending_pairings set attempts = attempts + 1
-        where session_id = $1 and approver_session_id = $2 and created_at > $3
-        returning attempts`,
-      [pairingId, approver.id, cutoff],
-    );
-    if (counted && counted.attempts < MAX_CODE_ATTEMPTS) {
-      return {
-        ok: false,
-        reason: "wrong-code",
-        attemptsLeft: MAX_CODE_ATTEMPTS - counted.attempts,
-      };
+    if (tried.attempts >= MAX_CODE_ATTEMPTS) {
+      await deleteWaitingPhone(tx, pairingId);
+      return { ok: false, reason: "gone" };
     }
-    if (counted) await deleteWaitingPhone(tx, pairingId);
-    await expirePendingPairings(tx, now);
-    return { ok: false, reason: "gone" };
+    return { ok: false, reason: "wrong-code", attemptsLeft: MAX_CODE_ATTEMPTS - tried.attempts };
   });
 }
 

@@ -42,4 +42,13 @@ describe("readAppConfig", () => {
       /https/,
     );
   });
+
+  it("on Vercel, refuses anything but production instead of relaxing its checks", () => {
+    expect(() => readAppConfig({ ...production, VERCEL: "1", JOBKIT_ENV: "test" })).toThrow(
+      /Vercel/,
+    );
+    expect(readAppConfig({ ...production, VERCEL: "1" }).appOrigin).toBe(
+      "https://jobkit.example.com",
+    );
+  });
 });

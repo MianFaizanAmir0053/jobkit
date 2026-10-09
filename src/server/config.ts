@@ -14,6 +14,9 @@ export interface AppConfig {
 type Env = Readonly<Record<string, string | undefined>>;
 
 export function readAppConfig(env: Env): AppConfig {
+  if (env.VERCEL && env.JOBKIT_ENV !== "production") {
+    throw new Error("On Vercel, JOBKIT_ENV must be production");
+  }
   const production = env.JOBKIT_ENV === "production";
   const appOrigin = env.APP_ORIGIN || (production ? "" : "http://localhost:3000");
   if (!isOrigin(appOrigin)) {
