@@ -16,6 +16,7 @@ import type { PgliteDb } from "@/adapters/pglite";
 import type { Llm } from "@/core/ports";
 import { createTestDb } from "@/server/db/testDb";
 
+import { caseless } from "./caseless";
 import { abandonStartedCalls, callModel, type ModelCallGuard, type ModelCallInput } from "./models";
 
 const JOB = "11111111-1111-4111-8111-111111111111";
@@ -258,6 +259,21 @@ describe("callModel", () => {
     expect(await rows()).toMatchObject([{ outcome: "client-error", cost_provisional: true }]);
   });
 
+  it("stores a provider's error message without the NUL characters Postgres text cannot hold", async () => {
+    const llm = fakeLlm([
+      () => ({
+        kind: "failure",
+        failure: "client",
+        message: `bad${String.fromCharCode(0)} request`,
+        requestId: null,
+        retryAfterMs: null,
+      }),
+    ]);
+
+    expect(await callModel(deps(llm), input)).toMatchObject({ ok: false, reason: "rejected" });
+    expect(await rows()).toMatchObject([{ outcome: "client-error", error: "bad request" }]);
+  });
+
   it("abandons a stream that stays silent for the idle limit, without retrying", async () => {
     const llm = fakeLlm([silence()], { inputTokens: 10_000 });
 
@@ -329,6 +345,35 @@ describe("callModel", () => {
       });
       expect(await rows()).toMatchObject([{ outcome: "invalid-output", cost: 0.014 }]);
     }
+  });
+
+  it("takes an enum value in another case when the stage's schema marks the field caseless", async () => {
+    const Kind = z.object({ kind: caseless(["full_time", "part_time"]) });
+    const llm = fakeLlm([answer({ kind: "Full_time" })]);
+
+    expect(await callModel(deps(llm), { ...input, schema: Kind })).toMatchObject({
+      ok: true,
+      output: { kind: "full_time" },
+    });
+    expect(await rows()).toMatchObject([{ outcome: "ok" }]);
+  });
+
+  it("closes the attempt's row with its cost, then lets a schema that throws surface as the bug it is", async () => {
+    // A refinement with a bug; its message holds a NUL, which Postgres text cannot store.
+    const Broken = z.object({ title: z.string() }).refine(() => {
+      throw new Error(`broken${String.fromCharCode(0)} refine`);
+    });
+    const llm = fakeLlm([answer({ title: "Engineer" })]);
+
+    await expect(callModel(deps(llm), { ...input, schema: Broken })).rejects.toThrow("refine");
+
+    const [row] = await rows();
+    expect(row).toMatchObject({
+      outcome: "invalid-output",
+      cost: 0.014,
+      cost_provisional: false,
+      error: "The schema threw while parsing: Error: broken refine",
+    });
   });
 
   it("fails when the answer was cut off at max_tokens", async () => {

@@ -11,6 +11,8 @@ import type {
   LlmRequest,
 } from "@/core/ports";
 
+import { describeThrown, storableText } from "@/lib/storableText";
+
 import { costOf, provisionalCost, roundUsd } from "./prices";
 
 /**
@@ -170,7 +172,7 @@ export async function callModel<T>(
       reply = await runAttempt(llm, request, limits.idleMs, deadline - Date.now());
     } catch (error) {
       // Adapters return failures as values; an exception is a bug, so it surfaces.
-      await finishWithoutUsage(deps, id, "client-error", null, String(error));
+      await finishWithoutUsage(deps, id, "client-error", null, describeThrown(error));
       throw error;
     }
 
@@ -215,7 +217,14 @@ export async function callModel<T>(
       await finish("max-tokens", null);
       return fail("max-tokens");
     }
-    const parsed = parseOutput(reply.text, input.schema);
+    let parsed: ReturnType<typeof parseOutput<T>>;
+    try {
+      parsed = parseOutput(reply.text, input.schema);
+    } catch (error) {
+      // A stage schema that throws is a bug: the row is closed with the attempt's cost, then it surfaces.
+      await finish("invalid-output", `The schema threw while parsing: ${describeThrown(error)}`);
+      throw error;
+    }
     if (!parsed.ok) {
       await finish("invalid-output", parsed.error);
       return fail("invalid-output");
@@ -306,7 +315,16 @@ function parseOutput<T>(
   const parsed = schema.safeParse(json);
   return parsed.success
     ? { ok: true, value: parsed.data }
-    : { ok: false, error: parsed.error.message.slice(0, 1000) };
+    : { ok: false, error: messageOf(parsed.error) };
+}
+
+// zod writes its message out lazily, which fails on an issue whose params loop back on themselves.
+function messageOf(error: { message: string }): string {
+  try {
+    return error.message;
+  } catch {
+    return "The answer did not match the schema, whose issues could not be written out";
+  }
 }
 
 async function insertRow(
@@ -351,7 +369,14 @@ async function finishWithoutUsage(
     `update {{schema}}.model_calls
         set ended_at = $2, outcome = $3, request_id = $4, error = $5, answered_model = $6
       where id = $1`,
-    [id, deps.clock.now(), outcome, requestId, error, answeredModel],
+    [
+      id,
+      deps.clock.now(),
+      outcome,
+      requestId,
+      error === null ? null : storableText(error),
+      answeredModel,
+    ],
   );
 }
 
@@ -399,7 +424,7 @@ async function finishWithUsage(
       JSON.stringify(iterations),
       roundUsd(total((run) => run.usd)),
       runs.every((run) => run.known),
-      error,
+      error === null ? null : storableText(error),
     ],
   );
 }

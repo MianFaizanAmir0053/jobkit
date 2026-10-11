@@ -3,6 +3,7 @@ import type { BetaMessage } from "@anthropic-ai/sdk/resources/beta/messages/mess
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
+import { caseless } from "@/core/platform/caseless";
 import type { LlmRequest } from "@/core/ports";
 
 import {
@@ -10,6 +11,7 @@ import {
   fromError,
   fromMessage,
   outputFormat,
+  restoreMembers,
   retryAfter,
   toMessages,
 } from "./anthropic";
@@ -646,6 +648,154 @@ describe("outputFormat", () => {
       schema: expect.objectContaining({ type: "object" }),
     });
     expect("parse" in format).toBe(false);
+  });
+
+  it("sends enum and const values, which the SDK's helper folds into descriptions, so the API constrains the model to them", () => {
+    const format = outputFormat(
+      z.object({
+        kind: z.enum(["a", "b"]),
+        fixed: z.literal("x"),
+        list: z.array(z.object({ tag: z.enum(["c", "d"]) })),
+        either: z.union([z.object({ u: z.enum(["e"]) }), z.object({ v: z.literal(1) })]),
+      }),
+    );
+    const properties = (format.schema as { properties: Record<string, Record<string, unknown>> })
+      .properties;
+
+    expect(properties.kind).toMatchObject({ type: "string", enum: ["a", "b"] });
+    expect(properties.fixed).toMatchObject({ const: "x" });
+    expect(properties.list).toMatchObject({ items: { properties: { tag: { enum: ["c", "d"] } } } });
+    expect(properties.either).toMatchObject({
+      anyOf: [{ properties: { u: { enum: ["e"] } } }, { properties: { v: { const: 1 } } }],
+    });
+  });
+
+  it("sends the values of an enum the schema uses twice, which the helper moves to $defs", () => {
+    const mode = z.enum(["remote", "onsite"]);
+    const format = outputFormat(z.object({ first: mode, second: mode }));
+
+    expect(format.schema).toMatchObject({
+      properties: { first: { $ref: "#/$defs/__schema0" }, second: { $ref: "#/$defs/__schema0" } },
+      $defs: { __schema0: { type: "string", enum: ["remote", "onsite"] } },
+    });
+  });
+
+  it("sends each enum value once, though the schema lists one twice", () => {
+    const format = outputFormat(z.object({ mode: z.enum({ A: "x", B: "x", C: "y" }) }));
+
+    expect(format.schema).toMatchObject({ properties: { mode: { enum: ["x", "y"] } } });
+  });
+
+  it("sends a discriminated union's and an intersection's values, which the helper reshapes", () => {
+    const format = outputFormat(
+      z.object({
+        either: z.discriminatedUnion("kind", [
+          z.object({ kind: z.literal("email"), tone: z.enum(["formal", "warm"]) }),
+          z.object({ kind: z.literal("form") }),
+        ]),
+        both: z.intersection(z.object({ a: z.enum(["x"]) }), z.object({ b: z.literal(2) })),
+      }),
+    );
+
+    expect(format.schema).toMatchObject({
+      properties: {
+        either: {
+          anyOf: [
+            { properties: { kind: { const: "email" }, tone: { enum: ["formal", "warm"] } } },
+            { properties: { kind: { const: "form" } } },
+          ],
+        },
+        // zod merges an intersection of two objects into one object.
+        both: { properties: { a: { enum: ["x"] }, b: { const: 2 } } },
+      },
+    });
+  });
+
+  it("sends the values of a caseless field", () => {
+    const format = outputFormat(z.object({ kind: caseless(["full_time", "part_time"]) }));
+
+    expect(format.schema).toMatchObject({
+      properties: { kind: { type: "string", enum: ["full_time", "part_time"] } },
+    });
+  });
+
+  it("restores nothing onto a node that changed kind on one side only", () => {
+    const from = {
+      type: "object",
+      properties: {
+        referenced: { type: "string", enum: ["x"] },
+        wrapped: { type: "string", enum: ["y"] },
+        untyped: { type: "string", enum: ["z"] },
+      },
+    };
+    // As a changed helper might write them: moved to $defs, wrapped in a union, or with no type.
+    const to = {
+      type: "object",
+      properties: {
+        referenced: { $ref: "#/$defs/A" },
+        wrapped: { type: "string", anyOf: [{ type: "string" }, { type: "null" }] },
+        untyped: { description: '{enum: ["z"]}' },
+      },
+    };
+    const before = JSON.stringify(to);
+
+    restoreMembers(from, to);
+
+    expect(JSON.stringify(to)).toBe(before);
+  });
+
+  it("leaves values the helper already keeps, and restores each part of an intersection", () => {
+    const from = {
+      allOf: [
+        { type: "string", enum: ["a", "b"] },
+        { type: "string", const: "a" },
+      ],
+    };
+    const to = { allOf: [{ type: "string", enum: ["b", "a"] }, { type: "string" }] };
+
+    restoreMembers(from, to);
+
+    expect(to).toEqual({
+      allOf: [
+        { type: "string", enum: ["b", "a"] },
+        { type: "string", const: "a" },
+      ],
+    });
+  });
+
+  it("restores nothing where the helper's nodes no longer line up with the schema's", () => {
+    const from = {
+      type: "object",
+      properties: {
+        filtered: {
+          anyOf: [
+            { type: "string", enum: ["a"] },
+            { type: "string", enum: ["b"] },
+          ],
+        },
+        reordered: {
+          anyOf: [
+            { type: "string", enum: ["b"] },
+            { type: "number", const: 1 },
+          ],
+        },
+        renamed: { type: "object", properties: { kind: { type: "string", enum: ["c"] } } },
+      },
+    };
+    // As a changed helper might write it: a branch dropped (which one?), two swapped, a property renamed.
+    const to = {
+      type: "object",
+      properties: {
+        filtered: { anyOf: [{ type: "string" }] },
+        reordered: { anyOf: [{ type: "number" }, { type: "string" }] },
+        renamed: { type: "object", properties: { sort: { type: "string" } } },
+      },
+    };
+    const before = JSON.stringify(to);
+
+    restoreMembers(from, to);
+
+    expect(JSON.stringify(to)).toBe(before);
   });
 });
 
