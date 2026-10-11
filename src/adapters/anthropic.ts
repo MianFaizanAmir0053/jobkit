@@ -102,7 +102,8 @@ export function createAnthropicLlm(opts: { apiKey: string; fetch?: Fetch }): Llm
         // be sent again (B4).
         const current = stream.currentMessage;
         const settled =
-          stream.receivedMessages.at(-1) ?? (current?.stop_reason === "refusal" ? current : undefined);
+          stream.receivedMessages.at(-1) ??
+          (current?.stop_reason === "refusal" ? current : undefined);
         return settled ? fromMessage(settled, stream.request_id ?? null, request.model) : failed;
       }
     },
@@ -193,7 +194,9 @@ export function fromMessage(
       requestId,
       usage,
       category: message.stop_details?.category ?? null,
-      ...(busy ? { detail: `the fallback model was too busy to run; the API suggests ${busy}` } : {}),
+      ...(busy
+        ? { detail: `the fallback model was too busy to run; the API suggests ${busy}` }
+        : {}),
     };
   }
   return {
@@ -256,7 +259,12 @@ export function fromError(error: unknown, streamRequestId: string | null = null)
   }
   if (error instanceof Anthropic.APIError) {
     const kind = kindOf(error);
-    return failure(kind, error, kind === "client" ? null : retryAfter(error.headers), streamRequestId);
+    return failure(
+      kind,
+      error,
+      kind === "client" ? null : retryAfter(error.headers),
+      streamRequestId,
+    );
   }
   if (
     error instanceof Anthropic.AnthropicError &&

@@ -210,9 +210,12 @@ describe("callModel", () => {
   });
 
   it("keeps the provisional cost of an answer that came without usage", async () => {
-    const llm = fakeLlm([answer({ title: "x", count: 1 }, { usage: [], model: "claude-opus-5-5-x" })], {
-      inputTokens: 10_000,
-    });
+    const llm = fakeLlm(
+      [answer({ title: "x", count: 1 }, { usage: [], model: "claude-opus-5-5-x" })],
+      {
+        inputTokens: 10_000,
+      },
+    );
 
     expect(await callModel(deps(llm), input)).toMatchObject({ ok: true, costUsd: 0.36 });
     expect(await rows()).toMatchObject([
@@ -223,7 +226,9 @@ describe("callModel", () => {
   it("keeps the provisional cost of a refusal that came without usage", async () => {
     await callModel(deps(fakeLlm([refusal({ usage: [] })], { inputTokens: 10_000 })), input);
 
-    expect(await rows()).toMatchObject([{ outcome: "refused", cost: 0.36, cost_provisional: true }]);
+    expect(await rows()).toMatchObject([
+      { outcome: "refused", cost: 0.36, cost_provisional: true },
+    ]);
   });
 
   it("records the policy category a refusal names", async () => {
@@ -233,7 +238,10 @@ describe("callModel", () => {
   });
 
   it("records what else the provider said about a refusal", async () => {
-    await callModel(deps(fakeLlm([refusal({ category: "cyber", detail: "the fallback model was busy" })])), input);
+    await callModel(
+      deps(fakeLlm([refusal({ category: "cyber", detail: "the fallback model was busy" })])),
+      input,
+    );
     await db.exec("update {{schema}}.model_calls set attempt = 2");
     await callModel(deps(fakeLlm([refusal({ detail: "no category" })])), input);
 
