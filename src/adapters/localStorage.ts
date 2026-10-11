@@ -4,7 +4,7 @@
  * `acceptSignedUpload` and `resolveSignedRead`; tokens live in memory.
  */
 import { randomBytes } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { link, mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, relative, sep } from "node:path";
 
 import type { Storage } from "@/core/ports";
@@ -15,6 +15,26 @@ export interface LocalStorage extends Storage {
   acceptSignedUpload(token: string, bytes: Uint8Array): Promise<boolean>;
   /** The path a read token stands for, or null once it has expired. */
   resolveSignedRead(token: string, nowMs: number): string | null;
+}
+
+// A draft's name ends in "~", which no storage path may (see storagePath.ts), so no listing shows it.
+const DRAFT = /~$/;
+
+/**
+ * Writes the whole file under a draft name, then gives it its own name in
+ * one step, so a reader never sees part of a file, as with object storage.
+ * Without `overwrite` the step is a hard link, which fails when the file is
+ * already there; with it, a rename, which replaces it.
+ */
+async function writeWhole(file: string, bytes: Uint8Array, overwrite: boolean): Promise<void> {
+  const draft = `${file}.${randomBytes(6).toString("hex")}~`;
+  await writeFile(draft, bytes, { flag: "wx" });
+  try {
+    if (overwrite) await rename(draft, file);
+    else await link(draft, file);
+  } finally {
+    await rm(draft, { force: true });
+  }
 }
 
 export function createLocalStorage(opts: { root: string; origin: string }): LocalStorage {
@@ -35,7 +55,7 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
           : Promise.resolve([join(dir, entry.name)]),
       ),
     );
-    return nested.flat();
+    return nested.flat().filter((file) => !DRAFT.test(file));
   }
 
   return {
@@ -57,7 +77,7 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
       uploads.delete(t);
       const file = fileFor(path);
       await mkdir(dirname(file), { recursive: true });
-      await writeFile(file, bytes);
+      await writeWhole(file, bytes, true);
       return true;
     },
     resolveSignedRead(t, nowMs) {
@@ -68,7 +88,7 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
     async put(path, bytes, _contentType, options) {
       const file = fileFor(path);
       await mkdir(dirname(file), { recursive: true });
-      await writeFile(file, bytes, { flag: options?.overwrite ? "w" : "wx" }).catch(
+      await writeWhole(file, bytes, options?.overwrite === true).catch(
         (error: NodeJS.ErrnoException) => {
           throw error.code === "EEXIST" ? new Error(`${path} already exists in storage`) : error;
         },

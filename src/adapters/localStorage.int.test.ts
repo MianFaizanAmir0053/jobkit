@@ -41,6 +41,25 @@ describe("local storage", () => {
     expect(new TextDecoder().decode((await storage.get("profile/cv.pdf"))!)).toBe("three");
   });
 
+  it("never shows a file half written: a put that loses a race finds the winner's file whole", async () => {
+    // Large enough that writing it takes a moment, as a CV does.
+    const big = new Uint8Array(4 * 1024 * 1024).fill(7);
+    const seen: (number | undefined)[] = [];
+
+    for (let round = 0; round < 10; round++) {
+      const path = `profile/cv-${round}.pdf`;
+      await Promise.all(
+        [0, 1].map(() =>
+          storage.put(path, big, "application/pdf").catch(async () => {
+            seen.push((await storage.stat(path))?.size);
+          }),
+        ),
+      );
+    }
+
+    expect(seen).toEqual(Array(10).fill(big.length));
+  });
+
   it("lists the files under a prefix", async () => {
     await storage.put("jobs/j1/a.webp", bytes("a"), "image/webp");
     await storage.put("jobs/j1/crops/c.png", bytes("c"), "image/png");
