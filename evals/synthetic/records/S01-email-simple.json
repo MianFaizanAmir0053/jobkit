@@ -92,7 +92,7 @@
         {
           "kind": "subject_format",
           "text": "Use the subject \"Application - Senior Full-Stack Engineer - Your Name\".",
-          "value": "Application - Senior Full-Stack Engineer - Your Name",
+          "value": "Application - Senior Full-Stack Engineer - {name}",
           "addressed_to_ai": false
         }
       ],

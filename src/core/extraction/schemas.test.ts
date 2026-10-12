@@ -6,6 +6,8 @@ import { type ZodType, z } from "zod";
 
 import { caseless } from "@/core/platform/caseless";
 
+import { draftAnswerSchema } from "@/core/drafting/kit";
+
 import { jobRecordSchema } from "./record";
 
 /*
@@ -18,10 +20,11 @@ import { jobRecordSchema } from "./record";
  * of flagging the field; and B4 rules out records, tuples and anything that
  * changes a value. The census reads each schema as the Claude adapter sends
  * it, with shared parts as $defs, and keeps under 20 and 12 for a margin.
- * Task 22 adds drafting's schemas (extraction AC2).
+ * Drafting's schemas are counted too (extraction AC2).
  */
 const STRUCTURED_SCHEMAS: Record<string, ZodType> = {
   "extract: the job record": jobRecordSchema,
+  "draft: the fit table and an email body": draftAnswerSchema,
 };
 
 const MAX_OPTIONAL = 20;
