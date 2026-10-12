@@ -37,4 +37,10 @@ describe("gmailComposeUrl", () => {
     expect(() => gmailComposeUrl("jobs@example.com&bcc=x@evil.com", "s", "b")).toThrow();
     expect(() => gmailComposeUrl("jobs@example.com?cc=x@evil.com", "s", "b")).toThrow();
   });
+  it("opens compose in the owner's Google account when given one", () => {
+    const url = new URL(gmailComposeUrl("jobs@example.com", "s", "b", "owner@example.com"));
+
+    expect(url.searchParams.get("authuser")).toBe("owner@example.com");
+    expect(url.searchParams.get("to")).toBe("jobs@example.com");
+  });
 });

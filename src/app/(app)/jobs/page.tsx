@@ -13,11 +13,11 @@ export default async function JobsPage() {
   await requireSession();
   const jobs = await listJobs();
   const timeZone = await viewerTimeZone();
-  const running = jobs.some((job) => job.kind === "running");
+  const running = jobs.filter((job) => job.kind === "running").map((job) => job.id);
 
   return (
     <section aria-labelledby="jobs-heading">
-      {running && <JobsRefresher />}
+      {running.length > 0 && <JobsRefresher running={running} />}
       <h1 id="jobs-heading" className="text-2xl font-semibold tracking-tight">
         Jobs
       </h1>
@@ -38,7 +38,8 @@ export default async function JobsPage() {
                   {[job.title, job.company].filter(Boolean).join(" · ") || "A job post"}
                 </span>
                 <span className="text-sm text-muted-foreground">
-                  {STATE_WORDS[job.state]} · {formatTime(job.receivedAt, timeZone)}
+                  {job.sent ? "Sent" : STATE_WORDS[job.state]} ·{" "}
+                  {formatTime(job.receivedAt, timeZone)}
                 </span>
               </Link>
             </li>

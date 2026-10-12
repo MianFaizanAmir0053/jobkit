@@ -308,6 +308,17 @@ describe("extract's run", () => {
     expect(stopReasonOf(output)).toBe("no_role");
   });
 
+  it("does not flag a missing role on a post that stops for its language", async () => {
+    const id = await extractingJob([], "ہمیں ایک ویب ڈویلپر کی ضرورت ہے");
+
+    const result = await runExtract(id, [answer(fixture("S08-urdu"))]);
+
+    if (!result.ok) throw new Error(result.reason);
+    const output = result.output as ExtractOutput;
+    expect(stopReasonOf(output)).toBe("language");
+    expect(output.flags).toEqual([]);
+  });
+
   it("flags a stop for no role even when the model still calls the post no job post", async () => {
     const record = {
       ...fixture("S01-email-simple"),

@@ -174,10 +174,6 @@ export function extractStage(deps: ExtractDeps): StageDefinition {
       // Checked as the model wrote it, so a repeated ID is flagged; kept with IDs by position.
       const flags = checkRecord(called.output, tiles);
       const record = numbered(called.output);
-      // A stop for no role carries its flag, even when the record says "not a job post".
-      if (record.roles.length === 0 && !flags.some((flag) => flag.kind === "no_roles")) {
-        flags.push({ kind: "no_roles", path: "roles", message: FLAG_MESSAGES.no_roles });
-      }
       const output: ExtractOutput = {
         record,
         flags,
@@ -185,6 +181,10 @@ export function extractStage(deps: ExtractDeps): StageDefinition {
         tiles,
         postConfirmed: input.postConfirmed,
       };
+      // A stop for no role carries its flag, even when a confirmed post is still called no job post.
+      if (stopReasonOf(output) === "no_role" && !flags.some((flag) => flag.kind === "no_roles")) {
+        flags.push({ kind: "no_roles", path: "roles", message: FLAG_MESSAGES.no_roles });
+      }
       return { ok: true, output };
     },
 

@@ -8,13 +8,15 @@ import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { JobView, Step } from "@/core/review/jobView";
+import { appConfig } from "@/server/config";
 import { jobForViewer, requireSession, viewerTimeZone } from "@/server/dal";
 
-import { formatTime, STATE_WORDS } from "../words";
+import { formatTime, placeOfFlag, STATE_WORDS } from "../words";
 
 import { ActionButton } from "./ActionButton";
 import { CopyButton } from "./CopyButton";
 import { JobPoller } from "./JobPoller";
+import { MarkSent } from "./MarkSent";
 
 export const metadata: Metadata = { title: "Job · jobkit" };
 
@@ -50,6 +52,8 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
   const view = await jobForViewer(id);
   if (!view) notFound();
   const timeZone = await viewerTimeZone();
+  // The Google account jobkit signs in with: Gmail opens in it, and the page says to check its From.
+  const account = appConfig().ownerEmail;
   const record = view.extraction?.record ?? null;
   const heading = [view.role?.title, record?.company.name].filter(Boolean).join(" · ") || "Job";
   const polling = view.kind === "running" || view.kind === "client";
@@ -72,7 +76,9 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
       <Steps steps={view.steps} />
       <StatePanel view={view} />
       {record && <PostPanel view={view} />}
-      {view.state === "kit_ready" && view.draft && <KitPanel view={view} timeZone={timeZone} />}
+      {view.state === "kit_ready" && view.draft && (
+        <KitPanel view={view} timeZone={timeZone} account={account} />
+      )}
     </section>
   );
 }
@@ -227,14 +233,14 @@ function PostPanel({ view }: { view: JobView }) {
   const extraction = view.extraction!;
   const scam = [...extraction.record.scam_signals, ...extraction.backstop];
   // From every role, once each: the model may record a line about the whole post under one role.
-  const aimedAtAi = [
-    ...new Set(
-      extraction.record.roles.flatMap((role) => [
-        ...role.instructions.filter((line) => line.addressed_to_ai).map((line) => line.text),
-        ...role.screening_questions.filter((line) => line.addressed_to_ai).map((line) => line.text),
-      ]),
-    ),
-  ];
+  const lines = extraction.record.roles.flatMap((role) => [
+    ...role.instructions.filter((line) => line.addressed_to_ai).map((line) => line.text),
+    ...role.screening_questions.filter((line) => line.addressed_to_ai).map((line) => line.text),
+  ]);
+  const key = (line: string) => line.trim().toLowerCase().replace(/\s+/g, " ");
+  const aimedAtAi = lines.filter(
+    (line, i) => lines.findIndex((other) => key(other) === key(line)) === i,
+  );
   if (scam.length === 0 && extraction.flags.length === 0 && aimedAtAi.length === 0) return null;
   return (
     <div className="flex flex-col gap-3">
@@ -263,9 +269,15 @@ function PostPanel({ view }: { view: JobView }) {
       {extraction.flags.length > 0 && (
         <Panel title="Check these against the post">
           <ul className="list-disc pl-5 text-sm">
-            {extraction.flags.map((flag, i) => (
-              <li key={i}>{flag.message}</li>
-            ))}
+            {extraction.flags.map((flag, i) => {
+              const place = placeOfFlag(flag.path);
+              return (
+                <li key={i}>
+                  {place && <span className="font-medium">{place}: </span>}
+                  {flag.message}
+                </li>
+              );
+            })}
           </ul>
         </Panel>
       )}
@@ -273,12 +285,21 @@ function PostPanel({ view }: { view: JobView }) {
   );
 }
 
-function KitPanel({ view, timeZone }: { view: JobView; timeZone: string }) {
+function KitPanel({
+  view,
+  timeZone,
+  account,
+}: {
+  view: JobView;
+  timeZone: string;
+  account: string;
+}) {
   const draft = view.draft!;
   const role = view.role!;
   const kit = draft.kit;
   const body = emailBody(kit);
-  const address = role.route.kind === "email" ? role.route.address : "";
+  const byEmail = role.route.kind === "email";
+  const address = byEmail ? role.route.address : "";
   const strict = address !== "" && isStrictAddress(address);
   const blockText = new Map(kit.blocks.map((block) => [block.id, block.text]));
   const requirementText = new Map(role.requirements.map((entry) => [entry.id, entry.text]));
@@ -315,6 +336,10 @@ function KitPanel({ view, timeZone }: { view: JobView; timeZone: string }) {
               <span className="text-destructive">
                 This address did not pass the strict check. Type it yourself from the post.
               </span>
+            ) : byEmail ? (
+              <span className="text-destructive">
+                The post asks you to apply by email but gives no address. Find it in the post.
+              </span>
             ) : (
               <span>
                 The post asks you to apply {ROUTE_WORDS[role.route.kind]}
@@ -329,7 +354,7 @@ function KitPanel({ view, timeZone }: { view: JobView; timeZone: string }) {
         <div className="flex flex-wrap gap-2">
           {strict && (
             <a
-              href={gmailComposeUrl(address, kit.subject, body)}
+              href={gmailComposeUrl(address, kit.subject, body, account || null)}
               target="_blank"
               rel="noopener noreferrer"
               className={buttonVariants()}
@@ -341,7 +366,9 @@ function KitPanel({ view, timeZone }: { view: JobView; timeZone: string }) {
           <CopyButton text={body} label="Copy email" />
         </div>
         <p className="text-sm text-muted-foreground">
-          Gmail adds your signature. Attach your CV in Gmail before you send.
+          In Gmail, {account ? `check that From shows ${account}, ` : "check the From address, "}
+          attach your CV, and send. Gmail adds your signature. Make any changes here in jobkit
+          rather than in Gmail.
         </p>
       </Panel>
 
@@ -397,14 +424,12 @@ function KitPanel({ view, timeZone }: { view: JobView; timeZone: string }) {
       <Panel title="After you send it">
         {view.application?.status === "sent" && view.application.sentAt ? (
           <p className="text-sm">Marked sent on {formatTime(view.application.sentAt, timeZone)}.</p>
+        ) : byEmail ? (
+          <MarkSent jobId={view.id} />
         ) : (
-          <div>
-            <ActionButton
-              url={`/api/jobs/${view.id}/sent`}
-              label="Mark sent"
-              confirmText="Mark this application as sent? Do this once you have sent the email from Gmail."
-            />
-          </div>
+          <p className="text-sm text-muted-foreground">
+            Recording an application sent another way comes with form and message kits.
+          </p>
         )}
       </Panel>
     </div>

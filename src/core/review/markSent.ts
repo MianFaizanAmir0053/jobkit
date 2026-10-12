@@ -5,20 +5,24 @@ import { loadJob } from "@/core/platform/jobs";
 import type { Clock, Db } from "@/core/ports";
 
 /**
- * "Mark sent" on a ready email kit (review spec; ledger spec, "Statuses"):
- * the chosen role's application is opened, if this is its first kit, then
- * marked kit_ready and sent, each with its audit row. A second tap changes
- * nothing. Before real use there is no timing arm, and on the thin path
- * every kit is an email kit, so the application's route is email.
+ * "Mark sent" on a ready email kit (review spec, "Handoffs"; ledger spec,
+ * "Statuses" and "Factual edits"): the chosen role's application is opened,
+ * if this is its first kit, then marked kit_ready and sent, each with its
+ * audit row, and the kit's outcome is recorded with the owner's answer to
+ * "Did you change anything in Gmail?". Only a role whose route is email is
+ * marked sent; a second tap changes nothing. Before real use there is no
+ * timing arm.
  */
 
 export type MarkSent =
-  { ok: true; changed: boolean } | { ok: false; reason: "not-found" | "not-ready" | "refused" };
+  | { ok: true; changed: boolean }
+  | { ok: false; reason: "not-found" | "not-ready" | "not-email" | "refused" };
 
 export async function markSent(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
+  answer: { changedInGmail: boolean },
 ): Promise<MarkSent> {
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
@@ -26,7 +30,9 @@ export async function markSent(
   const extraction = await currentExtraction(deps.db, jobId);
   const role = await chosenRole(deps.db, jobId);
   if (!extraction || !role) return { ok: false, reason: "not-ready" };
-  const { kind, address } = role.route;
+  // Sending another way is Mark submitted, which comes with form and message kits.
+  if (role.route.kind !== "email") return { ok: false, reason: "not-email" };
+  const address = role.route.address;
   const applicationId = await openApplication(
     deps,
     {
@@ -34,7 +40,7 @@ export async function markSent(
       roleId: role.id,
       company: extraction.record.company.name,
       role: role.title,
-      address: kind === "email" && isStrictAddress(address) ? address : null,
+      address: isStrictAddress(address) ? address : null,
       route: "email",
       requirements: role.requirements.map((requirement) => requirement.text),
       arm: null,
@@ -45,5 +51,16 @@ export async function markSent(
   // Already kit_ready, or sent, after an earlier tap: the next move decides.
   await changeStatus(deps, applicationId, "kit_ready", sessionId);
   const sent = await changeStatus(deps, applicationId, "sent", sessionId);
-  return sent.ok ? { ok: true, changed: sent.changed } : { ok: false, reason: "refused" };
+  if (!sent.ok) return { ok: false, reason: "refused" };
+  if (sent.changed) {
+    // No in-app edits yet (the editor comes later), so only Gmail can have changed a fact.
+    await deps.db.query(
+      `insert into {{schema}}.draft_outcomes
+         (application_id, job_id, kind, changed_in_gmail, factual_edit, recorded_at)
+       values ($1, $2, 'email', $3, $3, $4)
+       on conflict (application_id) do nothing`,
+      [applicationId, jobId, answer.changedInGmail, deps.clock.now()],
+    );
+  }
+  return { ok: true, changed: sent.changed };
 }

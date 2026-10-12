@@ -13,6 +13,7 @@ import { judgePassThrough } from "@/core/drafting/judgeStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
+import { confirmPost } from "@/core/extraction/owner";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import type { ModelCallDeps } from "@/core/platform/models";
@@ -203,6 +204,16 @@ describe("jobView", () => {
     expect((await jobView({ db, clock }, started.jobId))?.state).toBe("upload_failed");
   });
 
+  it("shows a step running again as running, not as the result it gave before", async () => {
+    const id = await pasted();
+    await run(id, [answer({ ...fixture("S01-email-simple"), roles: [] })]);
+    expect(await confirmPost({ db, clock }, id)).toEqual({ ok: true });
+
+    const view = (await jobView({ db, clock }, id))!;
+
+    expect(view.steps.find((step) => step.stage === "extract")?.status).toBe("running");
+  });
+
   it("is null for a job that does not exist", async () => {
     expect(await jobView({ db, clock }, "33333333-3333-4333-8333-333333333333")).toBeNull();
     expect(await jobView({ db, clock }, "not-a-uuid")).toBeNull();
@@ -215,8 +226,14 @@ describe("markSent", () => {
     const id = await pasted();
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
 
-    expect(await markSent({ db, clock }, id, null)).toEqual({ ok: true, changed: true });
-    expect(await markSent({ db, clock }, id, null)).toEqual({ ok: true, changed: false });
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: true })).toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toEqual({
+      ok: true,
+      changed: false,
+    });
 
     const { rows } = await db.query<{
       status: string;
@@ -233,17 +250,42 @@ describe("markSent", () => {
       status: "sent",
       sentAt: clock.now(),
     });
+    // The Gmail answer is the outcome's, once: a "Yes" is a factual edit (ledger spec).
+    const outcomes = await db.query<{
+      kind: string;
+      changed_in_gmail: boolean;
+      factual_edit: boolean;
+    }>(
+      "select kind, changed_in_gmail, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+      [id],
+    );
+    expect(outcomes.rows).toEqual([{ kind: "email", changed_in_gmail: true, factual_edit: true }]);
+  });
+
+  it("refuses a kit whose role is to be applied for another way", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S05-whatsapp-local-number")), answer(DRAFT)]);
+    expect((await jobView({ db, clock }, id))?.state).toBe("kit_ready");
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toEqual({
+      ok: false,
+      reason: "not-email",
+    });
   });
 
   it("refuses a job whose kit is not ready, and one that does not exist", async () => {
     const id = await pasted();
     await run(id, [answer({ ...fixture("S01-email-simple"), roles: [] })]);
 
-    expect(await markSent({ db, clock }, id, null)).toEqual({ ok: false, reason: "not-ready" });
-    expect(await markSent({ db, clock }, "33333333-3333-4333-8333-333333333333", null)).toEqual({
+    const answerNo = { changedInGmail: false };
+    expect(await markSent({ db, clock }, id, null, answerNo)).toEqual({
       ok: false,
-      reason: "not-found",
+      reason: "not-ready",
     });
+    expect(
+      await markSent({ db, clock }, "33333333-3333-4333-8333-333333333333", null, answerNo),
+    ).toEqual({ ok: false, reason: "not-found" });
   });
 });
 
@@ -255,7 +297,7 @@ describe("listJobViews", () => {
     const newer = await pasted();
     await run(newer, [answer(fixture("S01-email-simple"))]);
 
-    const list = await listJobViews(db);
+    const list = await listJobViews({ db, clock });
 
     expect(list.map(({ id, state, company, title }) => ({ id, state, company, title }))).toEqual([
       {
@@ -271,5 +313,37 @@ describe("listJobViews", () => {
         title: "2 roles",
       },
     ]);
+  });
+  it("shows a sent kit as sent, and a long-dead upload as failed", async () => {
+    await seedSample();
+    const sentJob = await pasted();
+    await run(sentJob, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await markSent({ db, clock }, sentJob, null, { changedInGmail: false });
+    const started = await startJob(
+      { db, clock, storage },
+      {
+        images: [
+          {
+            contentType: "image/png",
+            bytes: 10,
+            width: 1080,
+            height: 2400,
+            sha256: "a".repeat(64),
+          },
+        ],
+        pastedText: "",
+        clientElapsedMs: 0,
+      },
+    );
+    if (!started.ok) throw new Error(started.message);
+    clock.advance(15 * 60_000 + 1);
+
+    const list = await listJobViews({ db, clock });
+
+    expect(list.find((job) => job.id === sentJob)?.sent).toBe(true);
+    expect(list.find((job) => job.id === started.jobId)).toMatchObject({
+      state: "upload_failed",
+      sent: false,
+    });
   });
 });

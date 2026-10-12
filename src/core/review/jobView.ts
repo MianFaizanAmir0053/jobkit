@@ -9,7 +9,7 @@ import {
 import { chosenRole } from "@/core/extraction/owner";
 import type { Role } from "@/core/extraction/record";
 import type { ApplicationStatus } from "@/core/ledger/statuses";
-import { type Job, jobStatus } from "@/core/platform/jobs";
+import { expireUploads, type Job, jobStatus } from "@/core/platform/jobs";
 import { kindOf, type JobState, type StageName, type StateKind } from "@/core/platform/jobStates";
 import { stageOutput } from "@/core/platform/runner";
 import type { Clock, Db } from "@/core/ports";
@@ -93,11 +93,12 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
 
 async function failureOf(db: Db, job: Job): Promise<JobView["failure"]> {
   if (job.state !== "failed") return null;
-  // The failed stage's last recorded error: technical words, shown only under "Details".
+  // The failed stage's last recorded error in this round: technical words, shown only under "Details".
   const { rows } = await db.query<{ error: string | null }>(
     `select error from {{schema}}.job_stage_runs
-      where job_id = $1 and stage = $2 and outcome = 'failed' order by id desc limit 1`,
-    [job.id, job.failedStage ?? job.pendingStage],
+      where job_id = $1 and stage = $2 and round = $3 and outcome = 'failed'
+      order by id desc limit 1`,
+    [job.id, job.failedStage ?? job.pendingStage, job.retryRound],
   );
   const detail = rows[0]?.error ?? null;
   return {
@@ -117,9 +118,10 @@ async function stepsOf(db: Db, job: Job): Promise<Step[]> {
   return STEPS.map(({ stage, label, checked }) => {
     const outcome = last.get(stage);
     let status: Step["status"] = "waiting";
+    // A stage running again, as after "Read it again", is running, whatever it gave before.
     if (job.state === "failed" && job.failedStage === stage) status = "failed";
-    else if (outcome === "ok" || outcome === "reused") status = checked ? "done" : "not_checked";
     else if (kindOf(job.state) === "running" && job.pendingStage === stage) status = "running";
+    else if (outcome === "ok" || outcome === "reused") status = checked ? "done" : "not_checked";
     return { stage, label, status };
   });
 }
@@ -143,10 +145,20 @@ export interface JobListItem {
   receivedAt: Date;
   company: string;
   title: string;
+  /** Whether the owner marked the kit sent. */
+  sent: boolean;
 }
 
-/** The jobs list, newest first, with what extract read of each post. */
-export async function listJobViews(db: Db, limit = 50): Promise<JobListItem[]> {
+/**
+ * The jobs list, newest first, with what extract read of each post. Reading
+ * it applies the upload timeout first, as every status read does (B9).
+ */
+export async function listJobViews(
+  deps: { db: Db; clock: Clock },
+  limit = 50,
+): Promise<JobListItem[]> {
+  const { db } = deps;
+  await expireUploads(db, deps.clock.now());
   const { rows } = await db.query<{
     id: string;
     state: JobState;
@@ -155,9 +167,12 @@ export async function listJobViews(db: Db, limit = 50): Promise<JobListItem[]> {
     chosen_role_output: string | null;
     output: unknown;
     output_hash: string | null;
+    sent: boolean;
   }>(
     `select j.id, j.state, j.received_at, j.chosen_role, j.chosen_role_output,
-            x.output, x.output_hash
+            x.output, x.output_hash,
+            exists (select 1 from {{schema}}.applications as a
+                     where a.job_id = j.id and a.status = 'sent') as sent
        from {{schema}}.jobs as j
        left join lateral (
          select output, output_hash from {{schema}}.job_stage_runs as r
@@ -183,6 +198,7 @@ export async function listJobViews(db: Db, limit = 50): Promise<JobListItem[]> {
       receivedAt: row.received_at,
       company: extraction?.record.company.name ?? "",
       title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : ""),
+      sent: row.sent,
     };
   });
 }

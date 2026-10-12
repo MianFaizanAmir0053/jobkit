@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getContainer } from "@/server/container";
+import { setScriptedAnswers } from "@/server/scriptedModels";
 import { testRoutesAllowed } from "@/server/testOnly";
 
 /**
@@ -19,6 +20,17 @@ export async function POST() {
     delete from {{schema}}.owner;
     delete from {{schema}}.baseline_runs;
     delete from {{schema}}.profile_versions;
+    delete from {{schema}}.draft_outcomes;
+    delete from {{schema}}.status_changes;
+    delete from {{schema}}.applications;
+    delete from {{schema}}.model_calls;
+    delete from {{schema}}.job_stage_runs;
+    delete from {{schema}}.job_leases;
+    delete from {{schema}}.job_images;
+    delete from {{schema}}.job_state_changes;
+    delete from {{schema}}.jobs;
   `);
+  // A pipeline left running from an earlier test must not take the next test's answers.
+  setScriptedAnswers([]);
   return new NextResponse(null, { status: 204 });
 }

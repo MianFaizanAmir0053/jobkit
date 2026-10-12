@@ -140,13 +140,13 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
   if (context.keyword !== null && !hasWord(body, context.keyword)) {
     flag("keyword_missing", "body", MESSAGES.keyword_missing);
   }
-  const copied = [kit.subject, kit.greeting, body, kit.closing].join("\n");
   // From every role: a line aimed at AI that the model recorded under another role still counts.
+  // Looked for in the body only: the subject, greeting and closing are the app's words.
   const followed = context.record.roles
     .flatMap((each) => each.instructions)
     .filter((instruction) => instruction.addressed_to_ai)
     .map((instruction) => instruction.value.trim())
-    .find((value) => [...value].length >= 3 && hasWord(copied, value));
+    .find((value) => [...value].length >= 3 && hasWord(body, value));
   if (followed !== undefined) {
     const shown = [...followed].slice(0, 60).join("");
     flag(

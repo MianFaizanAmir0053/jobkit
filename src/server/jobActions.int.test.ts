@@ -268,12 +268,16 @@ describe("the job page's routes", () => {
     const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
     const picking = await settled([answer(fixture("S07-two-roles"))]);
 
-    const response = await sent(post(`/api/jobs/${ready}/sent`, "", cookie), deps(), ready);
+    const no = JSON.stringify({ changedInGmail: false });
+    expect((await sent(post(`/api/jobs/${ready}/sent`, "{}", cookie), deps(), ready)).status).toBe(
+      400,
+    );
+    const response = await sent(post(`/api/jobs/${ready}/sent`, no, cookie), deps(), ready);
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ ok: true, changed: true });
     expect(
-      (await sent(post(`/api/jobs/${picking}/sent`, "", cookie), deps(), picking)).status,
+      (await sent(post(`/api/jobs/${picking}/sent`, no, cookie), deps(), picking)).status,
     ).toBe(409);
   });
 

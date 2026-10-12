@@ -125,12 +125,27 @@ export async function draftAnyway(
   return ok(202);
 }
 
-/** POST /api/jobs/<id>/sent: Mark sent, after the owner sent the email from Gmail. */
+const sentBody = z.object({ changedInGmail: z.boolean() });
+
+/**
+ * POST /api/jobs/<id>/sent: Mark sent, after the owner sent the email from
+ * Gmail, with the answer to "Did you change anything in Gmail?".
+ */
 export async function sent(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
   if (!isUuid(jobId)) return refusal(404, "not-found");
-  const marked = await markSent(deps, jobId, actor.session.id);
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return refusal(413, "too-large");
+  let json: unknown = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    // Not JSON: refused below.
+  }
+  const parsed = sentBody.safeParse(json);
+  if (!parsed.success) return refusal(400, "invalid");
+  const marked = await markSent(deps, jobId, actor.session.id, parsed.data);
   if (!marked.ok) return refusal(marked.reason === "not-found" ? 404 : 409, marked.reason);
   return ok(200, { ok: true, changed: marked.changed });
 }

@@ -26,3 +26,21 @@ export function formatTime(date: Date, timeZone: string): string {
     timeZone,
   }).format(date);
 }
+
+const PARTS: Readonly<Record<string, string>> = {
+  roles: "Role",
+  requirements: "requirement",
+  screening_questions: "question",
+  instructions: "instruction",
+  scam_signals: "scam sign",
+  places: "place",
+};
+
+/** Where a record flag points, in the owner's words: "roles[1].requirements[2].id" is "Role 2, requirement 3". */
+export function placeOfFlag(path: string): string {
+  const named = [...path.matchAll(/([a-z_]+)\[(\d+)\]/g)]
+    .filter(([, part]) => PARTS[part!] !== undefined)
+    .map(([, part, index]) => `${PARTS[part!]} ${Number(index) + 1}`);
+  if (path.includes(".route.")) named.push("contact");
+  return named.join(", ");
+}

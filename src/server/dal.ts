@@ -60,7 +60,7 @@ export async function requireSession(require: SessionRequirements = {}): Promise
 /** The jobs list, newest first. */
 export const listJobs = cache(async (): Promise<JobListItem[]> => {
   await requireSession();
-  return listJobViews((await getContainer()).db);
+  return listJobViews(await getContainer());
 });
 
 /** One job as its page shows it, its upload timeout applied; null for an unknown ID. */

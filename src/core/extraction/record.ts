@@ -148,7 +148,7 @@ const role = z.strictObject({
       value: z
         .string()
         .describe(
-          "The subject format, keyword, word limit, deadline or other value it sets; empty when none.",
+          "The subject format, keyword, word limit, deadline or other value it sets; for a line addressed to AI, the exact words it asks applicants to write; empty when none.",
         ),
       addressed_to_ai: addressedToAi,
     }),
