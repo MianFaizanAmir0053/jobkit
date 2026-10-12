@@ -1,4 +1,5 @@
 import type { DraftOutput } from "@/core/drafting/draftStage";
+import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import type { EligibilityOutput } from "@/core/extraction/eligibility";
 import {
   type ExtractOutput,
@@ -44,15 +45,17 @@ export interface JobView {
   /** Whether the owner chose Draft anyway. */
   draftedAnyway: boolean;
   draft: DraftOutput | null;
+  /** The judge's verdicts; null before it ran, or from before it was built. */
+  judge: JudgeOutput | null;
   application: { status: ApplicationStatus; sentAt: Date | null } | null;
 }
 
-/** The thin path's stages, in order; eligibility and the judge pass through unchecked. */
+/** The thin path's stages, in order. */
 const STEPS: readonly { stage: StageName; label: string; checked: boolean }[] = [
   { stage: "extract", label: "Read the post", checked: true },
   { stage: "eligibility", label: "Check eligibility", checked: true },
   { stage: "draft", label: "Write the email", checked: true },
-  { stage: "judge", label: "Check every sentence separately", checked: false },
+  { stage: "judge", label: "Check every sentence separately", checked: true },
 ];
 
 export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promise<JobView | null> {
@@ -63,6 +66,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const stopReason = extraction ? stopReasonOf(extraction) : null;
   const role = await chosenRole(deps.db, id);
   const draft = (await stageOutput(deps.db, id, "draft"))?.output as DraftOutput | undefined;
+  const judge = (await stageOutput(deps.db, id, "judge"))?.output as JudgeOutput | undefined;
   const eligibility = (await stageOutput(deps.db, id, "eligibility"))?.output as
     EligibilityOutput | undefined;
   const { rows } = await deps.db.query<{ eligibility_decision: string | null }>(
@@ -87,6 +91,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     eligibility: eligibility?.checked ? eligibility : null,
     draftedAnyway: rows[0]?.eligibility_decision === "draft_anyway",
     draft: draft ?? null,
+    judge: judge?.checked ? judge : null,
     application: role ? await applicationOf(deps.db, id, role.id) : null,
   };
 }

@@ -9,7 +9,6 @@ import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { draftStage } from "@/core/drafting/draftStage";
-import { judgePassThrough } from "@/core/drafting/judgeStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
@@ -45,7 +44,16 @@ const pipeline = () => ({
   extract: extractStage({ db, storage, random, models: models() }),
   eligibility: eligibilityStage({ db, clock }),
   draft: draftStage({ db, random, models: models() }),
-  judge: judgePassThrough(),
+  // The judge has its own tests; here it passes every kit.
+  judge: {
+    callsModel: false,
+    input: () => ({}),
+    run: async () => ({
+      ok: true as const,
+      output: { checked: true, verdicts: [], markers: [] },
+    }),
+    next: () => ({ state: "kit_ready" as const, pending: null }),
+  },
 });
 
 const fixture = (id: string): JobRecord =>
@@ -123,7 +131,7 @@ afterEach(() => {
 });
 
 describe("jobView", () => {
-  it("shows a ready kit with its steps, the judge marked not checked", async () => {
+  it("shows a ready kit with every step done", async () => {
     await seedSample();
     const id = await pasted();
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
@@ -140,7 +148,7 @@ describe("jobView", () => {
       ["Read the post", "done"],
       ["Check eligibility", "done"],
       ["Write the email", "done"],
-      ["Check every sentence separately", "not_checked"],
+      ["Check every sentence separately", "done"],
     ]);
     expect(view.role?.id).toBe("P1");
     expect(view.draft?.kit.subject).toBe("Application - Senior Full-Stack Engineer - Sam Rivera");

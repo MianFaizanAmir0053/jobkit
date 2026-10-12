@@ -11,7 +11,6 @@ import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { draftStage } from "@/core/drafting/draftStage";
-import { judgePassThrough } from "@/core/drafting/judgeStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
@@ -61,7 +60,16 @@ const deps = () => ({
     extract: extractStage({ db, storage, random, models: models() }),
     eligibility: eligibilityStage({ db, clock }),
     draft: draftStage({ db, random, models: models() }),
-    judge: judgePassThrough(),
+    // The judge has its own tests; here it passes every kit.
+    judge: {
+      callsModel: false,
+      input: () => ({}),
+      run: async () => ({
+        ok: true as const,
+        output: { checked: true, verdicts: [], markers: [] },
+      }),
+      next: () => ({ state: "kit_ready" as const, pending: null }),
+    },
   },
   schedule: (task: () => Promise<unknown>) => {
     scheduled.push(task);

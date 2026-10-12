@@ -23,7 +23,7 @@ import { createTestDb } from "@/server/db/testDb";
 
 import { DEFAULT_GREETING, CLOSING } from "./build";
 import { type DraftOutput, draftStage, NO_PROFILE } from "./draftStage";
-import { judgePassThrough } from "./judgeStage";
+import { type JudgeOutput, judgeStage } from "./judgeStage";
 import type { DraftAnswer } from "./kit";
 
 /*
@@ -66,7 +66,7 @@ function pipeline() {
     extract: extractStage({ db, storage, random, models: models() }),
     eligibility: eligibilityStage({ db, clock }),
     draft: draftStage({ db, random, models: models() }),
-    judge: judgePassThrough(),
+    judge: judgeStage({ db, random, models: models() }),
   };
 }
 
@@ -147,7 +147,18 @@ const S01_DRAFT: DraftAnswer = {
   ],
 };
 
-/** Runs a paste-only job until it settles, the fake model answering extract then draft. */
+/** The fake judge's verdicts for S01's draft: the claims and the gap line supported. */
+const JUDGED = {
+  verdicts: [
+    { block_id: "S1", verdict: "not_a_claim", company_claim: false, note: "" },
+    { block_id: "S2", verdict: "supported", company_claim: false, note: "" },
+    { block_id: "S3", verdict: "supported", company_claim: false, note: "" },
+    { block_id: "S4", verdict: "supported", company_claim: false, note: "" },
+    { block_id: "S5", verdict: "not_a_claim", company_claim: false, note: "" },
+  ],
+};
+
+/** Runs a paste-only job until it settles, the fake model answering extract, draft, then judge. */
 async function run(pasted: string, steps: readonly FakeStep[]): Promise<string> {
   llm = fakeLlm(steps);
   const started = await startJob(
@@ -195,7 +206,11 @@ describe("the thin drafting group", () => {
     const pasted =
       "Northwind Analytics is hiring a Senior Full-Stack Engineer. Apply by email to jobs@example.com.";
 
-    const id = await run(pasted, [answer(fixture("S01-email-simple")), answer(S01_DRAFT)]);
+    const id = await run(pasted, [
+      answer(fixture("S01-email-simple")),
+      answer(S01_DRAFT),
+      answer(JUDGED),
+    ]);
 
     expect(await loadJob(db, id)).toMatchObject({ state: "kit_ready", pendingStage: null });
     expect((await stageOutput(db, id, "eligibility"))?.output).toEqual({
@@ -203,7 +218,14 @@ describe("the thin drafting group", () => {
       result: "eligible",
       reasons: [],
     });
-    expect((await stageOutput(db, id, "judge"))?.output).toEqual({ checked: false });
+    const judged = (await stageOutput(db, id, "judge"))!.output as JudgeOutput;
+    expect(judged.verdicts.map(({ blockId, verdict }) => [blockId, verdict])).toEqual([
+      ["S1", "not_a_claim"],
+      ["S2", "supported"],
+      ["S3", "supported"],
+      ["S4", "supported"],
+      ["S5", "not_a_claim"],
+    ]);
     const draft = (await stageOutput(db, id, "draft"))!.output as DraftOutput;
     expect(draft.kit.subject).toBe("Application - Senior Full-Stack Engineer - Sam Rivera");
     expect(draft.kit.greeting).toBe(DEFAULT_GREETING);
@@ -219,7 +241,7 @@ describe("the thin drafting group", () => {
       "select stage from {{schema}}.model_calls where job_id = $1 order by started_at",
       [id],
     );
-    expect(rows.map((row) => row.stage)).toEqual(["extract", "draft"]);
+    expect(rows.map((row) => row.stage)).toEqual(["extract", "draft", "judge"]);
   });
 
   it("sends the role's typed fields between markers, with no raw post text and nothing aimed at AI", async () => {
@@ -237,7 +259,11 @@ describe("the thin drafting group", () => {
       years: -1,
     });
 
-    await run(pasted, [answer(record), answer({ fit: [], blocks: [] } satisfies DraftAnswer)]);
+    await run(pasted, [
+      answer(record),
+      answer({ fit: [], blocks: [] } satisfies DraftAnswer),
+      answer({ verdicts: [] }),
+    ]);
 
     const request = llm.calls[1]!;
     expect(request).toMatchObject({
@@ -300,7 +326,7 @@ describe("the thin drafting group", () => {
     expect(llm.calls).toHaveLength(1);
 
     expect(await draftAnyway({ db, clock }, id)).toEqual({ ok: true });
-    llm = fakeLlm([answer(S01_DRAFT)]);
+    llm = fakeLlm([answer(S01_DRAFT), answer(JUDGED)]);
     const deps = { db, clock, pipeline: pipeline() };
     const lease = await claimJob(deps, id);
     if (!lease) throw new Error("not claimed");

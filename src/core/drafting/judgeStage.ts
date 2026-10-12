@@ -1,30 +1,123 @@
-import type { StageDefinition, Transition } from "@/core/platform/runner";
+import { z } from "zod";
+
+import { readExtractOutput } from "@/core/extraction/extract";
+import { callModel, type ModelCallDeps, type ModelCallFailure } from "@/core/platform/models";
+import type { StageDefinition, StageResult, Transition } from "@/core/platform/runner";
+import type { Db, Effort, Random } from "@/core/ports";
+import { getProfileVersion } from "@/core/profile/profile";
+import { canonicalJson } from "@/lib/canonicalJson";
+import { sha256Hex } from "@/lib/encoding";
+
+import type { DraftOutput } from "./draftStage";
+import {
+  type BlockVerdict,
+  citedFacts,
+  JUDGE_LAYOUT_VERSION,
+  JUDGE_RULES,
+  judgeAnswerSchema,
+  judgeContent,
+  mergeVerdicts,
+} from "./judge";
 
 /**
- * `judge` on the thin path: it passes the kit through unchecked, so the
- * owner can try a kit before the judge exists (the owner's choice,
- * 2026-10-12). Its output says so, and the job page shows that no separate
- * check ran. Task 24 replaces it with the independent Claude call the
- * drafting spec describes.
+ * The `judge` stage (drafting spec, "Stage judge"): one Claude Opus 5.5 call
+ * at low effort, independent of the drafter, with a verdict for every block
+ * of the kit. Overstated and unsupported claims, and any claim about the
+ * company, are shown on the job page for the owner to check before sending
+ * (the review page's "I checked this" and its gate come later).
  */
 
+export const JUDGE = {
+  model: "claude-opus-5-5",
+  effort: "low" satisfies Effort,
+  maxTokens: 16_000,
+} as const;
+
+const PROMPT = sha256Hex(
+  canonicalJson({
+    rules: JUDGE_RULES,
+    layout: JUDGE_LAYOUT_VERSION,
+    schema: z.toJSONSchema(judgeAnswerSchema),
+  }),
+);
+
+const PASSING: ReadonlySet<ModelCallFailure> = new Set(["timeout", "unavailable"]);
+
 export interface JudgeOutput {
-  checked: false;
+  checked: true;
+  verdicts: BlockVerdict[];
+  markers: string[];
 }
 
-export function judgePassThrough(): StageDefinition {
+interface JudgeInput {
+  draft: string;
+  facts: string;
+  model: string;
+  effort: Effort;
+  prompt: string;
+}
+
+export interface JudgeDeps {
+  db: Db;
+  random: Random;
+  models: ModelCallDeps;
+}
+
+export function judgeStage(deps: JudgeDeps): StageDefinition {
   return {
-    callsModel: false,
-    // B9: the output hash of the draft it would check.
-    async input(ctx) {
+    callsModel: true,
+
+    // B9: the draft's output hash, the cited facts' hash, the model's settings.
+    async input(ctx): Promise<JudgeInput> {
       const draft = await ctx.outputOf("draft");
       if (!draft) throw new Error("judge runs only after draft");
-      return { draft: draft.outputHash, checked: false };
+      const output = draft.output as DraftOutput;
+      const profile = await getProfileVersion(deps.db, output.profileVersion);
+      const facts = profile ? citedFacts(output.kit, profile.facts) : [];
+      return {
+        draft: draft.outputHash,
+        facts: sha256Hex(canonicalJson(facts)),
+        model: JUDGE.model,
+        effort: JUDGE.effort,
+        prompt: PROMPT,
+      };
     },
-    async run() {
-      const output: JudgeOutput = { checked: false };
+
+    async run(ctx, raw): Promise<StageResult> {
+      const input = raw as JudgeInput;
+      const draft = (await ctx.outputOf("draft"))?.output as DraftOutput | undefined;
+      const extraction = readExtractOutput((await ctx.outputOf("extract"))?.output);
+      const role = extraction?.record.roles.find((entry) => entry.id === draft?.roleId);
+      const profile = draft ? await getProfileVersion(deps.db, draft.profileVersion) : null;
+      if (!draft || !extraction || !role || !profile) {
+        throw new Error("judge's draft, record, role or profile is gone");
+      }
+      const marker = Buffer.from(deps.random.bytes(16)).toString("hex");
+      const called = await callModel(deps.models, {
+        stage: "judge",
+        jobId: ctx.job.id,
+        model: input.model,
+        system: JUDGE_RULES,
+        content: judgeContent(
+          draft.kit,
+          citedFacts(draft.kit, profile.facts),
+          { record: extraction.record, role },
+          marker,
+        ),
+        schema: judgeAnswerSchema,
+        effort: input.effort,
+        maxTokens: JUDGE.maxTokens,
+      });
+      if (!called.ok)
+        return { ok: false, reason: called.message, retry: PASSING.has(called.reason) };
+      const output: JudgeOutput = {
+        checked: true,
+        verdicts: mergeVerdicts(draft.kit, called.output),
+        markers: [marker],
+      };
       return { ok: true, output };
     },
+
     next(): Transition {
       return { state: "kit_ready", pending: null };
     },

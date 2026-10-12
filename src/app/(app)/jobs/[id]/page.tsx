@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { buttonVariants } from "@/components/ui/button";
+import { type BlockVerdict, isBlocking } from "@/core/drafting/judge";
 import { emailBody } from "@/core/drafting/kit";
 import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
@@ -302,6 +303,8 @@ function KitPanel({
   const address = byEmail ? role.route.address : "";
   const strict = address !== "" && isStrictAddress(address);
   const blockText = new Map(kit.blocks.map((block) => [block.id, block.text]));
+  // The separate check's findings: overstated, unsupported, or saying more about the company.
+  const judged = (view.judge?.verdicts ?? []).filter(isBlocking);
   const requirementText = new Map(role.requirements.map((entry) => [entry.id, entry.text]));
   const instructions = role.instructions.filter((line) => !line.addressed_to_ai);
 
@@ -309,8 +312,8 @@ function KitPanel({
     <div className="flex flex-col gap-4">
       <Panel title="Not checked yet">
         <p className="text-sm">
-          This version does not yet read the contact address a second time or check every sentence
-          separately. Read the whole email before you send it.
+          This version does not yet read the contact address a second time. Read the whole email
+          before you send it.
         </p>
       </Panel>
 
@@ -372,9 +375,18 @@ function KitPanel({
         </p>
       </Panel>
 
-      {draft.flags.length > 0 && (
+      {(draft.flags.length > 0 || judged.length > 0) && (
         <Panel title="Check these before you send">
           <ul className="flex flex-col gap-2 text-sm">
+            {judged.map((verdict) => (
+              <li key={`judge-${verdict.blockId}`}>
+                {judgeWords(verdict)}
+                <span className="text-muted-foreground">
+                  {" "}
+                  — &ldquo;{blockText.get(verdict.blockId)}&rdquo;
+                </span>
+              </li>
+            ))}
             {draft.flags.map((flag, i) => {
               const about = blockText.get(flag.at) ?? requirementText.get(flag.at);
               return (
@@ -451,4 +463,16 @@ function EligibilityReasons({ view }: { view: JobView }) {
       ))}
     </ul>
   );
+}
+
+/** A judge's finding in the owner's words. */
+function judgeWords(verdict: BlockVerdict): string {
+  const note = verdict.note ? ` ${verdict.note}` : "";
+  if (verdict.verdict === "overstated") {
+    return `The separate check says this says more than your facts show.${note}`;
+  }
+  if (verdict.verdict === "unsupported") {
+    return `The separate check found nothing in your facts behind this.${note}`;
+  }
+  return "This says something about the company that the post does not. Check it, or cut it.";
 }

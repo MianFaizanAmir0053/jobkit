@@ -21,5 +21,4 @@ The thin path (the owner's choice, 2026-10-12) is built first so the owner can t
 Each of these is built right after the thin path works, and the job page says where one is missing:
 
 - the second read of the email address or number, and the address checks;
-- the judge's review of the draft;
 - the phone: test on the laptop first; the phone follows through a tunnel to the dev server.
