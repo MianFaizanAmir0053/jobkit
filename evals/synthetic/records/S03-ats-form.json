@@ -1,0 +1,85 @@
+{
+  "post_kind": "job_post",
+  "language": "en",
+  "company": {
+    "name": "Fabrikam Payments",
+    "website": ""
+  },
+  "recruiter": {
+    "name": "",
+    "title": ""
+  },
+  "scam_signals": [],
+  "roles": [
+    {
+      "id": "P1",
+      "title": "Full-Stack Developer",
+      "seniority": "unspecified",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "remote",
+        "places": [
+          {
+            "text": "London",
+            "code": "GB"
+          }
+        ],
+        "remote_regions": ["UK"],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [],
+        "sponsorship": "unspecified",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "",
+        "currency": "",
+        "min": -1,
+        "max": -1,
+        "period": "unspecified"
+      },
+      "requirements": [],
+      "route": {
+        "kind": "ats_form",
+        "address": "https://boards.example.net/fabrikam/jobs/4471",
+        "quote": "Apply here: https://boards.example.net/fabrikam/jobs/4471",
+        "box": {
+          "tile": -1,
+          "x1": -1,
+          "y1": -1,
+          "x2": -1,
+          "y2": -1
+        }
+      },
+      "instructions": [],
+      "required_attachments": [],
+      "screening_questions": [
+        {
+          "id": "Q1",
+          "text": "Are you authorised to work in the UK?",
+          "addressed_to_ai": false
+        },
+        {
+          "id": "Q2",
+          "text": "What are your salary expectations (GBP)?",
+          "addressed_to_ai": false
+        },
+        {
+          "id": "Q3",
+          "text": "How many years of experience do you have with Python?",
+          "addressed_to_ai": false
+        },
+        {
+          "id": "Q4",
+          "text": "Why do you want to join Fabrikam?",
+          "addressed_to_ai": false
+        }
+      ]
+    }
+  ]
+}

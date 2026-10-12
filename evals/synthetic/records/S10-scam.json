@@ -1,0 +1,84 @@
+{
+  "post_kind": "job_post",
+  "language": "en",
+  "company": {
+    "name": "",
+    "website": ""
+  },
+  "recruiter": {
+    "name": "",
+    "title": ""
+  },
+  "scam_signals": [
+    {
+      "kind": "fee",
+      "quote": "Registration fee PKR 2,000 required before interview."
+    },
+    {
+      "kind": "national_id",
+      "quote": "Send your CNIC copy"
+    },
+    {
+      "kind": "bank_details",
+      "quote": "bank account details"
+    }
+  ],
+  "roles": [
+    {
+      "id": "P1",
+      "title": "Data entry and web jobs",
+      "seniority": "unspecified",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "remote",
+        "places": [],
+        "remote_regions": [],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [],
+        "sponsorship": "unspecified",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "Salary 150,000 PKR.",
+        "currency": "PKR",
+        "min": 150000,
+        "max": 150000,
+        "period": "unspecified"
+      },
+      "requirements": [],
+      "route": {
+        "kind": "email",
+        "address": "hr.jobs@example.net",
+        "quote": "Send your CNIC copy and bank account details to hr.jobs@example.net",
+        "box": {
+          "tile": -1,
+          "x1": -1,
+          "y1": -1,
+          "x2": -1,
+          "y2": -1
+        }
+      },
+      "instructions": [
+        {
+          "kind": "attach_document",
+          "text": "Send your CNIC copy and bank account details.",
+          "value": "CNIC copy",
+          "addressed_to_ai": false
+        }
+      ],
+      "required_attachments": [
+        {
+          "name": "CNIC copy",
+          "is_cv": false
+        }
+      ],
+      "screening_questions": []
+    }
+  ]
+}

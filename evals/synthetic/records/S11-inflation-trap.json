@@ -1,0 +1,96 @@
+{
+  "post_kind": "job_post",
+  "language": "en",
+  "company": {
+    "name": "Proseware Cloud",
+    "website": ""
+  },
+  "recruiter": {
+    "name": "",
+    "title": ""
+  },
+  "scam_signals": [],
+  "roles": [
+    {
+      "id": "P1",
+      "title": "Staff Platform Engineer",
+      "seniority": "staff",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "remote",
+        "places": [],
+        "remote_regions": ["worldwide"],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [],
+        "sponsorship": "unspecified",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "",
+        "currency": "",
+        "min": -1,
+        "max": -1,
+        "period": "unspecified"
+      },
+      "requirements": [
+        {
+          "id": "R1",
+          "text": "10+ years leading Kubernetes platform teams",
+          "priority": "must",
+          "kind": "experience",
+          "skills": ["kubernetes"],
+          "depth": "production",
+          "years": 10
+        },
+        {
+          "id": "R2",
+          "text": "Kafka at scale (1M messages per second)",
+          "priority": "must",
+          "kind": "skill",
+          "skills": [],
+          "depth": "production",
+          "years": -1
+        },
+        {
+          "id": "R3",
+          "text": "Go in production",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["go"],
+          "depth": "production",
+          "years": -1
+        },
+        {
+          "id": "R4",
+          "text": "React for internal tools",
+          "priority": "nice",
+          "kind": "skill",
+          "skills": ["react"],
+          "depth": "any",
+          "years": -1
+        }
+      ],
+      "route": {
+        "kind": "email",
+        "address": "platform-jobs@example.org",
+        "quote": "Apply: platform-jobs@example.org",
+        "box": {
+          "tile": -1,
+          "x1": -1,
+          "y1": -1,
+          "x2": -1,
+          "y2": -1
+        }
+      },
+      "instructions": [],
+      "required_attachments": [],
+      "screening_questions": []
+    }
+  ]
+}

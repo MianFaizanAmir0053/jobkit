@@ -1,0 +1,103 @@
+{
+  "post_kind": "job_post",
+  "language": "en",
+  "company": {
+    "name": "Northwind Analytics",
+    "website": ""
+  },
+  "recruiter": {
+    "name": "",
+    "title": ""
+  },
+  "scam_signals": [],
+  "roles": [
+    {
+      "id": "P1",
+      "title": "Senior Full-Stack Engineer",
+      "seniority": "senior",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "remote",
+        "places": [],
+        "remote_regions": ["worldwide"],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [],
+        "sponsorship": "unspecified",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "",
+        "currency": "",
+        "min": -1,
+        "max": -1,
+        "period": "unspecified"
+      },
+      "requirements": [
+        {
+          "id": "R1",
+          "text": "4+ years with React",
+          "priority": "must",
+          "kind": "experience",
+          "skills": ["react"],
+          "depth": "professional",
+          "years": 4
+        },
+        {
+          "id": "R2",
+          "text": "production Node.js",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["nodejs"],
+          "depth": "production",
+          "years": -1
+        },
+        {
+          "id": "R3",
+          "text": "PostgreSQL",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["postgresql"],
+          "depth": "any",
+          "years": -1
+        },
+        {
+          "id": "R4",
+          "text": "AWS",
+          "priority": "nice",
+          "kind": "skill",
+          "skills": ["aws"],
+          "depth": "any",
+          "years": -1
+        }
+      ],
+      "route": {
+        "kind": "email",
+        "address": "jobs@example.com",
+        "quote": "Apply by email to jobs@example.com",
+        "box": {
+          "tile": -1,
+          "x1": -1,
+          "y1": -1,
+          "x2": -1,
+          "y2": -1
+        }
+      },
+      "instructions": [
+        {
+          "kind": "subject_format",
+          "text": "Use the subject \"Application - Senior Full-Stack Engineer - Your Name\".",
+          "value": "Application - Senior Full-Stack Engineer - Your Name",
+          "addressed_to_ai": false
+        }
+      ],
+      "required_attachments": [],
+      "screening_questions": []
+    }
+  ]
+}
