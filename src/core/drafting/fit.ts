@@ -10,6 +10,8 @@ import type { FitRow, Verdict } from "./kit";
  * A skill or experience requirement is met only when, for every skill it
  * names, one cited fact has that skill at the depth it asks and with the
  * years it states: depth and years from the same fact, never one from each.
+ * An experience requirement naming no skill ("3+ years of professional
+ * software development") needs one cited fact with that depth and years.
  * An education requirement needs a cited education fact. Anything short of
  * that is `fit_unverified` and counts as partial, so a must-have needs a gap
  * line; a requirement with no row is `fit_missing` and counts as a gap.
@@ -77,14 +79,12 @@ function showsEverySkill(
   requirement: Role["requirements"][number],
   cited: readonly Fact[],
 ): boolean {
+  const deepEnough = (fact: Fact) =>
+    DEPTH_RANK[fact.depth] >= REQUIRED_RANK[requirement.depth] &&
+    (requirement.years < 0 || (fact.years ?? 0) >= requirement.years);
   const skills = requirement.skills.map(canonicalSkill);
-  if (skills.length === 0) return false;
+  if (skills.length === 0) return requirement.kind === "experience" && cited.some(deepEnough);
   return skills.every((skill) =>
-    cited.some(
-      (fact) =>
-        fact.skills.includes(skill) &&
-        DEPTH_RANK[fact.depth] >= REQUIRED_RANK[requirement.depth] &&
-        (requirement.years < 0 || (fact.years ?? 0) >= requirement.years),
-    ),
+    cited.some((fact) => fact.skills.includes(skill) && deepEnough(fact)),
   );
 }

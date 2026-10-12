@@ -15,6 +15,7 @@ import {
   gapLine,
   greetingFor,
   NEEDS_YOUR_LINE,
+  oneLine,
   type ProfileParts,
   subjectFor,
 } from "./build";
@@ -104,6 +105,32 @@ describe("acceptedInstructions", () => {
     expect(limitOf("one page")).toBe(BODY_WORD_LIMIT);
     expect(limitOf("2-3 paragraphs")).toBe(BODY_WORD_LIMIT);
     expect(limitOf("500 characters")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("100-150 words")).toBe(150);
+  });
+
+  it("reads a bare number as the limit before any words in the text, and never a least as a most", () => {
+    const limitOf = (value: string, text = "") =>
+      acceptedInstructions({
+        ...record().roles[0]!,
+        instructions: [instruction({ kind: "word_limit", value, text })],
+      }).wordLimit;
+
+    expect(limitOf("120", "Max 120; answers 50 words each")).toBe(120);
+    expect(limitOf("", "Keep the email to 90 words.")).toBe(90);
+    expect(limitOf("at least 100 words")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("A minimum of 100 words")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("min. 100 words")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("", "No fewer than 100 words, please.")).toBe(BODY_WORD_LIMIT);
+  });
+
+  it("refuses a keyword a format character splits, which no check could find", () => {
+    const zeroWidthSpace = String.fromCodePoint(0x200b);
+    const role: Role = {
+      ...record().roles[0]!,
+      instructions: [instruction({ kind: "include_keyword", value: `Uni${zeroWidthSpace}corn` })],
+    };
+
+    expect(acceptedInstructions(role).keyword).toBeNull();
   });
 
   it("keeps the 180-word limit when the post allows more, and refuses a keyword that is a link, too long or on two lines", () => {
@@ -154,6 +181,19 @@ describe("subjectFor", () => {
     expect(subjectFor(null, "Sam", `Engineer${override}reganaM`)).toBe(
       "Application: EngineerreganaM – Sam",
     );
+  });
+
+  it("drops every format character, keeping only a joiner inside an emoji", () => {
+    const marks = [0x200e, 0x200f, 0x061c, 0x200b, 0xfeff, 0x2060].map((code) =>
+      String.fromCodePoint(code),
+    );
+    expect(oneLine(`Sen${marks.join("")}ior`)).toBe("Senior");
+    const joiner = String.fromCodePoint(0x200d);
+    const family = [0x1f468, 0x1f469, 0x1f467]
+      .map((code) => String.fromCodePoint(code))
+      .join(joiner);
+    expect(oneLine(`Team ${family}`)).toBe(`Team ${family}`);
+    expect(oneLine(`Uni${joiner}corn`)).toBe("Unicorn");
   });
 
   it("never carries a line break, however the format tries", () => {

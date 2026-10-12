@@ -1,6 +1,6 @@
 import type { JobRecord, Role } from "@/core/extraction/record";
 
-import { knownLineFits, NEEDS_YOUR_LINE, type ProfileParts } from "./build";
+import { knownLineFits, NEEDS_YOUR_LINE, oneLine, type ProfileParts } from "./build";
 import { checkFit } from "./fit";
 import { bodyWords, type EmailKit, type FitRow, type KitBlock } from "./kit";
 
@@ -44,6 +44,8 @@ export interface KitContext {
   fit: readonly FitRow[];
   wordLimit: number;
   keyword: string | null;
+  /** The post's subject format code applied, or null for the default subject. */
+  subjectFormat: string | null;
   /** The marker strings the drafting call used. */
   markers: readonly string[];
 }
@@ -66,16 +68,26 @@ const MESSAGES = {
   no_claims: "The email says nothing about you yet. Write at least one sentence from your profile.",
 } as const;
 
-// An amount of money (a currency before or after a number, or a word for one); visas,
-// sponsorship and the right to work; and equal-opportunity topics worded about a person.
+// Money: a currency before or after a number, a word for one, an amount per month or year, or
+// pay itself. Visas, sponsorship and the right to work. Equal-opportunity topics worded about a
+// person. Names that share a word are not topics: Passport.js, Visa cards, a "Citizen Portal",
+// race conditions and data races.
 const SENSITIVE = [
   /(?:\b(?:usd|pkr|eur|gbp|aed|sar|qar|kwd|omr|bhd|sgd|cad|aud|inr|rs)\.?|[$£€₨₹])\s?\d/i,
   /\d[\d,.]*\s?(?:usd|pkr|eur|gbp|aed|sar|qar|kwd|omr|bhd|sgd|cad|aud|inr|dollars?|rupees?|pounds?|euros?|riyals?|dirhams?|lakhs?|crores?)\b/i,
-  /\b(?:visas?|sponsor(?:ship|ed|s|ing)?|work (?:authori[sz]ation|permits?)|right to work|(?:authori[sz]ed|eligible|permitted) to work|citizen(?:s|ship)?|nationality|passports?|permanent residen(?:t|cy|ce))\b/i,
-  /\b(?:gender|ethnicity|race(?!\s+conditions?)|veteran status|military service|(?:my|a|have a) disabilit(?:y|ies)|I am disabled)\b/i,
+  /\d[\d,.]*\s?[km]?\s?(?:\/\s?|per |an? )(?:month|mo|year|yr|annum|hour|hr|week)\b/i,
+  /\b(?:salary|salaries|compensation|remuneration|ctc|lpa|per annum|take-home|stipend|pay (?:range|expectations?|package))\b/i,
+  /\b(?:visas?(?!\s*(?:payments?|cards?|checkout|api|direct|network|integration|\/|&|and\s+mastercard))|sponsor(?:ship|ed|s|ing)?|work (?:authori[sz]ation|permits?)|right to work|(?:authori[sz]ed|eligible|permitted) to work|citizen(?:s|ship)?(?!\s+portal)|nationality|passports?(?!\.js)|permanent residen(?:t|cy|ce))\b/i,
+  /\b(?:gender|ethnicity|(?<!data[\s-])race(?![\s-]*conditions?)|veteran status|military service|(?:my|a|have a) disabilit(?:y|ies)|I am disabled)\b/i,
 ];
 
-const PLACEHOLDER = /[[{<][^\]}>]{0,40}[\]}>]/;
+// What a post's subject format can leave once {name} and {role} are filled: a short span in
+// paired brackets, or a stand-in such as "Your Name", "(Your Name)" or "%ROLE%".
+const PLACEHOLDERS =
+  /\[[^\]]{1,40}\]|\{[^}]{1,40}\}|<[^>]{1,40}>|\([^)]{0,40}\b(?:your|name|role|position|title)\b[^)]{0,40}\)|%[a-z_]{2,20}%|\byour (?:full )?name\b|\b(?:job|role|position) title\b/gi;
+
+/** A letter or a digit: a sentence holding none says nothing. */
+const WORDY = /[\p{L}\p{N}]/u;
 
 const isSensitive = (text: string) => SENSITIVE.some((pattern) => pattern.test(text));
 
@@ -86,7 +98,7 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
   const { role, profile } = context;
   const factIds = new Set(profile.facts.map((fact) => fact.id));
 
-  if (PLACEHOLDER.test(kit.subject)) {
+  if (leftPlaceholder(kit.subject, context.subjectFormat)) {
     flag("subject_placeholder", "subject", MESSAGES.subject_placeholder);
   }
   if (isSensitive(kit.subject))
@@ -95,17 +107,21 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     flag("sensitive_topic_drafted", "greeting", MESSAGES.sensitive_topic_drafted);
   }
   for (const block of kit.blocks) {
-    if (!citesTruly(block, context, factIds)) {
-      flag("invalid_citation", block.id, MESSAGES.invalid_citation);
-    }
-    if (block.class === "gap" && block.text === NEEDS_YOUR_LINE) {
+    // A gap whose line code could not write is the owner's to write: that is the flag it needs.
+    const ownersLine =
+      block.class === "gap" &&
+      block.text === NEEDS_YOUR_LINE &&
+      role.requirements.some((requirement) => requirement.id === block.gap?.requirementId);
+    if (ownersLine) {
       flag("needs_your_line", block.id, MESSAGES.needs_your_line);
+    } else if (!citesTruly(block, context, factIds)) {
+      flag("invalid_citation", block.id, MESSAGES.invalid_citation);
     }
     if (block.class !== "gap" && isSensitive(block.text)) {
       flag("sensitive_topic_drafted", block.id, MESSAGES.sensitive_topic_drafted);
     }
   }
-  if (!kit.blocks.some((block) => block.class === "claim")) {
+  if (!kit.blocks.some((block) => block.class === "claim" && WORDY.test(block.text))) {
     flag("no_claims", "body", MESSAGES.no_claims);
   }
 
@@ -145,8 +161,8 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
   const followed = context.record.roles
     .flatMap((each) => each.instructions)
     .filter((instruction) => instruction.addressed_to_ai)
-    .map((instruction) => instruction.value.trim())
-    .find((value) => [...value].length >= 3 && hasWord(body, value));
+    .map((instruction) => oneLine(instruction.value))
+    .find((value) => isCheckable(value) && hasWord(body, value));
   if (followed !== undefined) {
     const shown = [...followed].slice(0, 60).join("");
     flag(
@@ -215,6 +231,29 @@ function hasToken(text: string, token: string): boolean {
 }
 
 /** Whether `word` stands alone in `text`, in any case: "Java" is not in "JavaScript". */
-function hasWord(text: string, word: string): boolean {
+export function hasWord(text: string, word: string): boolean {
   return hasToken(text.toLowerCase(), word.toLowerCase());
+}
+
+/**
+ * Whether a value a line aimed at AI asked for can be looked for: two
+ * characters or more, or a single one that is not a letter or a digit,
+ * such as an emoji. A lone letter would be found everywhere.
+ */
+export function isCheckable(value: string): boolean {
+  const chars = [...value];
+  return chars.length >= 2 || (chars.length === 1 && !WORDY.test(value));
+}
+
+/**
+ * Whether a placeholder the post's subject format left, once {name} and
+ * {role} were filled, is still in the subject. Only the format's own words
+ * are looked at, so a title such as "Engineer [Remote]" is no placeholder.
+ */
+function leftPlaceholder(subject: string, format: string | null): boolean {
+  if (format === null) return false;
+  const rest = oneLine(format.replaceAll("{name}", " ").replaceAll("{role}", " "));
+  return [...rest.matchAll(PLACEHOLDERS)].some(([placeholder]) =>
+    subject.toLowerCase().includes(placeholder.toLowerCase()),
+  );
 }

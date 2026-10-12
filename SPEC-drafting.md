@@ -59,8 +59,8 @@ One Claude Opus 5.5 call through the platform wrapper, with structured output: t
   
   Raw post text is never sent to this stage.
 - **Accepted instructions:** only those not addressed to AI, and only these kinds, each of which the owner can decline on the review checklist:
-  - `subject_format`: applied by code, not the model. Only `{name}` and `{role}` are replaced, and control characters, including carriage returns and line feeds, are removed from the result;
-  - `word_limit`: passed as a number, tightening the 180-word limit;
+  - `subject_format`: applied by code, not the model. Only `{name}` and `{role}` are replaced, and control characters, including carriage returns and line feeds, are removed from the result, as are format characters (direction marks, zero-width spaces) from every string code takes from the post;
+  - `word_limit`: passed as a number, tightening the 180-word limit: the instruction's value when it is a bare number, otherwise the first "N words" in its value, then its text. A least ("at least 100 words") and a limit in other units ("one page", "500 characters") do not tighten it;
   - `include_keyword`: a single line of at most 40 characters with no link; passed as a quoted value; code checks that it appears.
   
   All other instructions appear only on the review checklist.
@@ -84,7 +84,7 @@ Runs when `extract_questions` added questions to a job whose kit already exists.
 - **Gap lines:**
   - a known gap line that names one of the requirement's skills, verbatim;
   - or, for a `skill` or `experience` requirement, a template, with `{skill}` replaced by the display name of the requirement's first skill tag that no approved fact has, so a line never says the owner lacks a skill the profile shows, and `{related}` by the related fact's phrase;
-  - for a must-have with no skill tag, a degree, a language or an "other" requirement, or one whose every skill appears in an approved fact, no template applies: the block shows "Needs your line" and blocks until the owner types one or picks a known line (the owner's rule, 2026-10-12).
+  - for a must-have with no skill tag, a degree, a language or an "other" requirement, or one whose every skill appears in an approved fact, no template applies: the block shows "Needs your line" and blocks until the owner types one or picks a known line (the owner's rule, 2026-10-12). A known line answers only a requirement naming one of its skills, so for a requirement with no skill tag the owner types the line.
   
   In a message kit, several gaps merge into one line ("I haven't used Kubernetes or Kafka professionally; the closest is …") so the 600-character limit can hold them.
 
@@ -93,6 +93,7 @@ Runs when `extract_questions` added questions to a job whose kit already exists.
 Code checks every fit row against the facts it cites (the owner's rule, 2026-10-12):
 
 - a `met` verdict needs, for a `skill` or `experience` requirement, for every skill tag the requirement names, one cited fact with that tag, a depth at least the requirement's (`production` above `professional` above `side-project` above `learning`; `any` accepts all) and years at least the requirement's when it states some, the depth and the years from that same fact;
+- a `met` verdict for an `experience` requirement that names no skill tag ("3+ years of professional software development") needs one cited fact with the depth and the years asked;
 - a `met` verdict for an `education` requirement needs a cited `education` fact; for a `language` or `other` requirement, the owner's tick;
 - anything short of that makes the row `fit_unverified`, counted as `partial`, so a must-have needs a gap line;
 - a requirement with no fit row at all is flagged `fit_missing`.
@@ -106,10 +107,13 @@ Pure code checks. `context` holds the record's chosen role, the profile version,
 - `missing_gap_line`: a must-have counted `partial` or `gap` with no gap line answering it;
 - `over_limit`: email body over the word limit in force, or message over 600 characters;
 - `keyword_missing`: an accepted keyword absent from the text;
-- `ai_instruction_followed`: the value of any instruction or question addressed to AI appearing in the kit;
+- `ai_instruction_followed`: the value of any instruction addressed to AI, from any role, appearing in the body as whole words; a value of one character is looked for only when it is a symbol, such as an emoji;
 - `fixed_answer_drafted`: recorded by `draft` when code replaced a drafted topic answer;
 - `topic_choice_needed` and `needs_your_answer`, for questions as above;
-- `sensitive_topic_drafted`: a drafted block that contains a currency amount, or words about visas, sponsorship, work authorisation or EEO topics, which only the profile may answer;
+- `sensitive_topic_drafted`: a drafted block, the subject or the greeting that contains a currency amount, an amount per month or year, words about pay (salary, compensation, CTC, LPA, per annum), or words about visas, sponsorship, work authorisation or EEO topics, which only the profile may answer. Names that share a word are not topics: Passport.js, Visa payments, a "Citizen Portal", race conditions and data races;
+- `subject_placeholder`: a placeholder the post's subject format left once `{name}` and `{role}` were filled (a short span in paired brackets, or a stand-in such as "Your Name" or "%ROLE%"), still in the subject;
+- `no_claims`: a body with no `claim` block holding a word;
+- `needs_your_line`: a gap whose line code could not write; such a block is not also flagged `invalid_citation`;
 - `short_answer_unconfirmed`: every drafted answer of under six words, until the owner ticks it;
 - `reference_leak`: any of this profile version's fact, template or known-line IDs, or this call's marker strings, appearing as a whole token in copy-ready text. Ordinary words such as "S3" or "F-1 visa" are never touched.
 

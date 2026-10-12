@@ -7,13 +7,14 @@ import { callModel, type ModelCallDeps, type ModelCallFailure } from "@/core/pla
 import type { StageDefinition, StageResult, Transition } from "@/core/platform/runner";
 import type { Db, Effort, Random } from "@/core/ports";
 import { getActiveProfile, getProfileVersion } from "@/core/profile/profile";
+import { SKILLS } from "@/core/shared/skills";
 import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 
-import { acceptedInstructions, buildEmailKit } from "./build";
+import { acceptedInstructions, buildEmailKit, oneLine } from "./build";
 import { draftAnswerSchema, type EmailKit, type FitRow } from "./kit";
 import { DRAFT_LAYOUT_VERSION, draftContent, draftSystemPrompt } from "./prompt";
-import { type KitFlag, validateEmailKit } from "./validate";
+import { hasWord, isCheckable, type KitFlag, validateEmailKit } from "./validate";
 
 /**
  * The `draft` stage for an email kit (drafting spec, "Stage draft"): one
@@ -33,11 +34,13 @@ export const DRAFT = {
 } as const;
 
 /**
- * What a stored kit holds beyond the model's answer: the parts code builds
- * and the flags it raises. Raise it when build.ts or validate.ts change
- * them, so an output kept from before is not reused.
+ * What a stored kit holds beyond the model's answer: the parts code builds,
+ * the flags it raises, and what the call is shown. Raise it when any of
+ * these change: build.ts, validate.ts, fit.ts, bodyWords in kit.ts, or
+ * withoutAiLines below, so an output kept from before is not reused. The
+ * skills table, which the fit check and the gap lines read, is hashed whole.
  */
-const BUILD_VERSION = 2;
+const BUILD_VERSION = 3;
 
 // The prompt as sent (its rules, the user turn's layout, the output's schema) and the build.
 const PROMPT = sha256Hex(
@@ -46,6 +49,7 @@ const PROMPT = sha256Hex(
     layout: DRAFT_LAYOUT_VERSION,
     schema: z.toJSONSchema(draftAnswerSchema),
     build: BUILD_VERSION,
+    skills: SKILLS,
   }),
 );
 
@@ -152,6 +156,7 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         fit,
         wordLimit: accepted.wordLimit,
         keyword: accepted.keyword,
+        subjectFormat: accepted.subjectFormat,
         markers: [marker],
       });
       const output: DraftOutput = {
@@ -174,12 +179,13 @@ export function draftStage(deps: DraftDeps): StageDefinition {
 }
 
 /**
- * The post's typed fields as the drafting call may see them: none that
- * repeats a line aimed at AI. The extract prompt records such lines as
- * instructions or questions, which never reach this call; a requirement, a
- * title or a company name that still carries one is left out (the fit check
- * then shows the requirement as not weighed), so no such line reaches the
- * model even inside the markers.
+ * The post's typed fields as the drafting call may see them. The extract
+ * prompt records lines aimed at AI as instructions or questions, which the
+ * role passed on goes without; a requirement, a title or a company name
+ * that repeats such a line, or what it asks for, as whole words, is left
+ * out too (the fit check then shows the requirement as not weighed). A
+ * line the extractor reworded into a requirement is beyond this check: the
+ * markers and the system prompt's rule are the defence there.
  */
 function withoutAiLines(
   record: JobRecord,
@@ -193,15 +199,18 @@ function withoutAiLines(
         .flatMap((line) => [line.text, line.value]),
       ...each.screening_questions.filter((line) => line.addressed_to_ai).map((line) => line.text),
     ])
-    .map((line) => line.trim().toLowerCase())
-    .filter((line) => [...line].length >= 3);
-  const touched = (text: string) => lines.some((line) => text.toLowerCase().includes(line));
+    .map(oneLine)
+    .filter(isCheckable);
+  // Whole words, on one line: "Java" leaves "JavaScript" alone, and a line break hides nothing.
+  const touched = (text: string) => lines.some((line) => hasWord(oneLine(text), line));
   return {
     company: touched(record.company.name) ? "" : record.company.name,
     role: {
       ...role,
       title: touched(role.title) ? "" : role.title,
       requirements: role.requirements.filter((requirement) => !touched(requirement.text)),
+      instructions: [],
+      screening_questions: [],
     },
     keyword,
   };

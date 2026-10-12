@@ -8,9 +8,10 @@ import type { DraftAnswer, EmailKit, FitRow, GapChoice, KitBlock } from "./kit";
  * The parts of an email kit code writes (drafting spec, "Code-built parts"
  * and "Accepted instructions"): the subject, the greeting, every gap line and
  * the closing, and which of the post's instructions code acts on. Every
- * string taken from the post loses its control and direction characters
- * here, so none can break a line in a subject or a header, or make one read
- * otherwise than it is sent.
+ * string taken from the post loses its control and format characters here
+ * (direction marks, zero-width spaces), so none can break a line in a
+ * subject or a header, make one read otherwise than it is sent, or hide a
+ * word from a check.
  */
 
 export const NEEDS_YOUR_LINE = "Needs your line";
@@ -20,6 +21,7 @@ export const BODY_WORD_LIMIT = 180;
 const KEYWORD_MAX_LENGTH = 40;
 
 type Requirement = Role["requirements"][number];
+type Instruction = Role["instructions"][number];
 
 export interface ProfileParts {
   facts: readonly Fact[];
@@ -39,21 +41,36 @@ function isControl(code: number): boolean {
   return code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
 }
 
-/** Direction overrides and isolates, which make text read otherwise than it runs. */
-function isDirectionMark(code: number): boolean {
-  return (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+/** Format characters: direction marks and isolates, zero-width spaces and joiners, a byte-order mark. */
+const FORMAT = /^\p{Cf}$/u;
+const PICTOGRAPH = /^\p{Extended_Pictographic}$/u;
+const ZERO_WIDTH_JOINER = String.fromCodePoint(0x200d);
+
+/** A variation selector or a skin tone, which may sit between an emoji and a joiner. */
+function isEmojiModifier(char: string): boolean {
+  const code = char.codePointAt(0)!;
+  return code === 0xfe0e || code === 0xfe0f || (code >= 0x1f3fb && code <= 0x1f3ff);
+}
+
+/** Whether the joiner at `i` joins two emoji, as in a family or a profession emoji. */
+function joinsEmoji(chars: readonly string[], i: number): boolean {
+  let before = i - 1;
+  while (before >= 0 && isEmojiModifier(chars[before]!)) before--;
+  return before >= 0 && PICTOGRAPH.test(chars[before]!) && PICTOGRAPH.test(chars[i + 1] ?? "");
 }
 
 /**
  * The text on one line: every control character, carriage returns and line
- * feeds among them, becomes a space, and direction marks go.
+ * feeds among them, becomes a space, and format characters go, except a
+ * joiner inside an emoji.
  */
 export function oneLine(text: string): string {
-  return [...text]
-    .map((char) => {
-      const code = char.codePointAt(0)!;
-      if (isDirectionMark(code)) return "";
-      return isControl(code) ? " " : char;
+  const chars = [...text];
+  return chars
+    .map((char, i) => {
+      if (isControl(char.codePointAt(0)!)) return " ";
+      if (!FORMAT.test(char)) return char;
+      return char === ZERO_WIDTH_JOINER && joinsEmoji(chars, i) ? char : "";
     })
     .join("")
     .replace(/ {2,}/g, " ")
@@ -67,18 +84,39 @@ export function canonicalSkill(tag: string): string {
 
 const LINK = /https?:|:\/\/|www\.|\b[a-z0-9-]+\.[a-z]{2,}\//i;
 const WORDS = /(\d[\d,]*)\s*words?\b/i;
+const BARE_NUMBER = /^\s*(\d[\d,]*)\s*$/;
+/** Words before a number that make it a least, not a most: "at least 100 words", "a minimum of 100 words". */
+const MINIMUM_BEFORE = /\b(?:at least|min(?:imum)?(?: of)?\.?|no (?:fewer|less) than)\s*$/i;
+
+/**
+ * The most words an instruction allows: its value when that is a bare
+ * number, else the first "N words" in its value, then in its text. None for
+ * a least ("at least 100 words") or a limit in other units ("one page",
+ * "500 characters"), which stay on the checklist.
+ */
+function wordLimitOf(instruction: Instruction): number | null {
+  const bare = BARE_NUMBER.exec(instruction.value)?.[1];
+  const found =
+    bare === undefined
+      ? [instruction.value, instruction.text]
+          .map((text) => ({ text, match: WORDS.exec(text) }))
+          .find(({ match }) => match !== null)
+      : undefined;
+  if (found?.match && MINIMUM_BEFORE.test(found.text.slice(0, found.match.index))) return null;
+  const words = Number((bare ?? found?.match?.[1])?.replaceAll(",", ""));
+  return Number.isInteger(words) && words > 0 ? words : null;
+}
 
 export function acceptedInstructions(role: Role): Accepted {
   const usable = role.instructions.filter((instruction) => !instruction.addressed_to_ai);
   const subject = usable.find(
     (instruction) => instruction.kind === "subject_format" && oneLine(instruction.value) !== "",
   );
-  // Only a limit in words tightens the body's; "one page" or "500 characters" stay on the checklist.
+  // Only a most in words tightens the body's limit.
   const limits = usable
     .filter((instruction) => instruction.kind === "word_limit")
-    .map((instruction) => WORDS.exec(`${instruction.value} ${instruction.text}`)?.[1])
-    .map((words) => Number(words?.replaceAll(",", "")))
-    .filter((limit) => Number.isInteger(limit) && limit > 0);
+    .map(wordLimitOf)
+    .filter((limit) => limit !== null);
   const keyword = usable.find(
     (instruction) =>
       instruction.kind === "include_keyword" &&

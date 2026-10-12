@@ -107,6 +107,22 @@ describe("checkFit", () => {
     expect(checkFit(both, [met("R1", ["F-docker", "F-k8s-prod"])], facts).flags).toEqual([]);
   });
 
+  it("meets an experience requirement naming no skill with one cited fact of the depth and years asked", () => {
+    const general = role([
+      requirement({ id: "R1", kind: "experience", depth: "professional", years: 3 }),
+    ]);
+
+    expect(checkFit(general, [met("R1", ["F-docker"])], facts).flags).toEqual([]);
+    expect(checkFit(general, [met("R1", ["F-k8s-learning"])], facts).flags).toEqual([
+      { kind: "fit_unverified", requirementId: "R1", reason: "facts" },
+    ]);
+    // A skill requirement naming no skill still cannot be checked.
+    const unnamed = role([requirement({ id: "R1", kind: "skill" })]);
+    expect(checkFit(unnamed, [met("R1", ["F-docker"])], facts).flags).toEqual([
+      { kind: "fit_unverified", requirementId: "R1", reason: "facts" },
+    ]);
+  });
+
   it("meets a degree only with a cited education fact", () => {
     const degree = role([
       requirement({ id: "R1", kind: "education", text: "BSc in Computer Science" }),
