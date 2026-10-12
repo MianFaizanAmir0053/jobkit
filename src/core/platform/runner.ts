@@ -429,18 +429,22 @@ function unregistered(stage: StageName): string {
 }
 
 function contextFor(db: Db, job: Job): StageContext {
-  return {
-    job,
-    async outputOf(stage) {
-      const { rows } = await db.query<{ output: unknown; output_hash: string }>(
-        `select output, output_hash from {{schema}}.job_stage_runs
-          where job_id = $1 and stage = $2 and outcome in ('ok', 'reused')
-          order by id desc limit 1`,
-        [job.id, stage],
-      );
-      return rows[0] ? { output: rows[0].output, outputHash: rows[0].output_hash } : null;
-    },
-  };
+  return { job, outputOf: (stage) => stageOutput(db, job.id, stage) };
+}
+
+/** A stage's current output in a job: its latest finished or reused run, as stages and pages see it. */
+export async function stageOutput(
+  db: Db,
+  jobId: string,
+  stage: StageName,
+): Promise<StageOutput | null> {
+  const { rows } = await db.query<{ output: unknown; output_hash: string }>(
+    `select output, output_hash from {{schema}}.job_stage_runs
+      where job_id = $1 and stage = $2 and outcome in ('ok', 'reused')
+      order by id desc limit 1`,
+    [jobId, stage],
+  );
+  return rows[0] ? { output: rows[0].output, outputHash: rows[0].output_hash } : null;
 }
 
 /** An output the stage already gave for this input, in this job. */

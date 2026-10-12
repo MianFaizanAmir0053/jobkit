@@ -12,11 +12,17 @@ export async function POST(request: NextRequest, ctx: RouteContext<"/api/jobs/[i
   // The invocation's time limit counts from here, before the container and the claim.
   // The system clock, which is the container's clock in the app.
   const startedAt = new Date();
-  const { db, clock } = await getContainer();
+  const container = await getContainer();
   const { id } = await ctx.params;
   return advance(
     request,
-    { db, clock, config: appConfig(), pipeline: appPipeline(), schedule: after },
+    {
+      db: container.db,
+      clock: container.clock,
+      config: appConfig(),
+      pipeline: appPipeline(container),
+      schedule: after,
+    },
     id,
     startedAt,
   );

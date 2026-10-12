@@ -14,7 +14,7 @@ export async function POST(request: NextRequest) {
   const container = await getContainer();
   return create(
     request,
-    { ...container, config: appConfig(), pipeline: appPipeline(), schedule: after },
+    { ...container, config: appConfig(), pipeline: appPipeline(container), schedule: after },
     startedAt,
   );
 }

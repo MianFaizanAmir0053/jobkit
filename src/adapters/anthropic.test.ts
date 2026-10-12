@@ -800,7 +800,9 @@ describe("outputFormat", () => {
 });
 
 describe("toMessages", () => {
-  it("sends text and base64 images as one user turn", () => {
+  // Extraction spec, "Images sent to Claude": a sizing mistake fails loudly
+  // instead of shifting the coordinates a model reports.
+  it("sends text and base64 images as one user turn, each image refusing to be downscaled", () => {
     expect(
       toMessages({
         content: [
@@ -813,7 +815,11 @@ describe("toMessages", () => {
         role: "user",
         content: [
           { type: "text", text: "Read this." },
-          { type: "image", source: { type: "base64", media_type: "image/webp", data: "AAAA" } },
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/webp", data: "AAAA" },
+            transformations: { oversized_image: "error" },
+          },
         ],
       },
     ]);

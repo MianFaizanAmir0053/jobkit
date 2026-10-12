@@ -267,8 +267,18 @@ const EU = "AT BE BG HR CY CZ DK EE FI FR DE GR HU IE IT LV LT LU MT NL PL PT RO
  * ambiguous has none: whether it takes in Pakistan cannot be said, so
  * eligibility reports it as unclear (extraction spec, stage `eligibility`).
  */
-const REGIONS: readonly { code: string; name: string; members: string | null; aliases: readonly string[] }[] = [
-  { code: "WORLDWIDE", name: "Worldwide", members: "*", aliases: ["anywhere", "global", "anywhere in the world"] },
+const REGIONS: readonly {
+  code: string;
+  name: string;
+  members: string | null;
+  aliases: readonly string[];
+}[] = [
+  {
+    code: "WORLDWIDE",
+    name: "Worldwide",
+    members: "*",
+    aliases: ["anywhere", "global", "anywhere in the world"],
+  },
   { code: "EU", name: "European Union", members: EU, aliases: [] },
   { code: "EEA", name: "European Economic Area", members: `${EU} IS LI NO`, aliases: [] },
   {
@@ -277,7 +287,12 @@ const REGIONS: readonly { code: string; name: string; members: string | null; al
     members: `${EU} GB NO CH IS LI UA MD BY RS BA ME MK AL XK AD MC SM VA GI FO GG JE IM AX SJ RU`,
     aliases: [],
   },
-  { code: "GCC", name: "Gulf Cooperation Council", members: "AE BH KW OM QA SA", aliases: ["gulf", "the gulf", "gulf countries"] },
+  {
+    code: "GCC",
+    name: "Gulf Cooperation Council",
+    members: "AE BH KW OM QA SA",
+    aliases: ["gulf", "the gulf", "gulf countries"],
+  },
   {
     code: "MIDDLE_EAST",
     name: "Middle East",
@@ -304,6 +319,9 @@ const REGIONS: readonly { code: string; name: string; members: string | null; al
   { code: "APAC", name: "Asia-Pacific", members: null, aliases: ["asia pacific"] },
 ];
 
+/** The region codes, in the table's order, for prompts that ask a model for a place code. */
+export const REGION_CODES: readonly string[] = REGIONS.map((region) => region.code);
+
 /**
  * Lower case, without accents, dots or apostrophes, with any other
  * punctuation as a space, and without the words a post puts around a
@@ -317,7 +335,7 @@ function lookupKey(text: string): string {
     .replace(/[.'’]/g, "")
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .trim();
-  for (let previous = ""; previous !== key; ) {
+  for (let previous = ""; previous !== key;) {
     previous = key;
     key = key.replace(/^(?:the|remote) /, "").replace(/ (?:only|based)$/, "");
   }

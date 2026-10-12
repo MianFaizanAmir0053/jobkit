@@ -227,6 +227,16 @@ function ownValue(record: Record<string, unknown>, key: string): unknown {
   return Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
+/**
+ * The request's one user turn. Every image refuses to be downscaled
+ * (extraction spec, "Images sent to Claude"): the API would otherwise shrink
+ * an image past the model's limits silently, and the boxes a model reports
+ * would then refer to the shrunken copy. Code cuts images to fit, so an
+ * oversized one is a bug, and the request fails with a 400 naming it. The
+ * default fallback routing drops a model that would shrink a marked image
+ * rather than failing the request (refusals and fallback guide, read on
+ * 2026-10-12).
+ */
 export function toMessages(request: Pick<LlmRequest, "content">): BetaMessageParam[] {
   return [
     {
@@ -237,6 +247,7 @@ export function toMessages(request: Pick<LlmRequest, "content">): BetaMessagePar
           : {
               type: "image" as const,
               source: { type: "base64" as const, media_type: part.mediaType, data: part.base64 },
+              transformations: { oversized_image: "error" as const },
             },
       ),
     },

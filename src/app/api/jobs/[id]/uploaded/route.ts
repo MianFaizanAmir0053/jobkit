@@ -15,7 +15,7 @@ export async function POST(request: NextRequest, ctx: RouteContext<"/api/jobs/[i
   const { id } = await ctx.params;
   return confirm(
     request,
-    { ...container, config: appConfig(), pipeline: appPipeline(), schedule: after },
+    { ...container, config: appConfig(), pipeline: appPipeline(container), schedule: after },
     id,
     startedAt,
   );
