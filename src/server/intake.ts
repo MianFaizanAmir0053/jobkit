@@ -25,10 +25,6 @@ type Deps = RunnerDeps & {
 
 const MAX_BODY_BYTES = 64 * 1024;
 
-// A share can wait on the phone before it is sent, but not for days: past
-// this the start time it gives the job is not believed (intake spec, "Clock").
-export const MAX_CLIENT_ELAPSED_MS = 24 * 60 * 60 * 1000;
-
 const newJobBody = z.object({
   images: z.array(
     z.object({
@@ -40,7 +36,7 @@ const newJobBody = z.object({
     }),
   ),
   pastedText: z.string().default(""),
-  clientElapsedMs: z.number().int().nonnegative().max(MAX_CLIENT_ELAPSED_MS),
+  clientElapsedMs: z.number().int().nonnegative(),
 });
 
 /** POST /api/jobs: creates the job and hands back an upload URL per image; a paste-only job starts at once. */
@@ -83,6 +79,7 @@ export async function confirm(
     if (confirmed.reason === "missing") {
       return refusal(409, "missing", { missing: confirmed.missing });
     }
+    // "not-uploading" is a job confirmed already; "upload-failed" one that ran out of time.
     return refusal(409, confirmed.reason);
   }
   await startPipeline(deps, jobId, startedAt);

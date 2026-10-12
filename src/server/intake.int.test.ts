@@ -17,7 +17,7 @@ import { issueSession } from "@/core/platform/sessions";
 import type { AppConfig } from "@/server/config";
 import { createTestDb } from "@/server/db/testDb";
 
-import { confirm, create, MAX_CLIENT_ELAPSED_MS } from "./intake";
+import { confirm, create } from "./intake";
 
 const ORIGIN = "http://localhost:3000";
 const config: AppConfig = {
@@ -225,11 +225,11 @@ describe("POST /api/jobs", () => {
     expect(
       (
         await newJob(
-          { images: [], pastedText: "A job post", clientElapsedMs: MAX_CLIENT_ELAPSED_MS + 1 },
+          { images: [], pastedText: "A job post", clientElapsedMs: 24 * 60 * 60 * 1000 + 1 },
           cookie,
         )
       ).status,
-    ).toBe(400);
+    ).toBe(422);
     expect(
       (await newJob({ images: [], pastedText: "A job post", clientElapsedMs: 1.5 }, cookie)).status,
     ).toBe(400);
@@ -305,6 +305,20 @@ describe("POST /api/jobs/<id>/uploaded", () => {
 
     expect(response.status).toBe(413);
     expect(await loadJob(db, jobId)).toMatchObject({ state: "uploading" });
+  });
+
+  it("says when the upload ran out of time, rather than that the job was confirmed", async () => {
+    const cookie = await signedIn();
+    const { jobId, uploads } = await started(cookie);
+    await uploadTo(uploads[0]!.url, screenshots[0]!.bytes);
+    await uploadTo(uploads[1]!.url, screenshots[1]!.bytes);
+    clock.advance(15 * 60_000 + 1);
+
+    const response = await confirm(post(`/api/jobs/${jobId}/uploaded`, "", cookie), deps(), jobId);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "upload-failed" });
+    expect(scheduled).toHaveLength(0);
   });
 
   it("refuses a phone not yet approved (intake AC8)", async () => {

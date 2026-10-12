@@ -17,6 +17,13 @@ export const LIMITS = {
 
 export const TOO_TALL = "Too tall. Take two shorter screenshots instead.";
 
+/**
+ * A share can wait on the phone before it is sent, but not for days: past
+ * this the start time it would give the job is not believed (intake spec,
+ * "Clock").
+ */
+export const MAX_HELD_MS = 24 * 60 * 60 * 1000;
+
 export const CONTENT_TYPES = ["image/webp", "image/jpeg", "image/png"] as const;
 
 export interface ImageMeta {

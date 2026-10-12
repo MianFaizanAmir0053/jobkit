@@ -88,10 +88,18 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
     async acceptSignedUpload(t, bytes, nowMs = Date.now()) {
       const path = uploadTarget(t, nowMs);
       if (path === null) return false;
-      const file = fileFor(path);
-      await mkdir(dirname(file), { recursive: true });
-      await writeWhole(file, bytes, true);
+      // Taken before the write, so a second upload at the same moment finds it used,
+      // and given back if the write fails, so the upload can be sent again.
+      const upload = uploads.get(t)!;
       uploads.delete(t);
+      const file = fileFor(path);
+      try {
+        await mkdir(dirname(file), { recursive: true });
+        await writeWhole(file, bytes, true);
+      } catch (error) {
+        uploads.set(t, upload);
+        throw error;
+      }
       return true;
     },
     resolveSignedRead(t, nowMs) {

@@ -159,6 +159,19 @@ describe("startJob", () => {
     });
   });
 
+  it("refuses a clock that says the page held the job for more than a day", async () => {
+    expect(
+      await startJob(deps(), {
+        images: [],
+        pastedText: "a post",
+        clientElapsedMs: 24 * 60 * 60 * 1000 + 1,
+      }),
+    ).toEqual({
+      ok: false,
+      message: "The page's clock went wrong. Reload the page and press Start again.",
+    });
+  });
+
   it("drops NUL characters from the pasted text, which Postgres cannot store", async () => {
     const nul = String.fromCharCode(0);
 
@@ -232,50 +245,34 @@ describe("confirmUploads", () => {
     expect(await loadJob(db, started.jobId)).toMatchObject({ state: "queued" });
   });
 
-  it("leaves the job uploading and lists each image missing or not as declared", async () => {
-    const real = await Promise.all(
-      [10, 20, 30, 40, 50, 60].map((shade) => webp(1080, 2400, shade)),
-    );
-    const declared = [
-      real[0]!.meta,
-      // Each of these declares something other than what arrives below.
-      real[1]!.meta,
-      { ...real[2]!.meta, height: 2_000 },
-      { ...real[3]!.meta, contentType: "image/png" as const },
-      real[4]!.meta,
-      real[5]!.meta,
-    ];
+  it("leaves the job uploading and lists each image missing or of the wrong size, reading no bytes", async () => {
+    const real = await Promise.all([10, 20, 30].map((shade) => webp(1080, 2400, shade)));
     const started = await startJob(deps(), {
-      images: declared,
+      images: real.map((shot) => shot.meta),
       pastedText: "",
       clientElapsedMs: 0,
     });
     if (!started.ok) throw new Error(started.message);
     const rows = await images(started.jobId);
     await storage.put(rows[0]!.storage_path, real[0]!.bytes, "image/webp");
-    // Another image of exactly the declared size: the hash tells them apart.
-    const other = await webp(1080, 2400, 99);
-    const sameSize = new Uint8Array(real[1]!.bytes.length);
-    sameSize.set(other.bytes.subarray(0, sameSize.length));
-    await storage.put(rows[1]!.storage_path, sameSize, "image/webp");
-    await storage.put(rows[2]!.storage_path, real[2]!.bytes, "image/webp");
-    await storage.put(rows[3]!.storage_path, real[3]!.bytes, "image/webp");
-    // Bytes whose hash matches but which are no image at all.
-    const garbage = new TextEncoder().encode("not an image, whatever it says");
-    await db.query("update {{schema}}.job_images set bytes = $2, sha256 = $3 where id = $1", [
-      rows[4]!.id,
-      garbage.length,
-      createHash("sha256").update(garbage).digest("hex"),
-    ]);
-    await storage.put(rows[4]!.storage_path, garbage, "image/webp");
+    await storage.put(rows[1]!.storage_path, real[1]!.bytes.subarray(1), "image/webp");
     // Nothing arrives for the last.
+    const read: string[] = [];
+    const watched = {
+      ...storage,
+      get: async (path: string) => {
+        read.push(path);
+        return storage.get(path);
+      },
+    };
 
-    expect(await confirmUploads(deps(), started.jobId)).toEqual({
+    expect(await confirmUploads({ db, clock, storage: watched }, started.jobId)).toEqual({
       ok: false,
       reason: "missing",
-      missing: rows.slice(1).map((row) => row.id),
+      missing: [rows[1]!.id, rows[2]!.id],
     });
     expect(await loadJob(db, started.jobId)).toMatchObject({ state: "uploading" });
+    expect(read).toEqual([]);
   });
 
   it("fails a job confirmed after its upload timeout instead of queueing it", async () => {
@@ -291,7 +288,7 @@ describe("confirmUploads", () => {
 
     expect(await confirmUploads(deps(), started.jobId)).toEqual({
       ok: false,
-      reason: "not-uploading",
+      reason: "upload-failed",
     });
     expect(await loadJob(db, started.jobId)).toMatchObject({ state: "upload_failed" });
   });

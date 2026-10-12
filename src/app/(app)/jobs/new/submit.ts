@@ -25,20 +25,41 @@ export const MESSAGES = {
   notStarted: "The job could not start. Try again.",
   createLost:
     "The connection dropped while the job was starting. Check the Jobs list before you press Start again: the job may have started.",
+  confirmLost:
+    "The connection dropped while the upload was being checked. Check the Jobs list before you press Start again: the job may have started.",
   signIn: "You are signed out. Sign in again, then press Start.",
   notAllowed:
     "This device cannot start jobs. Approve it on the laptop's Devices page, or sign in again.",
   badRequest:
     "The page sent something the server did not expect. Reload the page and press Start again.",
+  tooLarge: "Too much text for one job. Paste only the job post.",
   notArrived: "Some screenshots did not arrive. Check the connection and press Start again.",
+  refusedUpload:
+    "Storage refused a screenshot. Press Start again; if it happens again, take a smaller screenshot.",
+  tooSlow:
+    "The upload is too slow to finish within 15 minutes. Press Start again on a faster connection.",
+  uploadTimedOut:
+    "The upload took more than 15 minutes, so it was stopped. Press Start again on a faster connection.",
   notFound: "The job could not be found. Press Start again.",
 } as const;
 
 /** Waits before the second and third attempt of a request. */
 export const BACKOFF_MS = [1_000, 3_000] as const;
 
-/** One upload attempt may take this long: a 10 MB screenshot on a slow mobile connection. */
-export const UPLOAD_TIMEOUT_MS = 120_000;
+/** How long creating the job and checking the upload may take before the page stops waiting. */
+export const REQUEST_TIMEOUT_MS = 60_000;
+
+/** The server fails an upload after 15 minutes; the page stops trying a little earlier. */
+export const UPLOAD_DEADLINE_MS = 14 * 60_000;
+
+/**
+ * One upload attempt may take half a minute plus the file's size at 16 KB a
+ * second, the pace of a slow mobile connection: about five minutes for a
+ * 4 MB screenshot.
+ */
+export function uploadTimeoutMs(bytes: number): number {
+  return 30_000 + Math.ceil(bytes / 16);
+}
 
 export const browserDeps: SubmitDeps = {
   prepare: prepareImage,
@@ -72,9 +93,9 @@ export async function submitJob(
   if (refused) return { ok: false, message: refused };
 
   onStatus("Starting the job…");
-  let response: Response;
+  let created: { jobId: string; uploads: { imageId: string; url: string }[] };
   try {
-    response = await deps.fetch("/api/jobs", {
+    const response = await deps.fetch("/api/jobs", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -82,21 +103,22 @@ export async function submitJob(
         pastedText: input.text,
         clientElapsedMs: Math.max(0, Math.round(deps.now() - startedAt)),
       }),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+    if (!response.ok) return { ok: false, message: await createMessage(response) };
+    created = (await response.json()) as typeof created;
   } catch {
     // The server may have created the job before the answer was lost.
     return { ok: false, message: MESSAGES.createLost };
   }
-  if (!response.ok) return { ok: false, message: await createMessage(response) };
-  const created = (await response.json()) as {
-    jobId: string;
-    uploads: { imageId: string; url: string }[];
-  };
   if (created.uploads.length !== images.length) return { ok: false, message: MESSAGES.notStarted };
 
+  const uploadingSince = deps.now();
   for (const [i, upload] of created.uploads.entries()) {
     onStatus(`Uploading screenshot ${i + 1} of ${created.uploads.length}…`);
-    await uploadFile(deps, upload.url, images[i]!.blob);
+    const uploaded = await uploadFile(deps, upload.url, images[i]!.blob, uploadingSince);
+    if (uploaded === "too-slow") return { ok: false, message: MESSAGES.tooSlow };
+    if (uploaded === "refused") return { ok: false, message: MESSAGES.refusedUpload };
   }
   if (images.length > 0) {
     onStatus("Checking the upload…");
@@ -110,6 +132,7 @@ export async function submitJob(
 async function createMessage(response: Response): Promise<string> {
   const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
   if (response.status === 422 && typeof body?.error === "string") return body.error;
+  if (response.status === 413) return MESSAGES.tooLarge;
   return (
     sessionMessage(response.status) ??
     (response.status === 400 ? MESSAGES.badRequest : MESSAGES.notStarted)
@@ -123,48 +146,70 @@ function sessionMessage(status: number): string | null {
 }
 
 /**
- * Up to three attempts per file, waiting longer before each. Only a dropped
- * connection, a timeout or a server error is tried again: any other answer is
- * final, because a signed URL takes one upload, and the confirm step then
- * checks what arrived.
+ * Up to three attempts per file, waiting longer before each, each with a
+ * timeout sized to the file. Only a dropped connection, a timeout or a server
+ * error is tried again; any other answer is final, because a signed URL
+ * takes one upload, and the confirm step then checks what arrived. No
+ * attempt starts once the server's 15 minutes are nearly up.
  */
-async function uploadFile(deps: SubmitDeps, url: string, blob: Blob): Promise<void> {
+async function uploadFile(
+  deps: SubmitDeps,
+  url: string,
+  blob: Blob,
+  uploadingSince: number,
+): Promise<"done" | "refused" | "too-slow"> {
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await deps.wait(BACKOFF_MS[attempt - 1]!);
+    if (deps.now() - uploadingSince > UPLOAD_DEADLINE_MS) return "too-slow";
     try {
       const response = await deps.fetch(url, {
         method: "PUT",
         body: blob,
-        signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+        signal: AbortSignal.timeout(uploadTimeoutMs(blob.size)),
       });
-      if (response.status < 500) return;
+      // Too large or of a refused type: sending it again cannot help. Any other answer, such as
+      // a URL used already by an attempt whose answer was lost, is left to the confirm step.
+      if (response.status === 413 || response.status === 415) return "refused";
+      if (response.status < 500) return "done";
     } catch {
       // A dropped connection or a timeout; try again.
     }
   }
+  return "done";
 }
 
 /**
  * Asks the server to confirm the upload, up to three times while the
- * connection or the server fails. A job no longer uploading was confirmed
- * already, by an answer that was lost, or timed out: either way the job page
- * shows where it stands.
+ * connection or the server fails. A job that the server finds already
+ * queued or running was confirmed by an attempt whose answer was lost.
  */
 async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted> {
+  let lost = false;
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await deps.wait(BACKOFF_MS[attempt - 1]!);
     let response: Response;
     try {
-      response = await deps.fetch(`/api/jobs/${jobId}/uploaded`, { method: "POST" });
+      response = await deps.fetch(`/api/jobs/${jobId}/uploaded`, {
+        method: "POST",
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
     } catch {
+      lost = true;
       continue;
     }
-    if (response.status >= 500) continue;
+    if (response.status >= 500) {
+      lost = false;
+      continue;
+    }
     if (response.ok) return { ok: true, jobId };
     const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
     if (response.status === 409 && body?.error === "not-uploading") return { ok: true, jobId };
+    if (response.status === 409 && body?.error === "upload-failed") {
+      return { ok: false, message: MESSAGES.uploadTimedOut };
+    }
     if (response.status === 404) return { ok: false, message: MESSAGES.notFound };
     return { ok: false, message: sessionMessage(response.status) ?? MESSAGES.notArrived };
   }
-  return { ok: false, message: MESSAGES.notArrived };
+  // An answer lost on the way back may have queued the job.
+  return { ok: false, message: lost ? MESSAGES.confirmLost : MESSAGES.notArrived };
 }

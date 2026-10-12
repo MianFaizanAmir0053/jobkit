@@ -19,6 +19,7 @@ export const LOCAL_ONLY_PREFIXES = ["/api/dev/"];
 
 /** A route under a prefix, or at the prefix itself: "/api/dev" is as local-only as "/api/dev/x". */
 export function isUnder(route: string, prefix: string): boolean {
+  if (!prefix.endsWith("/")) throw new Error(`A prefix must end with a slash: ${prefix}`);
   return route.startsWith(prefix) || route === prefix.slice(0, -1);
 }
 

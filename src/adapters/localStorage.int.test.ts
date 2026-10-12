@@ -89,6 +89,17 @@ describe("local storage", () => {
     expect(await storage.acceptSignedUpload(token, bytes("y"))).toBe(false);
   });
 
+  it("lets only one of two uploads at the same moment use a token", async () => {
+    const { token } = await storage.createSignedUploadUrl("jobs/j1/a.webp");
+
+    const accepted = await Promise.all([
+      storage.acceptSignedUpload(token, bytes("first")),
+      storage.acceptSignedUpload(token, bytes("second")),
+    ]);
+
+    expect(accepted.sort()).toEqual([false, true]);
+  });
+
   it("names an upload token's path without using it up, until it expires", async () => {
     const { token } = await storage.createSignedUploadUrl("jobs/j1/a.webp");
     const now = Date.now();

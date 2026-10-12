@@ -3,7 +3,14 @@ import { describe, expect, it } from "vitest";
 import { TOO_TALL } from "@/core/intake/encode";
 
 import type { Prepared } from "./prepare";
-import { BACKOFF_MS, MESSAGES, type SubmitDeps, submitJob, UPLOAD_TIMEOUT_MS } from "./submit";
+import {
+  BACKOFF_MS,
+  MESSAGES,
+  type SubmitDeps,
+  submitJob,
+  UPLOAD_DEADLINE_MS,
+  uploadTimeoutMs,
+} from "./submit";
 
 /* Start's flow with the browser's pieces faked: intake AC1, AC3 and AC6 from the phone's side. */
 
@@ -93,7 +100,7 @@ describe("submitJob", () => {
       {
         url: "/api/jobs",
         method: "POST",
-        signal: null,
+        signal: expect.any(AbortSignal),
         body: {
           images: [],
           pastedText: "We're hiring. Apply at jobs@example.com",
@@ -270,7 +277,8 @@ describe("submitJob", () => {
     for (const call of fake.calls.filter((call) => call.method === "PUT")) {
       expect(call.signal).toBeInstanceOf(AbortSignal);
     }
-    expect(UPLOAD_TIMEOUT_MS).toBe(120_000);
+    // Half a minute plus the file at 16 KB a second: about five minutes for 4 MB.
+    expect(uploadTimeoutMs(4 * 1024 * 1024)).toBe(30_000 + 262_144);
   });
 
   it("says the screenshots did not arrive when the server cannot confirm them", async () => {
@@ -303,12 +311,16 @@ describe("submitJob", () => {
     expect(fake.calls.filter((call) => call.url.endsWith("/uploaded"))).toHaveLength(3);
     expect(fake.waits).toEqual([...BACKOFF_MS]);
 
+    // The last answer lost may have queued the job, so the page does not just say "Start again".
     const down = browser({ "a.png": screenshot(1) }, (call) =>
       call.url.endsWith("/uploaded") ? new Error("dropped") : happy(call),
     );
     expect(await submitJob(down.deps, { files: [file("a.png")], text: "" }, down.onStatus)).toEqual(
-      { ok: false, message: MESSAGES.notArrived },
+      { ok: false, message: MESSAGES.confirmLost },
     );
+    for (const call of down.calls.filter((call) => call.url.endsWith("/uploaded"))) {
+      expect(call.signal).toBeInstanceOf(AbortSignal);
+    }
     expect(down.calls.filter((call) => call.url.endsWith("/uploaded"))).toHaveLength(3);
   });
 
@@ -338,5 +350,63 @@ describe("submitJob", () => {
         await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus),
       ).toEqual({ ok: false, message });
     }
+  });
+  it("says the job may have started when the answer to creating it cannot be read", async () => {
+    const fake = browser({}, () => new Response("{not json", { status: 201 }));
+
+    expect(await submitJob(fake.deps, { files: [], text: "a post" }, fake.onStatus)).toEqual({
+      ok: false,
+      message: MESSAGES.createLost,
+    });
+  });
+
+  it("says the upload ran out of time when the server stopped it, never opening the job", async () => {
+    const happy = server("job-13", 1);
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.url.endsWith("/uploaded") ? json({ error: "upload-failed" }, 409) : happy(call),
+    );
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: false, message: MESSAGES.uploadTimedOut },
+    );
+  });
+
+  it("starts no upload once the server's 15 minutes are nearly up", async () => {
+    const fake = browser(
+      { "a.png": screenshot(1), "b.png": screenshot(2) },
+      server("job-14", 2),
+      // The tap, the request, the uploads' start, the first upload, then past the deadline.
+      [0, 0, 0, 1_000, UPLOAD_DEADLINE_MS + 1],
+    );
+
+    expect(
+      await submitJob(
+        fake.deps,
+        { files: [file("a.png"), file("b.png")], text: "" },
+        fake.onStatus,
+      ),
+    ).toEqual({ ok: false, message: MESSAGES.tooSlow });
+    expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+  });
+
+  it("stops when storage refuses a screenshot as too large, and says so", async () => {
+    const happy = server("job-15", 1);
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.method === "PUT" ? new Response(null, { status: 413 }) : happy(call),
+    );
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: false, message: MESSAGES.refusedUpload },
+    );
+    expect(fake.calls.filter((call) => call.method === "PUT")).toHaveLength(1);
+  });
+
+  it("says the text is too much when the server refuses a body over 64 KB", async () => {
+    const fake = browser({}, () => json({ error: "too-large" }, 413));
+
+    expect(await submitJob(fake.deps, { files: [], text: "a post" }, fake.onStatus)).toEqual({
+      ok: false,
+      message: MESSAGES.tooLarge,
+    });
   });
 });

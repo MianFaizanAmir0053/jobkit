@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { checkBuildRoutes, LOCAL_ONLY_PREFIXES, TEST_ONLY_PREFIXES } from "./checkBuild";
+import { checkBuildRoutes, isUnder, LOCAL_ONLY_PREFIXES, TEST_ONLY_PREFIXES } from "./checkBuild";
 
 const production = {
   "/(app)/jobs/page": "/jobs",
@@ -35,6 +35,10 @@ describe("checkBuildRoutes", () => {
         "/api/dev/storage/upload/[token]/route": "/api/dev/storage/upload/[token]",
       }),
     ).toEqual({ ok: false, routes: ["/api/dev/storage/upload/[token]"] });
+  });
+
+  it("refuses a prefix without its closing slash, which would match more than it names", () => {
+    expect(() => isUnder("/api/devices", "/api/dev")).toThrow();
   });
 
   it("fails a route at a prefix itself, not only below it", () => {
