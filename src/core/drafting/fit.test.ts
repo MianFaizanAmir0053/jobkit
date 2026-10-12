@@ -123,6 +123,24 @@ describe("checkFit", () => {
     ]);
   });
 
+  it("never meets by code an experience requirement that names no skill and asks no depth or years", () => {
+    const leading = role([requirement({ id: "R1", kind: "experience" })]);
+
+    expect(checkFit(leading, [met("R1", ["F-docker"])], facts).flags).toEqual([
+      { kind: "fit_unverified", requirementId: "R1", reason: "facts" },
+    ]);
+  });
+
+  it("does not meet an experience requirement with a degree", () => {
+    const professional = role([
+      requirement({ id: "R1", kind: "experience", depth: "professional" }),
+    ]);
+
+    expect(checkFit(professional, [met("R1", ["F-bsc"])], facts).flags).toEqual([
+      { kind: "fit_unverified", requirementId: "R1", reason: "facts" },
+    ]);
+  });
+
   it("meets a degree only with a cited education fact", () => {
     const degree = role([
       requirement({ id: "R1", kind: "education", text: "BSc in Computer Science" }),

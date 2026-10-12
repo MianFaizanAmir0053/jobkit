@@ -2,6 +2,8 @@ import type { Role } from "@/core/extraction/record";
 import type { LlmInput } from "@/core/ports";
 import type { Profile } from "@/core/profile/profile";
 
+import { oneLine } from "./build";
+
 /**
  * What `draft` sends Claude (drafting spec, "Stage draft"). The rules sit in
  * the system prompt. The user turn holds the owner's approved profile, and
@@ -37,7 +39,7 @@ The body
 }
 
 /** How the user turn is laid out; raise it when draftContent changes. */
-export const DRAFT_LAYOUT_VERSION = 1;
+export const DRAFT_LAYOUT_VERSION = 2;
 
 const lines = (items: readonly unknown[]) =>
   items.length === 0 ? "None." : items.map((item) => JSON.stringify(item)).join("\n");
@@ -57,19 +59,20 @@ export function draftContent(
     depth: fact.depth,
     ...(fact.years === undefined ? {} : { years: fact.years }),
   }));
+  // Every string from the post on one line, without characters that show nothing.
   const role = {
-    company: post.company,
-    title: post.role.title,
+    company: oneLine(post.company),
+    title: oneLine(post.role.title),
     requirements: post.role.requirements.map((requirement) => ({
       id: requirement.id,
-      text: requirement.text,
+      text: oneLine(requirement.text),
       priority: requirement.priority,
       kind: requirement.kind,
-      skills: requirement.skills,
+      skills: requirement.skills.map(oneLine),
       depth: requirement.depth,
       years: requirement.years,
     })),
-    ...(post.keyword === null ? {} : { keyword_to_include: post.keyword }),
+    ...(post.keyword === null ? {} : { keyword_to_include: oneLine(post.keyword) }),
   };
   const examples = profile.styleExamples
     .map((example, i) => `Example ${i + 1}:\n${example.trim()}`)

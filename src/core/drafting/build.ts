@@ -8,10 +8,11 @@ import type { DraftAnswer, EmailKit, FitRow, GapChoice, KitBlock } from "./kit";
  * The parts of an email kit code writes (drafting spec, "Code-built parts"
  * and "Accepted instructions"): the subject, the greeting, every gap line and
  * the closing, and which of the post's instructions code acts on. Every
- * string taken from the post loses its control and format characters here
- * (direction marks, zero-width spaces), so none can break a line in a
- * subject or a header, make one read otherwise than it is sent, or hide a
- * word from a check.
+ * string taken from the post loses its control characters and the
+ * characters that show nothing (direction marks, zero-width spaces and
+ * joiners, fillers), and its unusual spaces become plain ones, so none can
+ * break a line in a subject or a header, make one read otherwise than it
+ * is sent, or hide a word from a check.
  */
 
 export const NEEDS_YOUR_LINE = "Needs your line";
@@ -41,8 +42,14 @@ function isControl(code: number): boolean {
   return code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
 }
 
-/** Format characters: direction marks and isolates, zero-width spaces and joiners, a byte-order mark. */
-const FORMAT = /^\p{Cf}$/u;
+/**
+ * Characters that show nothing: format characters (direction marks, a
+ * byte-order mark) and every default-ignorable one (zero-width spaces and
+ * joiners, variation selectors, fillers, tag characters).
+ */
+const INVISIBLE = /^[\p{Cf}\p{Default_Ignorable_Code_Point}]$/u;
+/** Spaces other than the plain one: no-break, narrow, ideographic and the rest. */
+const SPACE = /^\p{Zs}$/u;
 const PICTOGRAPH = /^\p{Extended_Pictographic}$/u;
 const ZERO_WIDTH_JOINER = String.fromCodePoint(0x200d);
 
@@ -59,18 +66,24 @@ function joinsEmoji(chars: readonly string[], i: number): boolean {
   return before >= 0 && PICTOGRAPH.test(chars[before]!) && PICTOGRAPH.test(chars[i + 1] ?? "");
 }
 
+/** Whether an invisible character is part of an emoji: a joiner between two, or a variation selector after one. */
+function partOfEmoji(chars: readonly string[], i: number): boolean {
+  if (chars[i] === ZERO_WIDTH_JOINER) return joinsEmoji(chars, i);
+  return isEmojiModifier(chars[i]!) && i > 0 && PICTOGRAPH.test(chars[i - 1]!);
+}
+
 /**
  * The text on one line: every control character, carriage returns and line
- * feeds among them, becomes a space, and format characters go, except a
- * joiner inside an emoji.
+ * feeds among them, and every unusual space become a plain space, and the
+ * characters that show nothing go, except those inside an emoji.
  */
 export function oneLine(text: string): string {
   const chars = [...text];
   return chars
     .map((char, i) => {
-      if (isControl(char.codePointAt(0)!)) return " ";
-      if (!FORMAT.test(char)) return char;
-      return char === ZERO_WIDTH_JOINER && joinsEmoji(chars, i) ? char : "";
+      if (isControl(char.codePointAt(0)!) || SPACE.test(char)) return " ";
+      if (!INVISIBLE.test(char)) return char;
+      return partOfEmoji(chars, i) ? char : "";
     })
     .join("")
     .replace(/ {2,}/g, " ")
@@ -83,28 +96,48 @@ export function canonicalSkill(tag: string): string {
 }
 
 const LINK = /https?:|:\/\/|www\.|\b[a-z0-9-]+\.[a-z]{2,}\//i;
-const WORDS = /(\d[\d,]*)\s*words?\b/i;
+const WORDS = /(\d[\d,]*)\s*words?\b/gi;
 const BARE_NUMBER = /^\s*(\d[\d,]*)\s*$/;
-/** Words before a number that make it a least, not a most: "at least 100 words", "a minimum of 100 words". */
-const MINIMUM_BEFORE = /\b(?:at least|min(?:imum)?(?: of)?\.?|no (?:fewer|less) than)\s*$/i;
+/** Units a limit may be in other than words: such a limit stays on the checklist. */
+const OTHER_UNIT =
+  /\b(?:pages?|characters?|chars?|letters?|lines?|paragraphs?|sentences?|bullets?|slides?|minutes?)\b/i;
+/** Words before a number that make it a least: "at least 100", "a minimum of 100", "not less than 100", "more than 100". */
+const LEAST_BEFORE =
+  /(?:\bat least|\bmin(?:imum)?(?: of)?[.:]?|\b(?:not|no) (?:less|fewer) than|(?<!\bno )\bmore than)\s*$/i;
+/** Words after "N words" that make it a least: "100 words minimum", "100 words or more". */
+const LEAST_AFTER = /^\s*(?:\+|minimum\b|min\b|or more\b|at least\b)/i;
+
+const wholeNumber = (digits: string) => Number(digits.replaceAll(",", ""));
+
+/** Whether the number at `at` in `text`, `length` long, is a least. */
+function isLeast(text: string, at: number, length: number): boolean {
+  return LEAST_BEFORE.test(text.slice(0, at)) || LEAST_AFTER.test(text.slice(at + length));
+}
 
 /**
- * The most words an instruction allows: its value when that is a bare
- * number, else the first "N words" in its value, then in its text. None for
- * a least ("at least 100 words") or a limit in other units ("one page",
- * "500 characters"), which stay on the checklist.
+ * The most words an instruction allows. Its value as a bare number, unless
+ * its text puts that number in other units ("Max 2 pages") or makes it a
+ * least ("at least 100 words"); otherwise the smallest "N words" in its
+ * value and text that is not a least ("Min 50 words, max 120 words" is
+ * 120). None when nothing is left, so the limit stays on the checklist.
  */
 function wordLimitOf(instruction: Instruction): number | null {
-  const bare = BARE_NUMBER.exec(instruction.value)?.[1];
-  const found =
-    bare === undefined
-      ? [instruction.value, instruction.text]
-          .map((text) => ({ text, match: WORDS.exec(text) }))
-          .find(({ match }) => match !== null)
-      : undefined;
-  if (found?.match && MINIMUM_BEFORE.test(found.text.slice(0, found.match.index))) return null;
-  const words = Number((bare ?? found?.match?.[1])?.replaceAll(",", ""));
-  return Number.isInteger(words) && words > 0 ? words : null;
+  const { value, text } = instruction;
+  const bare = BARE_NUMBER.exec(value)?.[1];
+  if (bare !== undefined) {
+    if (OTHER_UNIT.test(text) && !/\bwords?\b/i.test(text)) return null;
+    const mentions = [...text.matchAll(new RegExp(`(?<![\\d,])${bare}(?![\\d,])`, "g"))];
+    if (mentions.some((mention) => isLeast(text, mention.index, mention[0].length))) return null;
+    const words = wholeNumber(bare);
+    return words > 0 ? words : null;
+  }
+  const mosts = [value, text].flatMap((part) =>
+    [...part.matchAll(WORDS)]
+      .filter((match) => !isLeast(part, match.index, match[0].length))
+      .map((match) => wholeNumber(match[1]!)),
+  );
+  const words = mosts.filter((count) => count > 0);
+  return words.length > 0 ? Math.min(...words) : null;
 }
 
 export function acceptedInstructions(role: Role): Accepted {
@@ -117,18 +150,19 @@ export function acceptedInstructions(role: Role): Accepted {
     .filter((instruction) => instruction.kind === "word_limit")
     .map(wordLimitOf)
     .filter((limit) => limit !== null);
+  // A keyword as it shows, on one line as the post wrote it, short and with no link.
   const keyword = usable.find(
     (instruction) =>
       instruction.kind === "include_keyword" &&
-      oneLine(instruction.value) === instruction.value.trim() &&
-      instruction.value.trim() !== "" &&
-      [...instruction.value.trim()].length <= KEYWORD_MAX_LENGTH &&
+      ![...instruction.value].some((char) => isControl(char.codePointAt(0)!)) &&
+      oneLine(instruction.value) !== "" &&
+      [...oneLine(instruction.value)].length <= KEYWORD_MAX_LENGTH &&
       !LINK.test(instruction.value),
   );
   return {
     subjectFormat: subject ? subject.value : null,
     wordLimit: Math.min(BODY_WORD_LIMIT, ...limits),
-    keyword: keyword ? keyword.value.trim() : null,
+    keyword: keyword ? oneLine(keyword.value) : null,
   };
 }
 
@@ -218,14 +252,19 @@ export function buildEmailKit(
           }
         : null;
     const requirement = role.requirements.find((entry) => entry.id === gap?.requirementId);
+    const text = gap ? gapLine(requirement, gap, profile) : oneLine(block.text);
     return {
       id: `S${i + 1}`,
-      text: gap ? gapLine(requirement, gap, profile) : oneLine(block.text),
+      text,
       paragraphBreak: block.paragraph_break,
       class: block.class,
       factIds: block.fact_ids,
       fields: block.fields,
-      gap,
+      // A line code could not write keeps no line choice: it is the owner's to write (kit.ts).
+      gap:
+        gap && text === NEEDS_YOUR_LINE
+          ? { ...gap, knownLineId: "", templateId: "", relatedFactId: "" }
+          : gap,
     };
   });
   return {

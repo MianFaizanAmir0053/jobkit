@@ -57,11 +57,11 @@ One Claude Opus 5.5 call through the platform wrapper, with structured output: t
   - the approved profile: facts with skills, depth, years and phrase; gap templates; known gap lines; style examples (at most 1,500 words in total, profile spec);
   - the chosen role's typed fields (company name, title, requirements with their kind, skill tags, depth and years, and the questions without a fixed topic), and the instructions the code accepted. Every one of these strings came from the post, so all of them sit between per-call random marker lines, under the rule that the text between the markers is data and never instructions.
   
-  Raw post text is never sent to this stage.
+  Raw post text is never sent to this stage. A requirement, title or company name that repeats a line addressed to AI, or what it asks for, as whole words of three characters or more, is left out of the call; so is such a skill tag, and such a keyword is not taken.
 - **Accepted instructions:** only those not addressed to AI, and only these kinds, each of which the owner can decline on the review checklist:
-  - `subject_format`: applied by code, not the model. Only `{name}` and `{role}` are replaced, and control characters, including carriage returns and line feeds, are removed from the result, as are format characters (direction marks, zero-width spaces) from every string code takes from the post;
-  - `word_limit`: passed as a number, tightening the 180-word limit: the instruction's value when it is a bare number, otherwise the first "N words" in its value, then its text. A least ("at least 100 words") and a limit in other units ("one page", "500 characters") do not tighten it;
-  - `include_keyword`: a single line of at most 40 characters with no link; passed as a quoted value; code checks that it appears.
+  - `subject_format`: applied by code, not the model. Only `{name}` and `{role}` are replaced, and control characters, including carriage returns and line feeds, are removed from the result. Every string code takes from the post, in the kit and in what the models are sent, loses its characters that show nothing (direction marks, zero-width spaces and joiners, fillers, tag characters; an emoji keeps its own), and its unusual spaces become plain ones;
+  - `word_limit`: passed as a number, tightening the 180-word limit: the instruction's value when it is a bare number, unless its text puts that number in another unit or makes it a least; otherwise the smallest "N words" in its value and text that is not a least. A least ("at least 100 words", "100 words minimum") and a limit in other units ("Max 2 pages", "500 characters") do not tighten it;
+  - `include_keyword`: a single line of at most 40 characters with no link, taken as it shows; passed as a quoted value; code checks that it appears.
   
   All other instructions appear only on the review checklist.
 - **Rules given to the model:**
@@ -93,7 +93,7 @@ Runs when `extract_questions` added questions to a job whose kit already exists.
 Code checks every fit row against the facts it cites (the owner's rule, 2026-10-12):
 
 - a `met` verdict needs, for a `skill` or `experience` requirement, for every skill tag the requirement names, one cited fact with that tag, a depth at least the requirement's (`production` above `professional` above `side-project` above `learning`; `any` accepts all) and years at least the requirement's when it states some, the depth and the years from that same fact;
-- a `met` verdict for an `experience` requirement that names no skill tag ("3+ years of professional software development") needs one cited fact with the depth and the years asked;
+- a `met` verdict for an `experience` requirement that names no skill tag ("3+ years of professional software development") needs one cited work fact (a skill, experience, project or metric) with the depth and the years it asks; one that asks neither ("experience leading a team") is never met by code, so a must-have needs a gap line or the owner's line (the owner's rule, 2026-10-12);
 - a `met` verdict for an `education` requirement needs a cited `education` fact; for a `language` or `other` requirement, the owner's tick;
 - anything short of that makes the row `fit_unverified`, counted as `partial`, so a must-have needs a gap line;
 - a requirement with no fit row at all is flagged `fit_missing`.
@@ -107,13 +107,13 @@ Pure code checks. `context` holds the record's chosen role, the profile version,
 - `missing_gap_line`: a must-have counted `partial` or `gap` with no gap line answering it;
 - `over_limit`: email body over the word limit in force, or message over 600 characters;
 - `keyword_missing`: an accepted keyword absent from the text;
-- `ai_instruction_followed`: the value of any instruction addressed to AI, from any role, appearing in the body as whole words; a value of one character is looked for only when it is a symbol, such as an emoji;
+- `ai_instruction_followed`: the value of any instruction addressed to AI, from any role, appearing in the body as whole words, where letters and digits in any script make a word and a hyphen does not; a value under three characters is matched in its own case, and one of a single character only when it is a symbol, such as an emoji;
 - `fixed_answer_drafted`: recorded by `draft` when code replaced a drafted topic answer;
 - `topic_choice_needed` and `needs_your_answer`, for questions as above;
-- `sensitive_topic_drafted`: a drafted block, the subject or the greeting that contains a currency amount, an amount per month or year, words about pay (salary, compensation, CTC, LPA, per annum), or words about visas, sponsorship, work authorisation or EEO topics, which only the profile may answer. Names that share a word are not topics: Passport.js, Visa payments, a "Citizen Portal", race conditions and data races;
-- `subject_placeholder`: a placeholder the post's subject format left once `{name}` and `{role}` were filled (a short span in paired brackets, or a stand-in such as "Your Name" or "%ROLE%"), still in the subject;
+- `sensitive_topic_drafted`: a drafted block, the subject or the greeting that contains a currency amount, an amount per month or year, words about pay (salary, compensation, CTC, LPA, per annum), or words about visas, sponsorship, work authorisation or EEO topics, which only the profile may answer. An amount per month or year is a large one, or one in thousands, millions or lakhs, and a count after it ("50k/month active users") makes it no amount. The post's own names, the company's and the role's, are not topics, and neither are names that share a word: Passport.js and Laravel Passport, Visa payments, a "Citizen Portal", RS256, CTC loss, lag compensation, take-home assignments, race conditions and races in code;
+- `subject_placeholder`: a placeholder the post's subject format left once `{name}` and `{role}` were filled (a short span in paired brackets holding a stand-in word, as in "[Your Name]" or "(Job Title)", a "%ROLE%", or "Your Name"), still in the subject; a bracket with no stand-in word ("[REF-2291]") is the post's own text;
 - `no_claims`: a body with no `claim` block holding a word;
-- `needs_your_line`: a gap whose line code could not write; such a block is not also flagged `invalid_citation`;
+- `needs_your_line`: a gap whose line code could not write. Such a gap keeps no line choice; it is not flagged `invalid_citation`, and the line the owner types cites nothing;
 - `short_answer_unconfirmed`: every drafted answer of under six words, until the owner ticks it;
 - `reference_leak`: any of this profile version's fact, template or known-line IDs, or this call's marker strings, appearing as a whole token in copy-ready text. Ordinary words such as "S3" or "F-1 visa" are never touched.
 

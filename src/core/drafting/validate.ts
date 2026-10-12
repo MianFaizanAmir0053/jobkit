@@ -68,28 +68,66 @@ const MESSAGES = {
   no_claims: "The email says nothing about you yet. Write at least one sentence from your profile.",
 } as const;
 
-// Money: a currency before or after a number, a word for one, an amount per month or year, or
-// pay itself. Visas, sponsorship and the right to work. Equal-opportunity topics worded about a
-// person. Names that share a word are not topics: Passport.js, Visa cards, a "Citizen Portal",
-// race conditions and data races.
+// Money: a currency next to a number; a number with a currency word, or in lakhs or crores; a
+// large amount, or one in thousands, millions or lakhs, per month or year, unless a count follows
+// ("50k/month active users"); and pay itself, in words that mean nothing else here. Visas,
+// sponsorship and the right to work. Equal-opportunity topics worded about a person. Names that
+// share a word are not topics: Passport.js and Laravel Passport, Visa payments, a "Citizen
+// Portal", RS256, CTC loss, lag compensation, take-home assignments, race conditions.
 const SENSITIVE = [
-  /(?:\b(?:usd|pkr|eur|gbp|aed|sar|qar|kwd|omr|bhd|sgd|cad|aud|inr|rs)\.?|[$£€₨₹])\s?\d/i,
-  /\d[\d,.]*\s?(?:usd|pkr|eur|gbp|aed|sar|qar|kwd|omr|bhd|sgd|cad|aud|inr|dollars?|rupees?|pounds?|euros?|riyals?|dirhams?|lakhs?|crores?)\b/i,
-  /\d[\d,.]*\s?[km]?\s?(?:\/\s?|per |an? )(?:month|mo|year|yr|annum|hour|hr|week)\b/i,
-  /\b(?:salary|salaries|compensation|remuneration|ctc|lpa|per annum|take-home|stipend|pay (?:range|expectations?|package))\b/i,
-  /\b(?:visas?(?!\s*(?:payments?|cards?|checkout|api|direct|network|integration|\/|&|and\s+mastercard))|sponsor(?:ship|ed|s|ing)?|work (?:authori[sz]ation|permits?)|right to work|(?:authori[sz]ed|eligible|permitted) to work|citizen(?:s|ship)?(?!\s+portal)|nationality|passports?(?!\.js)|permanent residen(?:t|cy|ce))\b/i,
-  /\b(?:gender|ethnicity|(?<!data[\s-])race(?![\s-]*conditions?)|veteran status|military service|(?:my|a|have a) disabilit(?:y|ies)|I am disabled)\b/i,
+  /(?:\b(?:usd|pkr|eur|gbp|aed|sar|qar|kwd|omr|bhd|sgd|cad|aud|inr)\.?\s?|\brs(?:\.\s?|\s)|[$£€₨₹]\s?)\d/i,
+  /\d[\d,.]*\s?(?:usd|pkr|eur|gbp|aed|sar|qar|kwd|omr|bhd|sgd|cad|aud|inr|dollars?|rupees?|pounds?|euros?|riyals?|dirhams?|lacs?|lakhs?|crores?)\b/i,
+  /(?:\b\d{1,3}(?:,\d{3})+|\b\d{4,}|\b\d+(?:\.\d+)?\s?(?:k|m|lacs?|lakhs?))\s?(?:(?:\/\s?|per |an? )(?:month|mo|year|yr|annum)\b|monthly\b|annually\b|yearly\b|p\.?[ma]\.?(?![a-z]))(?!\s+(?:active\s+)?(?:users?|visitors?|requests?|orders?|transactions?|events?|messages?|sessions?|downloads?|installs?|customers?|calls?|records?|rows?|queries|views?|signups?|subscribers?|hits?)\b)/i,
+  /\b(?:salary|salaries|remuneration|stipend|lpa|per annum|take-home pay|pay (?:range|expectations?|package))\b/i,
+  /\b(?:(?:my|current|expected|annual|monthly|total|base)\s+(?:compensation|ctc|take-home)|(?:compensation|ctc)\s+(?:expectations?|package|range|of|is))\b/i,
+  /\b(?:visas?(?!\s*(?:payments?|cards?|checkout|api|direct|network|integration|\/|&|,\s*mastercard|and\s+mastercard))|sponsor(?:ship|ed|s|ing)?|work (?:authori[sz]ation|permits?)|right to work|(?:authori[sz]ed|eligible|permitted) to work|citizen(?:s|ship)?(?!\s+portal)|nationality|(?<!laravel\s)passports?(?!\.js\b|-[a-z])|permanent residen(?:t|cy|ce))\b/i,
+  /\b(?:gender|ethnicity|veteran status|military service|(?:my|a|have a) disabilit(?:y|ies)|I am disabled|(?:my|your|of any|regardless of) race|race(?:,| or| and)\s+(?:ethnicity|religion|colou?r|gender|national origin)|(?:ethnicity|religion|colou?r|gender|national origin)(?:,| or| and)\s+race)\b/i,
 ];
 
 // What a post's subject format can leave once {name} and {role} are filled: a short span in
-// paired brackets, or a stand-in such as "Your Name", "(Your Name)" or "%ROLE%".
-const PLACEHOLDERS =
-  /\[[^\]]{1,40}\]|\{[^}]{1,40}\}|<[^>]{1,40}>|\([^)]{0,40}\b(?:your|name|role|position|title)\b[^)]{0,40}\)|%[a-z_]{2,20}%|\byour (?:full )?name\b|\b(?:job|role|position) title\b/gi;
+// paired brackets holding a stand-in word ("[Your Name]", "(Job Title)"), "%ROLE%", or "Your
+// Name". A bracket with no stand-in word ("[REF-2291]") is the post's own text.
+const STAND_IN = "your|name|role|position|title|job|first|last|full|candidate|applicant|surname";
+const PLACEHOLDERS = new RegExp(
+  [
+    `\\[[^\\]]{0,40}\\b(?:${STAND_IN})\\b[^\\]]{0,40}\\]`,
+    `\\{[^}]{0,40}\\b(?:${STAND_IN})\\b[^}]{0,40}\\}`,
+    `<[^>]{0,40}\\b(?:${STAND_IN})\\b[^>]{0,40}>`,
+    `\\([^)]{0,40}\\b(?:${STAND_IN})\\b[^)]{0,40}\\)`,
+    "%[a-z_]{2,20}%",
+    "\\byour (?:full )?name\\b",
+  ].join("|"),
+  "gi",
+);
 
 /** A letter or a digit: a sentence holding none says nothing. */
 const WORDY = /[\p{L}\p{N}]/u;
 
-const isSensitive = (text: string) => SENSITIVE.some((pattern) => pattern.test(text));
+/**
+ * Whether drafted text raises a topic only the profile may answer. The
+ * post's own names, the company's and the role's, are taken out first: a
+ * role at Visa is no visa.
+ */
+function isSensitive(text: string, names: readonly string[]): boolean {
+  const rest = names.reduce((left, name) => without(left, name), text);
+  return SENSITIVE.some((pattern) => pattern.test(rest));
+}
+
+/** `text` with every occurrence of `name`, in any case, replaced by a space. */
+function without(text: string, name: string): string {
+  const target = name.trim().toLowerCase();
+  if (target === "") return text;
+  const lower = text.toLowerCase();
+  // Lower-casing can change a string's length; then nothing is taken out.
+  if (lower.length !== text.length) return text;
+  let rest = "";
+  let from = 0;
+  for (let at = lower.indexOf(target); at >= 0; at = lower.indexOf(target, from)) {
+    rest += `${text.slice(from, at)} `;
+    from = at + target.length;
+  }
+  return rest + text.slice(from);
+}
 
 export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] {
   const flags: KitFlag[] = [];
@@ -97,27 +135,33 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     flags.push({ kind, at, message });
   const { role, profile } = context;
   const factIds = new Set(profile.facts.map((fact) => fact.id));
+  const names = [context.record.company.name, role.title];
 
   if (leftPlaceholder(kit.subject, context.subjectFormat)) {
     flag("subject_placeholder", "subject", MESSAGES.subject_placeholder);
   }
-  if (isSensitive(kit.subject))
+  if (isSensitive(kit.subject, names))
     flag("sensitive_topic_drafted", "subject", MESSAGES.sensitive_topic_drafted);
-  if (isSensitive(kit.greeting)) {
+  if (isSensitive(kit.greeting, names)) {
     flag("sensitive_topic_drafted", "greeting", MESSAGES.sensitive_topic_drafted);
   }
   for (const block of kit.blocks) {
-    // A gap whose line code could not write is the owner's to write: that is the flag it needs.
+    // A gap whose line code could not write (no known line, no template) is the owner's: it
+    // needs their line, and once they type one it cites nothing.
     const ownersLine =
       block.class === "gap" &&
-      block.text === NEEDS_YOUR_LINE &&
+      block.gap !== null &&
+      block.gap.knownLineId === "" &&
+      block.gap.templateId === "" &&
       role.requirements.some((requirement) => requirement.id === block.gap?.requirementId);
     if (ownersLine) {
-      flag("needs_your_line", block.id, MESSAGES.needs_your_line);
+      if (block.text === NEEDS_YOUR_LINE) {
+        flag("needs_your_line", block.id, MESSAGES.needs_your_line);
+      }
     } else if (!citesTruly(block, context, factIds)) {
       flag("invalid_citation", block.id, MESSAGES.invalid_citation);
     }
-    if (block.class !== "gap" && isSensitive(block.text)) {
+    if (block.class !== "gap" && isSensitive(block.text, names)) {
       flag("sensitive_topic_drafted", block.id, MESSAGES.sensitive_topic_drafted);
     }
   }
@@ -162,7 +206,8 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     .flatMap((each) => each.instructions)
     .filter((instruction) => instruction.addressed_to_ai)
     .map((instruction) => oneLine(instruction.value))
-    .find((value) => isCheckable(value) && hasWord(body, value));
+    // A value under three characters ("OK") is matched in its own case, so "ok" in a sentence is not it.
+    .find((value) => isCheckable(value) && hasWord(body, value, [...value].length < 3));
   if (followed !== undefined) {
     const shown = [...followed].slice(0, 60).join("");
     flag(
@@ -230,9 +275,39 @@ function hasToken(text: string, token: string): boolean {
   }
 }
 
-/** Whether `word` stands alone in `text`, in any case: "Java" is not in "JavaScript". */
-export function hasWord(text: string, word: string): boolean {
-  return hasToken(text.toLowerCase(), word.toLowerCase());
+/** A letter, a digit or a mark: what words are made of, in any script. A hyphen is not. */
+const WORD_CHAR = /^[\p{L}\p{N}\p{M}]$/u;
+
+/** The character before index `i`, a whole surrogate pair when it is one. */
+function charBefore(text: string, i: number): string {
+  if (i <= 0) return "";
+  const low = text.charCodeAt(i - 1);
+  const start = low >= 0xdc00 && low <= 0xdfff && i >= 2 ? i - 2 : i - 1;
+  return String.fromCodePoint(text.codePointAt(start)!);
+}
+
+function charAt(text: string, i: number): string {
+  return i < text.length ? String.fromCodePoint(text.codePointAt(i)!) : "";
+}
+
+/**
+ * Whether `word` stands alone in `text`, not inside a longer run of letters
+ * or digits in any script: "Java" is not in "JavaScript", nor "sum" in
+ * "résumé", but "pineapple" is in "pineapple-themed". In any case, unless
+ * `matchCase`. IDs and markers use hasToken instead, where a hyphen joins.
+ */
+export function hasWord(text: string, word: string, matchCase = false): boolean {
+  const haystack = matchCase ? text : text.toLowerCase();
+  const needle = matchCase ? word : word.toLowerCase();
+  if (needle === "") return false;
+  const startsWord = WORD_CHAR.test(charAt(needle, 0));
+  const endsWord = WORD_CHAR.test(charBefore(needle, needle.length));
+  for (let at = haystack.indexOf(needle); at >= 0; at = haystack.indexOf(needle, at + 1)) {
+    const clearBefore = !startsWord || !WORD_CHAR.test(charBefore(haystack, at));
+    const clearAfter = !endsWord || !WORD_CHAR.test(charAt(haystack, at + needle.length));
+    if (clearBefore && clearAfter) return true;
+  }
+  return false;
 }
 
 /**

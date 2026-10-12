@@ -108,6 +108,34 @@ describe("acceptedInstructions", () => {
     expect(limitOf("100-150 words")).toBe(150);
   });
 
+  it("reads a bare number as words only when the text does not make it a least or another unit", () => {
+    const limitOf = (value: string, text = "") =>
+      acceptedInstructions({
+        ...record().roles[0]!,
+        instructions: [instruction({ kind: "word_limit", value, text })],
+      }).wordLimit;
+
+    expect(limitOf("100", "Write at least 100 words")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("2", "Max 2 pages")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("120", "Max 120")).toBe(120);
+    expect(limitOf("150", "Keep it under 150 words")).toBe(150);
+  });
+
+  it("takes the smallest most in words, skipping every least", () => {
+    const limitOf = (text: string) =>
+      acceptedInstructions({
+        ...record().roles[0]!,
+        instructions: [instruction({ kind: "word_limit", value: "", text })],
+      }).wordLimit;
+
+    expect(limitOf("Min 50 words, max 120 words")).toBe(120);
+    expect(limitOf("100 words minimum")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("Not less than 100 words")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("More than 100 words")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("Min: 100 words")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("No more than 100 words")).toBe(100);
+  });
+
   it("reads a bare number as the limit before any words in the text, and never a least as a most", () => {
     const limitOf = (value: string, text = "") =>
       acceptedInstructions({
@@ -123,14 +151,17 @@ describe("acceptedInstructions", () => {
     expect(limitOf("", "No fewer than 100 words, please.")).toBe(BODY_WORD_LIMIT);
   });
 
-  it("refuses a keyword a format character splits, which no check could find", () => {
-    const zeroWidthSpace = String.fromCodePoint(0x200b);
-    const role: Role = {
-      ...record().roles[0]!,
-      instructions: [instruction({ kind: "include_keyword", value: `Uni${zeroWidthSpace}corn` })],
-    };
+  it("takes a keyword as it shows: what shows nothing goes, and an unusual space is a plain one", () => {
+    const keywordOf = (value: string) =>
+      acceptedInstructions({
+        ...record().roles[0]!,
+        instructions: [instruction({ kind: "include_keyword", value })],
+      }).keyword;
+    const char = (code: number) => String.fromCodePoint(code);
 
-    expect(acceptedInstructions(role).keyword).toBeNull();
+    expect(keywordOf(`Uni${char(0x200b)}corn`)).toBe("Unicorn");
+    expect(keywordOf(`Uni${char(0x034f)}corn`)).toBe("Unicorn");
+    expect(keywordOf(`Machine${char(0xa0)}Learning`)).toBe("Machine Learning");
   });
 
   it("keeps the 180-word limit when the post allows more, and refuses a keyword that is a link, too long or on two lines", () => {
@@ -194,6 +225,17 @@ describe("subjectFor", () => {
       .join(joiner);
     expect(oneLine(`Team ${family}`)).toBe(`Team ${family}`);
     expect(oneLine(`Uni${joiner}corn`)).toBe("Unicorn");
+  });
+
+  it("drops what shows nothing and makes every space plain, keeping what an emoji needs", () => {
+    const char = (code: number) => String.fromCodePoint(code);
+    expect(oneLine(`a${char(0x034f)}b${char(0x3164)}c${char(0xad)}d${char(0xe0041)}e`)).toBe(
+      "abcde",
+    );
+    expect(oneLine(`Senior${char(0xa0)}Engineer${char(0x202f)}role`)).toBe("Senior Engineer role");
+    const heart = `${char(0x2764)}${char(0xfe0f)}`;
+    expect(oneLine(`Thanks ${heart}`)).toBe(`Thanks ${heart}`);
+    expect(oneLine(`plain${char(0xfe0f)}text`)).toBe("plaintext");
   });
 
   it("never carries a line break, however the format tries", () => {
@@ -315,6 +357,42 @@ describe("gapLine", () => {
 });
 
 describe("buildEmailKit", () => {
+  it("keeps no line choice on a gap code could not write, which makes it the owner's", () => {
+    const answer: DraftAnswer = {
+      fit: [],
+      blocks: [
+        {
+          id: "S1",
+          text: "",
+          paragraph_break: false,
+          class: "gap",
+          fact_ids: [],
+          fields: [],
+          gap: {
+            requirement_id: "R4",
+            known_line_id: "K-gone",
+            template_id: "",
+            related_fact_id: "F-docker",
+          },
+        },
+      ],
+    };
+    const source = record();
+
+    const { kit } = buildEmailKit(answer, {
+      record: source,
+      role: source.roles[0]!,
+      ownerName: "Sam Rivera",
+      accepted: { subjectFormat: null, wordLimit: BODY_WORD_LIMIT, keyword: null },
+      profile,
+    });
+
+    expect(kit.blocks[0]).toMatchObject({
+      text: NEEDS_YOUR_LINE,
+      gap: { requirementId: "R4", knownLineId: "", templateId: "", relatedFactId: "" },
+    });
+  });
+
   it("keeps the model's blocks, writes the gap lines itself, and adds the parts code writes, with no signature", () => {
     const answer: DraftAnswer = {
       fit: [{ requirement_id: "R1", verdict: "met", fact_ids: ["F-docker"], note: "close" }],

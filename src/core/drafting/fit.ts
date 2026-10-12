@@ -11,7 +11,10 @@ import type { FitRow, Verdict } from "./kit";
  * names, one cited fact has that skill at the depth it asks and with the
  * years it states: depth and years from the same fact, never one from each.
  * An experience requirement naming no skill ("3+ years of professional
- * software development") needs one cited fact with that depth and years.
+ * software development") is met by one cited work fact with the depth and
+ * years it asks; one that asks neither ("experience leading a team") names
+ * nothing code can check, so it is never met by code (the owner's rule,
+ * 2026-10-12).
  * An education requirement needs a cited education fact. Anything short of
  * that is `fit_unverified` and counts as partial, so a must-have needs a gap
  * line; a requirement with no row is `fit_missing` and counts as a gap.
@@ -32,6 +35,9 @@ const DEPTH_RANK: Record<Fact["depth"], number> = {
   professional: 2,
   production: 3,
 };
+
+/** Facts about work, which an experience requirement can rest on: not a degree, a language or "other". */
+const WORK_KINDS: ReadonlySet<Fact["kind"]> = new Set(["skill", "experience", "project", "metric"]);
 
 const REQUIRED_RANK: Record<Role["requirements"][number]["depth"], number> = {
   any: 0,
@@ -83,7 +89,14 @@ function showsEverySkill(
     DEPTH_RANK[fact.depth] >= REQUIRED_RANK[requirement.depth] &&
     (requirement.years < 0 || (fact.years ?? 0) >= requirement.years);
   const skills = requirement.skills.map(canonicalSkill);
-  if (skills.length === 0) return requirement.kind === "experience" && cited.some(deepEnough);
+  if (skills.length === 0) {
+    const asks = requirement.depth !== "any" || requirement.years >= 0;
+    return (
+      requirement.kind === "experience" &&
+      asks &&
+      cited.some((fact) => WORK_KINDS.has(fact.kind) && deepEnough(fact))
+    );
+  }
   return skills.every((skill) =>
     cited.some((fact) => fact.skills.includes(skill) && deepEnough(fact)),
   );

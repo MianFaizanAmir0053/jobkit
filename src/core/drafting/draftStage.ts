@@ -14,7 +14,7 @@ import { sha256Hex } from "@/lib/encoding";
 import { acceptedInstructions, buildEmailKit, oneLine } from "./build";
 import { draftAnswerSchema, type EmailKit, type FitRow } from "./kit";
 import { DRAFT_LAYOUT_VERSION, draftContent, draftSystemPrompt } from "./prompt";
-import { hasWord, isCheckable, type KitFlag, validateEmailKit } from "./validate";
+import { hasWord, type KitFlag, validateEmailKit } from "./validate";
 
 /**
  * The `draft` stage for an email kit (drafting spec, "Stage draft"): one
@@ -36,11 +36,12 @@ export const DRAFT = {
 /**
  * What a stored kit holds beyond the model's answer: the parts code builds,
  * the flags it raises, and what the call is shown. Raise it when any of
- * these change: build.ts, validate.ts, fit.ts, bodyWords in kit.ts, or
- * withoutAiLines below, so an output kept from before is not reused. The
- * skills table, which the fit check and the gap lines read, is hashed whole.
+ * these change: build.ts, validate.ts, fit.ts, bodyWords in kit.ts, the
+ * skill lookup in skills.ts (skillTag and its key), or withoutAiLines
+ * below, so an output kept from before is not reused. The skills table's
+ * data is hashed whole.
  */
-const BUILD_VERSION = 3;
+const BUILD_VERSION = 4;
 
 // The prompt as sent (its rules, the user turn's layout, the output's schema) and the build.
 const PROMPT = sha256Hex(
@@ -64,6 +65,8 @@ export interface DraftOutput {
   flags: KitFlag[];
   wordLimit: number;
   keyword: string | null;
+  /** The post's subject format code applied, so validate can run again from what is stored. */
+  subjectFormat: string | null;
   markers: string[];
   profileVersion: string;
   roleId: string;
@@ -118,18 +121,14 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         throw new Error("draft's input names a profile, record or role that is gone");
       }
       const accepted = acceptedInstructions(role);
+      const post = withoutAiLines(extraction.record, role, accepted.keyword);
       const marker = Buffer.from(deps.random.bytes(16)).toString("hex");
       const called = await callModel(deps.models, {
         stage: "draft",
         jobId: ctx.job.id,
         model: input.model,
         system: draftSystemPrompt(accepted.wordLimit),
-        content: draftContent(
-          profile,
-          withoutAiLines(extraction.record, role, accepted.keyword),
-          accepted.wordLimit,
-          marker,
-        ),
+        content: draftContent(profile, post, accepted.wordLimit, marker),
         schema: draftAnswerSchema,
         effort: input.effort,
         maxTokens: DRAFT.maxTokens,
@@ -155,7 +154,7 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         profile: parts,
         fit,
         wordLimit: accepted.wordLimit,
-        keyword: accepted.keyword,
+        keyword: post.keyword,
         subjectFormat: accepted.subjectFormat,
         markers: [marker],
       });
@@ -164,7 +163,8 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         fit,
         flags,
         wordLimit: accepted.wordLimit,
-        keyword: accepted.keyword,
+        keyword: post.keyword,
+        subjectFormat: accepted.subjectFormat,
         markers: [marker],
         profileVersion: profile.versionId,
         roleId: role.id,
@@ -183,8 +183,11 @@ export function draftStage(deps: DraftDeps): StageDefinition {
  * prompt records lines aimed at AI as instructions or questions, which the
  * role passed on goes without; a requirement, a title or a company name
  * that repeats such a line, or what it asks for, as whole words, is left
- * out too (the fit check then shows the requirement as not weighed). A
- * line the extractor reworded into a requirement is beyond this check: the
+ * out too (the fit check then shows the requirement as not weighed), as is
+ * a skill tag that does, and a keyword that does is not taken at all, since
+ * the kit could not both use it and leave it out. Lines and values under
+ * three characters drop nothing: they would match ordinary words. A line
+ * the extractor reworded into a requirement is beyond this check: the
  * markers and the system prompt's rule are the defence there.
  */
 function withoutAiLines(
@@ -200,7 +203,7 @@ function withoutAiLines(
       ...each.screening_questions.filter((line) => line.addressed_to_ai).map((line) => line.text),
     ])
     .map(oneLine)
-    .filter(isCheckable);
+    .filter((line) => [...line].length >= 3);
   // Whole words, on one line: "Java" leaves "JavaScript" alone, and a line break hides nothing.
   const touched = (text: string) => lines.some((line) => hasWord(oneLine(text), line));
   return {
@@ -208,10 +211,15 @@ function withoutAiLines(
     role: {
       ...role,
       title: touched(role.title) ? "" : role.title,
-      requirements: role.requirements.filter((requirement) => !touched(requirement.text)),
+      requirements: role.requirements
+        .filter((requirement) => !touched(requirement.text))
+        .map((requirement) => ({
+          ...requirement,
+          skills: requirement.skills.filter((skill) => !touched(skill)),
+        })),
       instructions: [],
       screening_questions: [],
     },
-    keyword,
+    keyword: keyword !== null && touched(keyword) ? null : keyword,
   };
 }

@@ -65,6 +65,11 @@ export const draftAnswerSchema = z.strictObject({
 
 export type DraftAnswer = z.output<typeof draftAnswerSchema>;
 
+/**
+ * What a gap block answers and how its line was made. With no known line
+ * and no template, code could not write the line: the block is the
+ * owner's, "Needs your line" until they type it.
+ */
 export interface GapChoice {
   requirementId: string;
   knownLineId: string;
