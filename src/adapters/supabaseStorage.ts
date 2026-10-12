@@ -67,8 +67,8 @@ export function createSupabaseStorage(opts: {
     async get(path) {
       assertStoragePath(path);
       const { data, error } = await bucket().download(path);
-      if (error || !data) return null;
-      return new Uint8Array(await data.arrayBuffer());
+      if (error) return notFound(error) ? null : fail("download", error.message);
+      return data ? new Uint8Array(await data.arrayBuffer()) : null;
     },
     // Only a missing object is null: a passing server error must not read
     // as "absent", or the seed would try to upload over a stored CV.

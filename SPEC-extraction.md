@@ -62,7 +62,8 @@ Fields:
 - **Stops:**
   - `language: other` moves the job to `stopped`, with no drafting cost.
   - `not_a_job_post` also moves it to `stopped`, but the page offers "This is a job post", which records the owner's confirmation (part of `extract`'s input hash) and re-runs `extract` with that confirmation in the system prompt.
-- Several roles move the job to `needs_role_pick`. One role is chosen automatically.
+  - An English job post in which no role was found is kept with its `no_roles` flag and also moves to `stopped`; the page offers "Read it again", which records the same confirmation and re-runs `extract` once, and Skip (the owner's decision, 2026-10-12).
+- Several roles move the job to `needs_role_pick`. One role is chosen automatically. Code numbers roles, requirements and questions by position after the checks, so an ID the model repeated is flagged and the pick still finds the right role; a pick holds only for the extraction it was made on.
 
 ## Strict contact checks
 
@@ -115,7 +116,7 @@ Criteria about what the model notices (lines addressed to AI, scam signals in im
 3. The record schema accepts every synthetic fixture and rejects malformed ones; output that parses but fails a check is kept and flagged, not retried.
 4. The system prompt never contains post text; the post sits between per-call random markers; the wrapper call passes no tools (type-level test).
 5. The phrase backstop adds a scam signal when a CNIC request appears in pasted text, and when it appears only in a quoted field of a screenshot's record, while the fake model reports none.
-6. A non-English post stops the job, and its only exit is Skip; a `not_a_job_post` verdict stops it, and "This is a job post" re-runs `extract` with a new input hash rather than reusing the stopped result.
+6. A non-English post stops the job, and its only exit is Skip; a `not_a_job_post` verdict stops it, and "This is a job post" re-runs `extract` with a new input hash rather than reusing the stopped result; a post with no role found stops it with the record kept, and "Read it again" re-runs `extract` once.
 7. A post with several roles waits in `needs_role_pick`; scam signals stay attached to the post whichever role is picked; each role keeps its own contact.
 8. Strict checks: `hr@acme.com?bcc=x@evil.com`, `spy%40evil.com%2Chr@acme.com`, `a#b@acme.com`, `"hr"@acme.com`, `hr..x@acme.com`, `hr@acme` and `hr@@acme.com` fail; `jobs+dev@acme.co.uk` passes. `0300 1234567` becomes `923001234567`; `+92 (0)300 1234567` becomes `923001234567`; `+971 50 123 4567` becomes `971501234567`; `98765 43210`, `300-1234567` and `+92 300 12345` are flagged.
 9. Crops include the margin, respect the minimum size, are clamped to the image, are enlarged twofold, and are stored under the job's `crops/` path.

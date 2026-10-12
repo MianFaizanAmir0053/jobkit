@@ -111,7 +111,10 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
     async get(path) {
       return readFile(fileFor(path)).then(
         (buffer) => new Uint8Array(buffer),
-        () => null,
+        (error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        },
       );
     },
     async stat(path) {

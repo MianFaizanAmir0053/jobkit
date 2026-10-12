@@ -35,6 +35,7 @@ export interface Storage {
     contentType: string,
     options?: { overwrite?: boolean },
   ): Promise<void>;
+  /** A file's bytes; null when there is no file at the path, and a throw for any other failure. */
   get(path: string): Promise<Uint8Array | null>;
   /** A file's size; null when there is no file at the path, and a throw for any other failure. */
   stat(path: string): Promise<{ size: number } | null>;

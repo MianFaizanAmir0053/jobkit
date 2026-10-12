@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import { readExtractOutput } from "@/core/extraction/extract";
 import { chosenRole } from "@/core/extraction/owner";
 import { callModel, type ModelCallDeps, type ModelCallFailure } from "@/core/platform/models";
@@ -29,10 +31,12 @@ export const DRAFT = {
   maxTokens: 16_000,
 } as const;
 
+// The prompt as sent: its rules, the user turn's layout and the output's schema.
 const PROMPT = sha256Hex(
   canonicalJson({
     rules: draftSystemPrompt(0),
     layout: DRAFT_LAYOUT_VERSION,
+    schema: z.toJSONSchema(draftAnswerSchema),
   }),
 );
 

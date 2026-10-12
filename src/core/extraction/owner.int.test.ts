@@ -139,6 +139,20 @@ describe("confirmPost", () => {
   });
 });
 
+describe("confirmPost after no role was found", () => {
+  it("reads the post again once, then leaves Skip as the only way on", async () => {
+    const noRole = (): JobRecord => ({ ...fixture("S01-email-simple"), roles: [] });
+    const id = await extracted(noRole());
+    expect(await stateOf(id)).toEqual({ state: "stopped", pending: null });
+
+    expect(await confirmPost({ db, clock }, id)).toEqual({ ok: true });
+    await run(id, noRole());
+
+    expect(await stateOf(id)).toEqual({ state: "stopped", pending: null });
+    expect(await confirmPost({ db, clock }, id)).toEqual({ ok: false, reason: "not-a-post-stop" });
+  });
+});
+
 describe("pickRole", () => {
   it("goes on with the role the owner picks, each role keeping its own contact", async () => {
     const id = await extracted(fixture("S07-two-roles"));
@@ -161,6 +175,31 @@ describe("pickRole", () => {
     expect(await pickRole({ db, clock }, id, "P1")).toEqual({ ok: true });
     expect(await pickRole({ db, clock }, id, "P2")).toEqual({ ok: false, reason: "not-waiting" });
     expect((await chosenRole(db, id))?.id).toBe("P1");
+  });
+});
+
+describe("a pick and the extraction it was made on", () => {
+  it("picks the right role even when the model gave two roles one ID", async () => {
+    const record = fixture("S07-two-roles");
+    record.roles[1]!.id = "P1";
+    const id = await extracted(record);
+
+    expect(await pickRole({ db, clock }, id, "P2")).toEqual({ ok: true });
+    expect((await chosenRole(db, id))?.route.address).toBe("ml@example.com");
+  });
+
+  it("is ignored once extract reads the post again, a single role then going on by itself", async () => {
+    const id = await extracted(fixture("S07-two-roles"));
+    expect(await pickRole({ db, clock }, id, "P2")).toEqual({ ok: true });
+    // As after new screenshots: extract runs again, on a new input, and finds one role.
+    await db.query(
+      `update {{schema}}.jobs set state = 'extracting', pending_stage = 'extract',
+         post_confirmed_at = $2 where id = $1`,
+      [id, clock.now()],
+    );
+    await run(id, fixture("S01-email-simple"));
+
+    expect((await chosenRole(db, id))?.route.address).toBe("jobs@example.com");
   });
 });
 

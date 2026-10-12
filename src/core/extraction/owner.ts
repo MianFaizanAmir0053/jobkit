@@ -2,7 +2,7 @@ import { loadJob, moveJob } from "@/core/platform/jobs";
 import { stageOutput } from "@/core/platform/runner";
 import type { Clock, Db } from "@/core/ports";
 
-import { type ExtractOutput, readExtractOutput } from "./extract";
+import { type ExtractOutput, readExtractOutput, stopReasonOf } from "./extract";
 import type { Role } from "./record";
 
 /**
@@ -18,29 +18,43 @@ type Outcome<Reason extends string> = { ok: true } | { ok: false; reason: Reason
 
 /** The job's current extraction: extract's latest output, or null. */
 export async function currentExtraction(db: Db, jobId: string): Promise<ExtractOutput | null> {
-  const stored = await stageOutput(db, jobId, "extract");
-  return stored ? readExtractOutput(stored.output) : null;
+  return (await extractionWithHash(db, jobId))?.output ?? null;
 }
 
-/** The role the job's chain works on: the owner's pick, or the post's only role. */
+async function extractionWithHash(
+  db: Db,
+  jobId: string,
+): Promise<{ output: ExtractOutput; hash: string } | null> {
+  const stored = await stageOutput(db, jobId, "extract");
+  const output = stored ? readExtractOutput(stored.output) : null;
+  return stored && output ? { output, hash: stored.outputHash } : null;
+}
+
+/**
+ * The role the job's chain works on: the owner's pick, made on the current
+ * extraction, or else the post's only role.
+ */
 export async function chosenRole(db: Db, jobId: string): Promise<Role | null> {
-  const extraction = await currentExtraction(db, jobId);
+  const extraction = await extractionWithHash(db, jobId);
   if (!extraction) return null;
-  const { rows } = await db.query<{ chosen_role: string | null }>(
-    "select chosen_role from {{schema}}.jobs where id = $1",
-    [jobId],
-  );
-  const roles = extraction.record.roles;
-  const picked = rows[0]?.chosen_role ?? null;
-  if (picked !== null) return roles.find((role) => role.id === picked) ?? null;
+  const { rows } = await db.query<{
+    chosen_role: string | null;
+    chosen_role_output: string | null;
+  }>("select chosen_role, chosen_role_output from {{schema}}.jobs where id = $1", [jobId]);
+  const roles = extraction.output.record.roles;
+  const pick = rows[0];
+  if (pick?.chosen_role && pick.chosen_role_output === extraction.hash) {
+    return roles.find((role) => role.id === pick.chosen_role) ?? null;
+  }
   return roles.length === 1 ? roles[0]! : null;
 }
 
 /**
- * "This is a job post": after a stop for "not a job post", and only then,
- * records the owner's confirmation, which extract's input hash covers, and
- * sends the job back to extract. A stop for language has Skip as its only
- * exit, and a post already confirmed is not confirmed again.
+ * "This is a job post", or "Read it again": after a stop for "not a job
+ * post" or for no role found, and only then, records the owner's
+ * confirmation, which extract's input hash covers, and sends the job back
+ * to extract. A stop for language has Skip as its only exit, and a post
+ * already confirmed is not confirmed again.
  */
 export async function confirmPost(
   deps: Deps,
@@ -49,13 +63,12 @@ export async function confirmPost(
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
   const extraction = await currentExtraction(deps.db, jobId);
-  const stoppedAsNoPost =
+  const reason = extraction ? stopReasonOf(extraction) : null;
+  const confirmable =
     job.state === "stopped" &&
-    extraction !== null &&
-    extraction.record.language === "en" &&
-    extraction.record.post_kind === "not_a_job_post" &&
-    !extraction.postConfirmed;
-  if (!stoppedAsNoPost) return { ok: false, reason: "not-a-post-stop" };
+    (reason === "not_a_job_post" || reason === "no_role") &&
+    !extraction!.postConfirmed;
+  if (!confirmable) return { ok: false, reason: "not-a-post-stop" };
   const now = deps.clock.now();
   return deps.db.tx(async (tx) => {
     const moved = await moveJob(tx, jobId, {
@@ -80,8 +93,8 @@ export async function pickRole(
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
   if (job.state !== "needs_role_pick") return { ok: false, reason: "not-waiting" };
-  const extraction = await currentExtraction(deps.db, jobId);
-  if (!extraction?.record.roles.some((role) => role.id === roleId)) {
+  const extraction = await extractionWithHash(deps.db, jobId);
+  if (!extraction?.output.record.roles.some((role) => role.id === roleId)) {
     return { ok: false, reason: "no-such-role" };
   }
   return deps.db.tx(async (tx) => {
@@ -93,7 +106,10 @@ export async function pickRole(
       ifChangedAt: job.stateChangedAt,
     });
     if (!moved) return { ok: false, reason: "not-waiting" };
-    await tx.query("update {{schema}}.jobs set chosen_role = $2 where id = $1", [jobId, roleId]);
+    await tx.query(
+      "update {{schema}}.jobs set chosen_role = $2, chosen_role_output = $3 where id = $1",
+      [jobId, roleId, extraction.hash],
+    );
     return { ok: true };
   });
 }

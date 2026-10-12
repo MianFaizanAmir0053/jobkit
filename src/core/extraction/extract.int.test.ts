@@ -29,7 +29,8 @@ import {
   type ExtractOutput,
   extractStage,
   MISSING_IMAGE,
-  NO_ROLES,
+  stopReasonOf,
+  UNREAD_IMAGE,
   readExtractOutput,
 } from "./extract";
 import { extractSystemPrompt } from "./prompt";
@@ -294,15 +295,56 @@ describe("extract's run", () => {
     expect(readExtractOutput(JSON.parse(JSON.stringify(output)))).toEqual(output);
   });
 
-  it("fails without retrying when an English job post has no role", async () => {
+  it("keeps an English job post with no role, flagged, for the owner to have read again", async () => {
     const record = fixture("S01-email-simple");
     record.roles = [];
     const id = await extractingJob([], "We're hiring. Apply at jobs@example.com");
 
-    expect(await runExtract(id, [answer(record)])).toEqual({
+    const result = await runExtract(id, [answer(record)]);
+
+    if (!result.ok) throw new Error(result.reason);
+    const output = result.output as ExtractOutput;
+    expect(output.flags.map(({ kind, path }) => [kind, path])).toEqual([["no_roles", "roles"]]);
+    expect(stopReasonOf(output)).toBe("no_role");
+  });
+
+  it("numbers roles, requirements and questions by position, flagging the IDs the model repeated", async () => {
+    const record = fixture("S07-two-roles");
+    record.roles[1]!.id = "P1";
+    record.roles[0]!.requirements = record.roles[0]!.requirements.map((requirement) => ({
+      ...requirement,
+      id: "R1",
+    }));
+    const id = await extractingJob([], "Two open roles. Apply by email.");
+
+    const result = await runExtract(id, [answer(record)]);
+
+    if (!result.ok) throw new Error(result.reason);
+    const output = result.output as ExtractOutput;
+    expect(output.record.roles.map((role) => role.id)).toEqual(["P1", "P2"]);
+    expect(output.record.roles[1]!.title).toBe(fixture("S07-two-roles").roles[1]!.title);
+    expect(output.record.roles[0]!.requirements.map((requirement) => requirement.id)).toEqual(
+      record.roles[0]!.requirements.map((_, i) => `R${i + 1}`),
+    );
+    expect(
+      output.flags.filter(({ kind }) => kind === "duplicate_id").map(({ path }) => path),
+    ).toEqual([
+      "roles[1].id",
+      ...record.roles[0]!.requirements.slice(1).map((_, i) => `roles[0].requirements[${i + 1}].id`),
+    ]);
+  });
+
+  it("starts again after a passing storage error, which is not a missing screenshot", async () => {
+    const id = await extractingJob([await png(1080, 2400, 10)]);
+    const flaky = { ...storage, get: async () => Promise.reject(new Error("storage is down")) };
+    llm = fakeLlm([]);
+    const ctx = await contextOf(id);
+    const extract = extractStage({ db, storage: flaky, random, models: models() });
+
+    expect(await extract.run(ctx, await extract.input(ctx))).toEqual({
       ok: false,
-      reason: NO_ROLES,
-      retry: false,
+      reason: UNREAD_IMAGE,
+      retry: true,
     });
   });
 
@@ -403,6 +445,17 @@ describe("extract's next", () => {
     const record = { ...fixture("S01-email-simple"), post_kind: "not_a_job_post" as const };
     expect(await nextFor(record)).toEqual({ state: "stopped", pending: null });
     expect(await nextFor(record, true)).toEqual({ state: "checking", pending: "eligibility" });
+  });
+
+  it("stops a post in which no role was found", async () => {
+    expect(await nextFor({ ...fixture("S01-email-simple"), roles: [] })).toEqual({
+      state: "stopped",
+      pending: null,
+    });
+    expect(await nextFor({ ...fixture("S01-email-simple"), roles: [] }, true)).toEqual({
+      state: "stopped",
+      pending: null,
+    });
   });
 
   it("waits for the owner's pick when the post has several roles, and goes on with a single one", async () => {

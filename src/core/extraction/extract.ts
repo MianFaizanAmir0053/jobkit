@@ -13,6 +13,7 @@ import { FLAG_MESSAGES, jobRecordSchema, type RecordFlagKind, SCAM_KINDS } from 
 import { backstopSignals } from "./backstop";
 import { checkRecord } from "./record";
 import { checkRequest, cutTiles } from "./tiles";
+import type { JobRecord } from "./record";
 
 /**
  * The `extract` stage (extraction spec, "Stage extract"): one Claude call
@@ -21,8 +22,8 @@ import { checkRequest, cutTiles } from "./tiles";
  * check is kept with its flags, never retried; the phrase backstop adds scam
  * signals the model missed. Where the job goes next follows the record: a
  * post in another language stops, as does one that is not a job post until
- * the owner confirms it is, several roles wait for the owner's pick, and a
- * single role goes on to eligibility.
+ * the owner confirms it is, as does one with no role found, several roles
+ * wait for the owner's pick, and a single role goes on to eligibility.
  */
 
 export const EXTRACT = {
@@ -31,16 +32,17 @@ export const EXTRACT = {
   maxTokens: 16_000,
 } as const;
 
-// The prompt as sent: its rules, the confirmation and the user turn's layout.
+// The prompt as sent: its rules, the confirmation, the user turn's layout and the output's schema.
 const PROMPT = sha256Hex(
   canonicalJson({
     rules: extractSystemPrompt(false),
     confirmed: extractSystemPrompt(true),
     layout: LAYOUT_VERSION,
+    schema: z.toJSONSchema(jobRecordSchema),
   }),
 );
 
-export const NO_ROLES = "No role was found in this post.";
+export const UNREAD_IMAGE = "The screenshots could not be read from storage just now.";
 export const MISSING_IMAGE =
   "A screenshot is missing or changed since it was uploaded. Start a new job with the screenshots.";
 const CHANGED_IMAGES = "The job's screenshots changed while this step began.";
@@ -131,7 +133,13 @@ export function extractStage(deps: ExtractDeps): StageDefinition {
       }
       const bytes: Uint8Array[] = [];
       for (const image of images) {
-        const stored = await deps.storage.get(image.storagePath);
+        let stored: Uint8Array | null;
+        try {
+          stored = await deps.storage.get(image.storagePath);
+        } catch {
+          // A passing storage error, not a missing file.
+          return { ok: false, reason: UNREAD_IMAGE, retry: true };
+        }
         // The hash the input covers must be the bytes the model sees.
         if (!stored || createHash("sha256").update(stored).digest("hex") !== image.sha256) {
           return { ok: false, reason: MISSING_IMAGE, retry: false };
@@ -157,21 +165,18 @@ export function extractStage(deps: ExtractDeps): StageDefinition {
       if (!called.ok)
         return { ok: false, reason: called.message, retry: PASSING.has(called.reason) };
 
-      const record = called.output;
-      const readsRoles =
-        record.language === "en" && (record.post_kind === "job_post" || input.postConfirmed);
-      if (readsRoles && record.roles.length === 0) {
-        return { ok: false, reason: NO_ROLES, retry: false };
-      }
       const tiles = cut.tiles.map(({ image, top, width, height }) => ({
         image,
         top,
         width,
         height,
       }));
+      // Checked as the model wrote it, so a repeated ID is flagged; kept with IDs by position.
+      const flags = checkRecord(called.output, tiles);
+      const record = numbered(called.output);
       const output: ExtractOutput = {
         record,
-        flags: checkRecord(record, tiles),
+        flags,
         backstop: backstopSignals(record, input.pastedText),
         tiles,
         postConfirmed: input.postConfirmed,
@@ -182,15 +187,49 @@ export function extractStage(deps: ExtractDeps): StageDefinition {
     next(_ctx, raw): Transition {
       const output = readExtractOutput(raw);
       if (!output) throw new Error("extract's output is not a record this version can read");
-      const { record, postConfirmed } = output;
-      // The owner's confirmation answers "not a job post" only, never the language.
-      if (record.language === "other") return { state: "stopped", pending: null };
-      if (record.post_kind === "not_a_job_post" && !postConfirmed) {
-        return { state: "stopped", pending: null };
-      }
-      if (record.roles.length === 0) throw new Error("extract kept a record with no role");
-      if (record.roles.length > 1) return { state: "needs_role_pick", pending: null };
+      if (stopReasonOf(output) !== null) return { state: "stopped", pending: null };
+      if (output.record.roles.length > 1) return { state: "needs_role_pick", pending: null };
       return { state: "checking", pending: "eligibility" };
     },
+  };
+}
+
+/**
+ * Why a record stops its job, or null when the chain goes on: a post in
+ * another language (Skip is the only way on), one that is not a job post
+ * until the owner confirms it is, and one in which no role was found, which
+ * the owner can have read again once (the owner's choice, 2026-10-12).
+ */
+export type StopReason = "language" | "not_a_job_post" | "no_role";
+
+export function stopReasonOf(output: ExtractOutput): StopReason | null {
+  const { record, postConfirmed } = output;
+  if (record.language === "other") return "language";
+  if (record.post_kind === "not_a_job_post" && !postConfirmed) return "not_a_job_post";
+  if (record.roles.length === 0) return "no_role";
+  return null;
+}
+
+/**
+ * The record with its IDs by position, as the spec defines them: roles P1,
+ * P2, … and, within each role, requirements R1, … and questions Q1, … A
+ * model that repeats an ID is flagged, and the pick, the ledger's key and the
+ * fit table still find the right entry.
+ */
+function numbered(record: JobRecord): JobRecord {
+  return {
+    ...record,
+    roles: record.roles.map((role, i) => ({
+      ...role,
+      id: `P${i + 1}`,
+      requirements: role.requirements.map((requirement, j) => ({
+        ...requirement,
+        id: `R${j + 1}`,
+      })),
+      screening_questions: role.screening_questions.map((question, j) => ({
+        ...question,
+        id: `Q${j + 1}`,
+      })),
+    })),
   };
 }

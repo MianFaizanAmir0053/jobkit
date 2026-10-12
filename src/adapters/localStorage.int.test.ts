@@ -31,6 +31,13 @@ describe("local storage", () => {
     expect(await storage.stat("jobs/j1/a.webp")).toBeNull();
   });
 
+  it("reads null only for a missing file, and throws for any other failure", async () => {
+    await storage.put("jobs/j1/a.webp", bytes("hello"), "image/webp");
+
+    // A folder where a file was expected cannot be read, which is not "missing".
+    await expect(storage.get("jobs/j1")).rejects.toThrow();
+  });
+
   it("replaces a file only when asked, as Supabase Storage does", async () => {
     await storage.put("profile/cv.pdf", bytes("one"), "application/pdf");
 
