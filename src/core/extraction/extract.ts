@@ -89,12 +89,13 @@ interface ExtractInput {
   prompt: string;
 }
 
-interface PostImage {
+export interface PostImage {
   storagePath: string;
   sha256: string;
 }
 
-async function postImages(db: Db, jobId: string): Promise<PostImage[]> {
+/** The post's screenshots, in the order the owner added them. */
+export async function postImages(db: Db, jobId: string): Promise<PostImage[]> {
   const { rows } = await db.query<{ storage_path: string; sha256: string }>(
     `select storage_path, sha256 from {{schema}}.job_images
       where job_id = $1 and purpose = 'post' order by position`,

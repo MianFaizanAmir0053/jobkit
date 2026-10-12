@@ -92,6 +92,7 @@ The owner wants to try a job on the laptop as soon as possible, so the thinnest 
   - Verify: `npm test` with the fake model and synthetic fixtures. Depends on: 9, 12, 15. Files: src/core/extraction/{extractStage,questionsStage,prompts}.ts, src/app/api/jobs/[id]/role/route.ts. Scope: M.
 - [ ] **Task 17: `address_read`** — Owns: extraction AC9, AC10, AC12.
   - Verify: `npm test` on synthetic images. Depends on: 16. Files: src/core/extraction/{crop,addressRead}.ts. Scope: S.
+  - Built (2026-10-12), after the thin path: `crop.ts` (40-pixel margin, at least 240 by 64, kept inside the upright image, twofold, one sharp pipeline), `addressRead.ts` (agreement; an address in pasted text verbatim and whole, a number by its digits), `addressReadStage.ts` (Gemini Flash on the crop alone between markers; the crop under `jobs/<id>/crops/`; a read that cannot happen is a missing second read, never a failed job, including with no Gemini key), run beside draft for a contact the record gives. The job page shows the result under the address and holds back Open in Gmail while it is disputed. Left: the retype field and the gate (Task 28), crops served through 60-second signed URLs (review AC6), the purge of crops with the job's images (Task 34), and one live check with the evaluation key.
 - [ ] **Task 18: `eligibility`** — Owns: extraction AC11.
   - Verify: `npm test` (table tests). Depends on: 14, 15. Files: src/core/extraction/eligibility.ts and tests. Scope: S.
 - [ ] **Task 19: Evaluation tooling A** — Owns: evals AC1, AC2, AC7.
@@ -119,6 +120,7 @@ The owner wants to try a job on the laptop as soon as possible, so the thinnest 
 - [ ] **Task 25: `address_checks`** — Owns: review AC5.
   - DNS port and adapter, implicit and null MX, free mail, company mismatch.
   - Verify: `npm test` with a fake DNS. Depends on: 9. Files: src/core/review/addressChecks.ts, src/adapters/dns.ts. Scope: S.
+  - Built (2026-10-12), after the thin path: the Dns port, `src/adapters/dns.ts` (Node's resolver, one try of 3 seconds; a live test, free, shows example.com's null MX), `addressChecks.ts` and `addressChecksStage.ts`, run beside draft for an email address; the container gives the test server a DNS where every domain takes mail. The page lists each check under the address, a blocking one holding back Open in Gmail. Left: re-running on an edited To field (Task 29) and the gate (Task 28).
 - [ ] **Task 26: Thin kit page** — Owns: review AC1; ledger AC4; platform AC19.
   - Job page for email kits: progress, the manual-run screen with Stop, the contact panel with retype, flags with "I checked this", basic block editing with confirmation, `canHandOff` in the browser and on the server, polling rules; the jobs list.
   - First gives the test server scripted models, per stage, for the end-to-end tests (platform spec A3, B10): until then `modelsFor("test", …)` has none (src/server/models.ts).

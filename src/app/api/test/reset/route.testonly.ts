@@ -32,5 +32,6 @@ export async function POST() {
   `);
   // A pipeline left running from an earlier test must not take the next test's answers.
   setScriptedAnswers([]);
+  setScriptedAnswers([], "gemini");
   return new NextResponse(null, { status: 204 });
 }

@@ -6,7 +6,7 @@ The thin path (the owner's choice, 2026-10-12) is built first so the owner can t
 
 1. **Google sign-in client:** [setup.md](setup.md), step 4. For the laptop, only `http://localhost:3000` (origin) and `http://localhost:3000/api/auth/google/callback` (redirect URI) are needed; add the Vercel ones when the app is deployed.
 2. **Anthropic:** setup.md, step 6, item 2 only: the `jobkit-evals` workspace with its $15 limit, and its key.
-3. **`.env.local`:** the first bullet of setup.md, step 8: `OWNER_EMAIL`, `APP_ORIGIN=http://localhost:3000`, `JOBKIT_ENV=development`, `JOBKIT_LOCAL_EVALS=1`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `ANTHROPIC_EVALS_API_KEY`. The Gemini key can wait: the second read of an address is not in the thin path. `OWNER_EMAIL` is also the Gmail account the job page opens and names as From, so make it the account you send applications from.
+3. **`.env.local`:** the first bullet of setup.md, step 8: `OWNER_EMAIL`, `APP_ORIGIN=http://localhost:3000`, `JOBKIT_ENV=development`, `JOBKIT_LOCAL_EVALS=1`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `ANTHROPIC_EVALS_API_KEY`. Add `GEMINI_EVALS_API_KEY` too if you have it: jobkit then reads a screenshot's email address or number a second time with Gemini Flash, at a fraction of a cent a job. Without it, a screenshot job asks you to type the address yourself; pasted text needs no key, since jobkit looks for the address in the text. `OWNER_EMAIL` is also the Gmail account the job page opens and names as From, so make it the account you send applications from.
 4. **Profile:** setup.md, step 13, items 1 and 2. Drafts use only the facts marked `approved: true`, so read the facts in `private/profile.yaml` and approve the ones you stand behind, and write the signature. The fixed answers decide the eligibility check, so make the work authorisation, relocation and working window entries true; gap lines and style examples can follow. With the dev server stopped, `npm run profile:seed` checks the file and stores it.
 
 ## Each time
@@ -20,5 +20,5 @@ The thin path (the owner's choice, 2026-10-12) is built first so the owner can t
 
 Each of these is built right after the thin path works, and the job page says where one is missing:
 
-- the second read of the email address or number, and the address checks;
+- a field to retype a disputed address in jobkit (for now, type it in Gmail; Open in Gmail stays hidden until then), and the gate that holds every copy and handoff while a check stands;
 - the phone: test on the laptop first; the phone follows through a tunnel to the dev server.

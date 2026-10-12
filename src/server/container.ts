@@ -9,12 +9,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { systemClock } from "@/adapters/clock";
+import { createDns, offlineDns } from "@/adapters/dns";
 import { createLocalStorage } from "@/adapters/localStorage";
 import { createPgDb } from "@/adapters/pg";
 import { createPgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { createSupabaseStorage } from "@/adapters/supabaseStorage";
-import type { Clock, Db, Llm, Random, Storage } from "@/core/ports";
+import type { Clock, Db, Dns, Llm, Random, Storage } from "@/core/ports";
 import { openLocalDb } from "@/server/db/localDb";
 import { applyMigrations, bootstrapForTests, loadMigrations } from "@/server/db/migrate";
 import { onVercelDeployment } from "@/server/deployEnv";
@@ -30,6 +31,8 @@ export interface Container {
   storage: Storage;
   clock: Clock;
   random: Random;
+  /** Real lookups, except on the test server, where every domain takes mail. */
+  dns: Dns;
   /** The model behind a model ID; throws when this environment has no key for it. */
   llmFor(model: string): Llm;
   close(): Promise<void>;
@@ -74,7 +77,8 @@ export async function createContainer(
         bucket: BUCKET,
       });
       const llmFor = modelsFor("production", env);
-      return { kind: "production", db, storage, ...SYSTEM, llmFor, close: () => db.close() };
+      const dns = createDns();
+      return { kind: "production", db, storage, ...SYSTEM, dns, llmFor, close: () => db.close() };
     }
     case "development":
     case "test": {
@@ -97,7 +101,16 @@ export async function createContainer(
           origin: env.APP_ORIGIN ?? "http://localhost:3000",
         });
         const llmFor = modelsFor(env.JOBKIT_ENV, env);
-        return { kind: env.JOBKIT_ENV, db, storage, ...SYSTEM, llmFor, close: () => db.close() };
+        const dns = env.JOBKIT_ENV === "test" ? offlineDns() : createDns();
+        return {
+          kind: env.JOBKIT_ENV,
+          db,
+          storage,
+          ...SYSTEM,
+          dns,
+          llmFor,
+          close: () => db.close(),
+        };
       } catch (error) {
         await db.close();
         throw error;

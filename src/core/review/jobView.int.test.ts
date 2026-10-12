@@ -8,7 +8,9 @@ import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
+import { offlineDns } from "@/adapters/dns";
 import { draftStage } from "@/core/drafting/draftStage";
+import { addressReadStage } from "@/core/extraction/addressReadStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
@@ -23,6 +25,7 @@ import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 import { createTestDb } from "@/server/db/testDb";
 
+import { addressChecksStage } from "./addressChecksStage";
 import { jobView, listJobViews } from "./jobView";
 import { markSent } from "./markSent";
 
@@ -204,6 +207,42 @@ describe("jobView", () => {
 
     expect(view.steps.find((step) => step.stage === "eligibility")?.status).toBe("not_checked");
     expect(view.eligibility).toBeNull();
+  });
+
+  it("shows how the contact's second read settled, and the address's checks", async () => {
+    await seedSample();
+    const stages = pipeline();
+    const beside: Pipeline = {
+      ...stages,
+      draft: { ...stages.draft, alongside: () => ["address_read", "address_checks"] },
+      address_read: addressReadStage({ db, storage, random, models: models() }),
+      address_checks: addressChecksStage({ db, dns: offlineDns() }),
+    };
+    // S01's address is in the pasted text: the second read agrees.
+    const found = await pasted("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    await run(found, [answer(fixture("S01-email-simple")), answer(DRAFT)], beside);
+
+    expect(await jobView({ db, clock }, found)).toMatchObject({
+      state: "kit_ready",
+      contact: { kind: "email", agreement: { ok: true } },
+      addressChecks: [{ kind: "company", blocking: false }],
+    });
+
+    const missing = await pasted("Northwind Analytics is hiring. Apply on our site.");
+    await run(missing, [answer(fixture("S01-email-simple")), answer(DRAFT)], beside);
+
+    expect((await jobView({ db, clock }, missing))?.contact).toEqual({
+      kind: "email",
+      agreement: { ok: false, reason: "not_in_text" },
+    });
+  });
+
+  it("has no second read for a job whose read never ran", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+
+    expect(await jobView({ db, clock }, id)).toMatchObject({ contact: null, addressChecks: null });
   });
 
   it("says why a job stopped and whether it can be read again", async () => {

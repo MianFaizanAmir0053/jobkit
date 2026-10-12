@@ -1,5 +1,7 @@
 import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { JudgeOutput } from "@/core/drafting/judgeStage";
+import { type Agreement, agreement, type ContactKind } from "@/core/extraction/addressRead";
+import { type AddressReadOutput, contactOf } from "@/core/extraction/addressReadStage";
 import type { EligibilityOutput } from "@/core/extraction/eligibility";
 import {
   type ExtractOutput,
@@ -14,6 +16,9 @@ import { expireUploads, type Job, jobStatus } from "@/core/platform/jobs";
 import { kindOf, type JobState, type StageName, type StateKind } from "@/core/platform/jobStates";
 import { stageOutput } from "@/core/platform/runner";
 import type { Clock, Db } from "@/core/ports";
+
+import type { AddressCheck } from "./addressChecks";
+import type { AddressChecksOutput } from "./addressChecksStage";
 
 /**
  * What the job page and the jobs list show (review spec, as far as the thin
@@ -47,6 +52,10 @@ export interface JobView {
   draft: DraftOutput | null;
   /** The judge's verdicts; null before it ran, or from before it was built. */
   judge: JudgeOutput | null;
+  /** How the contact's second read settled; null before it ran, or for a role with no contact. */
+  contact: { kind: ContactKind; agreement: Agreement } | null;
+  /** The email address's checks; null before they ran, or for another route. */
+  addressChecks: AddressCheck[] | null;
   application: { status: ApplicationStatus; sentAt: Date | null } | null;
 }
 
@@ -79,6 +88,11 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     JudgeOutput | PassedThrough | undefined;
   const eligibility = (await stageOutput(deps.db, id, "eligibility"))?.output as
     EligibilityOutput | PassedThrough | undefined;
+  const read = (await stageOutput(deps.db, id, "address_read"))?.output as
+    AddressReadOutput | undefined;
+  const checks = (await stageOutput(deps.db, id, "address_checks"))?.output as
+    AddressChecksOutput | undefined;
+  const contact = contactOf(role);
   // A job that ran before a check was built keeps that output: its step shows as not checked.
   const unchecked = new Set<StageName>();
   if (eligibility && !eligibility.checked) unchecked.add("eligibility");
@@ -101,6 +115,15 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     draftedAnyway: await draftedAnyway(deps.db, id),
     draft: draft ?? null,
     judge: judge?.checked ? judge : null,
+    // Settled against the contact as it stands now, so a read of another one never passes it.
+    contact:
+      read?.checked && contact && read.kind === contact.kind
+        ? { kind: contact.kind, agreement: agreement(contact.kind, contact.contact, read.second) }
+        : null,
+    addressChecks:
+      checks?.checked && contact?.kind === "email" && checks.address === contact.contact.trim()
+        ? checks.checks
+        : null,
     application: role ? await applicationOf(deps.db, id, role.id) : null,
   };
 }

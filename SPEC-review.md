@@ -54,7 +54,7 @@ Images and crops reach the page only through signed URLs that last 60 seconds.
 
 ## Stage `address_checks`
 
-Runs for email routes in the `drafting` group, and again whenever the owner edits the To field.
+Runs for email routes in the `drafting` group, and again whenever the owner edits the To field. A result is kept with its input, so the same address is not looked up again. The test server's DNS gives every domain a mail host, so end-to-end tests run offline.
 
 - **Syntax:** the strict address check (extraction spec). Failure is blocking.
 - **Mail host:** MX records for the domain. With no MX, an A or AAAA record counts as the implicit MX of RFC 5321. A null MX (a single MX record pointing to ".", RFC 7505) or no records at all is blocking. A DNS timeout (3 seconds) gives "Couldn't check the mail server", a warning.

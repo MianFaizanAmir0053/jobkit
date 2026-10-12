@@ -43,6 +43,20 @@ export interface Storage {
   remove(paths: readonly string[]): Promise<void>;
 }
 
+/** One DNS question's answer (review spec, "Stage address_checks"). */
+export type DnsAnswer =
+  /** MX exchanges, or addresses; a null MX's exchange is "" or ".". */
+  | { kind: "records"; values: string[] }
+  /** The name exists with no records of that type, or does not exist. */
+  | { kind: "none" }
+  | { kind: "timeout" }
+  /** Any other failure: a server failure or a refusal. */
+  | { kind: "failed" };
+
+export interface Dns {
+  lookup(name: string, type: "MX" | "A" | "AAAA"): Promise<DnsAnswer>;
+}
+
 export interface Clock {
   now(): Date;
 }

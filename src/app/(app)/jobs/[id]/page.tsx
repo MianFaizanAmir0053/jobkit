@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { buttonVariants } from "@/components/ui/button";
 import { type BlockVerdict, isBlocking } from "@/core/drafting/judge";
 import { emailBody } from "@/core/drafting/kit";
+import type { AgreementProblem } from "@/core/extraction/addressRead";
 import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
 import { gmailComposeUrl } from "@/core/review/gmail";
@@ -311,21 +312,38 @@ function KitPanel({
   const unchecked = view.steps
     .filter((step) => step.status === "not_checked")
     .map((step) => step.label.toLowerCase());
+  // The second read and the address checks: either one blocking keeps the address out of Gmail.
+  const noun = view.contact?.kind === "whatsapp" ? "number" : "address";
+  const disputed =
+    view.contact && !view.contact.agreement.ok
+      ? contactWords(view.contact.agreement.reason, noun)
+      : null;
+  const blocking = (view.addressChecks ?? []).filter((check) => check.blocking);
+  const warnings = (view.addressChecks ?? []).filter((check) => !check.blocking);
+  const unread =
+    view.contact === null &&
+    (role.route.kind === "email" || role.route.kind === "whatsapp") &&
+    role.route.address.trim() !== "";
+  const toGmail = strict && disputed === null && blocking.length === 0;
 
   return (
     <div className="flex flex-col gap-4">
-      <Panel title="Not checked yet">
-        <p className="text-sm">
-          This version does not yet read the contact address a second time. Read the whole email
-          before you send it.
-        </p>
-        {unchecked.length > 0 && (
-          <p className="mt-2 text-sm">
-            This job ran before these checks were built: {unchecked.join("; ")}. To have them run,
-            send the post again as a new job.
-          </p>
-        )}
-      </Panel>
+      {(unread || unchecked.length > 0) && (
+        <Panel title="Not checked yet">
+          {unread && (
+            <p className="text-sm">
+              This job ran before jobkit read the {noun} a second time. Check it against the post
+              before you send.
+            </p>
+          )}
+          {unchecked.length > 0 && (
+            <p className="mt-2 text-sm">
+              This job ran before these checks were built: {unchecked.join("; ")}. To have them run,
+              send the post again as a new job.
+            </p>
+          )}
+        </Panel>
+      )}
 
       {view.eligibility && view.eligibility.reasons.length > 0 && (
         <Panel
@@ -360,13 +378,27 @@ function KitPanel({
                 {role.route.address && `: ${role.route.address}`}. Use the text below there.
               </span>
             )}
+            {disputed && <p className="mt-1 text-destructive">{disputed}</p>}
+            {blocking.map((check) => (
+              <p key={check.kind} className="mt-1 text-destructive">
+                {check.message}
+              </p>
+            ))}
+            {warnings.map((check) => (
+              <p key={check.kind} className="mt-1 text-muted-foreground">
+                {check.message}
+              </p>
+            ))}
+            {view.contact?.agreement.ok && (
+              <p className="mt-1 text-muted-foreground">Read a second time: it matches.</p>
+            )}
           </dd>
           <dt className="text-muted-foreground">Subject</dt>
           <dd>{kit.subject}</dd>
         </dl>
         <div className="rounded-md bg-muted p-3 text-sm whitespace-pre-wrap">{body}</div>
         <div className="flex flex-wrap gap-2">
-          {strict && (
+          {toGmail && (
             <a
               href={gmailComposeUrl(address, kit.subject, body, account || null)}
               target="_blank"
@@ -488,4 +520,20 @@ function judgeWords(verdict: BlockVerdict): string {
     return `The separate check found nothing in your facts behind this.${note}`;
   }
   return "This says something about the company that the post does not. Check it, or cut it.";
+}
+
+/** Why the contact's second read leaves it to the owner, in their words. */
+function contactWords(reason: AgreementProblem, noun: "address" | "number"): string {
+  switch (reason) {
+    case "disagree":
+      return `A second read of the screenshot gives a different ${noun}. Type it yourself from the screenshot.`;
+    case "no_second_read":
+      return `The ${noun} could not be read a second time. Type it yourself from the screenshot.`;
+    case "invalid_box":
+      return `jobkit could not find the ${noun} on the screenshot. Type it yourself from the post.`;
+    case "no_crop":
+      return `jobkit could not cut the ${noun} out of the screenshot. Type it yourself from the post.`;
+    case "not_in_text":
+      return `This ${noun} is not in the pasted text as written. Type it yourself from the post.`;
+  }
 }

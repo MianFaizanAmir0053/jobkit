@@ -76,7 +76,7 @@ export async function cutTiles(images: readonly Uint8Array[]): Promise<CutResult
 }
 
 /** An image's size once turned upright, from its header alone, or null when it cannot be read. */
-async function uprightSize(bytes: Uint8Array): Promise<{ width: number; height: number } | null> {
+export async function uprightSize(bytes: Uint8Array): Promise<{ width: number; height: number } | null> {
   let metadata: Metadata;
   try {
     metadata = await sharp(bytes).metadata();

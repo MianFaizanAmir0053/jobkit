@@ -85,7 +85,7 @@ Runs when the owner adds `form` screenshots to a job, for example the screening 
 
 ## Stage `address_read`
 
-Runs for email and WhatsApp routes, alongside `draft` (platform B9).
+Runs for email and WhatsApp routes whose record gives a contact, alongside `draft` (platform B9). Its input hash stands for the crop by the screenshot's hash, the box and the crop's rules, from which code makes the crop, so nothing is read from storage before it runs. A read that cannot happen, a box that does not fit its screenshot, a crop that cannot be made, a model call that fails, or no Gemini key on the machine, leaves the second read missing: a blocking flag, never a failed job.
 
 - **From screenshots:** code crops the chosen role's contact box on the original image with a 40-pixel margin, at least 240 by 64 pixels, clamped to the image, and enlarges it twofold with `sharp`. A Gemini Flash call (amendment A4) sees only the crop, as untrusted data between markers, and returns the email address or phone number it shows, or none. The crop is stored at `jobs/<jobId>/crops/` and purged with the job's images (intake spec).
 - **From pasted text:** no model call. An address must appear verbatim in the text; a number must appear in the text with the same digits after normalisation.
