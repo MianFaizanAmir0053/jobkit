@@ -14,8 +14,9 @@ import {
 } from "@/adapters/fakeLlm";
 import type { PgliteDb } from "@/adapters/pglite";
 import type { Llm } from "@/core/ports";
-import { createTestDb } from "@/server/db/testDb";
+import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 
+import { caseless } from "./caseless";
 import { abandonStartedCalls, callModel, type ModelCallGuard, type ModelCallInput } from "./models";
 
 const JOB = "11111111-1111-4111-8111-111111111111";
@@ -81,6 +82,7 @@ async function rows(): Promise<CallRow[]> {
 
 beforeAll(async () => {
   db = await createTestDb();
+  await insertTestJobs(db, [JOB, OTHER_JOB]);
 });
 
 afterAll(async () => {
@@ -210,9 +212,12 @@ describe("callModel", () => {
   });
 
   it("keeps the provisional cost of an answer that came without usage", async () => {
-    const llm = fakeLlm([answer({ title: "x", count: 1 }, { usage: [], model: "claude-opus-5-5-x" })], {
-      inputTokens: 10_000,
-    });
+    const llm = fakeLlm(
+      [answer({ title: "x", count: 1 }, { usage: [], model: "claude-opus-5-5-x" })],
+      {
+        inputTokens: 10_000,
+      },
+    );
 
     expect(await callModel(deps(llm), input)).toMatchObject({ ok: true, costUsd: 0.36 });
     expect(await rows()).toMatchObject([
@@ -223,7 +228,9 @@ describe("callModel", () => {
   it("keeps the provisional cost of a refusal that came without usage", async () => {
     await callModel(deps(fakeLlm([refusal({ usage: [] })], { inputTokens: 10_000 })), input);
 
-    expect(await rows()).toMatchObject([{ outcome: "refused", cost: 0.36, cost_provisional: true }]);
+    expect(await rows()).toMatchObject([
+      { outcome: "refused", cost: 0.36, cost_provisional: true },
+    ]);
   });
 
   it("records the policy category a refusal names", async () => {
@@ -233,7 +240,10 @@ describe("callModel", () => {
   });
 
   it("records what else the provider said about a refusal", async () => {
-    await callModel(deps(fakeLlm([refusal({ category: "cyber", detail: "the fallback model was busy" })])), input);
+    await callModel(
+      deps(fakeLlm([refusal({ category: "cyber", detail: "the fallback model was busy" })])),
+      input,
+    );
     await db.exec("update {{schema}}.model_calls set attempt = 2");
     await callModel(deps(fakeLlm([refusal({ detail: "no category" })])), input);
 
@@ -248,6 +258,21 @@ describe("callModel", () => {
 
     expect(await callModel(deps(llm), input)).toMatchObject({ ok: false, reason: "rejected" });
     expect(await rows()).toMatchObject([{ outcome: "client-error", cost_provisional: true }]);
+  });
+
+  it("stores a provider's error message without the NUL characters Postgres text cannot hold", async () => {
+    const llm = fakeLlm([
+      () => ({
+        kind: "failure",
+        failure: "client",
+        message: `bad${String.fromCharCode(0)} request`,
+        requestId: null,
+        retryAfterMs: null,
+      }),
+    ]);
+
+    expect(await callModel(deps(llm), input)).toMatchObject({ ok: false, reason: "rejected" });
+    expect(await rows()).toMatchObject([{ outcome: "client-error", error: "bad request" }]);
   });
 
   it("abandons a stream that stays silent for the idle limit, without retrying", async () => {
@@ -321,6 +346,35 @@ describe("callModel", () => {
       });
       expect(await rows()).toMatchObject([{ outcome: "invalid-output", cost: 0.014 }]);
     }
+  });
+
+  it("takes an enum value in another case when the stage's schema marks the field caseless", async () => {
+    const Kind = z.object({ kind: caseless(["full_time", "part_time"]) });
+    const llm = fakeLlm([answer({ kind: "Full_time" })]);
+
+    expect(await callModel(deps(llm), { ...input, schema: Kind })).toMatchObject({
+      ok: true,
+      output: { kind: "full_time" },
+    });
+    expect(await rows()).toMatchObject([{ outcome: "ok" }]);
+  });
+
+  it("closes the attempt's row with its cost, then lets a schema that throws surface as the bug it is", async () => {
+    // A refinement with a bug; its message holds a NUL, which Postgres text cannot store.
+    const Broken = z.object({ title: z.string() }).refine(() => {
+      throw new Error(`broken${String.fromCharCode(0)} refine`);
+    });
+    const llm = fakeLlm([answer({ title: "Engineer" })]);
+
+    await expect(callModel(deps(llm), { ...input, schema: Broken })).rejects.toThrow("refine");
+
+    const [row] = await rows();
+    expect(row).toMatchObject({
+      outcome: "invalid-output",
+      cost: 0.014,
+      cost_provisional: false,
+      error: "The schema threw while parsing: Error: broken refine",
+    });
   });
 
   it("fails when the answer was cut off at max_tokens", async () => {
@@ -426,5 +480,24 @@ describe("abandonStartedCalls", () => {
       { job_id: JOB, outcome: "abandoned", cost: 0.36 },
       { job_id: OTHER_JOB, outcome: "started", cost: 0.36 },
     ]);
+  });
+
+  it("ends an abandoned call no later than a call can last, however long the job sat unclaimed", async () => {
+    const started = clock.now();
+    await db.query(
+      `insert into {{schema}}.model_calls
+         (job_id, stage, attempt, provider, requested_model, started_at, outcome, cost_usd, cost_provisional)
+       values ($1, 'extract', 1, 'anthropic', 'claude-opus-5-5', $2, 'started', 0.36, true)`,
+      [JOB, started],
+    );
+
+    await abandonStartedCalls(db, JOB, new Date(started.getTime() + 3 * 60 * 60_000));
+
+    const { rows } = await db.query<{ ended_at: Date }>(
+      "select ended_at from {{schema}}.model_calls where job_id = $1",
+      [JOB],
+    );
+    // Counting the input, then the attempts and one retry's wait: 10 + 200 + 15 seconds.
+    expect(rows).toEqual([{ ended_at: new Date(started.getTime() + 225_000) }]);
   });
 });

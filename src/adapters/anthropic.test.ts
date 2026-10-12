@@ -3,6 +3,7 @@ import type { BetaMessage } from "@anthropic-ai/sdk/resources/beta/messages/mess
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
+import { caseless } from "@/core/platform/caseless";
 import type { LlmRequest } from "@/core/ports";
 
 import {
@@ -10,6 +11,7 @@ import {
   fromError,
   fromMessage,
   outputFormat,
+  restoreMembers,
   retryAfter,
   toMessages,
 } from "./anthropic";
@@ -72,7 +74,11 @@ function messageStart(model = "claude-opus-5-5"): string {
 }
 
 const textStart = (index: number) =>
-  event({ type: "content_block_start", index, content_block: { type: "text", text: "", citations: null } });
+  event({
+    type: "content_block_start",
+    index,
+    content_block: { type: "text", text: "", citations: null },
+  });
 const textDelta = (index: number, text: string) =>
   event({ type: "content_block_delta", index, delta: { type: "text_delta", text } });
 const blockStop = (index: number) => event({ type: "content_block_stop", index });
@@ -93,8 +99,16 @@ function messageDelta(
 /** A thinking block as Claude Opus 5.5 streams it by default: no text, only a signature. */
 function hiddenThinking(index: number): string[] {
   return [
-    event({ type: "content_block_start", index, content_block: { type: "thinking", thinking: "", signature: "" } }),
-    event({ type: "content_block_delta", index, delta: { type: "signature_delta", signature: "c2ln" } }),
+    event({
+      type: "content_block_start",
+      index,
+      content_block: { type: "thinking", thinking: "", signature: "" },
+    }),
+    event({
+      type: "content_block_delta",
+      index,
+      delta: { type: "signature_delta", signature: "c2ln" },
+    }),
     blockStop(index),
   ];
 }
@@ -179,7 +193,9 @@ describe("createAnthropicLlm", () => {
       ],
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toEqual({
       kind: "answer",
@@ -187,7 +203,13 @@ describe("createAnthropicLlm", () => {
       model: "claude-opus-5-5",
       requestId: "req_stream",
       usage: [
-        { model: "claude-opus-5-5", inputTokens: 1200, outputTokens: 300, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        {
+          model: "claude-opus-5-5",
+          inputTokens: 1200,
+          outputTokens: 300,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
       ],
       truncated: false,
     });
@@ -200,7 +222,10 @@ describe("createAnthropicLlm", () => {
       stream: true,
       system: "Read the post.",
       fallbacks: "default",
-      output_config: { effort: "high", format: { type: "json_schema", schema: { type: "object" } } },
+      output_config: {
+        effort: "high",
+        format: { type: "json_schema", schema: { type: "object" } },
+      },
     });
     expect(sent!.body).not.toHaveProperty("thinking");
     expect(sent!.body).not.toHaveProperty("betas");
@@ -303,7 +328,9 @@ describe("createAnthropicLlm", () => {
       ],
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({
       kind: "answer",
@@ -331,7 +358,9 @@ describe("createAnthropicLlm", () => {
       ],
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({
       kind: "answer",
@@ -352,7 +381,9 @@ describe("createAnthropicLlm", () => {
       ],
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({ kind: "refusal", category: "cyber", requestId: "req_stream" });
   });
@@ -369,7 +400,9 @@ describe("createAnthropicLlm", () => {
       ],
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({
       kind: "refusal",
@@ -381,11 +414,16 @@ describe("createAnthropicLlm", () => {
 
   it("settles on a refusal whose closing event was lost, rather than sending it again", async () => {
     const api = fakeApi(() => ({
-      chunks: [messageStart(), messageDelta({ stop_reason: "refusal", stop_details: refusalDetails() })],
+      chunks: [
+        messageStart(),
+        messageDelta({ stop_reason: "refusal", stop_details: refusalDetails() }),
+      ],
       failWith: new TypeError("terminated"),
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({ kind: "refusal", category: "cyber" });
   });
@@ -402,7 +440,9 @@ describe("createAnthropicLlm", () => {
       ],
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({ kind: "answer", text: '{"a":', truncated: true });
   });
@@ -440,7 +480,9 @@ describe("createAnthropicLlm", () => {
       ],
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({ kind: "failure", failure: "server" });
   });
@@ -450,7 +492,9 @@ describe("createAnthropicLlm", () => {
       chunks: [messageStart(), "event: error\ndata: upstream connect error\n\n"],
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({ kind: "failure", failure: "server" });
   });
@@ -459,15 +503,24 @@ describe("createAnthropicLlm", () => {
     const api = fakeApi(
       () =>
         new Response(
-          JSON.stringify({ type: "error", error: { type: "rate_limit_error", message: "Slow down" } }),
+          JSON.stringify({
+            type: "error",
+            error: { type: "rate_limit_error", message: "Slow down" },
+          }),
           {
             status: 429,
-            headers: { "content-type": "application/json", "retry-after": "3", "request-id": "req_429" },
+            headers: {
+              "content-type": "application/json",
+              "retry-after": "3",
+              "request-id": "req_429",
+            },
           },
         ),
     );
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toEqual({
       kind: "failure",
@@ -481,9 +534,15 @@ describe("createAnthropicLlm", () => {
   it("returns a body that ends before the message does as a dropped connection, with its request ID", async () => {
     const api = fakeApi(() => ({ chunks: [messageStart(), textStart(0), textDelta(0, '{"a":')] }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
-    expect(reply).toMatchObject({ kind: "failure", failure: "connection", requestId: "req_stream" });
+    expect(reply).toMatchObject({
+      kind: "failure",
+      failure: "connection",
+      requestId: "req_stream",
+    });
   });
 
   it("returns a body the network breaks partway as a dropped connection", async () => {
@@ -492,15 +551,22 @@ describe("createAnthropicLlm", () => {
       failWith: new TypeError("terminated"),
     }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({ kind: "failure", failure: "connection", message: "terminated" });
   });
 
   it("keeps a whole message whose connection broke only after it ended", async () => {
-    const api = fakeApi(() => ({ chunks: answerOf('{"a":1}'), failWith: new TypeError("terminated") }));
+    const api = fakeApi(() => ({
+      chunks: answerOf('{"a":1}'),
+      failWith: new TypeError("terminated"),
+    }));
 
-    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(request());
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
 
     expect(reply).toMatchObject({ kind: "answer", text: '{"a":1}', truncated: false });
   });
@@ -521,7 +587,9 @@ describe("createAnthropicLlm", () => {
   });
 
   it("throws a fault inside the stream that is not the network's, since that is a bug", async () => {
-    const api = fakeApi(() => ({ chunks: [messageStart(), textStart(0), textDelta(0, '{"a":1}')] }));
+    const api = fakeApi(() => ({
+      chunks: [messageStart(), textStart(0), textDelta(0, '{"a":1}')],
+    }));
     let events = 0;
     const onEvent = () => {
       if (++events === 3) throw new RangeError("a bug in the caller");
@@ -557,9 +625,10 @@ describe("createAnthropicLlm", () => {
   it("counts input tokens with the same schema the call sends", async () => {
     const api = fakeApi(() => Response.json({ input_tokens: 1234, context_management: null }));
 
-    const counted = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).countInputTokens(
-      request(),
-    );
+    const counted = await createAnthropicLlm({
+      apiKey: "test-key",
+      fetch: api.fetch,
+    }).countInputTokens(request());
 
     expect(counted).toBe(1234);
     expect(api.sent[0]!.url.pathname).toBe("/v1/messages/count_tokens");
@@ -574,8 +643,159 @@ describe("outputFormat", () => {
   it("keeps the JSON schema and leaves out the SDK's parser", () => {
     const format = outputFormat(z.object({ a: z.number() }));
 
-    expect(format).toEqual({ type: "json_schema", schema: expect.objectContaining({ type: "object" }) });
+    expect(format).toEqual({
+      type: "json_schema",
+      schema: expect.objectContaining({ type: "object" }),
+    });
     expect("parse" in format).toBe(false);
+  });
+
+  it("sends enum and const values, which the SDK's helper folds into descriptions, so the API constrains the model to them", () => {
+    const format = outputFormat(
+      z.object({
+        kind: z.enum(["a", "b"]),
+        fixed: z.literal("x"),
+        list: z.array(z.object({ tag: z.enum(["c", "d"]) })),
+        either: z.union([z.object({ u: z.enum(["e"]) }), z.object({ v: z.literal(1) })]),
+      }),
+    );
+    const properties = (format.schema as { properties: Record<string, Record<string, unknown>> })
+      .properties;
+
+    expect(properties.kind).toMatchObject({ type: "string", enum: ["a", "b"] });
+    expect(properties.fixed).toMatchObject({ const: "x" });
+    expect(properties.list).toMatchObject({ items: { properties: { tag: { enum: ["c", "d"] } } } });
+    expect(properties.either).toMatchObject({
+      anyOf: [{ properties: { u: { enum: ["e"] } } }, { properties: { v: { const: 1 } } }],
+    });
+  });
+
+  it("sends the values of an enum the schema uses twice, which the helper moves to $defs", () => {
+    const mode = z.enum(["remote", "onsite"]);
+    const format = outputFormat(z.object({ first: mode, second: mode }));
+
+    expect(format.schema).toMatchObject({
+      properties: { first: { $ref: "#/$defs/__schema0" }, second: { $ref: "#/$defs/__schema0" } },
+      $defs: { __schema0: { type: "string", enum: ["remote", "onsite"] } },
+    });
+  });
+
+  it("sends each enum value once, though the schema lists one twice", () => {
+    const format = outputFormat(z.object({ mode: z.enum({ A: "x", B: "x", C: "y" }) }));
+
+    expect(format.schema).toMatchObject({ properties: { mode: { enum: ["x", "y"] } } });
+  });
+
+  it("sends a discriminated union's and an intersection's values, which the helper reshapes", () => {
+    const format = outputFormat(
+      z.object({
+        either: z.discriminatedUnion("kind", [
+          z.object({ kind: z.literal("email"), tone: z.enum(["formal", "warm"]) }),
+          z.object({ kind: z.literal("form") }),
+        ]),
+        both: z.intersection(z.object({ a: z.enum(["x"]) }), z.object({ b: z.literal(2) })),
+      }),
+    );
+
+    expect(format.schema).toMatchObject({
+      properties: {
+        either: {
+          anyOf: [
+            { properties: { kind: { const: "email" }, tone: { enum: ["formal", "warm"] } } },
+            { properties: { kind: { const: "form" } } },
+          ],
+        },
+        // zod merges an intersection of two objects into one object.
+        both: { properties: { a: { enum: ["x"] }, b: { const: 2 } } },
+      },
+    });
+  });
+
+  it("sends the values of a caseless field", () => {
+    const format = outputFormat(z.object({ kind: caseless(["full_time", "part_time"]) }));
+
+    expect(format.schema).toMatchObject({
+      properties: { kind: { type: "string", enum: ["full_time", "part_time"] } },
+    });
+  });
+
+  it("restores nothing onto a node that changed kind on one side only", () => {
+    const from = {
+      type: "object",
+      properties: {
+        referenced: { type: "string", enum: ["x"] },
+        wrapped: { type: "string", enum: ["y"] },
+        untyped: { type: "string", enum: ["z"] },
+      },
+    };
+    // As a changed helper might write them: moved to $defs, wrapped in a union, or with no type.
+    const to = {
+      type: "object",
+      properties: {
+        referenced: { $ref: "#/$defs/A" },
+        wrapped: { type: "string", anyOf: [{ type: "string" }, { type: "null" }] },
+        untyped: { description: '{enum: ["z"]}' },
+      },
+    };
+    const before = JSON.stringify(to);
+
+    restoreMembers(from, to);
+
+    expect(JSON.stringify(to)).toBe(before);
+  });
+
+  it("leaves values the helper already keeps, and restores each part of an intersection", () => {
+    const from = {
+      allOf: [
+        { type: "string", enum: ["a", "b"] },
+        { type: "string", const: "a" },
+      ],
+    };
+    const to = { allOf: [{ type: "string", enum: ["b", "a"] }, { type: "string" }] };
+
+    restoreMembers(from, to);
+
+    expect(to).toEqual({
+      allOf: [
+        { type: "string", enum: ["b", "a"] },
+        { type: "string", const: "a" },
+      ],
+    });
+  });
+
+  it("restores nothing where the helper's nodes no longer line up with the schema's", () => {
+    const from = {
+      type: "object",
+      properties: {
+        filtered: {
+          anyOf: [
+            { type: "string", enum: ["a"] },
+            { type: "string", enum: ["b"] },
+          ],
+        },
+        reordered: {
+          anyOf: [
+            { type: "string", enum: ["b"] },
+            { type: "number", const: 1 },
+          ],
+        },
+        renamed: { type: "object", properties: { kind: { type: "string", enum: ["c"] } } },
+      },
+    };
+    // As a changed helper might write it: a branch dropped (which one?), two swapped, a property renamed.
+    const to = {
+      type: "object",
+      properties: {
+        filtered: { anyOf: [{ type: "string" }] },
+        reordered: { anyOf: [{ type: "number" }, { type: "string" }] },
+        renamed: { type: "object", properties: { sort: { type: "string" } } },
+      },
+    };
+    const before = JSON.stringify(to);
+
+    restoreMembers(from, to);
+
+    expect(JSON.stringify(to)).toBe(before);
   });
 });
 
@@ -631,7 +851,13 @@ describe("fromMessage", () => {
     ).toMatchObject({
       model: "claude-opus-5-5-20260801",
       usage: [
-        { model: "claude-opus-5-5", inputTokens: 1200, outputTokens: 300, cacheReadTokens: 0, cacheWriteTokens: 0 },
+        {
+          model: "claude-opus-5-5",
+          inputTokens: 1200,
+          outputTokens: 300,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
       ],
     });
   });
@@ -657,25 +883,37 @@ describe("fromMessage", () => {
     );
 
     expect(reply).toMatchObject({
-      usage: [{ model: "claude-opus-5-5" }, { model: "claude-opus-5" }, { model: "claude-opus-4-8" }],
+      usage: [
+        { model: "claude-opus-5-5" },
+        { model: "claude-opus-5" },
+        { model: "claude-opus-4-8" },
+      ],
     });
   });
 
   it("takes max_tokens and a full context window as a cut-off answer", () => {
     for (const stop_reason of ["max_tokens", "model_context_window_exceeded"] as const) {
-      expect(fromMessage(message({ stop_reason }), null, "claude-opus-5-5"), stop_reason).toMatchObject({
+      expect(
+        fromMessage(message({ stop_reason }), null, "claude-opus-5-5"),
+        stop_reason,
+      ).toMatchObject({
         kind: "answer",
         truncated: true,
       });
     }
-    expect(fromMessage(message({ stop_reason: "stop_sequence" }), null, "claude-opus-5-5")).toMatchObject({
+    expect(
+      fromMessage(message({ stop_reason: "stop_sequence" }), null, "claude-opus-5-5"),
+    ).toMatchObject({
       truncated: false,
     });
   });
 
   it("leaves any other ending to the wrapper's parse, with its usage, not calling it cut off", () => {
     for (const stop_reason of ["pause_turn", null] as const) {
-      expect(fromMessage(message({ stop_reason }), "req_1", "claude-opus-5-5"), String(stop_reason)).toMatchObject({
+      expect(
+        fromMessage(message({ stop_reason }), "req_1", "claude-opus-5-5"),
+        String(stop_reason),
+      ).toMatchObject({
         kind: "answer",
         truncated: false,
         usage: [{ model: "claude-opus-5-5", outputTokens: 300 }],
@@ -696,7 +934,10 @@ describe("fromError", () => {
       [new Anthropic.APIUserAbortError(), "aborted"],
       [new Anthropic.BadRequestError(400, {}, "bad", headers({})), "client"],
       [new Anthropic.AuthenticationError(401, {}, "no key", headers({})), "client"],
-      [new Anthropic.APIError(undefined, {}, "bad request", undefined, "invalid_request_error"), "client"],
+      [
+        new Anthropic.APIError(undefined, {}, "bad request", undefined, "invalid_request_error"),
+        "client",
+      ],
     ];
 
     for (const [error, kind] of cases) {
@@ -705,8 +946,18 @@ describe("fromError", () => {
   });
 
   it("follows the API's x-should-retry header over the status", () => {
-    const retryable = new Anthropic.BadRequestError(400, {}, "x", headers({ "x-should-retry": "true" }));
-    const final = new Anthropic.InternalServerError(500, {}, "x", headers({ "x-should-retry": "false" }));
+    const retryable = new Anthropic.BadRequestError(
+      400,
+      {},
+      "x",
+      headers({ "x-should-retry": "true" }),
+    );
+    const final = new Anthropic.InternalServerError(
+      500,
+      {},
+      "x",
+      headers({ "x-should-retry": "false" }),
+    );
 
     expect(fromError(retryable)).toMatchObject({ failure: "server" });
     expect(fromError(final)).toMatchObject({ failure: "client" });
@@ -715,7 +966,9 @@ describe("fromError", () => {
   it("takes a stream that broke under the network, and only that, as a dropped connection", () => {
     const broke = new Anthropic.AnthropicError("terminated");
     broke.cause = new ConnectionLost(new TypeError("terminated"));
-    const bug = new Anthropic.AnthropicError("Cannot read properties of undefined (reading 'type')");
+    const bug = new Anthropic.AnthropicError(
+      "Cannot read properties of undefined (reading 'type')",
+    );
     bug.cause = new TypeError("Cannot read properties of undefined (reading 'type')");
 
     expect(fromError(broke, "req_7")).toMatchObject({ failure: "connection", requestId: "req_7" });
@@ -737,8 +990,9 @@ describe("retryAfter", () => {
   it("reads milliseconds, seconds or an HTTP date, and nothing when absent", () => {
     expect(retryAfter(new Headers({ "retry-after-ms": "1500" }))).toBe(1500);
     expect(retryAfter(new Headers({ "retry-after": "2" }))).toBe(2000);
-    expect(retryAfter(new Headers({ "retry-after": new Date(Date.now() + 60_000).toUTCString() })))
-      .toBeGreaterThan(50_000);
+    expect(
+      retryAfter(new Headers({ "retry-after": new Date(Date.now() + 60_000).toUTCString() })),
+    ).toBeGreaterThan(50_000);
     expect(retryAfter(new Headers())).toBeNull();
     expect(retryAfter(undefined)).toBeNull();
   });

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
 import type { PgliteDb } from "@/adapters/pglite";
-import { createTestDb } from "@/server/db/testDb";
+import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 
 import { applyAgain, duplicateGate, duplicatesOf, findDuplicates } from "./duplicates";
 import { companyRoleHash, postFingerprint } from "./normalise";
@@ -30,6 +30,11 @@ const deps = () => ({ db, clock });
 
 beforeAll(async () => {
   db = await createTestDb();
+  // Applications belong to jobs; newJob() hands out these IDs in turn.
+  await insertTestJobs(
+    db,
+    Array.from({ length: MAX_JOBS }, (_, i) => jobId(i + 1)),
+  );
 });
 
 afterAll(async () => {
@@ -44,9 +49,16 @@ beforeEach(async () => {
   clock = fakeClock();
 });
 
+const MAX_JOBS = 1000;
+
+function jobId(n: number): string {
+  return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+}
+
 function newJob(): string {
   jobs += 1;
-  return `00000000-0000-4000-8000-${String(jobs).padStart(12, "0")}`;
+  if (jobs > MAX_JOBS) throw new Error("Raise MAX_JOBS: the tests need more jobs");
+  return jobId(jobs);
 }
 
 const application = (overrides: Partial<NewApplication> = {}): NewApplication => ({

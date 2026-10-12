@@ -5,7 +5,7 @@ import type {
   BetaMessage,
   BetaMessageParam,
 } from "@anthropic-ai/sdk/resources/beta/messages/messages";
-import type { ZodType } from "zod";
+import { z, type ZodType } from "zod";
 
 import type { Llm, LlmFailureKind, LlmReply, LlmRequest, LlmUsage } from "@/core/ports";
 
@@ -102,7 +102,8 @@ export function createAnthropicLlm(opts: { apiKey: string; fetch?: Fetch }): Llm
         // be sent again (B4).
         const current = stream.currentMessage;
         const settled =
-          stream.receivedMessages.at(-1) ?? (current?.stop_reason === "refusal" ? current : undefined);
+          stream.receivedMessages.at(-1) ??
+          (current?.stop_reason === "refusal" ? current : undefined);
         return settled ? fromMessage(settled, stream.request_id ?? null, request.model) : failed;
       }
     },
@@ -147,7 +148,83 @@ function withOwnHeaders(fetch: Fetch, apiKey: string): Fetch {
  */
 export function outputFormat(schema: ZodType): BetaJSONOutputFormat {
   const { type, schema: jsonSchema } = betaZodOutputFormat(schema);
+  // The helper reshapes this same JSON Schema.
+  restoreMembers(z.toJSONSchema(schema, { reused: "ref" }), jsonSchema);
   return { type, schema: jsonSchema };
+}
+
+/**
+ * Copies `enum` and `const` back onto the schema the SDK's helper reshaped.
+ * The helper folds both into descriptions as text, though the API supports
+ * them and constrains the model to their values, if not to their case
+ * (https://platform.claude.com/docs/en/build-with-claude/structured-outputs).
+ * The folded text stays in each description as a harmless repeat.
+ *
+ * The walk pairs nodes by position along the keys the helper keeps:
+ * `$defs`, `$ref` (which ends a node), `anyOf` (which also carries
+ * `oneOf`), `allOf`, `properties` and `items`. A pair whose type,
+ * `$ref`, union or intersection, or property names differ, or a branch list
+ * whose length changed, is not walked further: a helper that one day drops,
+ * wraps or retypes nodes then leaves those values as description text
+ * rather than putting them on a wrong node. Nodes of one shape that swapped
+ * places would trade values; today's helper keeps every node in place, as
+ * the tests pin down. Values the helper already keeps are left as they are.
+ */
+export function restoreMembers(from: unknown, to: unknown): void {
+  if (!isRecord(from) || !isRecord(to) || !sameShape(from, to)) return;
+  if (isRecord(from.$defs) && isRecord(to.$defs)) {
+    for (const [name, definition] of Object.entries(from.$defs)) {
+      restoreMembers(definition, ownValue(to.$defs, name));
+    }
+  }
+  if (Object.hasOwn(from, "$ref")) return;
+  if (Array.isArray(from.enum) && !Object.hasOwn(to, "enum")) to.enum = [...new Set(from.enum)];
+  if (Object.hasOwn(from, "const") && !Object.hasOwn(to, "const")) to.const = from.const;
+  const branches = Array.isArray(from.anyOf)
+    ? from.anyOf
+    : Array.isArray(from.oneOf)
+      ? from.oneOf
+      : undefined;
+  if (branches) restoreEach(branches, to.anyOf);
+  else if (Array.isArray(from.allOf)) restoreEach(from.allOf, to.allOf);
+  if (isRecord(from.properties) && isRecord(to.properties)) {
+    for (const [key, property] of Object.entries(from.properties)) {
+      restoreMembers(property, ownValue(to.properties, key));
+    }
+  }
+  restoreMembers(from.items, to.items);
+}
+
+function restoreEach(from: readonly unknown[], to: unknown): void {
+  if (!Array.isArray(to) || to.length !== from.length) return;
+  from.forEach((node, i) => restoreMembers(node, to[i]));
+}
+
+/**
+ * Whether two nodes can be one node before and after the helper: the same
+ * type and `$ref`, a union or intersection on both sides or on neither, and
+ * the same property names.
+ */
+function sameShape(from: Record<string, unknown>, to: Record<string, unknown>): boolean {
+  const same = (key: string) => JSON.stringify(from[key]) === JSON.stringify(to[key]);
+  if (!same("type") || !same("$ref")) return false;
+  const union = (node: Record<string, unknown>) =>
+    Array.isArray(node.anyOf) || Array.isArray(node.oneOf);
+  if (union(from) !== union(to) || Array.isArray(from.allOf) !== Array.isArray(to.allOf)) {
+    return false;
+  }
+  const names = (node: Record<string, unknown>) =>
+    JSON.stringify(Object.keys(isRecord(node.properties) ? node.properties : {}).sort());
+  return names(from) === names(to);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// A key read only from the object itself, so a "__proto__" key reaches no prototype.
+function ownValue(record: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(record, key) ? record[key] : undefined;
 }
 
 export function toMessages(request: Pick<LlmRequest, "content">): BetaMessageParam[] {
@@ -193,7 +270,9 @@ export function fromMessage(
       requestId,
       usage,
       category: message.stop_details?.category ?? null,
-      ...(busy ? { detail: `the fallback model was too busy to run; the API suggests ${busy}` } : {}),
+      ...(busy
+        ? { detail: `the fallback model was too busy to run; the API suggests ${busy}` }
+        : {}),
     };
   }
   return {
@@ -256,7 +335,12 @@ export function fromError(error: unknown, streamRequestId: string | null = null)
   }
   if (error instanceof Anthropic.APIError) {
     const kind = kindOf(error);
-    return failure(kind, error, kind === "client" ? null : retryAfter(error.headers), streamRequestId);
+    return failure(
+      kind,
+      error,
+      kind === "client" ? null : retryAfter(error.headers),
+      streamRequestId,
+    );
   }
   if (
     error instanceof Anthropic.AnthropicError &&
