@@ -1,0 +1,132 @@
+{
+  "post_kind": "job_post",
+  "language": "en",
+  "company": {
+    "name": "Tailspin Toys",
+    "website": ""
+  },
+  "recruiter": {
+    "name": "",
+    "title": ""
+  },
+  "scam_signals": [],
+  "roles": [
+    {
+      "id": "P1",
+      "title": "Backend Engineer",
+      "seniority": "unspecified",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "remote",
+        "places": [],
+        "remote_regions": ["Asia"],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [],
+        "sponsorship": "unspecified",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "",
+        "currency": "",
+        "min": -1,
+        "max": -1,
+        "period": "unspecified"
+      },
+      "requirements": [
+        {
+          "id": "R1",
+          "text": "Node.js",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["nodejs"],
+          "depth": "any",
+          "years": -1
+        }
+      ],
+      "route": {
+        "kind": "email",
+        "address": "backend@example.com",
+        "quote": "Backend Engineer (Node.js) - apply to backend@example.com",
+        "box": {
+          "tile": -1,
+          "x1": -1,
+          "y1": -1,
+          "x2": -1,
+          "y2": -1
+        }
+      },
+      "instructions": [],
+      "required_attachments": [],
+      "screening_questions": []
+    },
+    {
+      "id": "P2",
+      "title": "Machine Learning Engineer",
+      "seniority": "unspecified",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "remote",
+        "places": [],
+        "remote_regions": ["Asia"],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [],
+        "sponsorship": "unspecified",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "",
+        "currency": "",
+        "min": -1,
+        "max": -1,
+        "period": "unspecified"
+      },
+      "requirements": [
+        {
+          "id": "R1",
+          "text": "Python",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["python"],
+          "depth": "any",
+          "years": -1
+        },
+        {
+          "id": "R2",
+          "text": "PyTorch",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["machine-learning"],
+          "depth": "any",
+          "years": -1
+        }
+      ],
+      "route": {
+        "kind": "email",
+        "address": "ml@example.com",
+        "quote": "Machine Learning Engineer (Python, PyTorch) - apply to ml@example.com",
+        "box": {
+          "tile": -1,
+          "x1": -1,
+          "y1": -1,
+          "x2": -1,
+          "y2": -1
+        }
+      },
+      "instructions": [],
+      "required_attachments": [],
+      "screening_questions": []
+    }
+  ]
+}

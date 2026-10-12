@@ -1,0 +1,97 @@
+{
+  "post_kind": "job_post",
+  "language": "en",
+  "company": {
+    "name": "Contoso Health",
+    "website": ""
+  },
+  "recruiter": {
+    "name": "",
+    "title": ""
+  },
+  "scam_signals": [],
+  "roles": [
+    {
+      "id": "P1",
+      "title": "Backend Engineer",
+      "seniority": "unspecified",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "remote",
+        "places": [],
+        "remote_regions": ["US only"],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [
+          {
+            "place": "US",
+            "quote": "Candidates must be authorized to work in the United States."
+          }
+        ],
+        "sponsorship": "not_offered",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "",
+        "currency": "",
+        "min": -1,
+        "max": -1,
+        "period": "unspecified"
+      },
+      "requirements": [
+        {
+          "id": "R1",
+          "text": "Python",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["python"],
+          "depth": "any",
+          "years": -1
+        },
+        {
+          "id": "R2",
+          "text": "FastAPI",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["fastapi"],
+          "depth": "any",
+          "years": -1
+        },
+        {
+          "id": "R3",
+          "text": "3+ years",
+          "priority": "must",
+          "kind": "experience",
+          "skills": [],
+          "depth": "professional",
+          "years": 3
+        }
+      ],
+      "route": {
+        "kind": "email",
+        "address": "careers@example.org",
+        "quote": "Send your resume to careers@example.org.",
+        "box": {
+          "tile": -1,
+          "x1": -1,
+          "y1": -1,
+          "x2": -1,
+          "y2": -1
+        }
+      },
+      "instructions": [],
+      "required_attachments": [
+        {
+          "name": "Resume",
+          "is_cv": true
+        }
+      ],
+      "screening_questions": []
+    }
+  ]
+}

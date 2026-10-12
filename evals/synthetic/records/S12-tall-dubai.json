@@ -1,0 +1,92 @@
+{
+  "post_kind": "job_post",
+  "language": "en",
+  "company": {
+    "name": "Adventure Works",
+    "website": ""
+  },
+  "recruiter": {
+    "name": "",
+    "title": ""
+  },
+  "scam_signals": [],
+  "roles": [
+    {
+      "id": "P1",
+      "title": "Senior Next.js Engineer",
+      "seniority": "senior",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "onsite",
+        "places": [
+          {
+            "text": "Dubai",
+            "code": "AE"
+          }
+        ],
+        "remote_regions": [],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [],
+        "sponsorship": "offered",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "",
+        "currency": "",
+        "min": -1,
+        "max": -1,
+        "period": "unspecified"
+      },
+      "requirements": [
+        {
+          "id": "R1",
+          "text": "Next.js",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["nextjs"],
+          "depth": "any",
+          "years": -1
+        },
+        {
+          "id": "R2",
+          "text": "TypeScript",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["typescript"],
+          "depth": "any",
+          "years": -1
+        },
+        {
+          "id": "R3",
+          "text": "5+ years",
+          "priority": "must",
+          "kind": "experience",
+          "skills": [],
+          "depth": "professional",
+          "years": 5
+        }
+      ],
+      "route": {
+        "kind": "email",
+        "address": "talent@example.com",
+        "quote": "Apply by email: talent@example.com",
+        "box": {
+          "tile": 3,
+          "x1": 72,
+          "y1": 1100,
+          "x2": 560,
+          "y2": 1160
+        }
+      },
+      "instructions": [],
+      "required_attachments": [],
+      "screening_questions": []
+    }
+  ]
+}
