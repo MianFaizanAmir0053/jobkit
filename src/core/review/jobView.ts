@@ -1,4 +1,5 @@
 import type { DraftOutput } from "@/core/drafting/draftStage";
+import type { EligibilityOutput } from "@/core/extraction/eligibility";
 import {
   type ExtractOutput,
   readExtractOutput,
@@ -39,6 +40,9 @@ export interface JobView {
   /** Whether "This is a job post" or "Read it again" is on offer. */
   canReadAgain: boolean;
   role: Role | null;
+  eligibility: EligibilityOutput | null;
+  /** Whether the owner chose Draft anyway. */
+  draftedAnyway: boolean;
   draft: DraftOutput | null;
   application: { status: ApplicationStatus; sentAt: Date | null } | null;
 }
@@ -46,7 +50,7 @@ export interface JobView {
 /** The thin path's stages, in order; eligibility and the judge pass through unchecked. */
 const STEPS: readonly { stage: StageName; label: string; checked: boolean }[] = [
   { stage: "extract", label: "Read the post", checked: true },
-  { stage: "eligibility", label: "Check eligibility", checked: false },
+  { stage: "eligibility", label: "Check eligibility", checked: true },
   { stage: "draft", label: "Write the email", checked: true },
   { stage: "judge", label: "Check every sentence separately", checked: false },
 ];
@@ -59,6 +63,12 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const stopReason = extraction ? stopReasonOf(extraction) : null;
   const role = await chosenRole(deps.db, id);
   const draft = (await stageOutput(deps.db, id, "draft"))?.output as DraftOutput | undefined;
+  const eligibility = (await stageOutput(deps.db, id, "eligibility"))?.output as
+    EligibilityOutput | undefined;
+  const { rows } = await deps.db.query<{ eligibility_decision: string | null }>(
+    "select eligibility_decision from {{schema}}.jobs where id = $1",
+    [id],
+  );
   return {
     id,
     state: job.state,
@@ -73,6 +83,9 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       (stopReason === "not_a_job_post" || stopReason === "no_role") &&
       !extraction!.postConfirmed,
     role,
+    // An output from before the check was built says only "not_checked".
+    eligibility: eligibility?.checked ? eligibility : null,
+    draftedAnyway: rows[0]?.eligibility_decision === "draft_anyway",
     draft: draft ?? null,
     application: role ? await applicationOf(deps.db, id, role.id) : null,
   };

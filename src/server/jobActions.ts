@@ -1,7 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
-import { confirmPost, pickRole, skipRolePick } from "@/core/extraction/owner";
+import {
+  confirmPost,
+  draftAnyway as draftAnywayCore,
+  pickRole,
+  skipRolePick,
+} from "@/core/extraction/owner";
 import { loadJob, retryJob, skipJob } from "@/core/platform/jobs";
 import type { RunnerDeps } from "@/core/platform/runner";
 import { markSent } from "@/core/review/markSent";
@@ -13,7 +18,7 @@ import { startPipeline } from "@/server/jobs";
 /**
  * The owner's answers on the job page (platform spec B9; extraction and
  * review specs): Retry, Skip, the role pick, "This is a job post" or "Read
- * it again", and Mark sent. Each needs an approved session and the app's
+ * it again", Draft anyway, and Mark sent. Each needs an approved session and the app's
  * own origin, moves the job only from the state it was read in, and, where
  * the job runs again, starts the pipeline as the upload confirmation does.
  */
@@ -100,6 +105,22 @@ export async function readAgain(
   if (!confirmed.ok) {
     return refusal(confirmed.reason === "not-found" ? 404 : 409, confirmed.reason);
   }
+  await startPipeline(deps, jobId, startedAt);
+  return ok(202);
+}
+
+/** POST /api/jobs/<id>/draft-anyway: the owner drafts for a role that looks closed to them. */
+export async function draftAnyway(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+  startedAt: Date = deps.clock.now(),
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const decided = await draftAnywayCore(deps, jobId);
+  if (!decided.ok) return refusal(decided.reason === "not-found" ? 404 : 409, decided.reason);
   await startPipeline(deps, jobId, startedAt);
   return ok(202);
 }

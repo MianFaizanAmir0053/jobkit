@@ -135,3 +135,32 @@ export async function skipRolePick(
   });
   return moved ? { ok: true } : { ok: false, reason: "not-waiting" };
 }
+
+/**
+ * "Draft anyway" (extraction spec, "Stage eligibility"): the owner's answer
+ * to a role that looks closed to them. It is recorded, which eligibility's
+ * input hash covers, and the job goes on to drafting.
+ */
+export async function draftAnyway(
+  deps: Deps,
+  jobId: string,
+): Promise<Outcome<"not-found" | "not-waiting">> {
+  const job = await loadJob(deps.db, jobId);
+  if (!job) return { ok: false, reason: "not-found" };
+  if (job.state !== "needs_eligibility_decision") return { ok: false, reason: "not-waiting" };
+  return deps.db.tx(async (tx) => {
+    const moved = await moveJob(tx, jobId, {
+      from: "needs_eligibility_decision",
+      to: "drafting",
+      pending: "draft",
+      at: deps.clock.now(),
+      ifChangedAt: job.stateChangedAt,
+    });
+    if (!moved) return { ok: false, reason: "not-waiting" };
+    await tx.query(
+      "update {{schema}}.jobs set eligibility_decision = 'draft_anyway' where id = $1",
+      [jobId],
+    );
+    return { ok: true };
+  });
+}

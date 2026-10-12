@@ -11,7 +11,7 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { draftStage } from "@/core/drafting/draftStage";
 import { judgePassThrough } from "@/core/drafting/judgeStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
-import { eligibilityPassThrough } from "@/core/extraction/eligibility";
+import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
@@ -42,7 +42,7 @@ function models(): ModelCallDeps {
 
 const pipeline = () => ({
   extract: extractStage({ db, storage, random, models: models() }),
-  eligibility: eligibilityPassThrough(db),
+  eligibility: eligibilityStage({ db, clock }),
   draft: draftStage({ db, random, models: models() }),
   judge: judgePassThrough(),
 });
@@ -122,7 +122,7 @@ afterEach(() => {
 });
 
 describe("jobView", () => {
-  it("shows a ready kit with its steps, eligibility and the judge marked not checked", async () => {
+  it("shows a ready kit with its steps, the judge marked not checked", async () => {
     await seedSample();
     const id = await pasted();
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
@@ -137,7 +137,7 @@ describe("jobView", () => {
     });
     expect(view.steps.map(({ label, status }) => [label, status])).toEqual([
       ["Read the post", "done"],
-      ["Check eligibility", "not_checked"],
+      ["Check eligibility", "done"],
       ["Write the email", "done"],
       ["Check every sentence separately", "not_checked"],
     ]);
@@ -164,7 +164,7 @@ describe("jobView", () => {
   });
 
   it("shows a failure's reason, and its recorded cause apart from it", async () => {
-    // No profile: draft fails with words the page shows.
+    // No profile: eligibility fails with words the page shows.
     const id = await pasted();
     await run(id, [answer(fixture("S01-email-simple"))]);
 
@@ -172,12 +172,12 @@ describe("jobView", () => {
 
     expect(view.state).toBe("failed");
     expect(view.failure).toEqual({
-      stage: "draft",
+      stage: "eligibility",
       reason:
         "There is no profile yet. Seed it on the laptop with npm run profile:seed, then press Retry.",
       detail: null,
     });
-    expect(view.steps.find((step) => step.stage === "draft")?.status).toBe("failed");
+    expect(view.steps.find((step) => step.stage === "eligibility")?.status).toBe("failed");
   });
 
   it("applies the upload timeout when it reads a job", async () => {

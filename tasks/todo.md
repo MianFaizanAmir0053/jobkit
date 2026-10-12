@@ -19,6 +19,7 @@ The owner wants to try a job on the laptop as soon as possible, so the thinnest 
 - [x] **TP5: Job page and the email** (parts of Tasks 26 and 27): polling `advance`, the steps as they run, Retry and Skip, the role pick, the email with copy buttons, Open in Gmail and Mark sent, and a jobs list.
   - Done (2026-10-12): `src/core/review/{jobView,markSent,gmail}.ts`, the owner's routes in `src/server/jobActions.ts` (retry, skip, role, read-again, sent), the job page and the jobs list. The test server now answers models from a script set through `/api/test/models` (part of Task 26), so the whole chain was checked in the browser pane with the sample profile: upload or paste, extract, the kit, Open in Gmail's fields, Mark sent.
 - [ ] **TP6: The owner's run-through** on the laptop, with the local runbook.
+- [x] **After the thin path: eligibility** (part of Task 16), built while the owner sets up: `src/core/extraction/{eligibilityCheck,eligibility}.ts`, Draft anyway (migration 0015, `POST /api/jobs/<id>/draft-anyway`), and its panel and findings on the job page. Readings of the spec: remote regions and onsite places are alternatives, so a role passes when any one does, and otherwise takes the least severe of their findings; a zone's offset is taken at the time of the check. Kit types and needs_kit_type are still not built: every route gets an email kit.
 
 ## Phase 0: Foundation and spikes (days 1–3)
 

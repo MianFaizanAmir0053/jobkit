@@ -135,6 +135,20 @@ function StatePanel({ view }: { view: JobView }) {
           </div>
         </Panel>
       );
+    case "needs_eligibility_decision":
+      return (
+        <Panel title="This role may not be open to you">
+          <EligibilityReasons view={view} />
+          <p className="text-sm text-muted-foreground">
+            If you know better (the post may be wrong, or you may have a permit it does not know
+            of), draft anyway. Otherwise skip it.
+          </p>
+          <div className="flex gap-2">
+            <ActionButton url={`${base}/draft-anyway`} label="Draft anyway" />
+            {skip}
+          </div>
+        </Panel>
+      );
     case "upload_failed":
       return (
         <Panel title="The upload did not finish">
@@ -274,11 +288,22 @@ function KitPanel({ view, timeZone }: { view: JobView; timeZone: string }) {
     <div className="flex flex-col gap-4">
       <Panel title="Not checked yet">
         <p className="text-sm">
-          This version does not yet check whether you are eligible (read the post&apos;s location
-          and work-permit lines yourself), read the contact address a second time, or check every
-          sentence separately. Read the whole email before you send it.
+          This version does not yet read the contact address a second time or check every sentence
+          separately. Read the whole email before you send it.
         </p>
       </Panel>
+
+      {view.eligibility && view.eligibility.reasons.length > 0 && (
+        <Panel
+          title={
+            view.draftedAnyway
+              ? "You chose to draft for a role that may not be open to you"
+              : "Check these about the role"
+          }
+        >
+          <EligibilityReasons view={view} />
+        </Panel>
+      )}
 
       <Panel title="The email">
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
@@ -383,5 +408,22 @@ function KitPanel({ view, timeZone }: { view: JobView; timeZone: string }) {
         )}
       </Panel>
     </div>
+  );
+}
+
+/** What the eligibility check found, each with the post's words. */
+function EligibilityReasons({ view }: { view: JobView }) {
+  const reasons = view.eligibility?.reasons ?? [];
+  return (
+    <ul className="flex list-disc flex-col gap-1 pl-5 text-sm">
+      {reasons.map((reason, i) => (
+        <li key={i}>
+          {reason.message}
+          {reason.quote && (
+            <span className="text-muted-foreground"> — &ldquo;{reason.quote}&rdquo;</span>
+          )}
+        </li>
+      ))}
+    </ul>
   );
 }

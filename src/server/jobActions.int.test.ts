@@ -13,7 +13,7 @@ import { cryptoRandom } from "@/adapters/random";
 import { draftStage } from "@/core/drafting/draftStage";
 import { judgePassThrough } from "@/core/drafting/judgeStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
-import { eligibilityPassThrough } from "@/core/extraction/eligibility";
+import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
@@ -25,7 +25,7 @@ import { validateProfile } from "@/core/profile/validate";
 import type { AppConfig } from "@/server/config";
 import { createTestDb } from "@/server/db/testDb";
 
-import { readAgain, retry, role, sent, skip } from "./jobActions";
+import { draftAnyway, readAgain, retry, role, sent, skip } from "./jobActions";
 import { startPipeline } from "./jobs";
 
 /* The job page's routes: Retry, Skip, the role pick, Read it again, Mark sent (B2, B9). */
@@ -59,7 +59,7 @@ const deps = () => ({
   config,
   pipeline: {
     extract: extractStage({ db, storage, random, models: models() }),
-    eligibility: eligibilityPassThrough(db),
+    eligibility: eligibilityStage({ db, clock }),
     draft: draftStage({ db, random, models: models() }),
     judge: judgePassThrough(),
   },
@@ -233,6 +233,35 @@ describe("the job page's routes", () => {
     ).toBe(409);
   });
 
+  it("draft anyway for a role that looks closed, or skip it", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const closed = await settled([answer(fixture("S02-us-only"))]);
+    const skipped = await settled([answer(fixture("S02-us-only"))]);
+    expect([await stateOf(closed), await stateOf(skipped)]).toEqual([
+      "needs_eligibility_decision",
+      "needs_eligibility_decision",
+    ]);
+
+    const response = await draftAnyway(
+      post(`/api/jobs/${closed}/draft-anyway`, "", cookie),
+      deps(),
+      closed,
+    );
+    expect(response.status).toBe(202);
+    await drain([answer(DRAFT)]);
+    expect(await stateOf(closed)).toBe("kit_ready");
+    expect(
+      (await draftAnyway(post(`/api/jobs/${closed}/draft-anyway`, "", cookie), deps(), closed))
+        .status,
+    ).toBe(409);
+
+    expect(
+      (await skip(post(`/api/jobs/${skipped}/skip`, "", cookie), deps(), skipped)).status,
+    ).toBe(200);
+    expect(await stateOf(skipped)).toBe("closed");
+  });
+
   it("mark a ready kit sent, and refuse one that is not ready", async () => {
     await seedSample();
     const cookie = await signedIn();
@@ -251,7 +280,7 @@ describe("the job page's routes", () => {
   it("refuse another origin, a missing session and an unknown job", async () => {
     const cookie = await signedIn();
     const id = await settled([answer(fixture("S08-urdu"))]);
-    const actions = [retry, skip, role, readAgain, sent] as const;
+    const actions = [retry, skip, role, readAgain, draftAnyway, sent] as const;
 
     for (const action of actions) {
       expect(

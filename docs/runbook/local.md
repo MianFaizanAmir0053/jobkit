@@ -7,20 +7,19 @@ The thin path (the owner's choice, 2026-10-12) is built first so the owner can t
 1. **Google sign-in client:** [setup.md](setup.md), step 4. For the laptop, only `http://localhost:3000` (origin) and `http://localhost:3000/api/auth/google/callback` (redirect URI) are needed; add the Vercel ones when the app is deployed.
 2. **Anthropic:** setup.md, step 6, item 2 only: the `jobkit-evals` workspace with its $15 limit, and its key.
 3. **`.env.local`:** the first bullet of setup.md, step 8: `OWNER_EMAIL`, `APP_ORIGIN=http://localhost:3000`, `JOBKIT_ENV=development`, `JOBKIT_LOCAL_EVALS=1`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `ANTHROPIC_EVALS_API_KEY`. The Gemini key can wait: the second read of an address is not in the thin path.
-4. **Profile:** setup.md, step 13, items 1 and 2. Drafts use only the facts marked `approved: true`, so read the facts in `private/profile.yaml` and approve the ones you stand behind, and write the signature. The fixed answers, gap lines and style examples can follow. With the dev server stopped, `npm run profile:seed` checks the file and stores it.
+4. **Profile:** setup.md, step 13, items 1 and 2. Drafts use only the facts marked `approved: true`, so read the facts in `private/profile.yaml` and approve the ones you stand behind, and write the signature. The fixed answers decide the eligibility check, so make the work authorisation, relocation and working window entries true; gap lines and style examples can follow. With the dev server stopped, `npm run profile:seed` checks the file and stores it.
 
 ## Each time
 
 1. `npm run dev`, then open http://localhost:3000 and sign in with Google.
 2. **New job:** choose screenshots of a job post, or paste its text, and press Start.
-3. The job page shows each step as it runs. A post with several roles asks which one; a post that is not a job post, or not in English, stops.
+3. The job page shows each step as it runs. A post with several roles asks which one; a post that is not a job post, not in English, or with no role found, stops. A role that looks closed to you (say, US only) waits for Draft anyway or Skip; one that is unclear goes on, its reasons shown with the email.
 4. A finished job shows the email: to, subject and body, with copy buttons and **Open in Gmail**, which opens Gmail's compose window with the draft filled in. Attach your CV there and send it yourself; then press **Mark sent**.
 
 ## Not in the thin path yet
 
 Each of these is built right after the thin path works, and the job page says where one is missing:
 
-- the eligibility check;
 - the second read of the email address or number, and the address checks;
 - the judge's review of the draft;
 - the phone: test on the laptop first; the phone follows through a tunnel to the dev server.

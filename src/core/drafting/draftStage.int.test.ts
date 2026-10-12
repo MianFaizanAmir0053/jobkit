@@ -8,7 +8,8 @@ import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
-import { eligibilityPassThrough } from "@/core/extraction/eligibility";
+import { eligibilityStage } from "@/core/extraction/eligibility";
+import { draftAnyway } from "@/core/extraction/owner";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
@@ -63,7 +64,7 @@ function models(): ModelCallDeps {
 function pipeline() {
   return {
     extract: extractStage({ db, storage, random, models: models() }),
-    eligibility: eligibilityPassThrough(db),
+    eligibility: eligibilityStage({ db, clock }),
     draft: draftStage({ db, random, models: models() }),
     judge: judgePassThrough(),
   };
@@ -197,7 +198,11 @@ describe("the thin drafting group", () => {
     const id = await run(pasted, [answer(fixture("S01-email-simple")), answer(S01_DRAFT)]);
 
     expect(await loadJob(db, id)).toMatchObject({ state: "kit_ready", pendingStage: null });
-    expect((await stageOutput(db, id, "eligibility"))?.output).toEqual({ result: "not_checked" });
+    expect((await stageOutput(db, id, "eligibility"))?.output).toEqual({
+      checked: true,
+      result: "eligible",
+      reasons: [],
+    });
     expect((await stageOutput(db, id, "judge"))?.output).toEqual({ checked: false });
     const draft = (await stageOutput(db, id, "draft"))!.output as DraftOutput;
     expect(draft.kit.subject).toBe("Application - Senior Full-Stack Engineer - Sam Rivera");
@@ -266,17 +271,42 @@ describe("the thin drafting group", () => {
     expect(content).not.toContain("F-unapproved-example");
   });
 
-  it("fails at draft, without a model call, when there is no profile", async () => {
+  it("fails before drafting, without a model call, when there is no profile", async () => {
     const id = await run("We're hiring. Apply at jobs@example.com", [
       answer(fixture("S01-email-simple")),
     ]);
 
     expect(await loadJob(db, id)).toMatchObject({
       state: "failed",
-      pendingStage: "draft",
-      failedStage: "draft",
+      pendingStage: "eligibility",
+      failedStage: "eligibility",
       failure: NO_PROFILE,
     });
     expect(llm.calls).toHaveLength(1);
+  });
+  it("stops a role that looks closed to the owner until they draft anyway", async () => {
+    await seedSample();
+    const id = await run("Contoso Health - Backend Engineer (Remote - US only)", [
+      answer(fixture("S02-us-only")),
+    ]);
+
+    expect(await loadJob(db, id)).toMatchObject({ state: "needs_eligibility_decision" });
+    const checked = (await stageOutput(db, id, "eligibility"))!.output as {
+      result: string;
+      reasons: { kind: string }[];
+    };
+    expect(checked.result).toBe("likely_ineligible");
+    expect(checked.reasons.map((reason) => reason.kind)).toContain("remote_region");
+    expect(llm.calls).toHaveLength(1);
+
+    expect(await draftAnyway({ db, clock }, id)).toEqual({ ok: true });
+    llm = fakeLlm([answer(S01_DRAFT)]);
+    const deps = { db, clock, pipeline: pipeline() };
+    const lease = await claimJob(deps, id);
+    if (!lease) throw new Error("not claimed");
+    await runJob(deps, lease);
+
+    expect(await loadJob(db, id)).toMatchObject({ state: "kit_ready" });
+    expect(await draftAnyway({ db, clock }, id)).toEqual({ ok: false, reason: "not-waiting" });
   });
 });
