@@ -2,6 +2,17 @@
 
 Every task is test-first and ends with `npm run check` green (platform AC1 holds after every task). "Owns" lists the acceptance criteria (AC) a task must make pass; each criterion in the eight MVP specs has exactly one owner. Scope: S is 1–2 files, M is 3–5. Migrations take the next free number when their task is built (`NNNN` below), since tasks may land in a different order.
 
+## Thin local path first (the owner's choice, 2026-10-12)
+
+The owner wants to try a job on the laptop as soon as possible, so the thinnest path to a testable email draft is built before the remaining tasks, in this order. Each step builds the part of its tasks the path needs, test-first and reviewed as usual; the rest of each task follows in plan order afterwards. Everything runs with `npm run dev` and the local database (no deploy). The owner's side is [docs/runbook/local.md](../docs/runbook/local.md): a Google client for localhost, the evaluation key, and approving profile facts.
+
+- [ ] **TP1: Extraction core** (Task 15): the record with `caseless` enum fields, tiles, contact checks, the phrase backstop, the review's fixes; merged from `feat/extraction-core`.
+- [ ] **TP2: Intake on the laptop** (parts of Tasks 12 and 13): job images and pasted text, `POST /api/jobs`, the development storage routes, confirming an upload (which queues the job and starts the runner), and a New job page that scales an image wider than 2,576 pixels down before uploading it. No arms before real use, as the ledger spec has it.
+- [ ] **TP3: `extract`** (part of Task 16): the prompt with its untrusted-data markers, tiles from the stored images, the record's checks and the backstop, the stops, and the role pick.
+- [ ] **TP4: `draft`** (parts of Tasks 22 and 23): an email draft from the approved facts and the chosen role, with gaps flagged. Eligibility and the judge pass through, and the address stages are left out, each noted on the job page (the owner's choice).
+- [ ] **TP5: Job page and the email** (parts of Tasks 26 and 27): polling `advance`, the steps as they run, Retry and Skip, the role pick, the email with copy buttons, Open in Gmail and Mark sent, and a jobs list.
+- [ ] **TP6: The owner's run-through** on the laptop, with the local runbook.
+
 ## Phase 0: Foundation and spikes (days 1–3)
 
 - [x] **Task 1: Scaffold and tooling** — Owns: platform AC1.
