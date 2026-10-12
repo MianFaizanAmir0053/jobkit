@@ -58,9 +58,13 @@ const STEPS: readonly { stage: StageName; label: string }[] = [
   { stage: "judge", label: "Check every sentence separately" },
 ];
 
-/** What eligibility and the judge gave on the thin path before their checks were built. */
+/**
+ * What eligibility and the judge gave on the thin path before their checks
+ * were built: `{ result: "not_checked" }` and `{ checked: false }`. Neither
+ * says `checked: true`.
+ */
 interface PassedThrough {
-  checked: false;
+  checked?: false;
 }
 
 export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promise<JobView | null> {

@@ -185,6 +185,27 @@ describe("jobView", () => {
     expect(view.judge).toBeNull();
   });
 
+  it("shows the old eligibility pass-through's output as not checked", async () => {
+    await seedSample();
+    const id = await pasted();
+    const stages = pipeline();
+    // The thin path's first eligibility stage stored only this.
+    const passThrough = {
+      ...stages.eligibility,
+      run: async () => ({ ok: true as const, output: { result: "not_checked" } }),
+      next: () => ({ state: "drafting" as const, pending: "draft" as const }),
+    };
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], {
+      ...stages,
+      eligibility: passThrough,
+    });
+
+    const view = (await jobView({ db, clock }, id))!;
+
+    expect(view.steps.find((step) => step.stage === "eligibility")?.status).toBe("not_checked");
+    expect(view.eligibility).toBeNull();
+  });
+
   it("says why a job stopped and whether it can be read again", async () => {
     const id = await pasted();
     await run(id, [answer({ ...fixture("S01-email-simple"), roles: [] })]);

@@ -8,7 +8,7 @@ import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
-import { eligibilityStage } from "@/core/extraction/eligibility";
+import { eligibilityStage, type EligibilityOutput } from "@/core/extraction/eligibility";
 import { draftAnyway, draftedAnyway } from "@/core/extraction/owner";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
@@ -404,5 +404,13 @@ describe("the thin drafting group", () => {
       [id, reading],
     );
     expect(await draftedAnyway(db, id)).toBe(false);
+    // So the check, finding the role closed, waits for the owner again.
+    const job = (await loadJob(db, id))!;
+    const ctx = { job, outputOf: (stage: "extract") => stageOutput(db, id, stage) };
+    const checked = (await stageOutput(db, id, "eligibility"))!.output as EligibilityOutput;
+    expect(await eligibilityStage({ db, clock }).next!(ctx, checked)).toEqual({
+      state: "needs_eligibility_decision",
+      pending: null,
+    });
   });
 });

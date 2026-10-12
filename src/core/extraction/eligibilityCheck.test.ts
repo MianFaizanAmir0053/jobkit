@@ -79,6 +79,12 @@ describe("remote regions", () => {
     });
   });
 
+  it("starts a sentence about a region with its article", () => {
+    expect(check(role({ location: { remote_regions: ["MENA"] } })).reasons[0]?.message).toBe(
+      "The Middle East and North Africa has no agreed list of countries. Check whether it includes Pakistan.",
+    );
+  });
+
   it("is unclear for a region with no agreed countries, and for one the table does not know", () => {
     expect(check(role({ location: { remote_regions: ["EMEA"] } })).result).toBe("unclear");
     expect(check(role({ location: { remote_regions: ["Southeast Asia"] } })).result).toBe(
@@ -111,6 +117,56 @@ describe("where the work is done", () => {
     });
 
     expect(check(either)).toEqual({ result: "eligible", reasons: [] });
+  });
+
+  it("never lets what the post leaves open cancel a clear exclusion", () => {
+    const hybrid = role({
+      location: { work_mode: "hybrid", places: [], remote_regions: ["US only"] },
+    });
+    expect(check(hybrid).reasons.map(({ kind, result }) => [kind, result])).toEqual([
+      ["remote_region", "likely_ineligible"],
+      ["place", "unclear"],
+    ]);
+    const unspecified = role({
+      location: {
+        work_mode: "unspecified",
+        places: [{ text: "New York", code: "US" }],
+        remote_regions: ["US only"],
+      },
+    });
+    expect(check(unspecified).result).toBe("likely_ineligible");
+  });
+
+  it("lets a place of a role whose work mode is not given pass it, as an alternative", () => {
+    const either = role({
+      location: {
+        work_mode: "unspecified",
+        places: [{ text: "Lahore", code: "PK" }],
+        remote_regions: ["US only"],
+      },
+    });
+
+    expect(check(either)).toEqual({ result: "eligible", reasons: [] });
+  });
+
+  it("judges the places of a remote role that names no region, as 'London · Remote' does", () => {
+    const london = role({
+      location: {
+        work_mode: "remote",
+        places: [{ text: "London", code: "GB" }],
+        remote_regions: [],
+      },
+    });
+
+    expect(check(london).reasons).toEqual([
+      {
+        kind: "place",
+        result: "unclear",
+        message:
+          "The role is based in the United Kingdom, and your profile is open to relocating only to other places.",
+        quote: "London",
+      },
+    ]);
   });
 
   it("takes the least severe finding when no alternative passes", () => {
@@ -181,6 +237,31 @@ describe("work authorisation", () => {
         quote: "Right to work in Germany",
       },
     ]);
+  });
+
+  it("is unclear, not likely ineligible, about other places when the owner may work in one the post lists", () => {
+    const either = role({
+      eligibility: {
+        work_authorisation: [
+          { place: "PK", quote: "Authorised to work in Pakistan" },
+          { place: "AE", quote: "or the UAE" },
+        ],
+        sponsorship: "not_offered",
+      },
+    });
+
+    expect(check(either)).toEqual({
+      result: "unclear",
+      reasons: [
+        {
+          kind: "work_authorisation",
+          result: "unclear",
+          message:
+            "The post also asks for the right to work in the United Arab Emirates, which you do not have. You may work in Pakistan, which it lists too; check whether it needs both.",
+          quote: "or the UAE",
+        },
+      ],
+    });
   });
 
   it("is unclear for a place it cannot place", () => {
@@ -266,6 +347,35 @@ describe("onsite and hybrid places", () => {
     expect(check(onsite(["Netherlands", "NL"]), germany).reasons[0]?.message).toBe(
       "The role is onsite in the Netherlands, and your profile is open to relocating only to other places.",
     );
+  });
+
+  it("says a relocation answer covers only part of a region when it does", () => {
+    const germany: EligibilityProfile = {
+      ...profile,
+      fixedAnswers: {
+        ...profile.fixedAnswers,
+        relocation: { open: true, places: ["DE"], text: "Open to relocating to Germany" },
+      },
+    };
+
+    expect(check(onsite(["Europe", "EUROPE"]), germany).reasons[0]?.message).toBe(
+      "The role is onsite in Europe. You are open to relocating to part of it; check where.",
+    );
+  });
+
+  it("reads an onsite place 'anywhere' as no place, and keeps a place the post gives only as a code", () => {
+    expect(check(onsite(["Anywhere", "WORLDWIDE"])).reasons[0]?.message).toBe(
+      "The role is onsite, and the post does not say where. Check where you would work.",
+    );
+    expect(check(onsite(["", "DE"])).reasons).toEqual([
+      {
+        kind: "place",
+        result: "likely_ineligible",
+        message:
+          "The role is onsite in Germany, and your profile is open to relocating only to other places.",
+        quote: "",
+      },
+    ]);
   });
 
   it("is unclear for an onsite role that does not say where", () => {
@@ -379,6 +489,37 @@ describe("time zone", () => {
         result: "unclear",
         message: "The post asks for a time zone we could not read. Check the hours it means.",
         quote: "Mars time",
+      },
+    ]);
+  });
+
+  it("reads 'no zone' in any case, and quotes only the post's own words", () => {
+    const zoned = (zone: string, text = "", hours = -1) =>
+      role({ location: { time_zone: { zone, min_overlap_hours: hours, text } } });
+
+    expect(check(zoned("Unspecified")).result).toBe("eligible");
+    expect(check(zoned(" none ")).result).toBe("eligible");
+    expect(check(zoned("America/Los_Angeles")).reasons[0]?.quote).toBe("");
+  });
+
+  it("is unclear about a demand on working hours that names no zone", () => {
+    const team = role({
+      location: {
+        time_zone: {
+          zone: "unspecified",
+          min_overlap_hours: 4,
+          text: "4 hours overlap with the team",
+        },
+      },
+    });
+
+    expect(check(team).reasons).toEqual([
+      {
+        kind: "time_zone",
+        result: "unclear",
+        message:
+          "The post asks for working hours we could not place in a time zone. Check the hours it means.",
+        quote: "4 hours overlap with the team",
       },
     ]);
   });
