@@ -9,7 +9,8 @@ import type { Clock, Db } from "@/core/ports";
  * "Statuses" and "Factual edits"): the chosen role's application is opened,
  * if this is its first kit, then marked kit_ready and sent, each with its
  * audit row, and the kit's outcome is recorded with the owner's answer to
- * "Did you change anything in Gmail?". Only a role whose route is email is
+ * "Did you change anything in Gmail?" in the same transaction as sent, so
+ * neither is kept without the other. Only a role whose route is email is
  * marked sent; a second tap changes nothing. Before real use there is no
  * timing arm.
  */
@@ -50,17 +51,19 @@ export async function markSent(
   );
   // Already kit_ready, or sent, after an earlier tap: the next move decides.
   await changeStatus(deps, applicationId, "kit_ready", sessionId);
-  const sent = await changeStatus(deps, applicationId, "sent", sessionId);
-  if (!sent.ok) return { ok: false, reason: "refused" };
-  if (sent.changed) {
-    // No in-app edits yet (the editor comes later), so only Gmail can have changed a fact.
-    await deps.db.query(
-      `insert into {{schema}}.draft_outcomes
-         (application_id, job_id, kind, changed_in_gmail, factual_edit, recorded_at)
-       values ($1, $2, 'email', $3, $3, $4)
-       on conflict (application_id) do nothing`,
-      [applicationId, jobId, answer.changedInGmail, deps.clock.now()],
-    );
-  }
-  return { ok: true, changed: sent.changed };
+  return deps.db.tx(async (tx): Promise<MarkSent> => {
+    const sent = await changeStatus({ ...deps, db: tx }, applicationId, "sent", sessionId);
+    if (!sent.ok) return { ok: false, reason: "refused" };
+    if (sent.changed) {
+      // No in-app edits yet (the editor comes later), so only Gmail can have changed a fact.
+      await tx.query(
+        `insert into {{schema}}.draft_outcomes
+           (application_id, job_id, kind, changed_in_gmail, factual_edit, recorded_at)
+         values ($1, $2, 'email', $3, $3, $4)
+         on conflict (application_id) do nothing`,
+        [applicationId, jobId, answer.changedInGmail, deps.clock.now()],
+      );
+    }
+    return { ok: true, changed: sent.changed };
+  });
 }

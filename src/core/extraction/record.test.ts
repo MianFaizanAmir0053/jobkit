@@ -297,6 +297,20 @@ describe("checkRecord", () => {
     expect(kinds(checkRecord(record, []))).toEqual([{ kind: "box", path: "roles[0].route.box" }]);
   });
 
+  it("says an email route gives no address, rather than that its address failed", () => {
+    const record = structuredClone(fixture("S01-email-simple"));
+    record.roles[0]!.route.address = " ";
+
+    expect(checkRecord(record, [])).toEqual([
+      {
+        kind: "no_address",
+        path: "roles[0].route.address",
+        message:
+          "The post asks for applications by email but gives no address. Find it in the post.",
+      },
+    ]);
+  });
+
   it("asks the owner to type a failing address, never to copy what the post shows", () => {
     expect(FLAG_MESSAGES.address).toBe(
       "This email address did not pass the strict check. Type the address yourself, and nothing else.",

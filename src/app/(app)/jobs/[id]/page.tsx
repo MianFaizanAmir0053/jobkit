@@ -70,7 +70,8 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
           {heading}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {STATE_WORDS[view.state]} · started {formatTime(view.receivedAt, timeZone)}
+          {view.application?.status === "sent" ? "Sent" : STATE_WORDS[view.state]} · started{" "}
+          {formatTime(view.receivedAt, timeZone)}
         </p>
       </div>
 
@@ -379,8 +380,8 @@ function KitPanel({
         </div>
         <p className="text-sm text-muted-foreground">
           In Gmail, {account ? `check that From shows ${account}, ` : "check the From address, "}
-          attach your CV, and send. Gmail adds your signature. Make any changes here in jobkit
-          rather than in Gmail.
+          attach your CV, and send. Gmail adds your signature. If you change anything in Gmail,
+          answer Yes when jobkit asks.
         </p>
       </Panel>
 
@@ -449,7 +450,9 @@ function KitPanel({
           <MarkSent jobId={view.id} />
         ) : (
           <p className="text-sm text-muted-foreground">
-            Recording an application sent another way comes with form and message kits.
+            {role.route.kind === "unknown" || role.route.kind === "other"
+              ? "Choosing how to apply, and recording it once sent, comes with the kit-type pick."
+              : "Recording an application sent another way comes with form and message kits."}
           </p>
         )}
       </Panel>

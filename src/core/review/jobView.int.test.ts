@@ -17,6 +17,7 @@ import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import type { ModelCallDeps } from "@/core/platform/models";
 import { claimJob, type Pipeline, runJob } from "@/core/platform/runner";
+import type { Db, QueryResult, Row } from "@/core/ports";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 import { createTestDb } from "@/server/db/testDb";
@@ -297,6 +298,41 @@ describe("markSent", () => {
       [id],
     );
     expect(outcomes.rows).toEqual([{ kind: "email", changed_in_gmail: true, factual_edit: true }]);
+  });
+
+  it("records sent and the Gmail answer together, or neither", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    // A database that loses the outcome's insert, as on a dropped connection.
+    const losing = (inner: Db): Db => ({
+      schema: inner.schema,
+      query: <T extends Row = Row>(sql: string, params?: readonly unknown[]) =>
+        sql.includes("draft_outcomes")
+          ? Promise.reject<QueryResult<T>>(new Error("connection lost"))
+          : inner.query<T>(sql, params),
+      exec: (sql) => inner.exec(sql),
+      tx: (fn) => inner.tx((tx) => fn(losing(tx))),
+    });
+    const statuses = async () =>
+      (
+        await db.query<{ status: string }>(
+          "select status from {{schema}}.applications where job_id = $1",
+          [id],
+        )
+      ).rows.map((row) => row.status);
+
+    await expect(
+      markSent({ db: losing(db), clock }, id, null, { changedInGmail: true }),
+    ).rejects.toThrow("connection lost");
+    expect(await statuses()).toEqual(["kit_ready"]);
+
+    // So the owner can answer again.
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: true })).toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(await statuses()).toEqual(["sent"]);
   });
 
   it("refuses a kit whose role is to be applied for another way", async () => {

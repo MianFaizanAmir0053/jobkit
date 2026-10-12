@@ -5,7 +5,8 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
-function messageFor(status: number): string {
+/** A refused answer in plain words, by its HTTP status. */
+export function messageFor(status: number): string {
   if (status === 401) return "You are signed out. Sign in again, then try.";
   if (status === 403) return "This device cannot do that. Sign in again on the laptop.";
   if (status === 409) return "The job has moved on; the page now shows where it stands.";

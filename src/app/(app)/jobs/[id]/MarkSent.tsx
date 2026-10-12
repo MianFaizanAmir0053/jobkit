@@ -5,10 +5,13 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
+import { messageFor } from "./ActionButton";
+
 /**
  * After the Gmail handoff (review spec, "Handoffs"): "Did you send it?" with
  * Mark sent and Not yet; Mark sent then asks "Did you change anything in
- * Gmail?", and the answer is recorded with the sent status (ledger spec,
+ * Gmail?", with Back for a mistaken tap, since a sent kit cannot be taken
+ * back yet, and the answer is recorded with the sent status (ledger spec,
  * "Factual edits").
  */
 export function MarkSent({ jobId }: { jobId: string }) {
@@ -26,13 +29,7 @@ export function MarkSent({ jobId }: { jobId: string }) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ changedInGmail }),
       });
-      if (!response.ok) {
-        setError(
-          response.status === 401
-            ? "You are signed out. Sign in again, then try."
-            : "That did not work. Try again.",
-        );
-      }
+      if (!response.ok) setError(messageFor(response.status));
       router.refresh();
     } catch {
       setError("The connection dropped. Try again.");
@@ -72,6 +69,16 @@ export function MarkSent({ jobId }: { jobId: string }) {
             </Button>
             <Button disabled={busy} variant="outline" onClick={() => void record(false)}>
               No
+            </Button>
+            <Button
+              disabled={busy}
+              variant="ghost"
+              onClick={() => {
+                setError(null);
+                setStep("sent?");
+              }}
+            >
+              Back
             </Button>
           </div>
         </>

@@ -176,7 +176,7 @@ export type JobRecord = z.infer<typeof jobRecordSchema>;
 export type Role = JobRecord["roles"][number];
 
 export type RecordFlagKind =
-  "address" | "number" | "box" | "duplicate_id" | "too_long" | "no_roles";
+  "address" | "no_address" | "number" | "box" | "duplicate_id" | "too_long" | "no_roles";
 
 /** A check the record failed. The record is kept and the review page shows the flag; nothing is retried. */
 export interface RecordFlag {
@@ -190,6 +190,7 @@ export const FLAG_MESSAGES: Readonly<Record<RecordFlagKind, string>> = {
   // Never "as the post shows it": a post may hide a second recipient in the address.
   address:
     "This email address did not pass the strict check. Type the address yourself, and nothing else.",
+  no_address: "The post asks for applications by email but gives no address. Find it in the post.",
   number: NUMBER_FLAG,
   box: "Where this contact sits on the screenshot is not known.",
   duplicate_id:
@@ -233,7 +234,8 @@ export function checkRecord(record: JobRecord, tiles: readonly TilePlace[]): Rec
     repeatedIds(role.requirements, `${at}.requirements`, flag);
     repeatedIds(role.screening_questions, `${at}.screening_questions`, flag);
     const { kind, address, box: contactBox } = role.route;
-    if (kind === "email" && !isStrictAddress(address)) flag("address", `${at}.route.address`);
+    if (kind === "email" && address.trim() === "") flag("no_address", `${at}.route.address`);
+    else if (kind === "email" && !isStrictAddress(address)) flag("address", `${at}.route.address`);
     if (kind === "whatsapp" && !normaliseWhatsAppNumber(address).ok)
       flag("number", `${at}.route.address`);
     const { tile, ...corners } = contactBox;
