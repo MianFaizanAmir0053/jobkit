@@ -3,9 +3,10 @@ import Link from "next/link";
 import { buttonVariants } from "@/components/ui/button";
 import { requireSession } from "@/server/dal";
 
-// Each later task adds its page here: New job, Stats, Spend.
+// Each later task adds its page here: Stats, Spend.
 const NAV: readonly { href: string; label: string; googleOnly?: boolean }[] = [
   { href: "/jobs", label: "Jobs" },
+  { href: "/jobs/new", label: "New job" },
   { href: "/baseline", label: "Baseline" },
   // The owner's fixed answers stay off paired phones.
   { href: "/profile", label: "Profile", googleOnly: true },

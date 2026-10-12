@@ -3,6 +3,10 @@ import { createJob, loadJob, moveJob } from "@/core/platform/jobs";
 import type { Clock, Db, Storage } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
+import { type ImageMeta, refusal } from "./limits";
+
+export { type ImageMeta, LIMITS } from "./limits";
+
 /**
  * Starting a job from what the phone sends (intake spec, "Upload path").
  * The request carries only metadata: each image's type, size, dimensions
@@ -14,24 +18,13 @@ import { isUuid } from "@/lib/uuid";
  * spec), and intake draws one once real use starts.
  */
 
-export const LIMITS = {
-  images: 8,
-  imageBytes: 10 * 1024 * 1024,
-  tiles: 20,
-  textLength: 20_000,
-} as const;
-
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
-const EXTENSIONS = { "image/webp": "webp", "image/jpeg": "jpg", "image/png": "png" } as const;
-
-export interface ImageMeta {
-  contentType: keyof typeof EXTENSIONS;
-  bytes: number;
-  width: number;
-  height: number;
-  sha256: string;
-}
+const EXTENSIONS = {
+  "image/webp": "webp",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+} as const satisfies Record<ImageMeta["contentType"], string>;
 
 export interface NewJob {
   images: readonly ImageMeta[];
@@ -99,27 +92,6 @@ export async function startJob(deps: Deps, job: NewJob): Promise<StartResult> {
       (await moveJob(tx, jobId, { from: "uploading", to: "queued", pending: null, at: now }));
     return { ok: true, jobId, uploads, queued };
   });
-}
-
-/** Intake's limits, checked again on the server; the message to show, or null. */
-function refusal(images: readonly ImageMeta[], pastedText: string): string | null {
-  if (images.length === 0 && pastedText.trim() === "") {
-    return "Nothing to start: choose screenshots of the post, or paste its text.";
-  }
-  if (images.length > LIMITS.images) {
-    return `At most ${LIMITS.images} screenshots per job. Remove some, or split the post into two jobs.`;
-  }
-  if (images.some((image) => image.bytes > LIMITS.imageBytes)) {
-    return "A screenshot is larger than 10 MB. Take a smaller screenshot of that part.";
-  }
-  if (pastedText.length > LIMITS.textLength) {
-    return "The pasted text is longer than 20,000 characters. Paste only the job post.";
-  }
-  const tiles = images.reduce((sum, image) => sum + tileCount(image.width, image.height), 0);
-  if (tiles > LIMITS.tiles) {
-    return "Too many screenshots for one job. Remove some, or split the post into two jobs.";
-  }
-  return null;
 }
 
 export type ConfirmResult =

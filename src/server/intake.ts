@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { confirmUploads, startJob } from "@/core/intake/jobs";
+import { CONTENT_TYPES } from "@/core/intake/limits";
 import type { RunnerDeps } from "@/core/platform/runner";
 import type { Storage } from "@/core/ports";
 import type { AppConfig } from "@/server/config";
@@ -27,7 +28,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 const newJobBody = z.object({
   images: z.array(
     z.object({
-      contentType: z.enum(["image/webp", "image/jpeg", "image/png"]),
+      contentType: z.enum(CONTENT_TYPES),
       bytes: z.number().int().positive(),
       width: z.number().int().positive(),
       height: z.number().int().positive(),
