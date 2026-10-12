@@ -212,13 +212,15 @@ function RoleSummary({ role }: { role: Role }) {
 function PostPanel({ view }: { view: JobView }) {
   const extraction = view.extraction!;
   const scam = [...extraction.record.scam_signals, ...extraction.backstop];
-  const role = view.role;
-  const aimedAtAi = role
-    ? [
+  // From every role, once each: the model may record a line about the whole post under one role.
+  const aimedAtAi = [
+    ...new Set(
+      extraction.record.roles.flatMap((role) => [
         ...role.instructions.filter((line) => line.addressed_to_ai).map((line) => line.text),
         ...role.screening_questions.filter((line) => line.addressed_to_ai).map((line) => line.text),
-      ]
-    : [];
+      ]),
+    ),
+  ];
   if (scam.length === 0 && extraction.flags.length === 0 && aimedAtAi.length === 0) return null;
   return (
     <div className="flex flex-col gap-3">

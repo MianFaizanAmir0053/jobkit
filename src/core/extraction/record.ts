@@ -192,7 +192,8 @@ export const FLAG_MESSAGES: Readonly<Record<RecordFlagKind, string>> = {
     "This email address did not pass the strict check. Type the address yourself, and nothing else.",
   number: NUMBER_FLAG,
   box: "Where this contact sits on the screenshot is not known.",
-  duplicate_id: "Two entries here share an ID.",
+  duplicate_id:
+    "The model gave this entry an ID it had already used. Check it is not listed twice.",
   too_long: "This text is longer than the post would make it. Check it against the post.",
   no_roles: "No role was found in this post.",
 };

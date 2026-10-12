@@ -231,15 +231,15 @@ describe("extract's run", () => {
     expect(marker).toBeDefined();
     expect(content).toEqual([
       `BEGIN POST ${marker}`,
-      "Tile 1 of 4: screenshot 1, rows 0 to 2576, 1080 by 2576 pixels.",
+      `[${marker}] Tile 1 of 4: screenshot 1, rows 0 to 2576, 1080 by 2576 pixels.`,
       "[image/png]",
-      "Tile 2 of 4: screenshot 1, rows 2376 to 4952, 1080 by 2576 pixels.",
+      `[${marker}] Tile 2 of 4: screenshot 1, rows 2376 to 4952, 1080 by 2576 pixels.`,
       "[image/png]",
-      "Tile 3 of 4: screenshot 1, rows 4752 to 6000, 1080 by 1248 pixels.",
+      `[${marker}] Tile 3 of 4: screenshot 1, rows 4752 to 6000, 1080 by 1248 pixels.`,
       "[image/png]",
-      "Tile 4 of 4: screenshot 2, rows 0 to 2400, 1080 by 2400 pixels.",
+      `[${marker}] Tile 4 of 4: screenshot 2, rows 0 to 2400, 1080 by 2400 pixels.`,
       "[image/png]",
-      `Text the job seeker pasted:\n${pasted}`,
+      `[${marker}] Text the job seeker pasted:\n${pasted}`,
       `END POST ${marker}`,
       "Fill in the job record for the post between the markers.",
     ]);
@@ -306,6 +306,23 @@ describe("extract's run", () => {
     const output = result.output as ExtractOutput;
     expect(output.flags.map(({ kind, path }) => [kind, path])).toEqual([["no_roles", "roles"]]);
     expect(stopReasonOf(output)).toBe("no_role");
+  });
+
+  it("flags a stop for no role even when the model still calls the post no job post", async () => {
+    const record = {
+      ...fixture("S01-email-simple"),
+      post_kind: "not_a_job_post" as const,
+      roles: [],
+    };
+    const id = await extractingJob([], "a post");
+    await db.query("update {{schema}}.jobs set post_confirmed_at = now() where id = $1", [id]);
+
+    const result = await runExtract(id, [answer(record)]);
+
+    if (!result.ok) throw new Error(result.reason);
+    const output = result.output as ExtractOutput;
+    expect(stopReasonOf(output)).toBe("no_role");
+    expect(output.flags.map(({ kind }) => kind)).toEqual(["no_roles"]);
   });
 
   it("numbers roles, requirements and questions by position, flagging the IDs the model repeated", async () => {

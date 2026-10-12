@@ -254,9 +254,13 @@ describe("validateEmailKit", () => {
     };
     const kit = cleanKit();
 
-    expect(kinds(kit, context({ role: trapped }))).toEqual([]);
+    expect(kinds(kit, context({ role: trapped, record: { ...record, roles: [trapped] } }))).toEqual(
+      [],
+    );
     kit.blocks[3]!.text = "Thank you, and banana.";
-    expect(kinds(kit, context({ role: trapped }))).toEqual([["ai_instruction_followed", "kit"]]);
+    expect(kinds(kit, context({ role: trapped, record: { ...record, roles: [trapped] } }))).toEqual(
+      [["ai_instruction_followed", "kit"]],
+    );
   });
 
   it("flags a profile ID or a marker standing alone in the text, and never an ordinary word like S3 or F-1", () => {

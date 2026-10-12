@@ -203,6 +203,21 @@ describe("a pick and the extraction it was made on", () => {
   });
 });
 
+describe("a stale pick and a read that finds several roles", () => {
+  it("chooses no role until the owner picks again", async () => {
+    const id = await extracted(fixture("S07-two-roles"));
+    expect(await pickRole({ db, clock }, id, "P2")).toEqual({ ok: true });
+    await db.query(
+      `update {{schema}}.jobs set state = 'extracting', pending_stage = 'extract',
+         post_confirmed_at = $2 where id = $1`,
+      [id, clock.now()],
+    );
+    await run(id, fixture("S07-two-roles"));
+
+    expect(await chosenRole(db, id)).toBeNull();
+  });
+});
+
 describe("chosenRole", () => {
   it("is a post's only role without any pick", async () => {
     const id = await extracted(fixture("S01-email-simple"));

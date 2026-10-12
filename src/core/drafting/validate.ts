@@ -118,7 +118,9 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
   if (context.keyword !== null && !lower.includes(context.keyword.toLowerCase())) {
     flag("keyword_missing", "body", MESSAGES.keyword_missing);
   }
-  const aimedAtAi = role.instructions
+  // From every role: a line aimed at AI that the model recorded under another role still counts.
+  const aimedAtAi = context.record.roles
+    .flatMap((each) => each.instructions)
     .filter((instruction) => instruction.addressed_to_ai)
     .map((instruction) => instruction.value.trim().toLowerCase())
     .filter((value) => value.length >= 2);

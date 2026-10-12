@@ -266,7 +266,7 @@ Modules register stages; the runner owns their order, the job's state and the bo
 | `drafting` | running | `draft` or `draft_answers`, with `address_read` and `address_checks` alongside | `judging`, `failed` |
 | `judging` | running | `judge` | `kit_ready`, `failed` |
 | `kit_ready` | ready | the kit is ready for review | `extracting` (screenshots added), `drafting` (contact edited, another kit type, or new questions), `needs_role_pick` (another role) |
-| `stopped` | owner | not a job post, not in English, or no role found | `extracting` (the owner confirms a post marked "not a job post", or has a post with no role found read again, once; never for language), `closed` |
+| `stopped` | owner | not a job post, not in English, or no role found | `extracting` (the owner confirms a post marked "not a job post", or has a post with no role found read again; the confirmation is given once per job, never for language), `closed` |
 | `failed` | owner | a stage failed; the page shows the stage, a readable reason, Retry and Skip | the failed stage's running state (Retry), `closed` (Skip) |
 | `closed` | final | finished without a kit, or skipped | none |
 
