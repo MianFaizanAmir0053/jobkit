@@ -1,6 +1,8 @@
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
 
+import { TOO_TALL } from "@/core/intake/limits";
+
 import {
   checkRequest,
   cutTiles,
@@ -141,6 +143,11 @@ describe("cutTiles", () => {
 
     expect(await cutTiles([await png(3000, 100)])).toEqual({ ok: false, reason: TOO_WIDE });
     expect(await cutTiles([turned])).toEqual({ ok: false, reason: TOO_WIDE });
+  });
+
+  it("refuses an image taller than intake allows, whatever the page declared", async () => {
+    expect(await cutTiles([await png(10, 30_001)])).toEqual({ ok: false, reason: TOO_TALL });
+    expect(await cutTiles([await png(10, 30_000)])).toMatchObject({ ok: true });
   });
 
   it("refuses more tiles than one request carries, before cutting any", async () => {

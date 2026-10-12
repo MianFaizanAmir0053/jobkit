@@ -1,5 +1,7 @@
 import sharp, { type Metadata, type OutputInfo } from "sharp";
 
+import { LIMITS, TOO_TALL } from "@/core/intake/limits";
+
 import { MAX_LONG_EDGE, type TilePlace, tileCount, tileSpans } from "@/core/shared/tileGeometry";
 
 /**
@@ -47,6 +49,7 @@ export async function cutTiles(images: readonly Uint8Array[]): Promise<CutResult
     const size = await uprightSize(bytes);
     if (size === null) return { ok: false, reason: UNREADABLE };
     if (size.width > MAX_LONG_EDGE) return { ok: false, reason: TOO_WIDE };
+    if (size.height > LIMITS.height) return { ok: false, reason: TOO_TALL };
     total += tileCount(size.width, size.height);
   }
   if (total > MAX_IMAGE_BLOCKS) return { ok: false, reason: TOO_MUCH_IMAGE_DATA };

@@ -19,15 +19,9 @@ const SOURCE = /\.(?:tsx?|jsx?|mjs|cjs)$/;
 const BUILTINS = new Set(builtinModules);
 const SERVER_PACKAGES = [
   /^node:/,
-  /^sharp$/,
-  /^pg$/,
-  /^@electric-sql\//,
-  /^@anthropic-ai\//,
-  /^@google\//,
-  /^@supabase\//,
-  /^arctic$/,
-  /^next\/headers$/,
-  /^server-only$/,
+  /^(?:sharp|pg|pg-pool|arctic|server-only)(?:\/|$)/,
+  /^@(?:electric-sql|anthropic-ai|google|supabase)\//,
+  /^next\/(?:headers|cache)(?:\/|$)/,
 ];
 
 function sourceFiles(dir: string): string[] {
@@ -163,6 +157,10 @@ describe("the reader of files", () => {
     expect(isServerPackage("crypto")).toBe(true);
     expect(isServerPackage("node:crypto")).toBe(true);
     expect(isServerPackage("next/headers")).toBe(true);
+    expect(isServerPackage("pg/lib/client")).toBe(true);
+    expect(isServerPackage("sharp/lib/index")).toBe(true);
+    expect(isServerPackage("next/cache")).toBe(true);
+    expect(isServerPackage("pgx")).toBe(false);
     expect(isServerPackage("react")).toBe(false);
   });
 });

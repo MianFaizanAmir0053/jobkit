@@ -120,7 +120,9 @@ export type ConfirmResult =
  * IDs of those images come back, so the phone can upload them again. A job
  * past its upload timeout has failed. Whether the bytes are the ones the
  * phone hashed, extract checks when it reads them, and it cuts tiles by the
- * stored image's own size, so the limits hold for what was uploaded.
+ * stored image's own size, refusing one too tall or too wide, so the tile
+ * and size limits hold for what was uploaded. The width, height and tile
+ * count stored for each image are the phone's word.
  */
 export async function confirmUploads(deps: Deps, jobId: string): Promise<ConfirmResult> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
@@ -147,5 +149,8 @@ export async function confirmUploads(deps: Deps, jobId: string): Promise<Confirm
     at: deps.clock.now(),
     ifChangedAt: job.stateChangedAt,
   });
-  return moved ? { ok: true } : { ok: false, reason: "not-uploading" };
+  if (moved) return { ok: true };
+  // Something moved the job meanwhile: the upload timeout, or a confirm before this one.
+  const now = await loadJob(deps.db, jobId);
+  return { ok: false, reason: now?.state === "upload_failed" ? "upload-failed" : "not-uploading" };
 }

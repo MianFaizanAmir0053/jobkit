@@ -161,6 +161,29 @@ describe("POST /api/jobs", () => {
     expect(await loadJob(db, jobId)).toMatchObject({ state: "stopped" });
   });
 
+  it("answers a created job as created, even when its pipeline cannot start yet", async () => {
+    const cookie = await signedIn();
+    const broken = {
+      ...deps(),
+      schedule: () => {
+        throw new Error("after() is unavailable");
+      },
+    };
+
+    const response = await create(
+      post(
+        "/api/jobs",
+        JSON.stringify({ images: [], pastedText: "A job post", clientElapsedMs: 0 }),
+        cookie,
+      ),
+      broken,
+    );
+
+    expect(response.status).toBe(201);
+    const { jobId } = (await response.json()) as { jobId: string };
+    expect(await loadJob(db, jobId)).toMatchObject({ state: "queued" });
+  });
+
   it("refuses what breaks intake's limits, with the message the page shows", async () => {
     const cookie = await signedIn();
 
@@ -304,6 +327,20 @@ describe("POST /api/jobs/<id>/uploaded", () => {
     );
 
     expect(response.status).toBe(413);
+    expect(await loadJob(db, jobId)).toMatchObject({ state: "uploading" });
+  });
+
+  it("asks the page to try again when storage cannot say what arrived", async () => {
+    const cookie = await signedIn();
+    const { jobId } = await started(cookie);
+    const failing = {
+      ...deps(),
+      storage: { ...storage, stat: () => Promise.reject(new Error("storage is down")) },
+    };
+
+    const response = await confirm(post(`/api/jobs/${jobId}/uploaded`, "", cookie), failing, jobId);
+
+    expect(response.status).toBe(503);
     expect(await loadJob(db, jobId)).toMatchObject({ state: "uploading" });
   });
 

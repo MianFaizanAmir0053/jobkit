@@ -15,8 +15,10 @@ export interface LocalStorage extends Storage {
   uploadTarget(token: string, nowMs: number): string | null;
   /**
    * Stores the bytes for a live upload token. A token works once, as a signed
-   * upload URL does, but is used up only once the file is written, so a write
-   * that fails can be sent again. False for an unknown, used or expired token.
+   * upload URL does: it is taken while the file is written, so a second
+   * upload at the same moment finds it used, and given back if the write
+   * fails, so the upload can be sent again. False for an unknown, used or
+   * expired token.
    */
   acceptSignedUpload(token: string, bytes: Uint8Array, nowMs?: number): Promise<boolean>;
   /** The path a read token stands for, or null once it has expired. */
@@ -42,6 +44,9 @@ async function writeWhole(file: string, bytes: Uint8Array, overwrite: boolean): 
     await rm(draft, { force: true });
   }
 }
+
+// The errors that mean no file is at the path: nothing there, a folder, or a file where a folder was expected.
+const NO_FILE: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR", "EISDIR"]);
 
 // Supabase fixes a signed upload URL's validity at two hours.
 const UPLOAD_LIFETIME_MS = 2 * 60 * 60 * 1000;
@@ -120,7 +125,7 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
       return readFile(fileFor(path)).then(
         (buffer) => new Uint8Array(buffer),
         (error: NodeJS.ErrnoException) => {
-          if (error.code === "ENOENT") return null;
+          if (NO_FILE.has(error.code ?? "")) return null;
           throw error;
         },
       );
@@ -128,7 +133,10 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
     async stat(path) {
       return stat(fileFor(path)).then(
         (s) => (s.isFile() ? { size: s.size } : null),
-        () => null,
+        (error: NodeJS.ErrnoException) => {
+          if (NO_FILE.has(error.code ?? "")) return null;
+          throw error;
+        },
       );
     },
     async list(prefix) {

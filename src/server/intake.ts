@@ -54,7 +54,8 @@ export async function create(
   // The job was received when its request reached the route (intake spec, "Clock").
   const started = await startJob(deps, body.data, startedAt);
   if (!started.ok) return refusal(422, started.message);
-  if (started.queued) await startPipeline(deps, started.jobId, startedAt);
+  // The job exists now: a pipeline that fails to start is started by the job page's next poll.
+  if (started.queued) await startPipeline(deps, started.jobId, startedAt).catch(() => false);
   return NextResponse.json(
     { jobId: started.jobId, uploads: started.uploads, queued: started.queued },
     { status: 201, headers: NO_STORE },
@@ -73,7 +74,13 @@ export async function confirm(
   if ((await readLimited(request, MAX_BODY_BYTES)) === "too-large") {
     return refusal(413, "too-large");
   }
-  const confirmed = await confirmUploads(deps, jobId);
+  let confirmed: Awaited<ReturnType<typeof confirmUploads>>;
+  try {
+    confirmed = await confirmUploads(deps, jobId);
+  } catch {
+    // Storage could not say what arrived; the page asks again.
+    return refusal(503, "storage-unavailable");
+  }
   if (!confirmed.ok) {
     if (confirmed.reason === "not-found") return refusal(404, "not-found");
     if (confirmed.reason === "missing") {
@@ -82,7 +89,8 @@ export async function confirm(
     // "not-uploading" is a job confirmed already; "upload-failed" one that ran out of time.
     return refusal(409, confirmed.reason);
   }
-  await startPipeline(deps, jobId, startedAt);
+  // Queued now: a pipeline that fails to start is started by the job page's next poll.
+  await startPipeline(deps, jobId, startedAt).catch(() => false);
   return NextResponse.json({ queued: true }, { status: 202, headers: NO_STORE });
 }
 

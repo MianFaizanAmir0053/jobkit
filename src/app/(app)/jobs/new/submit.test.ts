@@ -87,7 +87,8 @@ function server(jobId: string, uploads: number) {
 
 describe("submitJob", () => {
   it("starts a paste-only job with one request, timing it from the tap", async () => {
-    const fake = browser({}, server("job-1", 0), [1_000, 3_500]);
+    // The tap, the upload deadline, then the request.
+    const fake = browser({}, server("job-1", 0), [1_000, 1_200, 3_500]);
 
     const submitted = await submitJob(
       fake.deps,
@@ -206,7 +207,8 @@ describe("submitJob", () => {
       [json({ error: "unauthorised" }, 401), MESSAGES.signIn],
       [json({ error: "forbidden" }, 403), MESSAGES.notAllowed],
       [json({ error: "invalid" }, 400), MESSAGES.badRequest],
-      [new Response("not json", { status: 500 }), MESSAGES.notStarted],
+      // A server error may come after the job was created.
+      [new Response("not json", { status: 500 }), MESSAGES.createLost],
       [json({ error: 42 }, 422), MESSAGES.notStarted],
     ];
     for (const [answer, message] of cases) {
@@ -407,6 +409,44 @@ describe("submitJob", () => {
     expect(await submitJob(fake.deps, { files: [], text: "a post" }, fake.onStatus)).toEqual({
       ok: false,
       message: MESSAGES.tooLarge,
+    });
+  });
+  it("keeps saying the job may have started once an answer could have been lost", async () => {
+    const happy = server("job-16", 1);
+    const cases: [(Response | Error)[], string][] = [
+      [
+        [
+          new Error("dropped"),
+          new Response(null, { status: 502 }),
+          new Response(null, { status: 503 }),
+        ],
+        MESSAGES.confirmLost,
+      ],
+      [
+        [new Error("dropped"), json({ error: "unauthorised" }, 401)],
+        `${MESSAGES.signIn} ${MESSAGES.checkJobs}`,
+      ],
+      [
+        [new Response(null, { status: 500 }), json({ error: "missing", missing: ["x"] }, 409)],
+        `${MESSAGES.notArrived} ${MESSAGES.checkJobs}`,
+      ],
+    ];
+    for (const [confirms, message] of cases) {
+      const fake = browser({ "a.png": screenshot(1) }, (call) =>
+        call.url.endsWith("/uploaded") ? confirms.shift()! : happy(call),
+      );
+      expect(
+        await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus),
+      ).toEqual({ ok: false, message });
+    }
+  });
+
+  it("says the job may have started when the answer to creating it has no upload list", async () => {
+    const fake = browser({}, () => json({ jobId: "job-17" }, 201));
+
+    expect(await submitJob(fake.deps, { files: [], text: "a post" }, fake.onStatus)).toEqual({
+      ok: false,
+      message: MESSAGES.createLost,
     });
   });
 });

@@ -275,6 +275,32 @@ describe("confirmUploads", () => {
     expect(read).toEqual([]);
   });
 
+  it("reports the timeout when the job runs out of time while its files are being checked", async () => {
+    const one = await webp(1080, 2400, 10);
+    const started = await startJob(deps(), {
+      images: [one.meta],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    if (!started.ok) throw new Error(started.message);
+    await storage.put((await images(started.jobId))[0]!.storage_path, one.bytes, "image/webp");
+    // As the daily backstop or a status read might, while confirm is checking sizes.
+    const racing = {
+      ...storage,
+      stat: async (path: string) => {
+        await db.query("update {{schema}}.jobs set state = 'upload_failed' where id = $1", [
+          started.jobId,
+        ]);
+        return storage.stat(path);
+      },
+    };
+
+    expect(await confirmUploads({ db, clock, storage: racing }, started.jobId)).toEqual({
+      ok: false,
+      reason: "upload-failed",
+    });
+  });
+
   it("fails a job confirmed after its upload timeout instead of queueing it", async () => {
     const one = await webp(1080, 2400, 10);
     const started = await startJob(deps(), {

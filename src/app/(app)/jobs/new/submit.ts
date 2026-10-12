@@ -1,4 +1,5 @@
 import { refusal } from "@/core/intake/limits";
+import { UPLOAD_TIMEOUT_MS } from "@/core/platform/jobs";
 
 import { type Prepared, type PreparedImage, prepareImage } from "./prepare";
 
@@ -26,7 +27,8 @@ export const MESSAGES = {
   createLost:
     "The connection dropped while the job was starting. Check the Jobs list before you press Start again: the job may have started.",
   confirmLost:
-    "The connection dropped while the upload was being checked. Check the Jobs list before you press Start again: the job may have started.",
+    "The upload could not be checked. Check the Jobs list before you press Start again: the job may have started.",
+  checkJobs: "Then check the Jobs list before you press Start again: the job may have started.",
   signIn: "You are signed out. Sign in again, then press Start.",
   notAllowed:
     "This device cannot start jobs. Approve it on the laptop's Devices page, or sign in again.",
@@ -49,8 +51,11 @@ export const BACKOFF_MS = [1_000, 3_000] as const;
 /** How long creating the job and checking the upload may take before the page stops waiting. */
 export const REQUEST_TIMEOUT_MS = 60_000;
 
-/** The server fails an upload after 15 minutes; the page stops trying a little earlier. */
-export const UPLOAD_DEADLINE_MS = 14 * 60_000;
+/**
+ * The server fails an upload 15 minutes after the job was created; the page
+ * stops a minute earlier, counting from before it asked to create the job.
+ */
+export const UPLOAD_DEADLINE_MS = UPLOAD_TIMEOUT_MS - 60_000;
 
 /**
  * One upload attempt may take half a minute plus the file's size at 16 KB a
@@ -93,6 +98,8 @@ export async function submitJob(
   if (refused) return { ok: false, message: refused };
 
   onStatus("Starting the job…");
+  // The server's upload clock starts when this request arrives; the page's starts sooner.
+  const deadline = deps.now() + UPLOAD_DEADLINE_MS;
   let created: { jobId: string; uploads: { imageId: string; url: string }[] };
   try {
     const response = await deps.fetch("/api/jobs", {
@@ -105,18 +112,20 @@ export async function submitJob(
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+    // A server error may come after the job was created; so may an answer the page cannot read.
+    if (response.status >= 500) return { ok: false, message: MESSAGES.createLost };
     if (!response.ok) return { ok: false, message: await createMessage(response) };
     created = (await response.json()) as typeof created;
+    if (!Array.isArray(created.uploads)) throw new Error("no uploads");
   } catch {
     // The server may have created the job before the answer was lost.
     return { ok: false, message: MESSAGES.createLost };
   }
   if (created.uploads.length !== images.length) return { ok: false, message: MESSAGES.notStarted };
 
-  const uploadingSince = deps.now();
   for (const [i, upload] of created.uploads.entries()) {
     onStatus(`Uploading screenshot ${i + 1} of ${created.uploads.length}…`);
-    const uploaded = await uploadFile(deps, upload.url, images[i]!.blob, uploadingSince);
+    const uploaded = await uploadFile(deps, upload.url, images[i]!.blob, deadline);
     if (uploaded === "too-slow") return { ok: false, message: MESSAGES.tooSlow };
     if (uploaded === "refused") return { ok: false, message: MESSAGES.refusedUpload };
   }
@@ -147,25 +156,26 @@ function sessionMessage(status: number): string | null {
 
 /**
  * Up to three attempts per file, waiting longer before each, each with a
- * timeout sized to the file. Only a dropped connection, a timeout or a server
- * error is tried again; any other answer is final, because a signed URL
- * takes one upload, and the confirm step then checks what arrived. No
- * attempt starts once the server's 15 minutes are nearly up.
+ * timeout sized to the file and cut short at the deadline, so no attempt
+ * runs past the server's 15 minutes. Only a dropped connection, a timeout
+ * or a server error is tried again; any other answer is final, because a
+ * signed URL takes one upload, and the confirm step then checks what arrived.
  */
 async function uploadFile(
   deps: SubmitDeps,
   url: string,
   blob: Blob,
-  uploadingSince: number,
+  deadline: number,
 ): Promise<"done" | "refused" | "too-slow"> {
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await deps.wait(BACKOFF_MS[attempt - 1]!);
-    if (deps.now() - uploadingSince > UPLOAD_DEADLINE_MS) return "too-slow";
+    const left = deadline - deps.now();
+    if (left <= 0) return "too-slow";
     try {
       const response = await deps.fetch(url, {
         method: "PUT",
         body: blob,
-        signal: AbortSignal.timeout(uploadTimeoutMs(blob.size)),
+        signal: AbortSignal.timeout(Math.min(uploadTimeoutMs(blob.size), left)),
       });
       // Too large or of a refused type: sending it again cannot help. Any other answer, such as
       // a URL used already by an attempt whose answer was lost, is left to the confirm step.
@@ -181,10 +191,16 @@ async function uploadFile(
 /**
  * Asks the server to confirm the upload, up to three times while the
  * connection or the server fails. A job that the server finds already
- * queued or running was confirmed by an attempt whose answer was lost.
+ * queued or running was confirmed by an attempt whose answer was lost. Any
+ * dropped connection, timeout or server error may have come after the job
+ * was queued, so from then on every refusal says to check the Jobs list.
  */
 async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted> {
-  let lost = false;
+  let uncertain = false;
+  const failed = (message: string): Submitted => ({
+    ok: false,
+    message: uncertain ? `${message} ${MESSAGES.checkJobs}` : message,
+  });
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) await deps.wait(BACKOFF_MS[attempt - 1]!);
     let response: Response;
@@ -194,11 +210,11 @@ async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch {
-      lost = true;
+      uncertain = true;
       continue;
     }
     if (response.status >= 500) {
-      lost = false;
+      uncertain = true;
       continue;
     }
     if (response.ok) return { ok: true, jobId };
@@ -207,9 +223,9 @@ async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted
     if (response.status === 409 && body?.error === "upload-failed") {
       return { ok: false, message: MESSAGES.uploadTimedOut };
     }
-    if (response.status === 404) return { ok: false, message: MESSAGES.notFound };
-    return { ok: false, message: sessionMessage(response.status) ?? MESSAGES.notArrived };
+    if (response.status === 404) return failed(MESSAGES.notFound);
+    if (response.status === 409) return failed(MESSAGES.notArrived);
+    return failed(sessionMessage(response.status) ?? MESSAGES.notArrived);
   }
-  // An answer lost on the way back may have queued the job.
-  return { ok: false, message: lost ? MESSAGES.confirmLost : MESSAGES.notArrived };
+  return { ok: false, message: MESSAGES.confirmLost };
 }
