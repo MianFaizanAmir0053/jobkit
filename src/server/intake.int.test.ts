@@ -1,8 +1,10 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { NextRequest } from "next/server";
+import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
@@ -15,7 +17,7 @@ import { issueSession } from "@/core/platform/sessions";
 import type { AppConfig } from "@/server/config";
 import { createTestDb } from "@/server/db/testDb";
 
-import { confirm, create } from "./intake";
+import { confirm, create, MAX_CLIENT_ELAPSED_MS } from "./intake";
 
 const ORIGIN = "http://localhost:3000";
 const config: AppConfig = {
@@ -58,6 +60,30 @@ const image = (n: number, bytes: number) => ({
   sha256: n.toString(16).padStart(64, "0"),
 });
 
+/** A real WebP and the metadata the phone would declare for it. */
+async function webp(shade: number) {
+  const bytes = new Uint8Array(
+    await sharp({
+      create: {
+        width: 1080,
+        height: 2400,
+        channels: 3,
+        background: { r: shade, g: shade, b: shade },
+      },
+    })
+      .webp()
+      .toBuffer(),
+  );
+  const meta = {
+    contentType: "image/webp",
+    bytes: bytes.length,
+    width: 1080,
+    height: 2400,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+  return { bytes, meta };
+}
+
 beforeAll(async () => {
   db = await createTestDb();
 });
@@ -82,11 +108,8 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
-async function signedIn(): Promise<string> {
-  const { token } = await issueSession(
-    { db, clock, random: cryptoRandom },
-    { kind: "google", label: "laptop" },
-  );
+async function signedIn(kind: "google" | "paired" = "google"): Promise<string> {
+  const { token } = await issueSession({ db, clock, random: cryptoRandom }, { kind, label: kind });
   return token;
 }
 
@@ -167,7 +190,7 @@ describe("POST /api/jobs", () => {
     );
   });
 
-  it("refuses a request from another origin, or without a session", async () => {
+  it("refuses a request from another origin, without a session, or from a phone not yet approved (intake AC8)", async () => {
     const cookie = await signedIn();
     const body = JSON.stringify({ images: [], pastedText: "A job post", clientElapsedMs: 0 });
 
@@ -175,13 +198,62 @@ describe("POST /api/jobs", () => {
       (await create(post("/api/jobs", body, cookie, "https://evil.example"), deps())).status,
     ).toBe(403);
     expect((await create(post("/api/jobs", body), deps())).status).toBe(401);
+    expect((await create(post("/api/jobs", body, await signedIn("paired")), deps())).status).toBe(
+      401,
+    );
+  });
+
+  it("refuses a body declared over 64 KB before reading it", async () => {
+    const cookie = await signedIn();
+    const request = new NextRequest(`${ORIGIN}/api/jobs`, {
+      method: "POST",
+      headers: {
+        origin: ORIGIN,
+        "content-type": "application/json",
+        cookie: `jobkit_session=${cookie}`,
+        "content-length": String(64 * 1024 + 1),
+      },
+      body: JSON.stringify({ images: [], pastedText: "A job post", clientElapsedMs: 0 }),
+    });
+
+    expect((await create(request, deps())).status).toBe(413);
+  });
+
+  it("refuses a clock that says the phone held the job for more than a day", async () => {
+    const cookie = await signedIn();
+
+    expect(
+      (
+        await newJob(
+          { images: [], pastedText: "A job post", clientElapsedMs: MAX_CLIENT_ELAPSED_MS + 1 },
+          cookie,
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (await newJob({ images: [], pastedText: "A job post", clientElapsedMs: 1.5 }, cookie)).status,
+    ).toBe(400);
+  });
+
+  it("records the job as received when its request reached the route (intake AC10)", async () => {
+    const cookie = await signedIn();
+    const arrived = new Date(clock.now().getTime() - 3_000);
+    const body = JSON.stringify({ images: [], pastedText: "A job post", clientElapsedMs: 700 });
+
+    const response = await create(post("/api/jobs", body, cookie), deps(), arrived);
+
+    const { jobId } = (await response.json()) as { jobId: string };
+    expect(await loadJob(db, jobId)).toMatchObject({ receivedAt: arrived, clientElapsedMs: 700 });
   });
 });
 
 describe("POST /api/jobs/<id>/uploaded", () => {
+  let screenshots: { bytes: Uint8Array; meta: ReturnType<typeof image> }[];
+
   async function started(cookie: string) {
+    screenshots = [await webp(10), await webp(20)];
     const response = await newJob(
-      { images: [image(1, 5), image(2, 3)], pastedText: "", clientElapsedMs: 0 },
+      { images: screenshots.map((shot) => shot.meta), pastedText: "", clientElapsedMs: 0 },
       cookie,
     );
     return (await response.json()) as {
@@ -190,16 +262,16 @@ describe("POST /api/jobs/<id>/uploaded", () => {
     };
   }
 
-  const uploadTo = async (url: string, text: string) => {
+  const uploadTo = async (url: string, bytes: Uint8Array) => {
     const token = new URL(url).pathname.split("/").pop()!;
-    expect(await storage.acceptSignedUpload(token, new TextEncoder().encode(text))).toBe(true);
+    expect(await storage.acceptSignedUpload(token, bytes)).toBe(true);
   };
 
   it("queues the job once every image arrived, and starts the pipeline", async () => {
     const cookie = await signedIn();
     const { jobId, uploads } = await started(cookie);
-    await uploadTo(uploads[0]!.url, "hello");
-    await uploadTo(uploads[1]!.url, "abc");
+    await uploadTo(uploads[0]!.url, screenshots[0]!.bytes);
+    await uploadTo(uploads[1]!.url, screenshots[1]!.bytes);
 
     const response = await confirm(post(`/api/jobs/${jobId}/uploaded`, "", cookie), deps(), jobId);
 
@@ -212,13 +284,36 @@ describe("POST /api/jobs/<id>/uploaded", () => {
   it("lists the images still missing, leaving the job uploading", async () => {
     const cookie = await signedIn();
     const { jobId, uploads } = await started(cookie);
-    await uploadTo(uploads[0]!.url, "hello");
+    await uploadTo(uploads[0]!.url, screenshots[0]!.bytes);
 
     const response = await confirm(post(`/api/jobs/${jobId}/uploaded`, "", cookie), deps(), jobId);
 
     expect(response.status).toBe(409);
     expect(await response.json()).toEqual({ error: "missing", missing: [uploads[1]!.imageId] });
     expect(scheduled).toHaveLength(0);
+  });
+
+  it("refuses a body over 64 KB, which could only be image bytes", async () => {
+    const cookie = await signedIn();
+    const { jobId } = await started(cookie);
+
+    const response = await confirm(
+      post(`/api/jobs/${jobId}/uploaded`, "x".repeat(64 * 1024 + 1), cookie),
+      deps(),
+      jobId,
+    );
+
+    expect(response.status).toBe(413);
+    expect(await loadJob(db, jobId)).toMatchObject({ state: "uploading" });
+  });
+
+  it("refuses a phone not yet approved (intake AC8)", async () => {
+    const { jobId } = await started(await signedIn());
+    const phone = await signedIn("paired");
+
+    expect(
+      (await confirm(post(`/api/jobs/${jobId}/uploaded`, "", phone), deps(), jobId)).status,
+    ).toBe(401);
   });
 
   it("refuses a job that is not uploading, one that does not exist, and a request without a session", async () => {

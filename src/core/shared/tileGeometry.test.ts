@@ -9,7 +9,7 @@ import {
   tileHeight,
   tileSpans,
   visualTokens,
-} from "./tileGeometry";
+} from "@/core/shared/tileGeometry";
 
 /* Extraction AC1's geometry: tile heights, cuts and boxes mapped back. */
 

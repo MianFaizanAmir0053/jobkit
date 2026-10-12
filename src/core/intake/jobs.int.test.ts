@@ -1,7 +1,9 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
@@ -50,6 +52,25 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+/** A real WebP and the metadata the phone would declare for it. */
+async function webp(width: number, height: number, shade: number) {
+  const bytes = new Uint8Array(
+    await sharp({
+      create: { width, height, channels: 3, background: { r: shade, g: shade, b: shade } },
+    })
+      .webp()
+      .toBuffer(),
+  );
+  const meta: ImageMeta = {
+    contentType: "image/webp",
+    bytes: bytes.length,
+    width,
+    height,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+  return { bytes, meta };
+}
+
 async function images(jobId: string) {
   const { rows } = await db.query<{
     id: string;
@@ -90,6 +111,12 @@ describe("startJob", () => {
     expect(stored[0]!.storage_path).toBe(`jobs/${started.jobId}/${stored[0]!.id}.webp`);
     expect(stored[2]!.storage_path).toBe(`jobs/${started.jobId}/${stored[2]!.id}.jpg`);
     expect(stored[0]!.purge_after).toEqual(new Date(clock.now().getTime() + 30 * 24 * 60 * 60_000));
+    // Each image's SHA-256 is recorded as declared (intake AC2).
+    const { rows: hashes } = await db.query<{ sha256: string }>(
+      "select sha256 from {{schema}}.job_images where job_id = $1 order by position",
+      [started.jobId],
+    );
+    expect(hashes.map((row) => row.sha256)).toEqual([hash(1), hash(2), hash(3)]);
     expect(started.uploads.map((upload) => upload.imageId)).toEqual(stored.map((row) => row.id));
     expect(new Set(started.uploads.map((upload) => upload.url)).size).toBe(3);
   });
@@ -114,6 +141,39 @@ describe("startJob", () => {
 
     if (!started.ok) throw new Error(started.message);
     expect((await images(started.jobId))[0]!.tile_count).toBe(3);
+  });
+
+  it("counts the job's start back from when its request arrived (intake AC10)", async () => {
+    const arrived = new Date(clock.now().getTime() - 4_000);
+
+    const started = await startJob(
+      deps(),
+      { images: [], pastedText: "a post", clientElapsedMs: 2_500 },
+      arrived,
+    );
+
+    if (!started.ok) throw new Error(started.message);
+    expect(await loadJob(db, started.jobId)).toMatchObject({
+      receivedAt: arrived,
+      clientElapsedMs: 2_500,
+    });
+  });
+
+  it("drops NUL characters from the pasted text, which Postgres cannot store", async () => {
+    const nul = String.fromCharCode(0);
+
+    const started = await startJob(deps(), {
+      images: [],
+      pastedText: `We're hiring${nul}. Apply at jobs@example.com`,
+      clientElapsedMs: 0,
+    });
+
+    if (!started.ok) throw new Error(started.message);
+    const { rows } = await db.query<{ pasted_text: string }>(
+      "select pasted_text from {{schema}}.jobs where id = $1",
+      [started.jobId],
+    );
+    expect(rows).toEqual([{ pasted_text: "We're hiring. Apply at jobs@example.com" }]);
   });
 
   it("starts a paste-only job queued, keeping its text, with nothing to upload", async () => {
@@ -142,6 +202,7 @@ describe("startJob", () => {
       { images: [], pastedText: "   " },
       { images: [image(1, { height: 30_000 }), image(2, { height: 30_000 })], pastedText: "" },
       { images: [image(1, { width: 3_000 })], pastedText: "" },
+      { images: [image(1, { width: 1, height: 30_001 })], pastedText: "" },
     ];
     for (const job of refusals) {
       expect(await startJob(deps(), { ...job, clientElapsedMs: 0 })).toMatchObject({ ok: false });
@@ -154,38 +215,85 @@ describe("startJob", () => {
 });
 
 describe("confirmUploads", () => {
-  it("queues the job once every image is stored at its declared size", async () => {
+  it("queues the job once every image is stored as declared", async () => {
+    const one = await webp(1080, 2400, 10);
+    const two = await webp(1080, 6000, 20);
     const started = await startJob(deps(), {
-      images: [image(1, { bytes: 5 }), image(2, { bytes: 3 })],
+      images: [one.meta, two.meta],
       pastedText: "",
       clientElapsedMs: 0,
     });
     if (!started.ok) throw new Error(started.message);
     const paths = (await images(started.jobId)).map((row) => row.storage_path);
-    await storage.put(paths[0]!, new TextEncoder().encode("hello"), "image/webp");
-    await storage.put(paths[1]!, new TextEncoder().encode("abc"), "image/webp");
+    await storage.put(paths[0]!, one.bytes, "image/webp");
+    await storage.put(paths[1]!, two.bytes, "image/webp");
 
     expect(await confirmUploads(deps(), started.jobId)).toEqual({ ok: true });
     expect(await loadJob(db, started.jobId)).toMatchObject({ state: "queued" });
   });
 
-  it("leaves the job uploading and lists the images missing or of the wrong size", async () => {
+  it("leaves the job uploading and lists each image missing or not as declared", async () => {
+    const real = await Promise.all(
+      [10, 20, 30, 40, 50, 60].map((shade) => webp(1080, 2400, shade)),
+    );
+    const declared = [
+      real[0]!.meta,
+      // Each of these declares something other than what arrives below.
+      real[1]!.meta,
+      { ...real[2]!.meta, height: 2_000 },
+      { ...real[3]!.meta, contentType: "image/png" as const },
+      real[4]!.meta,
+      real[5]!.meta,
+    ];
     const started = await startJob(deps(), {
-      images: [image(1, { bytes: 5 }), image(2, { bytes: 3 }), image(3, { bytes: 4 })],
+      images: declared,
       pastedText: "",
       clientElapsedMs: 0,
     });
     if (!started.ok) throw new Error(started.message);
     const rows = await images(started.jobId);
-    await storage.put(rows[0]!.storage_path, new TextEncoder().encode("hello"), "image/webp");
-    await storage.put(rows[1]!.storage_path, new TextEncoder().encode("abcd"), "image/webp");
+    await storage.put(rows[0]!.storage_path, real[0]!.bytes, "image/webp");
+    // Another image of exactly the declared size: the hash tells them apart.
+    const other = await webp(1080, 2400, 99);
+    const sameSize = new Uint8Array(real[1]!.bytes.length);
+    sameSize.set(other.bytes.subarray(0, sameSize.length));
+    await storage.put(rows[1]!.storage_path, sameSize, "image/webp");
+    await storage.put(rows[2]!.storage_path, real[2]!.bytes, "image/webp");
+    await storage.put(rows[3]!.storage_path, real[3]!.bytes, "image/webp");
+    // Bytes whose hash matches but which are no image at all.
+    const garbage = new TextEncoder().encode("not an image, whatever it says");
+    await db.query("update {{schema}}.job_images set bytes = $2, sha256 = $3 where id = $1", [
+      rows[4]!.id,
+      garbage.length,
+      createHash("sha256").update(garbage).digest("hex"),
+    ]);
+    await storage.put(rows[4]!.storage_path, garbage, "image/webp");
+    // Nothing arrives for the last.
 
     expect(await confirmUploads(deps(), started.jobId)).toEqual({
       ok: false,
       reason: "missing",
-      missing: [rows[1]!.id, rows[2]!.id],
+      missing: rows.slice(1).map((row) => row.id),
     });
     expect(await loadJob(db, started.jobId)).toMatchObject({ state: "uploading" });
+  });
+
+  it("fails a job confirmed after its upload timeout instead of queueing it", async () => {
+    const one = await webp(1080, 2400, 10);
+    const started = await startJob(deps(), {
+      images: [one.meta],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    if (!started.ok) throw new Error(started.message);
+    await storage.put((await images(started.jobId))[0]!.storage_path, one.bytes, "image/webp");
+    clock.advance(15 * 60_000 + 1);
+
+    expect(await confirmUploads(deps(), started.jobId)).toEqual({
+      ok: false,
+      reason: "not-uploading",
+    });
+    expect(await loadJob(db, started.jobId)).toMatchObject({ state: "upload_failed" });
   });
 
   it("refuses a job that is not uploading, and one that does not exist", async () => {

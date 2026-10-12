@@ -20,6 +20,10 @@ describe("prepareSize", () => {
     expect(prepareSize(5152, 60000)).toEqual({ ok: true, width: 2576, height: 30000 });
   });
 
+  it("keeps at least one pixel on each side of a very wide, very short image", () => {
+    expect(prepareSize(100_000, 10)).toEqual({ ok: true, width: 2576, height: 1 });
+  });
+
   it("refuses the message the spec gives", () => {
     expect(TOO_TALL).toBe("Too tall. Take two shorter screenshots instead.");
   });

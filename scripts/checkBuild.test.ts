@@ -36,6 +36,21 @@ describe("checkBuildRoutes", () => {
       }),
     ).toEqual({ ok: false, routes: ["/api/dev/storage/upload/[token]"] });
   });
+
+  it("fails a route at a prefix itself, not only below it", () => {
+    expect(
+      checkBuildRoutes({
+        ...production,
+        "/api/dev/route": "/api/dev",
+        "/api/test/route": "/api/test",
+        "/(app)/test/page": "/test",
+      }),
+    ).toEqual({ ok: false, routes: ["/api/dev", "/api/test", "/test"] });
+    // A route that only starts with the same letters is not under the prefix.
+    expect(checkBuildRoutes({ ...production, "/api/devices/route": "/api/devices" })).toEqual({
+      ok: true,
+    });
+  });
 });
 
 describe("the test-only files", () => {

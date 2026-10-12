@@ -1,4 +1,4 @@
-import { tileCount } from "@/core/extraction/tileGeometry";
+import { tileCount } from "@/core/shared/tileGeometry";
 
 /**
  * Intake's limits (intake spec, "Limits"). This module imports nothing from
@@ -9,9 +9,13 @@ import { tileCount } from "@/core/extraction/tileGeometry";
 export const LIMITS = {
   images: 8,
   imageBytes: 10 * 1024 * 1024,
+  /** Pixels, of the image as uploaded: scaled to 2,576 wide when it was wider. */
+  height: 30_000,
   tiles: 20,
   textLength: 20_000,
 } as const;
+
+export const TOO_TALL = "Too tall. Take two shorter screenshots instead.";
 
 export const CONTENT_TYPES = ["image/webp", "image/jpeg", "image/png"] as const;
 
@@ -31,6 +35,7 @@ export function refusal(images: readonly ImageMeta[], pastedText: string): strin
   if (images.length > LIMITS.images) {
     return `At most ${LIMITS.images} screenshots per job. Remove some, or split the post into two jobs.`;
   }
+  if (images.some((image) => image.height > LIMITS.height)) return TOO_TALL;
   if (images.some((image) => image.bytes > LIMITS.imageBytes)) {
     return "A screenshot is larger than 10 MB. Take a smaller screenshot of that part.";
   }

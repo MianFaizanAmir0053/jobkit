@@ -6,6 +6,7 @@ import { NextRequest } from "next/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
+import { LIMITS } from "@/core/intake/limits";
 
 import { acceptUpload, localRoutesAllowed, serveRead } from "./devStorage";
 
@@ -51,6 +52,55 @@ describe("the local storage routes", () => {
     expect(
       (await acceptUpload(put("unknown", bytes), { storage, kind: "development" }, "unknown"))
         .status,
+    ).toBe(404);
+  });
+
+  it("refuse an unknown token before reading any of the body", async () => {
+    const unread = new ReadableStream<Uint8Array>({
+      pull() {
+        throw new Error("the body was read");
+      },
+    });
+    const request = new NextRequest(
+      // A stream sent as a request body needs half duplex in Node.
+      new Request("http://localhost:3000/api/dev/storage/upload/unknown", {
+        method: "PUT",
+        body: unread,
+        duplex: "half",
+      } as RequestInit),
+    );
+
+    expect((await acceptUpload(request, { storage, kind: "development" }, "unknown")).status).toBe(
+      404,
+    );
+  });
+
+  it("refuse a body larger than an image may be, keeping the token for the right file", async () => {
+    const { url } = await storage.createSignedUploadUrl("jobs/j1/a.webp");
+    const token = tokenOf(url);
+    const deps = { storage, kind: "development" as const };
+
+    const tooLarge = new Uint8Array(LIMITS.imageBytes + 1);
+    expect((await acceptUpload(put(token, tooLarge), deps, token)).status).toBe(413);
+    expect(await storage.stat("jobs/j1/a.webp")).toBeNull();
+
+    const bytes = new TextEncoder().encode("webp bytes");
+    expect((await acceptUpload(put(token, bytes), deps, token)).status).toBe(200);
+  });
+
+  it("refuse a token two hours old, as Supabase's signed upload URLs expire", async () => {
+    const { url } = await storage.createSignedUploadUrl("jobs/j1/a.webp");
+    const token = tokenOf(url);
+    vi.advanceTimersByTime(2 * 60 * 60 * 1000 + 1);
+
+    expect(
+      (
+        await acceptUpload(
+          put(token, new TextEncoder().encode("late")),
+          { storage, kind: "development" },
+          token,
+        )
+      ).status,
     ).toBe(404);
   });
 

@@ -6,7 +6,7 @@ import { CONTENT_TYPES } from "@/core/intake/limits";
 import type { RunnerDeps } from "@/core/platform/runner";
 import type { Storage } from "@/core/ports";
 import type { AppConfig } from "@/server/config";
-import { NO_STORE, refusal, sessionForChange } from "@/server/http";
+import { NO_STORE, readLimited, refusal, sessionForChange } from "@/server/http";
 import { startPipeline } from "@/server/jobs";
 
 /**
@@ -25,6 +25,10 @@ type Deps = RunnerDeps & {
 
 const MAX_BODY_BYTES = 64 * 1024;
 
+// A share can wait on the phone before it is sent, but not for days: past
+// this the start time it gives the job is not believed (intake spec, "Clock").
+export const MAX_CLIENT_ELAPSED_MS = 24 * 60 * 60 * 1000;
+
 const newJobBody = z.object({
   images: z.array(
     z.object({
@@ -36,7 +40,7 @@ const newJobBody = z.object({
     }),
   ),
   pastedText: z.string().default(""),
-  clientElapsedMs: z.number().nonnegative(),
+  clientElapsedMs: z.number().int().nonnegative().max(MAX_CLIENT_ELAPSED_MS),
 });
 
 /** POST /api/jobs: creates the job and hands back an upload URL per image; a paste-only job starts at once. */
@@ -51,7 +55,8 @@ export async function create(
   if (json === "too-large") return refusal(413, "too-large");
   const body = newJobBody.safeParse(json);
   if (!body.success) return refusal(400, "invalid");
-  const started = await startJob(deps, body.data);
+  // The job was received when its request reached the route (intake spec, "Clock").
+  const started = await startJob(deps, body.data, startedAt);
   if (!started.ok) return refusal(422, started.message);
   if (started.queued) await startPipeline(deps, started.jobId, startedAt);
   return NextResponse.json(
@@ -69,6 +74,9 @@ export async function confirm(
 ): Promise<NextResponse> {
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
+  if ((await readLimited(request, MAX_BODY_BYTES)) === "too-large") {
+    return refusal(413, "too-large");
+  }
   const confirmed = await confirmUploads(deps, jobId);
   if (!confirmed.ok) {
     if (confirmed.reason === "not-found") return refusal(404, "not-found");
@@ -83,11 +91,10 @@ export async function confirm(
 
 /** The body as JSON, null when it is not JSON, or "too-large" past 64 KB, declared or sent. */
 async function smallJson(request: NextRequest): Promise<unknown> {
-  if (Number(request.headers.get("content-length") ?? "0") > MAX_BODY_BYTES) return "too-large";
-  const text = await request.text();
-  if (new TextEncoder().encode(text).length > MAX_BODY_BYTES) return "too-large";
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return "too-large";
   try {
-    return JSON.parse(text);
+    return JSON.parse(new TextDecoder().decode(body));
   } catch {
     return null;
   }

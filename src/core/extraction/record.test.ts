@@ -14,7 +14,7 @@ import {
   checkRecord,
   jobRecordSchema,
 } from "./record";
-import { type TilePlace, tileSpans } from "./tileGeometry";
+import { type TilePlace, tileSpans } from "@/core/shared/tileGeometry";
 
 /*
  * Extraction AC3. The synthetic records are what the fake model answers for

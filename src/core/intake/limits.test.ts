@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { type ImageMeta, LIMITS, refusal } from "./limits";
+import { type ImageMeta, LIMITS, refusal, TOO_TALL } from "./limits";
 
 /* The same refusals on the phone and on the server (intake AC3 and AC6). */
 
@@ -39,6 +39,12 @@ describe("refusal", () => {
         "",
       ),
     ).toBe("At most 8 screenshots per job. Remove some, or split the post into two jobs.");
+  });
+
+  it("refuses an image taller than 30,000 pixels, which few tiles would otherwise let through", () => {
+    expect(refusal([image(1, { width: 1, height: LIMITS.height })], "")).toBeNull();
+    expect(refusal([image(1, { width: 1, height: LIMITS.height + 1 })], "")).toBe(TOO_TALL);
+    expect(TOO_TALL).toBe("Too tall. Take two shorter screenshots instead.");
   });
 
   it("refuses a screenshot over 10 MB once encoded", () => {

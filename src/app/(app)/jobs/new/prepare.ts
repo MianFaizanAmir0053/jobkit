@@ -1,5 +1,6 @@
 import { encodingFor, prepareSize } from "@/core/intake/encode";
-import { tileCount } from "@/core/extraction/tileGeometry";
+import type { ImageMeta } from "@/core/intake/limits";
+import { tileCount } from "@/core/shared/tileGeometry";
 
 /**
  * The browser's half of preparing a screenshot (intake spec, "Upload path"):
@@ -10,13 +11,7 @@ import { tileCount } from "@/core/extraction/tileGeometry";
 
 export interface PreparedImage {
   blob: Blob;
-  meta: {
-    contentType: "image/webp" | "image/jpeg" | "image/png";
-    bytes: number;
-    width: number;
-    height: number;
-    sha256: string;
-  };
+  meta: ImageMeta;
   tiles: number;
 }
 
@@ -25,8 +20,12 @@ export type Prepared = ({ ok: true } & PreparedImage) | { ok: false; message: st
 const NOT_AN_IMAGE = "One of the files is not an image this browser can read.";
 const NOT_ENCODED =
   "This browser could not prepare one of the screenshots. Take two shorter screenshots instead.";
+// Browsers offer hashing only to secure pages: https, or localhost on the laptop.
+const NOT_SECURE =
+  "This page cannot prepare screenshots over a plain http address. Open jobkit at its https address, or at localhost on the laptop.";
 
 export async function prepareImage(file: File): Promise<Prepared> {
+  if (!globalThis.crypto?.subtle) return { ok: false, message: NOT_SECURE };
   let bitmap: ImageBitmap;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
@@ -42,7 +41,11 @@ export async function prepareImage(file: File): Promise<Prepared> {
     // A browser that cannot encode WebP gives PNG instead, which intake also takes.
     const contentType =
       blob.type === "image/webp" || blob.type === "image/jpeg" ? blob.type : "image/png";
-    const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+    const digest = await blob
+      .arrayBuffer()
+      .then((bytes) => crypto.subtle.digest("SHA-256", bytes))
+      .catch(() => null);
+    if (!digest) return { ok: false, message: NOT_ENCODED };
     const sha256 = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
     return {
       ok: true,

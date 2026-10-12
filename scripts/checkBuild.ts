@@ -17,11 +17,16 @@ export const TEST_ONLY_PREFIXES = ["/api/test/", "/test/"];
 // Local-only routes, the local storage adapter's stand-ins for Supabase's signed URLs.
 export const LOCAL_ONLY_PREFIXES = ["/api/dev/"];
 
+/** A route under a prefix, or at the prefix itself: "/api/dev" is as local-only as "/api/dev/x". */
+export function isUnder(route: string, prefix: string): boolean {
+  return route.startsWith(prefix) || route === prefix.slice(0, -1);
+}
+
 export function checkBuildRoutes(
   manifest: Readonly<Record<string, string>>,
 ): { ok: true } | { ok: false; routes: string[] } {
   const routes = Object.values(manifest).filter((route) =>
-    [...TEST_ONLY_PREFIXES, ...LOCAL_ONLY_PREFIXES].some((prefix) => route.startsWith(prefix)),
+    [...TEST_ONLY_PREFIXES, ...LOCAL_ONLY_PREFIXES].some((prefix) => isUnder(route, prefix)),
   );
   return routes.length === 0 ? { ok: true } : { ok: false, routes };
 }

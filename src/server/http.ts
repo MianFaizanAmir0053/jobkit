@@ -54,6 +54,40 @@ export async function sessionForChange(
   return sessionForRead(request, deps, require);
 }
 
+/**
+ * The request's body, or "too-large" once it passes `max` bytes, declared or
+ * sent. It is read piece by piece and dropped at the first byte past the
+ * limit, so a large body is never held whole.
+ */
+export async function readLimited(
+  request: Request,
+  max: number,
+): Promise<Uint8Array | "too-large"> {
+  const declared = request.headers.get("content-length");
+  if (declared !== null && Number(declared) > max) return "too-large";
+  const reader = request.body?.getReader();
+  if (!reader) return new Uint8Array(0);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > max) {
+      await reader.cancel();
+      return "too-large";
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, at);
+    at += chunk.length;
+  }
+  return body;
+}
+
 /** The request's JSON body, or null when it is missing or not JSON. */
 export async function jsonBody(request: NextRequest): Promise<unknown> {
   return request.json().catch(() => null);

@@ -1,9 +1,11 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import type { LocalStorage } from "@/adapters/localStorage";
+import { LIMITS } from "@/core/intake/limits";
 import type { Storage } from "@/core/ports";
 import type { Container } from "@/server/container";
 import { onVercelDeployment } from "@/server/deployEnv";
+import { readLimited } from "@/server/http";
 
 /**
  * The routes the local storage adapter's signed URLs point at: on the laptop
@@ -36,15 +38,23 @@ function local(deps: Deps): LocalStorage | null {
     : null;
 }
 
-/** PUT /api/dev/storage/upload/<token>: stores the file the token was issued for, once. */
+/**
+ * PUT /api/dev/storage/upload/<token>: stores the file the token was issued
+ * for. An unknown, used or expired token is refused before any of the body
+ * is read, and a body larger than intake allows an image is refused as it
+ * arrives, since the dev server listens on the local network too.
+ */
 export async function acceptUpload(
   request: NextRequest,
   deps: Deps,
   token: string,
 ): Promise<NextResponse> {
   const storage = local(deps);
-  if (!storage) return new NextResponse(null, { status: 404 });
-  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (!storage || storage.uploadTarget(token, Date.now()) === null) {
+    return new NextResponse(null, { status: 404 });
+  }
+  const bytes = await readLimited(request, LIMITS.imageBytes);
+  if (bytes === "too-large") return new NextResponse(null, { status: 413 });
   const stored = await storage.acceptSignedUpload(token, bytes);
   return new NextResponse(null, { status: stored ? 200 : 404 });
 }

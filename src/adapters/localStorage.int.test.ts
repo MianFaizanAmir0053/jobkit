@@ -82,6 +82,20 @@ describe("local storage", () => {
     expect(await storage.acceptSignedUpload(token, bytes("y"))).toBe(false);
   });
 
+  it("names an upload token's path without using it up, until it expires", async () => {
+    const { token } = await storage.createSignedUploadUrl("jobs/j1/a.webp");
+    const now = Date.now();
+
+    expect(storage.uploadTarget(token, now)).toBe("jobs/j1/a.webp");
+    expect(storage.uploadTarget(token, now)).toBe("jobs/j1/a.webp");
+    expect(storage.uploadTarget(token, now + 2 * 60 * 60 * 1000 + 1_000)).toBeNull();
+    expect(
+      await storage.acceptSignedUpload(token, bytes("x"), now + 2 * 60 * 60 * 1000 + 1_000),
+    ).toBe(false);
+    expect(await storage.acceptSignedUpload(token, bytes("x"), now)).toBe(true);
+    expect(storage.uploadTarget(token, now)).toBeNull();
+  });
+
   it("issues read URLs that resolve to the file only until they expire", async () => {
     await storage.put("jobs/j1/a.webp", bytes("a"), "image/webp");
     const url = await storage.createSignedReadUrl("jobs/j1/a.webp", 60);

@@ -1,6 +1,6 @@
 import sharp, { type Metadata, type OutputInfo } from "sharp";
 
-import { MAX_LONG_EDGE, type TilePlace, tileCount, tileSpans } from "./tileGeometry";
+import { MAX_LONG_EDGE, type TilePlace, tileCount, tileSpans } from "@/core/shared/tileGeometry";
 
 /**
  * Images as Claude receives them (extraction spec, "Images sent to Claude"):

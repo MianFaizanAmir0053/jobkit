@@ -3,7 +3,7 @@ import { z } from "zod";
 import { caseless } from "@/core/platform/caseless";
 
 import { NUMBER_FLAG, isStrictAddress, normaliseWhatsAppNumber } from "./contacts";
-import { mapBox, type TilePlace } from "./tileGeometry";
+import { mapBox, type TilePlace } from "@/core/shared/tileGeometry";
 
 /**
  * The job record (extraction spec, "Job record"). `extract` sends this schema

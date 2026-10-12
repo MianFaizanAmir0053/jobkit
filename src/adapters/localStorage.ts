@@ -11,8 +11,14 @@ import type { Storage } from "@/core/ports";
 import { assertStoragePath } from "@/server/storagePath";
 
 export interface LocalStorage extends Storage {
-  /** Stores the bytes for an upload token once; false for an unknown or used token. */
-  acceptSignedUpload(token: string, bytes: Uint8Array): Promise<boolean>;
+  /** The path a live upload token stands for, without using it up; null for an unknown, used or expired one. */
+  uploadTarget(token: string, nowMs: number): string | null;
+  /**
+   * Stores the bytes for a live upload token. A token works once, as a signed
+   * upload URL does, but is used up only once the file is written, so a write
+   * that fails can be sent again. False for an unknown, used or expired token.
+   */
+  acceptSignedUpload(token: string, bytes: Uint8Array, nowMs?: number): Promise<boolean>;
   /** The path a read token stands for, or null once it has expired. */
   resolveSignedRead(token: string, nowMs: number): string | null;
 }
@@ -37,14 +43,21 @@ async function writeWhole(file: string, bytes: Uint8Array, overwrite: boolean): 
   }
 }
 
+// Supabase fixes a signed upload URL's validity at two hours.
+const UPLOAD_LIFETIME_MS = 2 * 60 * 60 * 1000;
+
 export function createLocalStorage(opts: { root: string; origin: string }): LocalStorage {
-  const uploads = new Map<string, string>();
+  const uploads = new Map<string, { path: string; expiresAtMs: number }>();
   const reads = new Map<string, { path: string; expiresAtMs: number }>();
   const fileFor = (path: string) => {
     assertStoragePath(path);
     return join(opts.root, ...path.split("/"));
   };
   const token = () => randomBytes(24).toString("base64url");
+  const uploadTarget = (t: string, nowMs: number): string | null => {
+    const upload = uploads.get(t);
+    return upload && upload.expiresAtMs >= nowMs ? upload.path : null;
+  };
 
   async function walk(dir: string): Promise<string[]> {
     const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
@@ -62,7 +75,7 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
     async createSignedUploadUrl(path) {
       fileFor(path);
       const t = token();
-      uploads.set(t, path);
+      uploads.set(t, { path, expiresAtMs: Date.now() + UPLOAD_LIFETIME_MS });
       return { url: `${opts.origin}/api/dev/storage/upload/${t}`, token: t };
     },
     async createSignedReadUrl(path, expiresInSeconds) {
@@ -71,13 +84,14 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
       reads.set(t, { path, expiresAtMs: Date.now() + expiresInSeconds * 1000 });
       return `${opts.origin}/api/dev/storage/read/${t}`;
     },
-    async acceptSignedUpload(t, bytes) {
-      const path = uploads.get(t);
-      if (!path) return false;
-      uploads.delete(t);
+    uploadTarget,
+    async acceptSignedUpload(t, bytes, nowMs = Date.now()) {
+      const path = uploadTarget(t, nowMs);
+      if (path === null) return false;
       const file = fileFor(path);
       await mkdir(dirname(file), { recursive: true });
       await writeWhole(file, bytes, true);
+      uploads.delete(t);
       return true;
     },
     resolveSignedRead(t, nowMs) {

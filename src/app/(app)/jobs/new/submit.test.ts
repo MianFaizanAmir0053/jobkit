@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { TOO_TALL } from "@/core/intake/encode";
 
 import type { Prepared } from "./prepare";
-import { MESSAGES, type SubmitDeps, submitJob } from "./submit";
+import { BACKOFF_MS, MESSAGES, type SubmitDeps, submitJob, UPLOAD_TIMEOUT_MS } from "./submit";
 
 /* Start's flow with the browser's pieces faked: intake AC1, AC3 and AC6 from the phone's side. */
 
@@ -25,7 +25,7 @@ function screenshot(n: number, overrides: { height?: number; bytes?: number } = 
   };
 }
 
-type Call = { url: string; method: string; body: unknown };
+type Call = { url: string; method: string; body: unknown; signal: AbortSignal | null };
 
 /** A fake browser: `prepared` by file name, and `answer` for each request in turn. */
 function browser(
@@ -35,19 +35,23 @@ function browser(
 ) {
   const calls: Call[] = [];
   const statuses: string[] = [];
+  const waits: number[] = [];
   const deps: SubmitDeps = {
     prepare: async (file) => prepared[file.name]!,
     fetch: async (url, init) => {
       const body = typeof init.body === "string" ? JSON.parse(init.body) : init.body;
-      const call = { url, method: init.method ?? "GET", body };
+      const call = { url, method: init.method ?? "GET", body, signal: init.signal ?? null };
       calls.push(call);
       const answered = answer(call, calls);
       if (answered instanceof Error) throw answered;
       return answered;
     },
     now: () => times.shift() ?? 0,
+    wait: async (ms) => {
+      waits.push(ms);
+    },
   };
-  return { deps, calls, statuses, onStatus: (status: string) => statuses.push(status) };
+  return { deps, calls, statuses, waits, onStatus: (status: string) => statuses.push(status) };
 }
 
 const file = (name: string) => new File(["x"], name);
@@ -89,6 +93,7 @@ describe("submitJob", () => {
       {
         url: "/api/jobs",
         method: "POST",
+        signal: null,
         body: {
           images: [],
           pastedText: "We're hiring. Apply at jobs@example.com",
@@ -183,24 +188,38 @@ describe("submitJob", () => {
     expect(tall.calls).toEqual([]);
   });
 
-  it("shows the server's message for a job it refused, and a general one otherwise", async () => {
+  it("shows the server's message for a job it refused, and what to do for any other refusal", async () => {
     const refused = browser({}, () => json({ error: "The server's own words." }, 422));
     expect(await submitJob(refused.deps, { files: [], text: "a post" }, refused.onStatus)).toEqual({
       ok: false,
       message: "The server's own words.",
     });
 
-    for (const answer of [
-      json({ error: "forbidden" }, 403),
-      new Response("not json", { status: 500 }),
-      json({ error: 42 }, 422),
-    ]) {
+    const cases: [Response, string][] = [
+      [json({ error: "unauthorised" }, 401), MESSAGES.signIn],
+      [json({ error: "forbidden" }, 403), MESSAGES.notAllowed],
+      [json({ error: "invalid" }, 400), MESSAGES.badRequest],
+      [new Response("not json", { status: 500 }), MESSAGES.notStarted],
+      [json({ error: 42 }, 422), MESSAGES.notStarted],
+    ];
+    for (const [answer, message] of cases) {
       const failed = browser({}, () => answer);
       expect(await submitJob(failed.deps, { files: [], text: "a post" }, failed.onStatus)).toEqual({
         ok: false,
-        message: MESSAGES.notStarted,
+        message,
       });
     }
+  });
+
+  it("says the job may have started when the connection drops while it starts", async () => {
+    const fake = browser({}, () => new Error("dropped"));
+
+    expect(await submitJob(fake.deps, { files: [], text: "a post" }, fake.onStatus)).toEqual({
+      ok: false,
+      message: MESSAGES.createLost,
+    });
+    // Never sent twice: the first may have reached the server.
+    expect(fake.calls).toHaveLength(1);
   });
 
   it("refuses when the server hands back a different number of upload URLs", async () => {
@@ -246,6 +265,12 @@ describe("submitJob", () => {
       "token-2",
       "uploaded",
     ]);
+    // Each later attempt waits longer, and every attempt gives up after its timeout.
+    expect(fake.waits).toEqual([...BACKOFF_MS, ...BACKOFF_MS]);
+    for (const call of fake.calls.filter((call) => call.method === "PUT")) {
+      expect(call.signal).toBeInstanceOf(AbortSignal);
+    }
+    expect(UPLOAD_TIMEOUT_MS).toBe(120_000);
   });
 
   it("says the screenshots did not arrive when the server cannot confirm them", async () => {
@@ -259,5 +284,59 @@ describe("submitJob", () => {
     expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
       { ok: false, message: MESSAGES.notArrived },
     );
+  });
+
+  it("asks for the confirmation again while the connection or the server fails, three times at most", async () => {
+    const happy = server("job-10", 1);
+    const confirms: (Response | Error)[] = [
+      new Error("dropped"),
+      new Response(null, { status: 502 }),
+      json({ queued: true }, 202),
+    ];
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.url.endsWith("/uploaded") ? confirms.shift()! : happy(call),
+    );
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: true, jobId: "job-10" },
+    );
+    expect(fake.calls.filter((call) => call.url.endsWith("/uploaded"))).toHaveLength(3);
+    expect(fake.waits).toEqual([...BACKOFF_MS]);
+
+    const down = browser({ "a.png": screenshot(1) }, (call) =>
+      call.url.endsWith("/uploaded") ? new Error("dropped") : happy(call),
+    );
+    expect(await submitJob(down.deps, { files: [file("a.png")], text: "" }, down.onStatus)).toEqual(
+      { ok: false, message: MESSAGES.notArrived },
+    );
+    expect(down.calls.filter((call) => call.url.endsWith("/uploaded"))).toHaveLength(3);
+  });
+
+  it("opens the job when it is no longer uploading, as after a confirmation whose answer was lost", async () => {
+    const happy = server("job-11", 1);
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.url.endsWith("/uploaded") ? json({ error: "not-uploading" }, 409) : happy(call),
+    );
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: true, jobId: "job-11" },
+    );
+  });
+
+  it("tells a signed-out owner to sign in, and says when the job is gone", async () => {
+    const happy = server("job-12", 1);
+    const answers: [Response, string][] = [
+      [json({ error: "unauthorised" }, 401), MESSAGES.signIn],
+      [json({ error: "forbidden" }, 403), MESSAGES.notAllowed],
+      [json({ error: "not-found" }, 404), MESSAGES.notFound],
+    ];
+    for (const [answer, message] of answers) {
+      const fake = browser({ "a.png": screenshot(1) }, (call) =>
+        call.url.endsWith("/uploaded") ? answer : happy(call),
+      );
+      expect(
+        await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus),
+      ).toEqual({ ok: false, message });
+    }
   });
 });

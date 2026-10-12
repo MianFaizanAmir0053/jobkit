@@ -1,4 +1,6 @@
-import { MAX_LONG_EDGE } from "@/core/extraction/tileGeometry";
+import { MAX_LONG_EDGE } from "@/core/shared/tileGeometry";
+
+import { LIMITS, TOO_TALL } from "./limits";
 
 /**
  * How the phone prepares each image before it uploads (intake spec, "Upload
@@ -9,18 +11,21 @@ import { MAX_LONG_EDGE } from "@/core/extraction/tileGeometry";
  * browser decodes and encodes; this module only decides, so it is tested.
  */
 
-const MAX_HEIGHT = 30_000;
 const WEBP_MAX_SIDE = 16_383;
 
-export const TOO_TALL = "Too tall. Take two shorter screenshots instead.";
+export { TOO_TALL };
 
 export type PreparedSize =
   { ok: true; width: number; height: number } | { ok: false; message: string };
 
 export function prepareSize(width: number, height: number): PreparedSize {
   const scale = width > MAX_LONG_EDGE ? MAX_LONG_EDGE / width : 1;
-  const prepared = { width: Math.round(width * scale), height: Math.round(height * scale) };
-  return prepared.height > MAX_HEIGHT
+  // The limit applies to the image as uploaded, which is what extraction cuts.
+  const prepared = {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+  return prepared.height > LIMITS.height
     ? { ok: false, message: TOO_TALL }
     : { ok: true, ...prepared };
 }

@@ -4,9 +4,10 @@
  * visual tokens per image, and silently shrink a larger image, after which the
  * coordinates they return refer to the shrunken copy; so images are cut into
  * tiles that fit, and a box a model reports in a tile is mapped back to its
- * image. This module imports nothing, so intake's browser code counts tiles
- * with the formula the server cuts them by, and the record's checks map boxes
- * without loading sharp, which only tiles.ts does.
+ * image. This module imports nothing and is shared: intake's browser code
+ * counts tiles with the formula the server cuts them by, and the record's
+ * checks map boxes without loading sharp, which only extraction's tiles.ts
+ * does.
  */
 
 export const MAX_LONG_EDGE = 2576;

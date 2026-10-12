@@ -1,5 +1,9 @@
-import { tileCount } from "@/core/extraction/tileGeometry";
-import { createJob, loadJob, moveJob } from "@/core/platform/jobs";
+import { createHash } from "node:crypto";
+
+import sharp from "sharp";
+
+import { createJob, expireUploads, loadJob, moveJob } from "@/core/platform/jobs";
+import { tileCount } from "@/core/shared/tileGeometry";
 import type { Clock, Db, Storage } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
@@ -38,11 +42,21 @@ export type StartResult =
 
 type Deps = { db: Db; clock: Clock; storage: Storage };
 
-export async function startJob(deps: Deps, job: NewJob): Promise<StartResult> {
+/**
+ * Creates the job. `receivedAt` is when its request reached the server,
+ * from which the job's start is counted back (intake spec, "Clock").
+ */
+export async function startJob(
+  deps: Deps,
+  job: NewJob,
+  receivedAt: Date = deps.clock.now(),
+): Promise<StartResult> {
   // Exact repeats within one job are dropped, the first kept.
   const seen = new Set<string>();
   const images = job.images.filter((image) => !seen.has(image.sha256) && seen.add(image.sha256));
-  const refused = refusal(images, job.pastedText);
+  // A NUL character means nothing in a post, and Postgres text cannot hold one.
+  const pastedText = job.pastedText.split(String.fromCharCode(0)).join("");
+  const refused = refusal(images, pastedText);
   if (refused) return { ok: false, message: refused };
 
   const now = deps.clock.now();
@@ -50,13 +64,13 @@ export async function startJob(deps: Deps, job: NewJob): Promise<StartResult> {
   return deps.db.tx(async (tx) => {
     const jobId = await createJob(tx, {
       state: "uploading",
-      receivedAt: now,
+      receivedAt,
       clientElapsedMs: job.clientElapsedMs,
     });
-    if (job.pastedText.trim() !== "") {
+    if (pastedText.trim() !== "") {
       await tx.query("update {{schema}}.jobs set pasted_text = $2 where id = $1", [
         jobId,
-        job.pastedText,
+        pastedText,
       ]);
     }
     const uploads: { imageId: string; url: string }[] = [];
@@ -100,25 +114,28 @@ export type ConfirmResult =
   | { ok: false; reason: "missing"; missing: string[] };
 
 /**
- * Checks that every image of an uploading job is stored at the size its
- * metadata declared, then queues the job. A job with an image missing or of
- * the wrong size stays uploading, and the IDs of those images come back, so
- * the phone can upload them again.
+ * Checks that every image of an uploading job is stored as its metadata
+ * declared it: the same size, the same SHA-256, and an image of the declared
+ * type and dimensions, so the limits checked at creation hold for what was
+ * uploaded. Then it queues the job. A job with an image missing or not as
+ * declared stays uploading, and the IDs of those images come back, so the
+ * phone can upload them again. A job past its upload timeout has failed.
  */
 export async function confirmUploads(deps: Deps, jobId: string): Promise<ConfirmResult> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
+  await expireUploads(deps.db, deps.clock.now(), jobId);
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
   if (job.state !== "uploading") return { ok: false, reason: "not-uploading" };
-  const { rows } = await deps.db.query<{ id: string; storage_path: string; bytes: number }>(
-    `select id, storage_path, bytes from {{schema}}.job_images
-      where job_id = $1 order by purpose, position`,
+  const { rows } = await deps.db.query<StoredImage>(
+    `select id, storage_path, content_type, bytes, width, height, sha256
+       from {{schema}}.job_images where job_id = $1 order by purpose, position`,
     [jobId],
   );
   const missing: string[] = [];
   for (const row of rows) {
-    const stored = await deps.storage.stat(row.storage_path);
-    if (stored?.size !== row.bytes) missing.push(row.id);
+    const stored = await deps.storage.get(row.storage_path);
+    if (!stored || !(await asDeclared(stored, row))) missing.push(row.id);
   }
   if (missing.length > 0) return { ok: false, reason: "missing", missing };
   const moved = await moveJob(deps.db, jobId, {
@@ -129,4 +146,39 @@ export async function confirmUploads(deps: Deps, jobId: string): Promise<Confirm
     ifChangedAt: job.stateChangedAt,
   });
   return moved ? { ok: true } : { ok: false, reason: "not-uploading" };
+}
+
+type StoredImage = {
+  id: string;
+  storage_path: string;
+  content_type: ImageMeta["contentType"];
+  bytes: number;
+  width: number;
+  height: number;
+  sha256: string;
+};
+
+const FORMATS: Record<ImageMeta["contentType"], string> = {
+  "image/webp": "webp",
+  "image/jpeg": "jpeg",
+  "image/png": "png",
+};
+
+/** Whether stored bytes are the image declared: size, hash, then type and upright size from the header. */
+async function asDeclared(bytes: Uint8Array, declared: StoredImage): Promise<boolean> {
+  if (bytes.length !== declared.bytes) return false;
+  if (createHash("sha256").update(bytes).digest("hex") !== declared.sha256) return false;
+  try {
+    const { format, width, height, orientation } = await sharp(bytes).metadata();
+    // EXIF orientations 5 to 8 turn the image a quarter turn, swapping its sides.
+    const [upright, tall] =
+      orientation !== undefined && orientation >= 5 ? [height, width] : [width, height];
+    return (
+      format === FORMATS[declared.content_type] &&
+      upright === declared.width &&
+      tall === declared.height
+    );
+  } catch {
+    return false;
+  }
 }
