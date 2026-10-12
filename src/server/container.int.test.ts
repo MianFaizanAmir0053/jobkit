@@ -2,9 +2,11 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { createContainer, getContainer, type Container } from "./container";
 import { lockLocalData } from "./db/localDb";
+import { NO_ANSWER, setScriptedAnswers } from "./scriptedModels";
 
 let container: Container | undefined;
 let dataDir: string | undefined;
@@ -90,10 +92,33 @@ describe("createContainer", () => {
     expect(() => container!.llmFor("claude-opus-5-5")).toThrow(/ANTHROPIC_API_KEY is not set/);
   });
 
-  it("in test, has no model to call, whatever keys the shell holds", async () => {
+  it("in test, answers only from the script, whatever keys the shell holds", async () => {
     container = await createContainer({ JOBKIT_ENV: "test", ANTHROPIC_EVALS_API_KEY: "evals-key" });
+    setScriptedAnswers([]);
 
-    expect(() => container!.llmFor("claude-opus-5-5")).toThrow(/no models/);
+    // No provider is loaded: with no answer set, the call says so instead of reaching one.
+    await expect(
+      container.llmFor("claude-opus-5-5").countInputTokens({
+        model: "claude-opus-5-5",
+        system: "",
+        content: [],
+        schema: z.object({}),
+        effort: "low",
+        maxTokens: 10,
+      }),
+    ).resolves.toBe(1_000);
+    await expect(
+      container.llmFor("claude-opus-5-5").call({
+        model: "claude-opus-5-5",
+        system: "",
+        content: [],
+        schema: z.object({}),
+        effort: "low",
+        maxTokens: 10,
+        signal: new AbortController().signal,
+        onEvent: () => undefined,
+      }),
+    ).rejects.toThrow(NO_ANSWER);
   });
 
   it("checks every local build, as when the dev server builds again after an edited .env file", async () => {
@@ -126,7 +151,11 @@ describe("createContainer", () => {
   });
 
   it("is not fooled by VERCEL=1 in a local file, which `vercel env pull` writes with VERCEL_ENV=development", async () => {
-    container = await createContainer({ VERCEL: "1", VERCEL_ENV: "development", JOBKIT_ENV: "test" });
+    container = await createContainer({
+      VERCEL: "1",
+      VERCEL_ENV: "development",
+      JOBKIT_ENV: "test",
+    });
 
     expect(container.kind).toBe("test");
   });

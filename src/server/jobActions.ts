@@ -1,0 +1,115 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { z } from "zod";
+
+import { confirmPost, pickRole, skipRolePick } from "@/core/extraction/owner";
+import { loadJob, retryJob, skipJob } from "@/core/platform/jobs";
+import type { RunnerDeps } from "@/core/platform/runner";
+import { markSent } from "@/core/review/markSent";
+import { isUuid } from "@/lib/uuid";
+import type { AppConfig } from "@/server/config";
+import { NO_STORE, readLimited, refusal, sessionForChange } from "@/server/http";
+import { startPipeline } from "@/server/jobs";
+
+/**
+ * The owner's answers on the job page (platform spec B9; extraction and
+ * review specs): Retry, Skip, the role pick, "This is a job post" or "Read
+ * it again", and Mark sent. Each needs an approved session and the app's
+ * own origin, moves the job only from the state it was read in, and, where
+ * the job runs again, starts the pipeline as the upload confirmation does.
+ */
+
+type Deps = RunnerDeps & {
+  config: AppConfig;
+  /** Next's after() in the app: the pipeline runs once the response has gone. */
+  schedule: (task: () => Promise<unknown>) => void;
+};
+
+const MAX_BODY_BYTES = 1024;
+
+const ok = (status = 200, body: object = { ok: true }) =>
+  NextResponse.json(body, { status, headers: NO_STORE });
+
+/** POST /api/jobs/<id>/retry: a failed job resumes at the stage that failed. */
+export async function retry(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+  startedAt: Date = deps.clock.now(),
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const retried = await retryJob(deps, jobId);
+  if (!retried.ok) return refusal(retried.reason === "not-found" ? 404 : 409, retried.reason);
+  await startPipeline(deps, jobId, startedAt);
+  return ok(202);
+}
+
+/** POST /api/jobs/<id>/skip: closes a job waiting on the owner, the role pick's Skip included. */
+export async function skip(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const job = await loadJob(deps.db, jobId);
+  if (!job) return refusal(404, "not-found");
+  const skipped =
+    job.state === "needs_role_pick" ? await skipRolePick(deps, jobId) : await skipJob(deps, jobId);
+  if (!skipped.ok) return refusal(skipped.reason === "not-found" ? 404 : 409, skipped.reason);
+  return ok();
+}
+
+const roleBody = z.object({ roleId: z.string().min(1).max(20) });
+
+/** POST /api/jobs/<id>/role: the owner picks one of the post's roles, and the chain goes on with it. */
+export async function role(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+  startedAt: Date = deps.clock.now(),
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return refusal(413, "too-large");
+  let json: unknown = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    // Not JSON: refused below.
+  }
+  const parsed = roleBody.safeParse(json);
+  if (!parsed.success) return refusal(400, "invalid");
+  const picked = await pickRole(deps, jobId, parsed.data.roleId);
+  if (!picked.ok) return refusal(picked.reason === "not-found" ? 404 : 409, picked.reason);
+  await startPipeline(deps, jobId, startedAt);
+  return ok(202);
+}
+
+/** POST /api/jobs/<id>/read-again: "This is a job post", or "Read it again" after no role was found. */
+export async function readAgain(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+  startedAt: Date = deps.clock.now(),
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const confirmed = await confirmPost(deps, jobId);
+  if (!confirmed.ok) {
+    return refusal(confirmed.reason === "not-found" ? 404 : 409, confirmed.reason);
+  }
+  await startPipeline(deps, jobId, startedAt);
+  return ok(202);
+}
+
+/** POST /api/jobs/<id>/sent: Mark sent, after the owner sent the email from Gmail. */
+export async function sent(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const marked = await markSent(deps, jobId, actor.session.id);
+  if (!marked.ok) return refusal(marked.reason === "not-found" ? 404 : 409, marked.reason);
+  return ok(200, { ok: true, changed: marked.changed });
+}

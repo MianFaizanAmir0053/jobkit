@@ -4,6 +4,7 @@ import { z } from "zod";
 import { fakeLlm } from "@/adapters/fakeLlm";
 
 import { lazyLlm, modelsFor } from "./models";
+import { NO_ANSWER, setScriptedAnswers } from "./scriptedModels";
 
 const countable = {
   model: "claude-opus-5-5",
@@ -16,7 +17,10 @@ const countable = {
 
 describe("modelsFor", () => {
   it("in production, runs Claude and Gemini on the app's keys", () => {
-    const llmFor = modelsFor("production", { ANTHROPIC_API_KEY: "app-key", GEMINI_API_KEY: "app-key" });
+    const llmFor = modelsFor("production", {
+      ANTHROPIC_API_KEY: "app-key",
+      GEMINI_API_KEY: "app-key",
+    });
 
     expect(llmFor("claude-opus-5-5")).toMatchObject({ call: expect.any(Function) });
     expect(llmFor("gemini-3.8-flash")).toMatchObject({ call: expect.any(Function) });
@@ -44,12 +48,42 @@ describe("modelsFor", () => {
     );
   });
 
-  it("in tests, has no models at all", () => {
-    expect(() =>
-      modelsFor("test", { ANTHROPIC_API_KEY: "app-key", ANTHROPIC_EVALS_API_KEY: "evals-key" })(
-        "claude-opus-5-5",
-      ),
-    ).toThrow(/test server has no models/);
+  it("in tests, answers only from the script, whatever keys are set, never loading a provider", async () => {
+    const llmFor = modelsFor("test", {
+      ANTHROPIC_API_KEY: "app-key",
+      ANTHROPIC_EVALS_API_KEY: "evals-key",
+    });
+    setScriptedAnswers([{ post_kind: "job_post" }]);
+
+    const reply = await llmFor("claude-opus-5-5").call({
+      model: "claude-opus-5-5",
+      system: "",
+      content: [],
+      schema: z.object({}),
+      effort: "medium",
+      maxTokens: 10,
+      signal: new AbortController().signal,
+      onEvent: () => undefined,
+    });
+
+    expect(reply).toMatchObject({
+      kind: "answer",
+      text: '{"post_kind":"job_post"}',
+      requestId: "scripted",
+    });
+    await expect(
+      llmFor("gemini-3.8-flash").call({
+        model: "gemini-3.8-flash",
+        system: "",
+        content: [],
+        schema: z.object({}),
+        effort: "low",
+        maxTokens: 10,
+        signal: new AbortController().signal,
+        onEvent: () => undefined,
+      }),
+    ).rejects.toThrow(NO_ANSWER);
+    expect(() => llmFor("gpt-5")).toThrow(/No provider serves/);
   });
 
   it("refuses a model no provider serves", () => {

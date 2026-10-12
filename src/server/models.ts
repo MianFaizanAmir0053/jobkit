@@ -1,6 +1,7 @@
 import { spendGuard } from "@/core/ledger/spend";
 import { type ModelCallDeps, providerOf } from "@/core/platform/models";
 import type { Clock, Db, Llm } from "@/core/ports";
+import { scriptedLlm } from "@/server/scriptedModels";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
@@ -14,12 +15,19 @@ const KEY_NAMES = {
  * The model behind each model ID, by environment (platform spec B4, B8).
  * Production uses the app's keys. Development uses the evaluation keys from
  * .env.local, so local runs spend from the evaluation workspaces and never
- * from the app's. The test server has no keys; the stages' end-to-end tests
- * will give it scripted models (Task 26). A model whose key is missing
+ * from the app's. The test server has no keys: every model there answers
+ * from the script the end-to-end tests set (scriptedModels.ts). A model whose key is missing
  * throws when a stage asks for it, before anything is logged or charged, so
  * the rest of the app keeps working without it.
  */
 export function modelsFor(kind: keyof typeof KEY_NAMES, env: Env): (model: string) => Llm {
+  if (kind === "test") {
+    const scripted = scriptedLlm();
+    return (model) => {
+      providerOf(model);
+      return scripted;
+    };
+  }
   const names = KEY_NAMES[kind];
   const llms = {
     anthropic: lazyLlm(names ? env[names.anthropic] : undefined, async (apiKey) =>
@@ -64,7 +72,10 @@ export function modelCallDeps(container: {
  * that fails is tried again on the next call, as a container that failed to
  * start is. None without a key.
  */
-export function lazyLlm(apiKey: string | undefined, load: (apiKey: string) => Promise<Llm>): Llm | null {
+export function lazyLlm(
+  apiKey: string | undefined,
+  load: (apiKey: string) => Promise<Llm>,
+): Llm | null {
   if (!apiKey) return null;
   let loaded: Promise<Llm> | undefined;
   const llm = () =>

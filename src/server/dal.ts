@@ -19,6 +19,8 @@ import {
   type Session,
   type SessionRequirements,
 } from "@/core/platform/sessions";
+import { type JobListItem, listJobViews, jobView, type JobView } from "@/core/review/jobView";
+import { isUuid } from "@/lib/uuid";
 
 import { getContainer } from "./container";
 import { SESSION_COOKIE } from "./sessionCookie";
@@ -55,15 +57,27 @@ export async function requireSession(require: SessionRequirements = {}): Promise
   redirect(met.reason === "stale-google-auth" ? "/api/auth/google/start" : "/jobs");
 }
 
-export interface JobSummary {
-  id: string;
-  title: string;
-}
-
-/** The jobs list: empty until the runner's jobs table exists. */
-export const listJobs = cache(async (): Promise<JobSummary[]> => {
+/** The jobs list, newest first. */
+export const listJobs = cache(async (): Promise<JobListItem[]> => {
   await requireSession();
-  return [];
+  return listJobViews((await getContainer()).db);
+});
+
+/** One job as its page shows it, its upload timeout applied; null for an unknown ID. */
+export const jobForViewer = cache(async (id: string): Promise<JobView | null> => {
+  await requireSession();
+  if (!isUuid(id)) return null;
+  return jobView(await getContainer(), id);
+});
+
+/**
+ * The time zone the owner reads times in: the active profile's, or UTC
+ * before there is one. Paired phones see times too, but no other profile data.
+ */
+export const viewerTimeZone = cache(async (): Promise<string> => {
+  await requireSession();
+  const profile = await getActiveProfile((await getContainer()).db);
+  return profile?.owner.location.timezone ?? "UTC";
 });
 
 /** The Devices page's list: google sessions only (platform spec B3). */
