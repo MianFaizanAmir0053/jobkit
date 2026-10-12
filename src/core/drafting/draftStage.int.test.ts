@@ -343,6 +343,30 @@ describe("the thin drafting group", () => {
     expect(draft.flags.map((flag) => flag.kind)).not.toContain("keyword_missing");
   });
 
+  it("checks eligibility again when the role's zone has changed its clocks", async () => {
+    await seedSample();
+    const record = fixture("S01-email-simple");
+    record.roles[0]!.location.time_zone = {
+      zone: "Australia/Sydney",
+      min_overlap_hours: -1,
+      text: "Sydney hours",
+    };
+    const id = await run("Northwind Analytics is hiring. Apply to jobs@example.com.", [
+      answer(record),
+      answer(S01_DRAFT),
+      answer(JUDGED),
+    ]);
+    const job = (await loadJob(db, id))!;
+    const ctx = { job, outputOf: (stage: "extract") => stageOutput(db, id, stage) };
+    const inputAt = async (iso: string) => {
+      return eligibilityStage({ db, clock: fakeClock(new Date(iso)) }).input(ctx);
+    };
+
+    // Sydney keeps daylight saving in January and not in July.
+    expect(await inputAt("2026-07-15T12:00:00Z")).toMatchObject({ zoneOffset: 600 });
+    expect(await inputAt("2027-01-15T12:00:00Z")).toMatchObject({ zoneOffset: 660 });
+  });
+
   it("fails before drafting, without a model call, when there is no profile", async () => {
     const id = await run("We're hiring. Apply at jobs@example.com", [
       answer(fixture("S01-email-simple")),

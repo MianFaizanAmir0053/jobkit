@@ -280,7 +280,7 @@ Modules register stages; the runner owns their order, the job's state and the bo
 |---|---|
 | `extract` | post image hashes and pasted text; the owner's "This is a job post" confirmation; model, effort and prompt version |
 | `extract_questions` | form image hashes; model, effort and prompt version |
-| `eligibility` | the record's output hash; the chosen role; the profile version; the owner's eligibility decision |
+| `eligibility` | the record's output hash; the chosen role; the profile version; the owner's eligibility decision; the role's zone's offset from UTC that day, on which the overlap turns |
 | `draft` | the record's output hash; the chosen role; the profile version; the kit type; the owner's declined instructions; model, effort and prompt version |
 | `draft_answers` | the IDs and texts of questions not yet answered; the profile version; model, effort and prompt version |
 | `address_read` | the crop's hash, by the screenshot's hash, the box and the crop's rules it is made from; model and prompt version; for pasted text, the text's hash and the contact |

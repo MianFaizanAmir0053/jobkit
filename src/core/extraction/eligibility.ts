@@ -2,7 +2,7 @@ import type { StageDefinition, StageResult, Transition } from "@/core/platform/r
 import type { Clock, Db } from "@/core/ports";
 import { getActiveProfile, getProfileVersion } from "@/core/profile/profile";
 
-import { checkEligibility, type Eligibility } from "./eligibilityCheck";
+import { checkEligibility, type Eligibility, offsetMinutes } from "./eligibilityCheck";
 import { readExtractOutput } from "./extract";
 import { chosenRole, draftedAnyway } from "./owner";
 
@@ -29,13 +29,16 @@ interface EligibilityInput {
   profile: string | null;
   /** Whether the owner chose Draft anyway for this role on this record. */
   draftAnyway: boolean;
+  /** The role's zone's offset from UTC now, so a check is not reused across a change of clocks. */
+  zoneOffset: number | null;
 }
 
 export function eligibilityStage(deps: { db: Db; clock: Clock }): StageDefinition {
   return {
     callsModel: false,
 
-    // B9: the record's output hash, the chosen role, the profile version, the owner's decision.
+    // B9: the record's output hash, the chosen role, the profile version, the owner's decision,
+    // and the zone's offset today, on which the overlap turns.
     async input(ctx): Promise<EligibilityInput> {
       const extract = await ctx.outputOf("extract");
       const role = await chosenRole(deps.db, ctx.job.id);
@@ -48,6 +51,7 @@ export function eligibilityStage(deps: { db: Db; clock: Clock }): StageDefinitio
         role: role.id,
         profile: profile?.versionId ?? null,
         draftAnyway: await draftedAnyway(deps.db, ctx.job.id),
+        zoneOffset: offsetMinutes(role.location.time_zone.zone.trim(), deps.clock.now()),
       };
     },
 

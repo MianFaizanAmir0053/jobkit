@@ -319,6 +319,9 @@ const REGIONS: readonly {
   { code: "APAC", name: "Asia-Pacific", members: null, aliases: ["asia pacific"] },
 ];
 
+/** The region code for anywhere at all. */
+export const WORLDWIDE = "WORLDWIDE";
+
 /** The region codes, in the table's order, for prompts that ask a model for a place code. */
 export const REGION_CODES: readonly string[] = REGIONS.map((region) => region.code);
 
