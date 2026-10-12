@@ -2,9 +2,10 @@
  *   npm run build   runs `next build`, then this check
  *
  * Platform spec B2: test-only routes exist only in the dev server the
- * end-to-end tests start, never in a build. next.config.ts leaves them out of
- * every build; this confirms it from the build's own route manifest, and
- * fails the build (on Vercel too) if one slipped in.
+ * end-to-end tests start, and the local-only storage routes only in a dev
+ * server with a local database, never in a build. next.config.ts leaves them
+ * out of every build; this confirms it from the build's own route manifest,
+ * and fails the build (on Vercel too) if one slipped in.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -13,11 +14,14 @@ import { pathToFileURL } from "node:url";
 // Test-only routes live under these paths and nowhere else.
 export const TEST_ONLY_PREFIXES = ["/api/test/", "/test/"];
 
+// Local-only routes, the local storage adapter's stand-ins for Supabase's signed URLs.
+export const LOCAL_ONLY_PREFIXES = ["/api/dev/"];
+
 export function checkBuildRoutes(
   manifest: Readonly<Record<string, string>>,
 ): { ok: true } | { ok: false; routes: string[] } {
   const routes = Object.values(manifest).filter((route) =>
-    TEST_ONLY_PREFIXES.some((prefix) => route.startsWith(prefix)),
+    [...TEST_ONLY_PREFIXES, ...LOCAL_ONLY_PREFIXES].some((prefix) => route.startsWith(prefix)),
   );
   return routes.length === 0 ? { ok: true } : { ok: false, routes };
 }
@@ -27,7 +31,9 @@ function main(): number {
   const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, string>;
   const result = checkBuildRoutes(manifest);
   if (result.ok) return 0;
-  console.error(`This build contains test-only routes: ${result.routes.join(", ")}.`);
+  console.error(
+    `This build contains routes only a dev server may have: ${result.routes.join(", ")}.`,
+  );
   return 1;
 }
 

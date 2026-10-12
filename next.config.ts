@@ -16,8 +16,18 @@ const testOnly =
     ? ["testonly.ts", "testonly.tsx"]
     : [];
 
+// Local-only routes (route.localonly.ts, only under /api/dev/) stand in for
+// Supabase Storage when the database is local: in the dev server with
+// JOBKIT_ENV=development or test, never in a build (scripts/checkBuild.ts).
+const localOnly =
+  (process.env.JOBKIT_ENV === "development" || process.env.JOBKIT_ENV === "test") &&
+  process.env.NODE_ENV === "development" &&
+  !onVercelDeployment(process.env)
+    ? ["localonly.ts"]
+    : [];
+
 const nextConfig: NextConfig = {
-  pageExtensions: ["tsx", "ts", "jsx", "js", ...testOnly],
+  pageExtensions: ["tsx", "ts", "jsx", "js", ...testOnly, ...localOnly],
   // PGlite finds its WebAssembly files with new URL(…, import.meta.url), which
   // breaks once Turbopack bundles it: a persistent database (JOBKIT_ENV=
   // development) then fails to open. Node's own import keeps the URLs right.

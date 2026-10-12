@@ -30,12 +30,26 @@ export async function advance(
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
   if (!isUuid(jobId)) return refusal(404, "not-found");
-  const lease = await claimJob(deps, jobId, { requestedAt: startedAt });
-  if (!lease) {
+  if (!(await startPipeline(deps, jobId, startedAt))) {
     const job = await jobStatus(deps, jobId);
     if (!job) return refusal(404, "not-found");
     return refusal(409, kindOf(job.state) === "running" ? "claimed" : "not-running");
   }
-  deps.schedule(() => runJob(deps, lease, { startedAt }));
   return NextResponse.json({ claimed: true }, { status: 202, headers: NO_STORE });
+}
+
+/**
+ * Claims a running job's lease and schedules the pipeline to run once the
+ * response has gone. False when the job is not running or another
+ * invocation holds it.
+ */
+export async function startPipeline(
+  deps: RunnerDeps & { schedule: (task: () => Promise<unknown>) => void },
+  jobId: string,
+  startedAt: Date,
+): Promise<boolean> {
+  const lease = await claimJob(deps, jobId, { requestedAt: startedAt });
+  if (!lease) return false;
+  deps.schedule(() => runJob(deps, lease, { startedAt }));
+  return true;
 }
