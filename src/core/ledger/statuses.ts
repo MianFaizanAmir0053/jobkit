@@ -244,6 +244,12 @@ export async function undoStatus(
       );
       if (undone) {
         await recordChange(tx, applicationId, tapped, UNDO_TO[tapped], now, sessionId);
+        // A sent tap's outcome goes with it, so no outcome stands for a kit that was not sent.
+        if (tapped === "sent") {
+          await tx.query("delete from {{schema}}.draft_outcomes where application_id = $1", [
+            applicationId,
+          ]);
+        }
         return { ok: true, changed: true, status: UNDO_TO[tapped] };
       }
     }

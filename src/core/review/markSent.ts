@@ -60,7 +60,10 @@ export async function markSent(
         `insert into {{schema}}.draft_outcomes
            (application_id, job_id, kind, changed_in_gmail, factual_edit, recorded_at)
          values ($1, $2, 'email', $3, $3, $4)
-         on conflict (application_id) do nothing`,
+         on conflict (application_id) do update
+           set changed_in_gmail = excluded.changed_in_gmail,
+               factual_edit = excluded.factual_edit,
+               recorded_at = excluded.recorded_at`,
         [applicationId, jobId, answer.changedInGmail, deps.clock.now()],
       );
     }

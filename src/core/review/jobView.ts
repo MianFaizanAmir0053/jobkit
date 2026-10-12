@@ -157,7 +157,7 @@ export interface JobListItem {
   receivedAt: Date;
   company: string;
   title: string;
-  /** Whether the owner marked the kit sent. */
+  /** Whether the owner marked the chosen role's kit sent, as the job page shows it. */
   sent: boolean;
 }
 
@@ -179,12 +179,12 @@ export async function listJobViews(
     chosen_role_output: string | null;
     output: unknown;
     output_hash: string | null;
-    sent: boolean;
+    sent_roles: string[];
   }>(
     `select j.id, j.state, j.received_at, j.chosen_role, j.chosen_role_output,
             x.output, x.output_hash,
-            exists (select 1 from {{schema}}.applications as a
-                     where a.job_id = j.id and a.status = 'sent') as sent
+            array(select a.role_id from {{schema}}.applications as a
+                   where a.job_id = j.id and a.status = 'sent') as sent_roles
        from {{schema}}.jobs as j
        left join lateral (
          select output, output_hash from {{schema}}.job_stage_runs as r
@@ -210,7 +210,7 @@ export async function listJobViews(
       receivedAt: row.received_at,
       company: extraction?.record.company.name ?? "",
       title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : ""),
-      sent: row.sent,
+      sent: role !== undefined && row.sent_roles.includes(role.id),
     };
   });
 }

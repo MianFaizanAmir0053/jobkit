@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-import { browserPage, pollJob } from "../polling";
+import { advanceJob, browserPage, pollJob } from "../polling";
 
 /**
  * Keeps a running job moving and its page current (platform spec B9): each
@@ -18,7 +18,7 @@ export function JobPoller({ jobId }: { jobId: string }) {
   useEffect(
     () =>
       pollJob(
-        () => fetch(`/api/jobs/${jobId}/advance`, { method: "POST" }),
+        () => advanceJob(jobId),
         () => router.refresh(),
         browserPage(),
       ),

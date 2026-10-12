@@ -35,6 +35,17 @@ export const JOB_POLL = { fastMs: 2_000, slowMs: 5_000, fastForMs: 60_000 } as c
 /** The jobs list advances its running jobs every 10 seconds. */
 export const LIST_TICK_MS = 10_000;
 
+/** How long one advance request may take before the poll gives it up, so a stalled one never stops polling. */
+export const ADVANCE_TIMEOUT_MS = 15_000;
+
+/** Asks the server to advance a job; settles within ADVANCE_TIMEOUT_MS whatever the network does. */
+export function advanceJob(jobId: string): Promise<unknown> {
+  return fetch(`/api/jobs/${jobId}/advance`, {
+    method: "POST",
+    signal: AbortSignal.timeout(ADVANCE_TIMEOUT_MS),
+  }).catch(() => undefined);
+}
+
 /**
  * Polls one job: the first poll after the first interval, each next one an
  * interval after the last ends. Returns a function that stops it.
@@ -84,9 +95,11 @@ export function pollJob(
 }
 
 /**
- * Keeps the list's running jobs moving: a tick at once, then every 10
- * seconds and whenever the page is shown again, skipped while one runs.
- * Returns a function that stops it.
+ * Keeps the list's running jobs moving: a tick as soon as the page is
+ * free, then every 10 seconds and whenever the page is shown again,
+ * skipped while one runs. The first tick waits a turn, so a mount that is
+ * undone at once (React's Strict Mode does so in development) starts no
+ * second batch beside the first. Returns a function that stops it.
  */
 export function refreshList(
   advanceAll: () => Promise<unknown>,
@@ -108,9 +121,10 @@ export function refreshList(
   };
   const stopShown = page.onShown(tick);
   const timer = setInterval(tick, LIST_TICK_MS);
-  tick();
+  const first = setTimeout(tick, 0);
   return () => {
     stopped = true;
+    clearTimeout(first);
     clearInterval(timer);
     stopShown();
   };

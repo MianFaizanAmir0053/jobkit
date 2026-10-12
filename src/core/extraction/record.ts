@@ -190,7 +190,8 @@ export const FLAG_MESSAGES: Readonly<Record<RecordFlagKind, string>> = {
   // Never "as the post shows it": a post may hide a second recipient in the address.
   address:
     "This email address did not pass the strict check. Type the address yourself, and nothing else.",
-  no_address: "The post asks for applications by email but gives no address. Find it in the post.",
+  no_address:
+    "The post asks for applications by email, but jobkit found no address in it. Find it in the post.",
   number: NUMBER_FLAG,
   box: "Where this contact sits on the screenshot is not known.",
   duplicate_id:

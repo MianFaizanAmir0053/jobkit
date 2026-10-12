@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
-import { browserPage, refreshList } from "./polling";
+import { advanceJob, browserPage, refreshList } from "./polling";
 
 /**
  * Keeps the running jobs the list shows moving, and the list current
@@ -19,15 +19,7 @@ export function JobsRefresher({ running }: { running: readonly string[] }) {
   useEffect(
     () =>
       refreshList(
-        () =>
-          Promise.all(
-            ids
-              .split(",")
-              .filter(Boolean)
-              .map((id) =>
-                fetch(`/api/jobs/${id}/advance`, { method: "POST" }).catch(() => undefined),
-              ),
-          ),
+        () => Promise.all(ids.split(",").filter(Boolean).map(advanceJob)),
         () => router.refresh(),
         browserPage(),
       ),

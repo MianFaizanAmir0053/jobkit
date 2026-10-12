@@ -15,6 +15,7 @@ import { extractStage } from "@/core/extraction/extract";
 import { confirmPost } from "@/core/extraction/owner";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
+import { undoStatus } from "@/core/ledger/statuses";
 import type { ModelCallDeps } from "@/core/platform/models";
 import { claimJob, type Pipeline, runJob } from "@/core/platform/runner";
 import type { Db, QueryResult, Row } from "@/core/ports";
@@ -333,6 +334,59 @@ describe("markSent", () => {
       changed: true,
     });
     expect(await statuses()).toEqual(["sent"]);
+  });
+
+  it("takes back a sent tap's outcome with it, and records the answer given when sent again", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await markSent({ db, clock }, id, null, { changedInGmail: true });
+    const { rows } = await db.query<{ id: string; sent_at: Date }>(
+      "select id, sent_at from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    const outcomes = async () =>
+      (
+        await db.query<{ changed_in_gmail: boolean }>(
+          "select changed_in_gmail from {{schema}}.draft_outcomes where job_id = $1",
+          [id],
+        )
+      ).rows;
+
+    const undone = await undoStatus(
+      { db, clock },
+      rows[0]!.id,
+      { status: "sent", at: rows[0]!.sent_at },
+      null,
+    );
+    expect(undone).toMatchObject({ ok: true, changed: true, status: "kit_ready" });
+    expect(await outcomes()).toEqual([]);
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toEqual({
+      ok: true,
+      changed: true,
+    });
+    expect(await outcomes()).toEqual([{ changed_in_gmail: false }]);
+  });
+
+  it("keeps a Gmail answer on an email kit's outcome, and only there (migration 0018)", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await markSent({ db, clock }, id, null, { changedInGmail: false });
+
+    await expect(
+      db.query("update {{schema}}.draft_outcomes set changed_in_gmail = null where job_id = $1", [
+        id,
+      ]),
+    ).rejects.toThrow();
+    await expect(
+      db.query("update {{schema}}.draft_outcomes set kind = 'form' where job_id = $1", [id]),
+    ).rejects.toThrow();
+    await db.query(
+      "update {{schema}}.draft_outcomes set kind = 'form', changed_in_gmail = null where job_id = $1",
+      [id],
+    );
   });
 
   it("refuses a kit whose role is to be applied for another way", async () => {

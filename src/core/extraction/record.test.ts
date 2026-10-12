@@ -306,7 +306,7 @@ describe("checkRecord", () => {
         kind: "no_address",
         path: "roles[0].route.address",
         message:
-          "The post asks for applications by email but gives no address. Find it in the post.",
+          "The post asks for applications by email, but jobkit found no address in it. Find it in the post.",
       },
     ]);
   });

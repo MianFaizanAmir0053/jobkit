@@ -130,11 +130,23 @@ describe("refreshList", () => {
     const refresh = vi.fn();
     const stop = refreshList(advanceAll, refresh, page);
 
-    expect(advanceAll).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(0);
+    expect(advanceAll).toHaveBeenCalledTimes(1);
     expect(refresh).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(LIST_TICK_MS);
     expect(advanceAll).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("starts no batch for a mount undone at once, as Strict Mode does in development", async () => {
+    const { page } = fakePage();
+    const advanceAll = vi.fn(async () => undefined);
+
+    refreshList(advanceAll, vi.fn(), page)();
+    const stop = refreshList(advanceAll, vi.fn(), page);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(advanceAll).toHaveBeenCalledTimes(1);
     stop();
   });
 

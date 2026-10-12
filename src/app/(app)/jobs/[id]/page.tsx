@@ -301,7 +301,7 @@ function KitPanel({
   const kit = draft.kit;
   const body = emailBody(kit);
   const byEmail = role.route.kind === "email";
-  const address = byEmail ? role.route.address : "";
+  const address = byEmail ? role.route.address.trim() : "";
   const strict = address !== "" && isStrictAddress(address);
   const blockText = new Map(kit.blocks.map((block) => [block.id, block.text]));
   // The separate check's findings: overstated, unsupported, or saying more about the company.
@@ -351,7 +351,8 @@ function KitPanel({
               </span>
             ) : byEmail ? (
               <span className="text-destructive">
-                The post asks you to apply by email but gives no address. Find it in the post.
+                The post asks you to apply by email, but jobkit found no address in it. Find it in
+                the post.
               </span>
             ) : (
               <span>
@@ -380,8 +381,8 @@ function KitPanel({
         </div>
         <p className="text-sm text-muted-foreground">
           In Gmail, {account ? `check that From shows ${account}, ` : "check the From address, "}
-          attach your CV, and send. Gmail adds your signature. If you change anything in Gmail,
-          answer Yes when jobkit asks.
+          attach your CV, and send. Gmail adds your signature. If you change the email&apos;s
+          wording in Gmail, answer Yes when jobkit asks; attaching your CV does not count.
         </p>
       </Panel>
 
