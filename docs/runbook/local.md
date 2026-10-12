@@ -13,7 +13,7 @@ The thin path (the owner's choice, 2026-10-12) is built first so the owner can t
 
 1. `npm run dev`, then open http://localhost:3000 and sign in with Google.
 2. **New job:** choose screenshots of a job post, or paste its text, and press Start.
-3. The job page shows each step as it runs. A post with several roles asks which one; a post that is not a job post, not in English, or with no role found, stops. A role that looks closed to you (say, US only) waits for Draft anyway or Skip; one that is unclear goes on, its reasons shown with the email.
+3. The job page shows each step as it runs. A post with several roles asks which one; a post that is not a job post, not in English, or with no role found, stops. A role that looks closed to you (say, US only) waits for Draft anyway or Skip; one that is unclear goes on, its reasons shown with the email. If a reason comes from a wrong fixed answer, correct `private/profile.yaml`, run `npm run profile:seed` again with the dev server stopped, and send the post again as a new job: a job already checked keeps the answers it was checked with.
 4. A finished job shows the email: to, subject and body, with copy buttons and **Open in Gmail**, which opens Gmail's compose window with the draft filled in. Attach your CV there and send it yourself; then press **Mark sent**.
 
 ## Not in the thin path yet

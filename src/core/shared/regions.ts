@@ -427,7 +427,6 @@ export function placeContains(place: string, other: string): boolean | "unknown"
   return true;
 }
 
-/** A place's countries; null for an ambiguous region, undefined for an unknown code. */
 /**
  * Whether two places share a country, as the EU and Germany do, and as North
  * America and Latin America do through Mexico, though neither takes in the
@@ -441,6 +440,7 @@ export function placesOverlap(one: string, other: string): boolean | "unknown" {
   return false;
 }
 
+/** A place's countries; null for an ambiguous region, undefined for an unknown code. */
 function membersOf(code: string): ReadonlySet<string> | null | undefined {
   const entry = PLACES.get(code);
   if (!entry) return undefined;

@@ -7,7 +7,7 @@ import {
   type StopReason,
   stopReasonOf,
 } from "@/core/extraction/extract";
-import { chosenRole } from "@/core/extraction/owner";
+import { chosenRole, draftedAnyway } from "@/core/extraction/owner";
 import type { Role } from "@/core/extraction/record";
 import type { ApplicationStatus } from "@/core/ledger/statuses";
 import { expireUploads, type Job, jobStatus } from "@/core/platform/jobs";
@@ -25,7 +25,7 @@ import type { Clock, Db } from "@/core/ports";
 export interface Step {
   stage: StageName;
   label: string;
-  /** "not_checked": a stage that passes through on the thin path, saying so. */
+  /** "not_checked": a stage whose output is from before its check was built. */
   status: "done" | "running" | "failed" | "waiting" | "not_checked";
 }
 
@@ -51,12 +51,17 @@ export interface JobView {
 }
 
 /** The thin path's stages, in order. */
-const STEPS: readonly { stage: StageName; label: string; checked: boolean }[] = [
-  { stage: "extract", label: "Read the post", checked: true },
-  { stage: "eligibility", label: "Check eligibility", checked: true },
-  { stage: "draft", label: "Write the email", checked: true },
-  { stage: "judge", label: "Check every sentence separately", checked: true },
+const STEPS: readonly { stage: StageName; label: string }[] = [
+  { stage: "extract", label: "Read the post" },
+  { stage: "eligibility", label: "Check eligibility" },
+  { stage: "draft", label: "Write the email" },
+  { stage: "judge", label: "Check every sentence separately" },
 ];
+
+/** What eligibility and the judge gave on the thin path before their checks were built. */
+interface PassedThrough {
+  checked: false;
+}
 
 export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promise<JobView | null> {
   const job = await jobStatus(deps, id);
@@ -66,20 +71,21 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const stopReason = extraction ? stopReasonOf(extraction) : null;
   const role = await chosenRole(deps.db, id);
   const draft = (await stageOutput(deps.db, id, "draft"))?.output as DraftOutput | undefined;
-  const judge = (await stageOutput(deps.db, id, "judge"))?.output as JudgeOutput | undefined;
+  const judge = (await stageOutput(deps.db, id, "judge"))?.output as
+    JudgeOutput | PassedThrough | undefined;
   const eligibility = (await stageOutput(deps.db, id, "eligibility"))?.output as
-    EligibilityOutput | undefined;
-  const { rows } = await deps.db.query<{ eligibility_decision: string | null }>(
-    "select eligibility_decision from {{schema}}.jobs where id = $1",
-    [id],
-  );
+    EligibilityOutput | PassedThrough | undefined;
+  // A job that ran before a check was built keeps that output: its step shows as not checked.
+  const unchecked = new Set<StageName>();
+  if (eligibility && !eligibility.checked) unchecked.add("eligibility");
+  if (judge && !judge.checked) unchecked.add("judge");
   return {
     id,
     state: job.state,
     kind: kindOf(job.state),
     receivedAt: job.receivedAt,
     failure: await failureOf(deps.db, job),
-    steps: await stepsOf(deps.db, job),
+    steps: await stepsOf(deps.db, job, unchecked),
     extraction,
     stopReason,
     canReadAgain:
@@ -87,9 +93,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       (stopReason === "not_a_job_post" || stopReason === "no_role") &&
       !extraction!.postConfirmed,
     role,
-    // An output from before the check was built says only "not_checked".
     eligibility: eligibility?.checked ? eligibility : null,
-    draftedAnyway: rows[0]?.eligibility_decision === "draft_anyway",
+    draftedAnyway: await draftedAnyway(deps.db, id),
     draft: draft ?? null,
     judge: judge?.checked ? judge : null,
     application: role ? await applicationOf(deps.db, id, role.id) : null,
@@ -113,20 +118,22 @@ async function failureOf(db: Db, job: Job): Promise<JobView["failure"]> {
   };
 }
 
-async function stepsOf(db: Db, job: Job): Promise<Step[]> {
+async function stepsOf(db: Db, job: Job, unchecked: ReadonlySet<StageName>): Promise<Step[]> {
   const { rows } = await db.query<{ stage: StageName; outcome: string }>(
     `select distinct on (stage) stage, outcome from {{schema}}.job_stage_runs
       where job_id = $1 order by stage, id desc`,
     [job.id],
   );
   const last = new Map(rows.map((row) => [row.stage, row.outcome]));
-  return STEPS.map(({ stage, label, checked }) => {
+  return STEPS.map(({ stage, label }) => {
     const outcome = last.get(stage);
     let status: Step["status"] = "waiting";
     // A stage running again, as after "Read it again", is running, whatever it gave before.
     if (job.state === "failed" && job.failedStage === stage) status = "failed";
     else if (kindOf(job.state) === "running" && job.pendingStage === stage) status = "running";
-    else if (outcome === "ok" || outcome === "reused") status = checked ? "done" : "not_checked";
+    else if (outcome === "ok" || outcome === "reused") {
+      status = unchecked.has(stage) ? "not_checked" : "done";
+    }
     return { stage, label, status };
   });
 }

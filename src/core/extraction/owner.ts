@@ -138,8 +138,9 @@ export async function skipRolePick(
 
 /**
  * "Draft anyway" (extraction spec, "Stage eligibility"): the owner's answer
- * to a role that looks closed to them. It is recorded, which eligibility's
- * input hash covers, and the job goes on to drafting.
+ * to a role that looks closed to them. It is recorded with the role and the
+ * extraction it answers, which eligibility's input hash covers, and the job
+ * goes on to drafting.
  */
 export async function draftAnyway(
   deps: Deps,
@@ -148,6 +149,9 @@ export async function draftAnyway(
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
   if (job.state !== "needs_eligibility_decision") return { ok: false, reason: "not-waiting" };
+  const extraction = await extractionWithHash(deps.db, jobId);
+  const role = await chosenRole(deps.db, jobId);
+  if (!extraction || !role) return { ok: false, reason: "not-waiting" };
   return deps.db.tx(async (tx) => {
     const moved = await moveJob(tx, jobId, {
       from: "needs_eligibility_decision",
@@ -158,9 +162,36 @@ export async function draftAnyway(
     });
     if (!moved) return { ok: false, reason: "not-waiting" };
     await tx.query(
-      "update {{schema}}.jobs set eligibility_decision = 'draft_anyway' where id = $1",
-      [jobId],
+      `update {{schema}}.jobs set eligibility_decision = 'draft_anyway',
+         eligibility_decision_role = $2, eligibility_decision_output = $3 where id = $1`,
+      [jobId, role.id, extraction.hash],
     );
     return { ok: true };
   });
+}
+
+/**
+ * Whether the owner chose Draft anyway for the job's current role on its
+ * current extraction. A decision made for another role, or on an earlier
+ * reading of the post, does not count.
+ */
+export async function draftedAnyway(db: Db, jobId: string): Promise<boolean> {
+  const extraction = await extractionWithHash(db, jobId);
+  const role = await chosenRole(db, jobId);
+  if (!extraction || !role) return false;
+  const { rows } = await db.query<{
+    eligibility_decision: string | null;
+    eligibility_decision_role: string | null;
+    eligibility_decision_output: string | null;
+  }>(
+    `select eligibility_decision, eligibility_decision_role, eligibility_decision_output
+       from {{schema}}.jobs where id = $1`,
+    [jobId],
+  );
+  const row = rows[0];
+  return (
+    row?.eligibility_decision === "draft_anyway" &&
+    row.eligibility_decision_role === role.id &&
+    row.eligibility_decision_output === extraction.hash
+  );
 }

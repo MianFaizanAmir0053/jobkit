@@ -71,7 +71,8 @@ describe("remote regions", () => {
         {
           kind: "remote_region",
           result: "likely_ineligible",
-          message: "Remote work is open only to United States, which does not include Pakistan.",
+          message:
+            "Remote work is open only to people in the United States, which does not include Pakistan.",
           quote: "US only",
         },
       ],
@@ -90,6 +91,40 @@ describe("remote regions", () => {
       "eligible",
     );
     expect(check(role({ location: { remote_regions: ["US", "EMEA"] } })).result).toBe("unclear");
+  });
+
+  it("skips blank phrases", () => {
+    expect(check(role({ location: { remote_regions: [" ", "worldwide"] } })).result).toBe(
+      "eligible",
+    );
+  });
+});
+
+describe("where the work is done", () => {
+  it("passes 'onsite in Lahore, or remote in the US only' through Lahore", () => {
+    const either = role({
+      location: {
+        work_mode: "onsite",
+        places: [{ text: "Lahore", code: "PK" }],
+        remote_regions: ["US only"],
+      },
+    });
+
+    expect(check(either)).toEqual({ result: "eligible", reasons: [] });
+  });
+
+  it("takes the least severe finding when no alternative passes", () => {
+    const either = role({
+      location: {
+        work_mode: "onsite",
+        places: [{ text: "Dubai", code: "AE" }],
+        remote_regions: ["US only"],
+      },
+    });
+
+    expect(check(either).reasons.map(({ kind, result }) => [kind, result])).toEqual([
+      ["place", "unclear"],
+    ]);
   });
 });
 
@@ -124,6 +159,36 @@ describe("work authorisation", () => {
       eligibility: { work_authorisation: [{ place: "PK", quote: "Pakistan only" }] },
     });
     expect(check(pakistan).result).toBe("eligible");
+  });
+
+  it("reads a place written as a name rather than a code, and skips a blank entry", () => {
+    const written = role({
+      eligibility: {
+        work_authorisation: [
+          { place: "Germany", quote: "Right to work in Germany" },
+          { place: "", quote: " " },
+        ],
+        sponsorship: "not_offered",
+      },
+    });
+
+    expect(check(written).reasons).toEqual([
+      {
+        kind: "work_authorisation",
+        result: "likely_ineligible",
+        message:
+          "The role needs the right to work in Germany, which you do not have, and the post offers no sponsorship.",
+        quote: "Right to work in Germany",
+      },
+    ]);
+  });
+
+  it("is unclear for a place it cannot place", () => {
+    const unknown = role({
+      eligibility: { work_authorisation: [{ place: "Narnia", quote: "Right to work in Narnia" }] },
+    });
+
+    expect(check(unknown).result).toBe("unclear");
   });
 });
 
@@ -171,6 +236,67 @@ describe("onsite and hybrid places", () => {
         .result,
     ).toBe("likely_ineligible");
   });
+
+  it("reads the post's words before the model's code", () => {
+    expect(check(onsite(["Lahore", "GB"])).result).toBe("eligible");
+  });
+
+  it("is unclear for a region that takes in the owner's country", () => {
+    expect(check(onsite(["South Asia", "SOUTH_ASIA"])).reasons).toEqual([
+      {
+        kind: "place",
+        result: "unclear",
+        message:
+          "The role is onsite somewhere in South Asia, which includes Pakistan. Check where.",
+        quote: "South Asia",
+      },
+    ]);
+  });
+
+  it("is unclear for a region the owner would relocate to part of", () => {
+    const germany: EligibilityProfile = {
+      ...profile,
+      fixedAnswers: {
+        ...profile.fixedAnswers,
+        relocation: { open: true, places: ["DE"], text: "Open to relocating to Germany" },
+      },
+    };
+
+    expect(check(onsite(["Europe", "EUROPE"]), germany).result).toBe("unclear");
+    expect(check(onsite(["Netherlands", "NL"]), germany).reasons[0]?.message).toBe(
+      "The role is onsite in the Netherlands, and your profile is open to relocating only to other places.",
+    );
+  });
+
+  it("is unclear for an onsite role that does not say where", () => {
+    expect(check(role({ location: { work_mode: "onsite", places: [] } })).reasons).toEqual([
+      {
+        kind: "place",
+        result: "unclear",
+        message: "The role is onsite, and the post does not say where. Check where you would work.",
+        quote: "",
+      },
+    ]);
+  });
+
+  it("checks the places of a role whose work mode is not given, but never past unclear", () => {
+    const unspecified = (place: [string, string]) =>
+      role({
+        location: { work_mode: "unspecified", places: [{ text: place[0], code: place[1] }] },
+      });
+
+    expect(check(unspecified(["Berlin", "DE"])).reasons).toEqual([
+      {
+        kind: "place",
+        result: "unclear",
+        message:
+          "The role is based in Germany, and your profile is open to relocating only to other places.",
+        quote: "Berlin",
+      },
+    ]);
+    expect(check(unspecified(["Karachi", "PK"])).result).toBe("eligible");
+    expect(check(role({ location: { work_mode: "unspecified" } })).result).toBe("eligible");
+  });
 });
 
 describe("other limits", () => {
@@ -185,6 +311,10 @@ describe("other limits", () => {
         quote: "Must be a US citizen",
       },
     ]);
+  });
+
+  it("skips a blank limit", () => {
+    expect(check(role({ eligibility: { other_limits: ["", "  "] } })).result).toBe("eligible");
   });
 });
 
@@ -204,7 +334,7 @@ describe("time zone", () => {
         kind: "time_zone",
         result: "unclear",
         message:
-          "Your working hours overlap Australia/Sydney's working day by 3 hours; the post asks for 4.",
+          "Your working hours overlap 09:00 to 17:00 in the post's time zone by 3 hours; the post asks for 4 hours.",
         quote: "Sydney hours",
       },
     ]);
@@ -220,12 +350,37 @@ describe("time zone", () => {
     expect(check(losAngeles).result).toBe("unclear");
   });
 
-  it("does not check an unspecified zone, nor one this runtime does not know", () => {
+  it("says 1 hour, not 1 hours", () => {
+    // Los Angeles in July is UTC-7: 09:00 to 17:00 there is 16:00 to 00:00 UTC.
+    const window: EligibilityProfile = {
+      ...profile,
+      fixedAnswers: {
+        ...profile.fixedAnswers,
+        working_window: { start_utc: "09:00", end_utc: "17:00", text: "" },
+      },
+    };
+    const losAngeles = role({
+      location: { time_zone: { zone: "America/Los_Angeles", min_overlap_hours: 1.5, text: "PT" } },
+    });
+
+    expect(check(losAngeles, window).reasons[0]?.message).toBe(
+      "Your working hours overlap 09:00 to 17:00 in the post's time zone by 1 hour; the post asks for 1.5 hours.",
+    );
+  });
+
+  it("does not check an unspecified zone, and is unclear about one this runtime does not know", () => {
     expect(check(role({})).result).toBe("eligible");
     const unknown = role({
-      location: { time_zone: { zone: "Mars/Olympus", min_overlap_hours: 4, text: "" } },
+      location: { time_zone: { zone: "Mars/Olympus", min_overlap_hours: 4, text: "Mars time" } },
     });
-    expect(check(unknown).result).toBe("eligible");
+    expect(check(unknown).reasons).toEqual([
+      {
+        kind: "time_zone",
+        result: "unclear",
+        message: "The post asks for a time zone we could not read. Check the hours it means.",
+        quote: "Mars time",
+      },
+    ]);
   });
 
   it("counts windows on a 24-hour circle", () => {

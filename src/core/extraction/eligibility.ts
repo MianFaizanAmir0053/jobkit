@@ -4,7 +4,7 @@ import { getActiveProfile, getProfileVersion } from "@/core/profile/profile";
 
 import { checkEligibility, type Eligibility } from "./eligibilityCheck";
 import { readExtractOutput } from "./extract";
-import { chosenRole } from "./owner";
+import { chosenRole, draftedAnyway } from "./owner";
 
 /**
  * The `eligibility` stage (extraction spec, "Stage eligibility"):
@@ -27,15 +27,8 @@ interface EligibilityInput {
   record: string;
   role: string;
   profile: string | null;
-  decision: string | null;
-}
-
-async function decisionOf(db: Db, jobId: string): Promise<string | null> {
-  const { rows } = await db.query<{ eligibility_decision: string | null }>(
-    "select eligibility_decision from {{schema}}.jobs where id = $1",
-    [jobId],
-  );
-  return rows[0]?.eligibility_decision ?? null;
+  /** Whether the owner chose Draft anyway for this role on this record. */
+  draftAnyway: boolean;
 }
 
 export function eligibilityStage(deps: { db: Db; clock: Clock }): StageDefinition {
@@ -54,7 +47,7 @@ export function eligibilityStage(deps: { db: Db; clock: Clock }): StageDefinitio
         record: extract.outputHash,
         role: role.id,
         profile: profile?.versionId ?? null,
-        decision: await decisionOf(deps.db, ctx.job.id),
+        draftAnyway: await draftedAnyway(deps.db, ctx.job.id),
       };
     },
 
@@ -78,8 +71,7 @@ export function eligibilityStage(deps: { db: Db; clock: Clock }): StageDefinitio
 
     async next(ctx, raw): Promise<Transition> {
       const output = raw as EligibilityOutput;
-      const decided = (await decisionOf(deps.db, ctx.job.id)) === "draft_anyway";
-      if (output.result === "likely_ineligible" && !decided) {
+      if (output.result === "likely_ineligible" && !(await draftedAnyway(deps.db, ctx.job.id))) {
         return { state: "needs_eligibility_decision", pending: null };
       }
       return { state: "drafting", pending: "draft" };

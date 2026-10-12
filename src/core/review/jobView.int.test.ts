@@ -16,7 +16,7 @@ import { confirmPost } from "@/core/extraction/owner";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import type { ModelCallDeps } from "@/core/platform/models";
-import { claimJob, runJob } from "@/core/platform/runner";
+import { claimJob, type Pipeline, runJob } from "@/core/platform/runner";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 import { createTestDb } from "@/server/db/testDb";
@@ -88,9 +88,13 @@ const DRAFT: DraftAnswer = {
   ],
 };
 
-async function run(id: string, steps: readonly FakeStep[]): Promise<void> {
+async function run(
+  id: string,
+  steps: readonly FakeStep[],
+  stages: Pipeline = pipeline(),
+): Promise<void> {
   llm = fakeLlm(steps);
-  const deps = { db, clock, pipeline: pipeline() };
+  const deps = { db, clock, pipeline: stages };
   const lease = await claimJob(deps, id);
   if (!lease) throw new Error("not claimed");
   await runJob(deps, lease);
@@ -152,6 +156,31 @@ describe("jobView", () => {
     ]);
     expect(view.role?.id).toBe("P1");
     expect(view.draft?.kit.subject).toBe("Application - Senior Full-Stack Engineer - Sam Rivera");
+  });
+
+  it("shows a step whose output is from before its check was built as not checked", async () => {
+    await seedSample();
+    const id = await pasted();
+    const stages = pipeline();
+    // The thin path's first judge passed every kit through with no verdicts.
+    const passThrough = {
+      ...stages.judge,
+      run: async () => ({ ok: true as const, output: { checked: false } }),
+    };
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], {
+      ...stages,
+      judge: passThrough,
+    });
+
+    const view = (await jobView({ db, clock }, id))!;
+
+    expect(view.steps.map(({ stage, status }) => [stage, status])).toEqual([
+      ["extract", "done"],
+      ["eligibility", "done"],
+      ["draft", "done"],
+      ["judge", "not_checked"],
+    ]);
+    expect(view.judge).toBeNull();
   });
 
   it("says why a job stopped and whether it can be read again", async () => {

@@ -1,10 +1,12 @@
 import type { FixedAnswers } from "@/core/profile/schema";
 import {
+  isCountryCode,
   isPlaceCode,
   isUnclearRegion,
   placeCode,
   placeContains,
   placeName,
+  placesOverlap,
 } from "@/core/shared/regions";
 
 import type { Role } from "./record";
@@ -15,9 +17,11 @@ import type { Role } from "./record";
  * with the profile's fixed answers through the shared region table. Each
  * finding is `unclear` or `likely_ineligible` with its reason and the post's
  * words; the result is the most severe finding, or `eligible` with none.
- * Where a post offers alternatives (remote regions, onsite places), the
- * role is judged by the best of them: "London or Lahore" passes through
- * Lahore.
+ * Where a post says where the work can be done (remote regions, and the
+ * places of an onsite or hybrid role), those are alternatives: the role
+ * passes when any one does ("London or Lahore" passes through Lahore), and
+ * otherwise takes the least severe of their findings. A demand the check
+ * cannot read is unclear, never passed in silence.
  */
 
 export type EligibilityResult = "eligible" | "unclear" | "likely_ineligible";
@@ -46,17 +50,21 @@ const RANK: Record<EligibilityResult, number> = { eligible: 0, unclear: 1, likel
 const DEFAULT_OVERLAP_HOURS = 2;
 const WORKDAY = { start: 9 * 60, end: 17 * 60 };
 
+type Finding = EligibilityReason | null;
+
 export function checkEligibility(role: Role, profile: EligibilityProfile, at: Date): Eligibility {
+  const where = [...(remoteRegions(role, profile) ?? []), ...(places(role, profile) ?? [])];
   const reasons = [
-    ...bestOf(remoteRegions(role, profile)),
+    ...bestOf(where),
     ...workAuthorisation(role, profile),
-    ...bestOf(places(role, profile)),
-    ...role.eligibility.other_limits.map((quote): EligibilityReason => ({
-      kind: "other_limit",
-      result: "unclear",
-      message: "The post sets another limit. Check whether you meet it.",
-      quote,
-    })),
+    ...role.eligibility.other_limits
+      .filter((quote) => quote.trim() !== "")
+      .map((quote): EligibilityReason => ({
+        kind: "other_limit",
+        result: "unclear",
+        message: "The post sets another limit. Check whether you meet it.",
+        quote,
+      })),
     ...timeZone(role, profile, at),
   ];
   const result = reasons.reduce<EligibilityResult>(
@@ -71,19 +79,34 @@ export function checkEligibility(role: Role, profile: EligibilityProfile, at: Da
  * passes, otherwise the findings of the least severe kind, since the owner
  * needs only one alternative to work.
  */
-function bestOf(alternatives: (EligibilityReason | null)[] | null): EligibilityReason[] {
-  if (alternatives === null || alternatives.length === 0) return [];
-  if (alternatives.some((finding) => finding === null)) return [];
+function bestOf(alternatives: readonly Finding[]): EligibilityReason[] {
+  if (alternatives.length === 0 || alternatives.some((finding) => finding === null)) return [];
   const findings = alternatives as EligibilityReason[];
   const best = Math.min(...findings.map((finding) => RANK[finding.result]));
   return findings.filter((finding) => RANK[finding.result] === best);
 }
 
+/** Names a sentence puts "the" before: "the United States", "the Netherlands", "the Middle East". */
+const WITH_THE =
+  /^(?:United |European |Gulf |Middle East|Democratic |Republic |Central African|Dominican|British |French |U\.S\. |Isle |Netherlands$|Philippines$|Bahamas$|Gambia$|Maldives$|Seychelles$|Comoros$)|Islands$/;
+
+/** A place's name as a sentence reads it: "the United States", "Pakistan". */
+function named(code: string): string {
+  const name = placeName(code);
+  return WITH_THE.test(name) ? `the ${name}` : name;
+}
+
+function hoursText(count: number): string {
+  return `${count} ${count === 1 ? "hour" : "hours"}`;
+}
+
+/** A place a post names: the shared table's reading of its words first, then the model's code. */
+function placeOf(text: string, code: string): string | null {
+  return placeCode(text) ?? (isPlaceCode(code) ? code : null);
+}
+
 /** Each remote region the post names, looked up whole: a region taking in the owner's country passes. */
-function remoteRegions(
-  role: Role,
-  profile: EligibilityProfile,
-): (EligibilityReason | null)[] | null {
+function remoteRegions(role: Role, profile: EligibilityProfile): Finding[] | null {
   const phrases = role.location.remote_regions.filter((phrase) => phrase.trim() !== "");
   if (phrases.length === 0) return null;
   return phrases.map((phrase) => {
@@ -103,7 +126,7 @@ function remoteRegions(
     if (isUnclearRegion(code)) {
       return finding(
         "unclear",
-        `${placeName(code)} has no agreed list of countries. Check whether it includes ${placeName(profile.home)}.`,
+        `${placeName(code)} has no agreed list of countries. Check whether it includes ${named(profile.home)}.`,
       );
     }
     const contains = placeContains(code, profile.home);
@@ -111,21 +134,26 @@ function remoteRegions(
     if (contains === false) {
       return finding(
         "likely_ineligible",
-        `Remote work is open only to ${placeName(code)}, which does not include ${placeName(profile.home)}.`,
+        `Remote work is open only to people in ${named(code)}, which does not include ${named(profile.home)}.`,
       );
     }
     return finding("unclear", "Check whether this region includes you.");
   });
 }
 
-/** Each place the post asks the right to work in, matched to the profile's entry for it or a region containing it. */
+/**
+ * Each place the post asks the right to work in, matched to the profile's
+ * entry for it or a region containing it. Every place listed must be met,
+ * as the spec reads.
+ */
 function workAuthorisation(role: Role, profile: EligibilityProfile): EligibilityReason[] {
   const findings: EligibilityReason[] = [];
   for (const required of role.eligibility.work_authorisation) {
+    if (required.quote.trim() === "" && required.place.trim() === "") continue;
     const finding = (result: EligibilityReason["result"], message: string) =>
       findings.push({ kind: "work_authorisation", result, message, quote: required.quote });
-    const place = required.place;
-    if (!isPlaceCode(place) || isUnclearRegion(place)) {
+    const place = isPlaceCode(required.place) ? required.place : placeCode(required.place);
+    if (place === null || isUnclearRegion(place)) {
       finding("unclear", "The post asks for the right to work somewhere we could not place.");
       continue;
     }
@@ -133,7 +161,7 @@ function workAuthorisation(role: Role, profile: EligibilityProfile): Eligibility
     const entry =
       entries.find((each) => each.place === place) ??
       entries.find((each) => placeContains(each.place, place) === true);
-    const name = placeName(place);
+    const name = named(place);
     if (!entry) {
       finding("unclear", `Your profile does not say whether you may work in ${name}.`);
     } else if (entry.authorised) {
@@ -155,18 +183,35 @@ function workAuthorisation(role: Role, profile: EligibilityProfile): Eligibility
   return findings;
 }
 
-/** An onsite or hybrid role's places: one in the owner's country passes; elsewhere, the profile's relocation answer decides. */
-function places(role: Role, profile: EligibilityProfile): (EligibilityReason | null)[] | null {
+/**
+ * Where an onsite or hybrid role is done: a place in the owner's country
+ * passes; a region that takes in their country might be, so it is unclear;
+ * elsewhere the profile's relocation answer decides. A role whose work mode
+ * the post does not give is judged on any places it names, but never more
+ * severely than unclear, since it may be remote.
+ */
+function places(role: Role, profile: EligibilityProfile): Finding[] | null {
   const mode = role.location.work_mode;
-  if (mode !== "onsite" && mode !== "hybrid") return null;
   const listed = role.location.places.filter((place) => place.text.trim() !== "");
-  if (listed.length === 0) return null;
+  const atPlaces = mode === "onsite" || mode === "hybrid";
+  if (!atPlaces && !(mode === "unspecified" && listed.length > 0)) return null;
+  if (listed.length === 0) {
+    return [
+      {
+        kind: "place",
+        result: "unclear",
+        message: `The role is ${mode}, and the post does not say where. Check where you would work.`,
+        quote: "",
+      },
+    ];
+  }
   const relocation = profile.fixedAnswers.relocation;
+  const how = atPlaces ? mode : "based";
   return listed.map((place) => {
-    const code = isPlaceCode(place.code) ? place.code : placeCode(place.text);
+    const code = placeOf(place.text, place.code);
     const finding = (result: EligibilityReason["result"], message: string): EligibilityReason => ({
       kind: "place",
-      result,
+      result: atPlaces ? result : "unclear",
       message,
       quote: place.text,
     });
@@ -177,24 +222,33 @@ function places(role: Role, profile: EligibilityProfile): (EligibilityReason | n
       );
     }
     if (code === profile.home) return null;
-    const name = placeName(code);
+    if (!isCountryCode(code) && placeContains(code, profile.home) === true) {
+      return finding(
+        "unclear",
+        `The role is ${how} somewhere in ${named(code)}, which includes ${named(profile.home)}. Check where.`,
+      );
+    }
+    const name = named(code);
     if (!relocation.open) {
       return finding(
         "likely_ineligible",
-        `The role is ${mode} in ${name}, and your profile says you are not open to relocating.`,
+        `The role is ${how} in ${name}, and your profile says you are not open to relocating.`,
       );
     }
     const covered =
       relocation.places.length === 0 ||
-      relocation.places.some((each) => each === code || placeContains(each, code) === true);
+      relocation.places.some(
+        (each) =>
+          each === code || placeContains(each, code) === true || placesOverlap(each, code) === true,
+      );
     return covered
       ? finding(
           "unclear",
-          `The role is ${mode} in ${name}. You are open to relocating there; check the move.`,
+          `The role is ${how} in ${name}. You are open to relocating there; check the move.`,
         )
       : finding(
           "likely_ineligible",
-          `The role is ${mode} in ${name}, and your profile is open to relocating only to other places.`,
+          `The role is ${how} in ${name}, and your profile is open to relocating only to other places.`,
         );
   });
 }
@@ -203,12 +257,24 @@ function places(role: Role, profile: EligibilityProfile): (EligibilityReason | n
  * When the post names a zone: how much of the owner's working window falls
  * within 09:00 to 17:00 there, on a 24-hour circle, so windows that cross
  * midnight in UTC count. Less than the post asks, or under 2 hours when it
- * asks nothing, is unclear. The zone's offset is taken at `at`.
+ * asks nothing, is unclear, as is a zone that cannot be read. The zone's
+ * offset is taken at `at`.
  */
 function timeZone(role: Role, profile: EligibilityProfile, at: Date): EligibilityReason[] {
   const { zone, min_overlap_hours: asked, text } = role.location.time_zone;
-  const offset = zone === "unspecified" ? null : offsetMinutes(zone, at);
-  if (offset === null) return [];
+  if (zone.trim() === "" || zone === "unspecified") return [];
+  const quote = text.trim() !== "" ? text : zone;
+  const offset = offsetMinutes(zone, at);
+  if (offset === null) {
+    return [
+      {
+        kind: "time_zone",
+        result: "unclear",
+        message: "The post asks for a time zone we could not read. Check the hours it means.",
+        quote,
+      },
+    ];
+  }
   const window = profile.fixedAnswers.working_window;
   const overlap = overlapMinutes(
     [minutesOf(window.start_utc), minutesOf(window.end_utc)],
@@ -216,16 +282,17 @@ function timeZone(role: Role, profile: EligibilityProfile, at: Date): Eligibilit
   );
   const needed = (asked >= 0 ? asked : DEFAULT_OVERLAP_HOURS) * 60;
   if (overlap >= needed) return [];
-  const hours = Math.round((overlap / 60) * 10) / 10;
+  const span = hoursText(Math.round((overlap / 60) * 10) / 10);
+  const day = "09:00 to 17:00 in the post's time zone";
   return [
     {
       kind: "time_zone",
       result: "unclear",
       message:
         asked >= 0
-          ? `Your working hours overlap ${zone}'s working day by ${hours} hours; the post asks for ${asked}.`
-          : `Your working hours overlap ${zone}'s working day by only ${hours} hours.`,
-      quote: text,
+          ? `Your working hours overlap ${day} by ${span}; the post asks for ${hoursText(asked)}.`
+          : `Your working hours overlap ${day} by only ${span}.`,
+      quote,
     },
   ];
 }

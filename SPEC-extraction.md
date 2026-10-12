@@ -95,11 +95,15 @@ Runs for email and WhatsApp routes, alongside `draft` (platform B9).
 
 Deterministic code, no model, run before any drafting. It compares the chosen role with the profile's structured fixed answers (profile spec), through the shared region table, and returns `eligible`, `unclear` or `likely_ineligible`, each with its reasons. The overall result is the most severe one found (`likely_ineligible`, then `unclear`, then `eligible`).
 
+- **Where the work is done:** a role's remote regions and, when it is onsite or hybrid, its places are alternatives. The role passes when any one of them passes ("onsite in Lahore, or remote in the US only" passes through Lahore); when none does, it takes the least severe of their findings.
 - **Remote regions:** each phrase is looked up whole (never as a substring) in the region table. A region that includes Pakistan passes. A region that excludes it, such as "US only", gives `likely_ineligible` with the quote. A phrase the table does not know, or a region whose membership is ambiguous ("EMEA", "MENA"), gives `unclear`.
 - **Work authorisation:** each required place is matched to the profile's entry for that place, or for a region containing it (Germany meets an `EU` entry). Not authorised and sponsorship `not_offered` gives `likely_ineligible`; not authorised and sponsorship `unspecified` or `offered` gives `unclear`; a place the profile does not cover gives `unclear`.
-- **Onsite or hybrid places:** the role passes if any one of its places passes ("London or Lahore" passes through Lahore). A place in Pakistan passes. Elsewhere: relocation `open` with the place, or a region containing it, in the profile's list gives `unclear`; relocation `open` with an empty list gives `unclear`; relocation closed, or open only to other places, gives `likely_ineligible`; an unknown place gives `unclear`.
+- **Onsite or hybrid places:** the role passes if any one of its places passes ("London or Lahore" passes through Lahore). A place is read from the post's words through the region table first, and from the model's code only when the table does not know the words. A place in Pakistan passes; a region that takes in Pakistan ("South Asia") gives `unclear`. Elsewhere: relocation `open` with the place, a region containing it, or a place sharing a country with it, in the profile's list gives `unclear`; relocation `open` with an empty list gives `unclear`; relocation closed, or open only to other places, gives `likely_ineligible`; an unknown place gives `unclear`. An onsite or hybrid role whose post names no place gives `unclear`. A role whose work mode the post does not give is judged on any places it names, but never past `unclear`, since it may be remote.
 - **Other limits** (citizenship, security clearance, a degree from a named country, and anything the record lists there) give `unclear`, with the quote.
-- **Time zone:** when the role names a zone, code computes the overlap between the owner's working window and 09:00 to 17:00 in that zone, on a 24-hour circle, so windows that cross midnight in UTC count correctly. Less than the stated minimum overlap, or under 2 hours when none is stated, gives `unclear` with the hours shown. An unspecified zone is not checked.
+- **Time zone:** when the role names a zone, code computes the overlap between the owner's working window and 09:00 to 17:00 in that zone, on a 24-hour circle, so windows that cross midnight in UTC count correctly. Less than the stated minimum overlap, or under 2 hours when none is stated, gives `unclear` with the hours shown. An unspecified zone is not checked; a zone the runtime cannot read gives `unclear` with the post's words.
+- Blank entries the model returns (an empty region, limit or permit) are skipped.
+
+Draft anyway answers one role on one reading of the post: it is recorded with the role and the extract output it was made on, and a later extraction or another role asks again.
 
 `likely_ineligible` moves the job to `needs_eligibility_decision` (Draft anyway or Skip). `unclear` continues, with the reasons shown as a banner.
 
@@ -124,7 +128,7 @@ Criteria about what the model notices (lines addressed to AI, scam signals in im
 11. Eligibility table tests:
     - "US only" gives `likely_ineligible`; "worldwide" gives `eligible`; "EMEA" and "Southeast Asia" give `unclear`;
     - a right-to-work requirement for Germany with no sponsorship meets the profile's `EU` entry and gives `likely_ineligible`; the same with sponsorship unspecified gives `unclear`; a place the profile does not cover gives `unclear`;
-    - "London or Lahore" passes; onsite in Dubai with relocation open to `AE` gives `unclear`; onsite in Berlin with relocation open only to `AE` gives `likely_ineligible`;
+    - "London or Lahore" passes; onsite in Dubai with relocation open to `AE` gives `unclear`; onsite in Berlin with relocation open only to `AE` gives `likely_ineligible`; "onsite in Lahore, or remote in the US only" passes;
     - a citizenship limit gives `unclear`;
     - a role in `Australia/Sydney` against a working window of 04:00 to 13:00 UTC computes the overlap across midnight correctly;
     - several findings combine to the most severe.

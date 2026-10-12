@@ -307,6 +307,9 @@ function KitPanel({
   const judged = (view.judge?.verdicts ?? []).filter(isBlocking);
   const requirementText = new Map(role.requirements.map((entry) => [entry.id, entry.text]));
   const instructions = role.instructions.filter((line) => !line.addressed_to_ai);
+  const unchecked = view.steps
+    .filter((step) => step.status === "not_checked")
+    .map((step) => step.label.toLowerCase());
 
   return (
     <div className="flex flex-col gap-4">
@@ -315,6 +318,12 @@ function KitPanel({
           This version does not yet read the contact address a second time. Read the whole email
           before you send it.
         </p>
+        {unchecked.length > 0 && (
+          <p className="mt-2 text-sm">
+            This job ran before these checks were built: {unchecked.join("; ")}. To have them run,
+            send the post again as a new job.
+          </p>
+        )}
       </Panel>
 
       {view.eligibility && view.eligibility.reasons.length > 0 && (

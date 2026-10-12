@@ -9,7 +9,7 @@ import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { eligibilityStage } from "@/core/extraction/eligibility";
-import { draftAnyway } from "@/core/extraction/owner";
+import { draftAnyway, draftedAnyway } from "@/core/extraction/owner";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
@@ -334,5 +334,29 @@ describe("the thin drafting group", () => {
 
     expect(await loadJob(db, id)).toMatchObject({ state: "kit_ready" });
     expect(await draftAnyway({ db, clock }, id)).toEqual({ ok: false, reason: "not-waiting" });
+  });
+
+  it("counts Draft anyway only for the role and the reading of the post it answered", async () => {
+    await seedSample();
+    const id = await run("Contoso Health - Backend Engineer (Remote - US only)", [
+      answer(fixture("S02-us-only")),
+    ]);
+    expect(await draftAnyway({ db, clock }, id)).toEqual({ ok: true });
+    expect(await draftedAnyway(db, id)).toBe(true);
+    const reading = (await stageOutput(db, id, "extract"))!.outputHash;
+
+    // As if the post had been read again since: the decision answered an earlier reading.
+    await db.query(
+      "update {{schema}}.jobs set eligibility_decision_output = 'an earlier reading' where id = $1",
+      [id],
+    );
+    expect(await draftedAnyway(db, id)).toBe(false);
+    // And a decision for another role.
+    await db.query(
+      `update {{schema}}.jobs set eligibility_decision_output = $2, eligibility_decision_role = 'P2'
+        where id = $1`,
+      [id, reading],
+    );
+    expect(await draftedAnyway(db, id)).toBe(false);
   });
 });
