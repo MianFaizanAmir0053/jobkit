@@ -4,7 +4,7 @@ import { fakeClock, type FakeClock } from "@/adapters/clock";
 import type { PgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { issueSession } from "@/core/platform/sessions";
-import { createTestDb } from "@/server/db/testDb";
+import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 
 import { companyRoleHash, postFingerprint } from "./normalise";
 import {
@@ -36,6 +36,7 @@ const deps = () => ({ db, clock });
 
 beforeAll(async () => {
   db = await createTestDb();
+  await insertTestJobs(db, [JOB, OTHER_JOB, THIRD_JOB]);
 });
 
 afterAll(async () => {

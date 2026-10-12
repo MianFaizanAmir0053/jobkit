@@ -1,5 +1,6 @@
 import type { Clock, Db } from "@/core/ports";
 
+import { expireUploads } from "./jobs";
 import { expirePendingPairings } from "./pairing";
 
 /**
@@ -26,6 +27,7 @@ export interface DailyResult {
   expiredPairings: number;
   endedSessions: number;
   oldPairingTokens: number;
+  expiredUploads: number;
 }
 
 /**
@@ -38,6 +40,7 @@ export async function dailyMaintenance(deps: Deps): Promise<DailyResult> {
   await keepAlive(deps);
   const now = deps.clock.now();
   const expiredPairings = await expirePendingPairings(deps.db, now);
+  const expiredUploads = await expireUploads(deps.db, now);
   const ended = await deps.db.query("delete from {{schema}}.sessions where expires_at <= $1", [
     now,
   ]);
@@ -49,5 +52,6 @@ export async function dailyMaintenance(deps: Deps): Promise<DailyResult> {
     expiredPairings,
     endedSessions: ended.rowCount,
     oldPairingTokens: tokens.rowCount,
+    expiredUploads,
   };
 }

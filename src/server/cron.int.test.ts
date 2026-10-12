@@ -60,6 +60,7 @@ describe("GET /api/cron/daily", () => {
       expiredPairings: 0,
       endedSessions: 0,
       oldPairingTokens: 0,
+      expiredUploads: 0,
     });
     expect((await run(`Bearer ${secrets.keepalive}`)).status).toBe(401);
     expect((await run()).status).toBe(401);

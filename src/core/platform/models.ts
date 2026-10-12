@@ -432,13 +432,22 @@ async function finishWithUsage(
 /**
  * The runner's part of B4: an attempt left `started` by a killed invocation
  * is marked `abandoned` when its job is next claimed, keeping its provisional
- * cost.
+ * cost. It ended no later than an attempt can last, however long the job
+ * then sat unclaimed. Only the runner calls models for a job, so every such
+ * row was left by an invocation whose lease has lapsed. An attempt that
+ * outlived its invocation and finishes after all still closes its own row
+ * with what it cost, which is truer than the upper bound.
  */
 export async function abandonStartedCalls(db: Db, jobId: string, now: Date): Promise<number> {
   const { rowCount } = await db.query(
-    `update {{schema}}.model_calls set outcome = 'abandoned', ended_at = $2
+    `update {{schema}}.model_calls
+        set outcome = 'abandoned', ended_at = least($2, started_at + $3 * interval '1 millisecond')
       where job_id = $1 and outcome = 'started'`,
-    [jobId, now],
+    [
+      jobId,
+      now,
+      MODEL_CALL_LIMITS.countMs + MODEL_CALL_LIMITS.totalMs + MODEL_CALL_LIMITS.maxRetryWaitMs,
+    ],
   );
   return rowCount;
 }

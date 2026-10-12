@@ -14,7 +14,7 @@ import {
 } from "@/adapters/fakeLlm";
 import type { PgliteDb } from "@/adapters/pglite";
 import type { Llm } from "@/core/ports";
-import { createTestDb } from "@/server/db/testDb";
+import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 
 import { caseless } from "./caseless";
 import { abandonStartedCalls, callModel, type ModelCallGuard, type ModelCallInput } from "./models";
@@ -82,6 +82,7 @@ async function rows(): Promise<CallRow[]> {
 
 beforeAll(async () => {
   db = await createTestDb();
+  await insertTestJobs(db, [JOB, OTHER_JOB]);
 });
 
 afterAll(async () => {
@@ -479,5 +480,24 @@ describe("abandonStartedCalls", () => {
       { job_id: JOB, outcome: "abandoned", cost: 0.36 },
       { job_id: OTHER_JOB, outcome: "started", cost: 0.36 },
     ]);
+  });
+
+  it("ends an abandoned call no later than a call can last, however long the job sat unclaimed", async () => {
+    const started = clock.now();
+    await db.query(
+      `insert into {{schema}}.model_calls
+         (job_id, stage, attempt, provider, requested_model, started_at, outcome, cost_usd, cost_provisional)
+       values ($1, 'extract', 1, 'anthropic', 'claude-opus-5-5', $2, 'started', 0.36, true)`,
+      [JOB, started],
+    );
+
+    await abandonStartedCalls(db, JOB, new Date(started.getTime() + 3 * 60 * 60_000));
+
+    const { rows } = await db.query<{ ended_at: Date }>(
+      "select ended_at from {{schema}}.model_calls where job_id = $1",
+      [JOB],
+    );
+    // Counting the input, then the attempts and one retry's wait: 10 + 200 + 15 seconds.
+    expect(rows).toEqual([{ ended_at: new Date(started.getTime() + 225_000) }]);
   });
 });
