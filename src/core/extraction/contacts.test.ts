@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import { NUMBER_FLAG, isStrictAddress, normaliseWhatsAppNumber } from "./contacts";
 
+const EN_DASH = String.fromCharCode(0x2013);
+const NON_BREAKING_HYPHEN = String.fromCharCode(0x2011);
+
 /*
  * Extraction AC8. A post must not be able to smuggle a recipient or a header
  * into the handoff link, so an address passes only in a narrow form; a
@@ -56,6 +59,10 @@ describe("isStrictAddress", () => {
     ["a reserved name with no public suffix", "hr@localhost"],
     ["a local part over 64 characters", `${"a".repeat(65)}@example.com`],
     ["a domain label over 63 characters", `hr@${"a".repeat(64)}.example.com`],
+    [
+      "an address over RFC 5321's 254 characters",
+      `${"a".repeat(60)}@${Array.from({ length: 4 }, () => "b".repeat(60)).join(".")}.com`,
+    ],
   ])("fails %s", (_case, address) => {
     expect(isStrictAddress(address)).toBe(false);
   });
@@ -74,6 +81,11 @@ describe("normaliseWhatsAppNumber", () => {
     ["a North American number with an area code in brackets", "+1 (555) 010-0123", "15550100123"],
     ["a country code the table does not list", "+49 30 1234567", "49301234567"],
     ["the all-zero number the synthetic posts use", "0300 0000000", "923000000000"],
+    ["a space after the plus, before (0)", "+ 92 (0)300 1234567", "923001234567"],
+    ["00 and a space before (0)", "00 92 (0)300 1234567", "923001234567"],
+    ["an en dash", `0300${EN_DASH}1234567`, "923001234567"],
+    ["a non-breaking hyphen", `0300${NON_BREAKING_HYPHEN}1234567`, "923001234567"],
+    ["square brackets", "+92 [300] 1234567", "923001234567"],
   ])("accepts %s", (_case, text, number) => {
     expect(normaliseWhatsAppNumber(text)).toEqual({ ok: true, number });
   });
@@ -94,6 +106,11 @@ describe("normaliseWhatsAppNumber", () => {
     ["a wa.me link", "wa.me/923001234567"],
     ["more than 15 digits", "+49 1234 5678 9012 3456"],
     ["fewer than 8 digits", "+49 1234"],
+    ["a 0 straight after Pakistan's code", "+92 0300 123456"],
+    ["92 and a 0 with no plus", "92 0300 123456"],
+    ["a 0 straight after the UK's code", "+44 0207 946 095"],
+    ["a 0 straight after North America's code", "+1 055 501 0012"],
+    ["(0) after digits that are no listed country code", "+923 (0)00 1234567"],
   ])("flags %s", (_case, text) => {
     expect(normaliseWhatsAppNumber(text)).toEqual({ ok: false, reason: NUMBER_FLAG });
   });

@@ -14,7 +14,7 @@ import {
   checkRecord,
   jobRecordSchema,
 } from "./record";
-import { type Tile, tileSpans } from "./tiles";
+import { type TilePlace, tileSpans } from "./tileGeometry";
 
 /*
  * Extraction AC3. The synthetic records are what the fake model answers for
@@ -47,10 +47,25 @@ function post(id: string): Post {
   return found;
 }
 
-/** The tiles a post's screenshot is cut into; the checks need only their places and sizes. */
-function tilesOf(id: string): Tile[] {
+/** Where a post's screenshot is cut: the checks need only the tiles' places and sizes. */
+function tilesOf(id: string): TilePlace[] {
   const { width, height } = post(id).render;
-  return tileSpans(width, height).map((span) => ({ image: 0, ...span, width, png: new Uint8Array() }));
+  return tileSpans(width, height).map((span) => ({ image: 0, ...span, width }));
+}
+
+type Path = readonly (string | number)[];
+
+/** Sets a field by its path, as a model's wrong answer might, whatever its type. */
+function set(record: unknown, path: Path, value: unknown): void {
+  let node = record as Record<string | number, unknown>;
+  for (const key of path.slice(0, -1)) node = node[key] as Record<string | number, unknown>;
+  node[path.at(-1)!] = value;
+}
+
+function remove(record: unknown, path: Path): void {
+  let node = record as Record<string | number, unknown>;
+  for (const key of path.slice(0, -1)) node = node[key] as Record<string | number, unknown>;
+  delete node[path.at(-1)!];
 }
 
 /** A record's contact as the review page would use it: a number normalised, anything else as given. */
@@ -86,7 +101,9 @@ describe("the synthetic records", () => {
     if ("contact" in labels) expect(first && contactOf(first.route)).toBe(labels.contact);
     if ("roles" in labels) expect(record.roles).toHaveLength(labels.roles as number);
     if ("contacts" in labels) {
-      const byTitle = Object.fromEntries(record.roles.map((role) => [role.title, contactOf(role.route)]));
+      const byTitle = Object.fromEntries(
+        record.roles.map((role) => [role.title, contactOf(role.route)]),
+      );
       expect(byTitle).toEqual(labels.contacts);
     }
     if ("scam_signals" in labels) {
@@ -119,21 +136,37 @@ describe("the synthetic records", () => {
 });
 
 describe("jobRecordSchema", () => {
-  const base = () => structuredClone(fixture("S01-email-simple")) as unknown as Record<string, any>;
+  const base = () => structuredClone(fixture("S01-email-simple"));
 
   it.each([
-    ["a missing field", (r: Record<string, any>) => delete r.company],
-    ["null for an absent number", (r: Record<string, any>) => (r.roles[0].salary.min = null)],
-    ["a kind outside its list", (r: Record<string, any>) => (r.roles[0].route.kind = "fax")],
-    ["an unknown key", (r: Record<string, any>) => (r.extra = "x")],
-    ["an unknown key in a role", (r: Record<string, any>) => (r.roles[0].notes = "x")],
-    ["text for a flag", (r: Record<string, any>) => (r.roles[0].instructions[0].addressed_to_ai = "no")],
-    ["text for a number", (r: Record<string, any>) => (r.roles[0].requirements[0].years = "4")],
-    ["one role instead of a list", (r: Record<string, any>) => (r.roles = r.roles[0])],
+    ["a missing field", (r: JobRecord) => remove(r, ["company"])],
+    ["null for an absent number", (r: JobRecord) => set(r, ["roles", 0, "salary", "min"], null)],
+    ["a kind outside its list", (r: JobRecord) => set(r, ["roles", 0, "route", "kind"], "fax")],
+    ["an unknown key", (r: JobRecord) => set(r, ["extra"], "x")],
+    ["an unknown key in a role", (r: JobRecord) => set(r, ["roles", 0, "notes"], "x")],
+    [
+      "text for a flag",
+      (r: JobRecord) => set(r, ["roles", 0, "instructions", 0, "addressed_to_ai"], "no"),
+    ],
+    ["text for a number", (r: JobRecord) => set(r, ["roles", 0, "requirements", 0, "years"], "4")],
+    ["one role instead of a list", (r: JobRecord) => set(r, ["roles"], r.roles[0])],
   ])("rejects %s", (_case, breakIt) => {
     const record = base();
     breakIt(record);
     expect(jobRecordSchema.safeParse(record).success).toBe(false);
+  });
+
+  it("takes enum values the model wrote in another case, in the schema's own spelling", () => {
+    const record = base();
+    set(record, ["post_kind"], "Job_Post");
+    set(record, ["language"], "EN");
+    set(record, ["roles", 0, "seniority"], "Senior");
+    set(record, ["roles", 0, "route", "kind"], "Email");
+
+    const parsed = jobRecordSchema.parse(record);
+
+    expect([parsed.post_kind, parsed.language]).toEqual(["job_post", "en"]);
+    expect([parsed.roles[0]!.seniority, parsed.roles[0]!.route.kind]).toEqual(["senior", "email"]);
   });
 
   it("keeps output that parses but fails a check, and flags it rather than failing", () => {
@@ -142,7 +175,9 @@ describe("jobRecordSchema", () => {
     const parsed = jobRecordSchema.safeParse(record);
     expect(parsed.success).toBe(true);
     const before = structuredClone(record);
-    expect(kinds(checkRecord(record, []))).toEqual([{ kind: "address", path: "roles[0].route.address" }]);
+    expect(kinds(checkRecord(record, []))).toEqual([
+      { kind: "address", path: "roles[0].route.address" },
+    ]);
     expect(record).toEqual(before);
   });
 });
@@ -214,14 +249,58 @@ describe("checkRecord", () => {
     over.roles[0]!.title += "t";
     over.roles[0]!.route.quote = "r".repeat(MAX_QUOTE_LENGTH + 1);
     over.roles[0]!.eligibility.other_limits.push("o".repeat(MAX_QUOTE_LENGTH + 1));
-    over.roles[0]!.eligibility.work_authorisation.push({ place: "GB", quote: "w".repeat(MAX_QUOTE_LENGTH + 1) });
+    over.roles[0]!.eligibility.work_authorisation.push({
+      place: "GB",
+      quote: "w".repeat(MAX_QUOTE_LENGTH + 1),
+    });
     expect(checkRecord(over, [])).toEqual([
       { kind: "too_long", path: "scam_signals[0].quote", message: FLAG_MESSAGES.too_long },
       { kind: "too_long", path: "roles[0].title", message: FLAG_MESSAGES.too_long },
-      { kind: "too_long", path: "roles[0].eligibility.work_authorisation[0].quote", message: FLAG_MESSAGES.too_long },
-      { kind: "too_long", path: "roles[0].eligibility.other_limits[0]", message: FLAG_MESSAGES.too_long },
+      {
+        kind: "too_long",
+        path: "roles[0].eligibility.work_authorisation[0].quote",
+        message: FLAG_MESSAGES.too_long,
+      },
+      {
+        kind: "too_long",
+        path: "roles[0].eligibility.other_limits[0]",
+        message: FLAG_MESSAGES.too_long,
+      },
       { kind: "too_long", path: "roles[0].route.quote", message: FLAG_MESSAGES.too_long },
     ]);
+  });
+
+  it("counts a field's length in characters, so emoji count once", () => {
+    const atLimit = structuredClone(fixture("S10-scam"));
+    atLimit.scam_signals[0]!.quote = `${"q".repeat(MAX_QUOTE_LENGTH - 10)}${"😀".repeat(10)}`;
+    expect(checkRecord(atLimit, [])).toEqual([]);
+
+    atLimit.scam_signals[0]!.quote += "😀";
+    expect(kinds(checkRecord(atLimit, []))).toEqual([
+      { kind: "too_long", path: "scam_signals[0].quote" },
+    ]);
+  });
+
+  it("flags a job post in which no role was found", () => {
+    const record = structuredClone(fixture("S01-email-simple"));
+    record.roles = [];
+
+    expect(checkRecord(record, [])).toEqual([
+      { kind: "no_roles", path: "roles", message: FLAG_MESSAGES.no_roles },
+    ]);
+  });
+
+  it("flags a box with corners but no tile to be in", () => {
+    const record = structuredClone(fixture("S01-email-simple"));
+    record.roles[0]!.route.box = { tile: -1, x1: 10, y1: 10, x2: 200, y2: 40 };
+
+    expect(kinds(checkRecord(record, []))).toEqual([{ kind: "box", path: "roles[0].route.box" }]);
+  });
+
+  it("asks the owner to type a failing address, never to copy what the post shows", () => {
+    expect(FLAG_MESSAGES.address).toBe(
+      "This email address did not pass the strict check. Type the address yourself, and nothing else.",
+    );
   });
 
   it("never repeats a value from the post in a flag", () => {
