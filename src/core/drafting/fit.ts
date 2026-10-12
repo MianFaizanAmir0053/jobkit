@@ -1,16 +1,18 @@
 import type { Role } from "@/core/extraction/record";
 import type { Fact } from "@/core/profile/schema";
 
+import { canonicalSkill } from "./build";
 import type { FitRow, Verdict } from "./kit";
 
 /**
- * The fit check (drafting spec, "Fit check"): code checks every `met`
- * verdict against the facts it cites. A skill or experience requirement
- * needs a cited fact sharing one of its skills, at the depth it asks and
- * with the years it states, taken from the strongest such fact; an
- * education requirement needs a cited education fact. Anything short of
- * that is `fit_unverified` and counts as partial, so a must-have needs a
- * gap line; a requirement with no row is `fit_missing` and counts as a gap.
+ * The fit check (drafting spec, "Fit check", with the owner's rule of
+ * 2026-10-12): code checks every `met` verdict against the facts it cites.
+ * A skill or experience requirement is met only when, for every skill it
+ * names, one cited fact has that skill at the depth it asks and with the
+ * years it states: depth and years from the same fact, never one from each.
+ * An education requirement needs a cited education fact. Anything short of
+ * that is `fit_unverified` and counts as partial, so a must-have needs a gap
+ * line; a requirement with no row is `fit_missing` and counts as a gap.
  *
  * A language or "other" requirement is met only with the owner's tick,
  * which the review page will offer. Until it does, such a row is flagged
@@ -62,7 +64,7 @@ export function checkFit(
     const shown =
       requirement.kind === "education"
         ? cited.some((fact) => fact.kind === "education")
-        : showsSkill(requirement, cited);
+        : showsEverySkill(requirement, cited);
     if (!shown) {
       flags.push({ kind: "fit_unverified", requirementId: requirement.id, reason: "facts" });
     }
@@ -71,13 +73,18 @@ export function checkFit(
   return { flags, verdicts };
 }
 
-function showsSkill(requirement: Role["requirements"][number], cited: readonly Fact[]): boolean {
-  const sharing = cited.filter((fact) =>
-    fact.skills.some((skill) => requirement.skills.includes(skill)),
+function showsEverySkill(
+  requirement: Role["requirements"][number],
+  cited: readonly Fact[],
+): boolean {
+  const skills = requirement.skills.map(canonicalSkill);
+  if (skills.length === 0) return false;
+  return skills.every((skill) =>
+    cited.some(
+      (fact) =>
+        fact.skills.includes(skill) &&
+        DEPTH_RANK[fact.depth] >= REQUIRED_RANK[requirement.depth] &&
+        (requirement.years < 0 || (fact.years ?? 0) >= requirement.years),
+    ),
   );
-  if (sharing.length === 0) return false;
-  const depth = Math.max(...sharing.map((fact) => DEPTH_RANK[fact.depth]));
-  if (depth < REQUIRED_RANK[requirement.depth]) return false;
-  if (requirement.years < 0) return true;
-  return Math.max(...sharing.map((fact) => fact.years ?? 0)) >= requirement.years;
 }

@@ -1,6 +1,6 @@
 import type { JobRecord, Role } from "@/core/extraction/record";
 import type { Fact, GapTemplate, KnownGap } from "@/core/profile/schema";
-import { skillName } from "@/core/shared/skills";
+import { skillName, skillTag } from "@/core/shared/skills";
 
 import type { DraftAnswer, EmailKit, FitRow, GapChoice, KitBlock } from "./kit";
 
@@ -8,8 +8,9 @@ import type { DraftAnswer, EmailKit, FitRow, GapChoice, KitBlock } from "./kit";
  * The parts of an email kit code writes (drafting spec, "Code-built parts"
  * and "Accepted instructions"): the subject, the greeting, every gap line and
  * the closing, and which of the post's instructions code acts on. Every
- * string taken from the post loses its control characters here, so none can
- * break a line in a subject or a header.
+ * string taken from the post loses its control and direction characters
+ * here, so none can break a line in a subject or a header, or make one read
+ * otherwise than it is sent.
  */
 
 export const NEEDS_YOUR_LINE = "Needs your line";
@@ -29,35 +30,54 @@ export interface ProfileParts {
 /** What code takes from the post's instructions; never one addressed to AI. */
 export interface Accepted {
   subjectFormat: string | null;
-  /** The body's limit in words: 180, or less when the post asks for less. */
+  /** The body's limit in words: 180, or less when the post asks for fewer words. */
   wordLimit: number;
   keyword: string | null;
 }
 
-function isControl(char: string): boolean {
-  const code = char.codePointAt(0)!;
+function isControl(code: number): boolean {
   return code < 0x20 || (code >= 0x7f && code <= 0x9f) || code === 0x2028 || code === 0x2029;
 }
 
-/** The text on one line: every control character, carriage returns and line feeds among them, becomes a space. */
+/** Direction overrides and isolates, which make text read otherwise than it runs. */
+function isDirectionMark(code: number): boolean {
+  return (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
+}
+
+/**
+ * The text on one line: every control character, carriage returns and line
+ * feeds among them, becomes a space, and direction marks go.
+ */
 export function oneLine(text: string): string {
   return [...text]
-    .map((char) => (isControl(char) ? " " : char))
+    .map((char) => {
+      const code = char.codePointAt(0)!;
+      if (isDirectionMark(code)) return "";
+      return isControl(code) ? " " : char;
+    })
     .join("")
     .replace(/ {2,}/g, " ")
     .trim();
 }
 
-const LINK = /https?:|:\/\/|www\./i;
+/** A skill tag as the shared vocabulary writes it: "k8s" is kubernetes. */
+export function canonicalSkill(tag: string): string {
+  return skillTag(tag) ?? tag;
+}
+
+const LINK = /https?:|:\/\/|www\.|\b[a-z0-9-]+\.[a-z]{2,}\//i;
+const WORDS = /(\d[\d,]*)\s*words?\b/i;
 
 export function acceptedInstructions(role: Role): Accepted {
   const usable = role.instructions.filter((instruction) => !instruction.addressed_to_ai);
   const subject = usable.find(
     (instruction) => instruction.kind === "subject_format" && oneLine(instruction.value) !== "",
   );
+  // Only a limit in words tightens the body's; "one page" or "500 characters" stay on the checklist.
   const limits = usable
     .filter((instruction) => instruction.kind === "word_limit")
-    .map((instruction) => Number(/\d+/.exec(instruction.value)?.[0]))
+    .map((instruction) => WORDS.exec(`${instruction.value} ${instruction.text}`)?.[1])
+    .map((words) => Number(words?.replaceAll(",", "")))
     .filter((limit) => Number.isInteger(limit) && limit > 0);
   const keyword = usable.find(
     (instruction) =>
@@ -77,10 +97,11 @@ export function acceptedInstructions(role: Role): Accepted {
 /** The post's format with only {name} and {role} filled in, or "Application: {Role} – {Name}". */
 export function subjectFor(format: string | null, ownerName: string, roleTitle: string): string {
   const title = oneLine(roleTitle);
+  // Function replacements, so a "$&" in a title or a name is only text.
   const filled =
     format === null
       ? `Application: ${title} – ${ownerName}`
-      : format.replaceAll("{name}", ownerName).replaceAll("{role}", title);
+      : format.replaceAll("{name}", () => ownerName).replaceAll("{role}", () => title);
   return oneLine(filled);
 }
 
@@ -89,30 +110,54 @@ export function greetingFor(recruiterName: string): string {
   return name === "" ? DEFAULT_GREETING : `Dear ${name},`;
 }
 
+/** Whether a kind of requirement can take a template: a degree, a language or "other" cannot. */
+function takesTemplate(requirement: Requirement): boolean {
+  return requirement.kind === "skill" || requirement.kind === "experience";
+}
+
+/** Whether a known gap line speaks to this requirement: it names one of its skills. */
+export function knownLineFits(known: KnownGap, requirement: Requirement): boolean {
+  const skills = requirement.skills.map(canonicalSkill);
+  return known.skills.some((skill) => skills.includes(skill));
+}
+
 /**
- * A gap line, written by code: a known gap line verbatim, or a template with
- * {skill} as the requirement's first skill's name and {related} as the
- * related fact's phrase. "Needs your line" when neither can be built: a
- * requirement with no skill tag, or a choice naming nothing the profile has.
+ * A gap line, written by code (the owner's rule of 2026-10-12): a known gap
+ * line naming one of the requirement's skills, verbatim; or, for a skill or
+ * experience requirement, a template with {skill} as the first of its
+ * skills that no approved fact has, so a line never says the owner lacks a
+ * skill the profile shows, and {related} as the related fact's phrase.
+ * "Needs your line" when neither can be built: a degree, a language or an
+ * "other" requirement, every skill shown somewhere, or a choice naming
+ * nothing the profile has.
  */
 export function gapLine(
   requirement: Requirement | undefined,
   choice: GapChoice,
   profile: ProfileParts,
 ): string {
+  if (!requirement) return NEEDS_YOUR_LINE;
   const known = profile.knownGaps.find((gap) => gap.id === choice.knownLineId);
-  if (known) return known.line;
-  const skill = requirement?.skills[0];
+  if (known && knownLineFits(known, requirement)) return known.line;
   const template = profile.gapTemplates.find((entry) => entry.id === choice.templateId);
-  if (skill === undefined || !template) return NEEDS_YOUR_LINE;
+  if (!template || !takesTemplate(requirement)) return NEEDS_YOUR_LINE;
+  const lacking = requirement.skills
+    .map(canonicalSkill)
+    .find((skill) => !profile.facts.some((fact) => fact.skills.includes(skill)));
+  if (lacking === undefined) return NEEDS_YOUR_LINE;
   const related = profile.facts.find((fact) => fact.id === choice.relatedFactId);
   if (template.text.includes("{related}") && !related) return NEEDS_YOUR_LINE;
-  return template.text
-    .replaceAll("{skill}", skillName(skill))
-    .replaceAll("{related}", related?.phrase ?? "");
+  return oneLine(
+    template.text
+      .replaceAll("{skill}", () => oneLine(skillName(lacking)))
+      .replaceAll("{related}", () => related?.phrase ?? ""),
+  );
 }
 
-/** The kit from the model's answer: its blocks as written, gap lines by code, and the parts code writes. */
+/**
+ * The kit from the model's answer: its blocks as written, with IDs by
+ * position, gap lines by code, and the parts code writes.
+ */
 export function buildEmailKit(
   answer: DraftAnswer,
   context: {
@@ -124,7 +169,7 @@ export function buildEmailKit(
   },
 ): { kit: EmailKit; fit: FitRow[] } {
   const { record, role, ownerName, accepted, profile } = context;
-  const blocks: KitBlock[] = answer.blocks.map((block) => {
+  const blocks: KitBlock[] = answer.blocks.map((block, i) => {
     const gap: GapChoice | null =
       block.class === "gap"
         ? {
@@ -136,7 +181,7 @@ export function buildEmailKit(
         : null;
     const requirement = role.requirements.find((entry) => entry.id === gap?.requirementId);
     return {
-      id: block.id,
+      id: `S${i + 1}`,
       text: gap ? gapLine(requirement, gap, profile) : oneLine(block.text),
       paragraphBreak: block.paragraph_break,
       class: block.class,

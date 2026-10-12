@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { readExtractOutput } from "@/core/extraction/extract";
+import type { JobRecord, Role } from "@/core/extraction/record";
 import { chosenRole } from "@/core/extraction/owner";
 import { callModel, type ModelCallDeps, type ModelCallFailure } from "@/core/platform/models";
 import type { StageDefinition, StageResult, Transition } from "@/core/platform/runner";
@@ -31,12 +32,20 @@ export const DRAFT = {
   maxTokens: 16_000,
 } as const;
 
-// The prompt as sent: its rules, the user turn's layout and the output's schema.
+/**
+ * What a stored kit holds beyond the model's answer: the parts code builds
+ * and the flags it raises. Raise it when build.ts or validate.ts change
+ * them, so an output kept from before is not reused.
+ */
+const BUILD_VERSION = 2;
+
+// The prompt as sent (its rules, the user turn's layout, the output's schema) and the build.
 const PROMPT = sha256Hex(
   canonicalJson({
     rules: draftSystemPrompt(0),
     layout: DRAFT_LAYOUT_VERSION,
     schema: z.toJSONSchema(draftAnswerSchema),
+    build: BUILD_VERSION,
   }),
 );
 
@@ -113,7 +122,7 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         system: draftSystemPrompt(accepted.wordLimit),
         content: draftContent(
           profile,
-          { company: extraction.record.company.name, role, keyword: accepted.keyword },
+          withoutAiLines(extraction.record, role, accepted.keyword),
           accepted.wordLimit,
           marker,
         ),
@@ -161,5 +170,39 @@ export function draftStage(deps: DraftDeps): StageDefinition {
     next(): Transition {
       return { state: "judging", pending: "judge" };
     },
+  };
+}
+
+/**
+ * The post's typed fields as the drafting call may see them: none that
+ * repeats a line aimed at AI. The extract prompt records such lines as
+ * instructions or questions, which never reach this call; a requirement, a
+ * title or a company name that still carries one is left out (the fit check
+ * then shows the requirement as not weighed), so no such line reaches the
+ * model even inside the markers.
+ */
+function withoutAiLines(
+  record: JobRecord,
+  role: Role,
+  keyword: string | null,
+): { company: string; role: Role; keyword: string | null } {
+  const lines = record.roles
+    .flatMap((each) => [
+      ...each.instructions
+        .filter((line) => line.addressed_to_ai)
+        .flatMap((line) => [line.text, line.value]),
+      ...each.screening_questions.filter((line) => line.addressed_to_ai).map((line) => line.text),
+    ])
+    .map((line) => line.trim().toLowerCase())
+    .filter((line) => [...line].length >= 3);
+  const touched = (text: string) => lines.some((line) => text.toLowerCase().includes(line));
+  return {
+    company: touched(record.company.name) ? "" : record.company.name,
+    role: {
+      ...role,
+      title: touched(role.title) ? "" : role.title,
+      requirements: role.requirements.filter((requirement) => !touched(requirement.text)),
+    },
+    keyword,
   };
 }

@@ -72,7 +72,7 @@ describe("checkFit", () => {
     ]);
   });
 
-  it("believes a verdict its facts bear out, taking the strongest depth and the most years among them", () => {
+  it("believes a verdict one fact bears out, with the depth and the years asked", async () => {
     const result = checkFit(
       role([requirement({ id: "R1", skills: ["kubernetes"], depth: "production", years: 1 })]),
       [met("R1", ["F-k8s-learning", "F-k8s-prod"])],
@@ -81,6 +81,30 @@ describe("checkFit", () => {
 
     expect(result.flags).toEqual([]);
     expect(result.verdicts.get("R1")).toBe("met");
+  });
+
+  it("does not take the depth from one fact and the years from another", () => {
+    const result = checkFit(
+      role([requirement({ id: "R1", skills: ["kubernetes"], depth: "production", years: 2 })]),
+      [met("R1", ["F-k8s-learning", "F-k8s-prod"])],
+      [
+        fact({ id: "F-k8s-learning", skills: ["kubernetes"], depth: "learning", years: 5 }),
+        fact({ id: "F-k8s-prod", skills: ["kubernetes"], depth: "production", years: 1 }),
+      ],
+    );
+
+    expect(result.flags).toEqual([
+      { kind: "fit_unverified", requirementId: "R1", reason: "facts" },
+    ]);
+  });
+
+  it("needs every skill a requirement names, each shown by a cited fact, aliases included", () => {
+    const both = role([requirement({ id: "R1", skills: ["docker", "k8s"] })]);
+
+    expect(checkFit(both, [met("R1", ["F-docker"])], facts).flags).toEqual([
+      { kind: "fit_unverified", requirementId: "R1", reason: "facts" },
+    ]);
+    expect(checkFit(both, [met("R1", ["F-docker", "F-k8s-prod"])], facts).flags).toEqual([]);
   });
 
   it("meets a degree only with a cited education fact", () => {

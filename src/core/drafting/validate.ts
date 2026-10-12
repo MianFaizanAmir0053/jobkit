@@ -1,6 +1,6 @@
 import type { JobRecord, Role } from "@/core/extraction/record";
 
-import { NEEDS_YOUR_LINE, type ProfileParts } from "./build";
+import { knownLineFits, NEEDS_YOUR_LINE, type ProfileParts } from "./build";
 import { checkFit } from "./fit";
 import { bodyWords, type EmailKit, type FitRow, type KitBlock } from "./kit";
 
@@ -9,9 +9,11 @@ import { bodyWords, type EmailKit, type FitRow, type KitBlock } from "./kit";
  * as far as the thin path needs them: citations, the fit check, gap lines,
  * the word limit, the accepted keyword, anything an AI-addressed line asked
  * for, internal IDs or markers in the text, a line only the owner can write,
- * and sensitive topics in drafted sentences. Pure: it only flags, never
- * rewrites, so the review page can run it in the browser after each edit.
- * Topic questions, short answers and form and message kits come later.
+ * sensitive topics in drafted sentences and the subject, a placeholder left
+ * in the subject, and a body that says nothing about the owner. Pure: it
+ * only flags, never rewrites, so the review page can run it in the browser
+ * after each edit. Topic questions, short answers and form and message kits
+ * come later.
  */
 
 export type KitFlagKind =
@@ -24,11 +26,13 @@ export type KitFlagKind =
   | "ai_instruction_followed"
   | "reference_leak"
   | "needs_your_line"
-  | "sensitive_topic_drafted";
+  | "sensitive_topic_drafted"
+  | "subject_placeholder"
+  | "no_claims";
 
 export interface KitFlag {
   kind: KitFlagKind;
-  /** A block's ID, a requirement's ID, or "body", "subject" or "kit". */
+  /** A block's ID, a requirement's ID, or "body", "subject", "greeting" or "kit". */
   at: string;
   message: string;
 }
@@ -48,25 +52,32 @@ const MESSAGES = {
   invalid_citation:
     "This sentence cites something that is not in your approved profile or the post. Check it, or cut it.",
   fit_facts:
-    "Marked as met, but the facts cited do not show the skill at the depth or for the years asked.",
+    "Marked as met, but no cited fact shows every skill named at the depth and for the years asked.",
   fit_tick: "Only you can confirm you meet this requirement.",
   fit_missing: "The draft did not weigh this requirement.",
   missing_gap_line: "A must-have you do not fully meet has no honest line about it.",
   keyword_missing: "The post asks you to include a keyword, and the email does not.",
-  ai_instruction_followed:
-    "The email repeats what a line aimed at AI tools asked for. Take it out.",
   reference_leak: "An internal ID or marker appears in the email. Take it out.",
   needs_your_line: "Write this line yourself: no gap line in your profile fits this requirement.",
   sensitive_topic_drafted:
-    "This sentence mentions money, visas, work permits or another personal topic only your profile may answer. Check it.",
+    "This mentions money, visas, work permits or another personal topic only your profile may answer. Check it.",
+  subject_placeholder:
+    "The subject still holds a placeholder from the post. Fill it in before you send.",
+  no_claims: "The email says nothing about you yet. Write at least one sentence from your profile.",
 } as const;
 
-// A currency amount, or words about visas, sponsorship, work authorisation or EEO topics.
+// An amount of money (a currency before or after a number, or a word for one); visas,
+// sponsorship and the right to work; and equal-opportunity topics worded about a person.
 const SENSITIVE = [
-  /(?:\b(?:usd|pkr|eur|gbp|aed|sar|cad|aud|inr|rs)\.?|[$£€₨])\s?\d/i,
-  /\d[\d,.]*\s?(?:k\b|usd\b|pkr\b|eur\b|gbp\b|aed\b|dollars?\b|rupees?\b|pounds?\b|euros?\b)/i,
-  /\b(?:visas?|sponsor(?:ship|ed|s)?|work (?:authori[sz]ation|permits?)|right to work|citizenship|gender|ethnicity|race|veteran|disabilit(?:y|ies))\b/i,
+  /(?:\b(?:usd|pkr|eur|gbp|aed|sar|qar|kwd|omr|bhd|sgd|cad|aud|inr|rs)\.?|[$£€₨₹])\s?\d/i,
+  /\d[\d,.]*\s?(?:usd|pkr|eur|gbp|aed|sar|qar|kwd|omr|bhd|sgd|cad|aud|inr|dollars?|rupees?|pounds?|euros?|riyals?|dirhams?|lakhs?|crores?)\b/i,
+  /\b(?:visas?|sponsor(?:ship|ed|s|ing)?|work (?:authori[sz]ation|permits?)|right to work|(?:authori[sz]ed|eligible|permitted) to work|citizen(?:s|ship)?|nationality|passports?|permanent residen(?:t|cy|ce))\b/i,
+  /\b(?:gender|ethnicity|race(?!\s+conditions?)|veteran status|military service|(?:my|a|have a) disabilit(?:y|ies)|I am disabled)\b/i,
 ];
+
+const PLACEHOLDER = /[[{<][^\]}>]{0,40}[\]}>]/;
+
+const isSensitive = (text: string) => SENSITIVE.some((pattern) => pattern.test(text));
 
 export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] {
   const flags: KitFlag[] = [];
@@ -75,6 +86,14 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
   const { role, profile } = context;
   const factIds = new Set(profile.facts.map((fact) => fact.id));
 
+  if (PLACEHOLDER.test(kit.subject)) {
+    flag("subject_placeholder", "subject", MESSAGES.subject_placeholder);
+  }
+  if (isSensitive(kit.subject))
+    flag("sensitive_topic_drafted", "subject", MESSAGES.sensitive_topic_drafted);
+  if (isSensitive(kit.greeting)) {
+    flag("sensitive_topic_drafted", "greeting", MESSAGES.sensitive_topic_drafted);
+  }
   for (const block of kit.blocks) {
     if (!citesTruly(block, context, factIds)) {
       flag("invalid_citation", block.id, MESSAGES.invalid_citation);
@@ -82,9 +101,12 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     if (block.class === "gap" && block.text === NEEDS_YOUR_LINE) {
       flag("needs_your_line", block.id, MESSAGES.needs_your_line);
     }
-    if (block.class !== "gap" && SENSITIVE.some((pattern) => pattern.test(block.text))) {
+    if (block.class !== "gap" && isSensitive(block.text)) {
       flag("sensitive_topic_drafted", block.id, MESSAGES.sensitive_topic_drafted);
     }
+  }
+  if (!kit.blocks.some((block) => block.class === "claim")) {
+    flag("no_claims", "body", MESSAGES.no_claims);
   }
 
   const { flags: fitFlags, verdicts } = checkFit(role, context.fit, profile.facts);
@@ -113,19 +135,25 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     );
   }
 
-  const copied = [kit.subject, kit.greeting, ...kit.blocks.map((block) => block.text), kit.closing];
-  const lower = copied.join("\n").toLowerCase();
-  if (context.keyword !== null && !lower.includes(context.keyword.toLowerCase())) {
+  // The keyword counts only in the body, as a word of its own: "Go" is not in "good".
+  const body = kit.blocks.map((block) => block.text).join("\n");
+  if (context.keyword !== null && !hasWord(body, context.keyword)) {
     flag("keyword_missing", "body", MESSAGES.keyword_missing);
   }
+  const copied = [kit.subject, kit.greeting, body, kit.closing].join("\n");
   // From every role: a line aimed at AI that the model recorded under another role still counts.
-  const aimedAtAi = context.record.roles
+  const followed = context.record.roles
     .flatMap((each) => each.instructions)
     .filter((instruction) => instruction.addressed_to_ai)
-    .map((instruction) => instruction.value.trim().toLowerCase())
-    .filter((value) => value.length >= 2);
-  if (aimedAtAi.some((value) => lower.includes(value))) {
-    flag("ai_instruction_followed", "kit", MESSAGES.ai_instruction_followed);
+    .map((instruction) => instruction.value.trim())
+    .find((value) => [...value].length >= 3 && hasWord(copied, value));
+  if (followed !== undefined) {
+    const shown = [...followed].slice(0, 60).join("");
+    flag(
+      "ai_instruction_followed",
+      "kit",
+      `The email repeats “${shown}”, which a line aimed at AI tools asked for. Take it out.`,
+    );
   }
 
   const references = [
@@ -134,7 +162,8 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     ...profile.gapTemplates.map((template) => template.id),
     ...context.markers,
   ].filter((reference) => reference !== "");
-  if (references.some((reference) => copied.some((text) => hasToken(text, reference)))) {
+  const texts = [kit.subject, kit.greeting, ...kit.blocks.map((block) => block.text), kit.closing];
+  if (references.some((reference) => texts.some((text) => hasToken(text, reference)))) {
     flag("reference_leak", "kit", MESSAGES.reference_leak);
   }
   return flags;
@@ -158,11 +187,12 @@ function citesTruly(block: KitBlock, context: KitContext, factIds: ReadonlySet<s
   }
   if (block.class === "gap") {
     const gap = block.gap;
-    if (!gap || !role.requirements.some((requirement) => requirement.id === gap.requirementId)) {
-      return false;
-    }
+    const requirement = role.requirements.find((entry) => entry.id === gap?.requirementId);
+    if (!gap || !requirement) return false;
+    // A known line answers a requirement only by naming one of its skills.
+    const knownLine = profile.knownGaps.find((entry) => entry.id === gap.knownLineId);
     const known =
-      gap.knownLineId === "" || profile.knownGaps.some((entry) => entry.id === gap.knownLineId);
+      gap.knownLineId === "" || (knownLine !== undefined && knownLineFits(knownLine, requirement));
     const template =
       gap.templateId === "" || profile.gapTemplates.some((entry) => entry.id === gap.templateId);
     const related = gap.relatedFactId === "" || factIds.has(gap.relatedFactId);
@@ -182,4 +212,9 @@ function hasToken(text: string, token: string): boolean {
     if (!/[A-Za-z0-9-]/.test(before) && !/[A-Za-z0-9-]/.test(after)) return true;
     from = at + 1;
   }
+}
+
+/** Whether `word` stands alone in `text`, in any case: "Java" is not in "JavaScript". */
+function hasWord(text: string, word: string): boolean {
+  return hasToken(text.toLowerCase(), word.toLowerCase());
 }

@@ -82,17 +82,17 @@ Runs when `extract_questions` added questions to a job whose kit already exists.
 - **Subject:** the post's format when accepted, otherwise "Application: {Role} – Faizan Amir".
 - **Greeting:** "Dear {Name}," when the record names a recruiter, otherwise "Dear Hiring Team,".
 - **Gap lines:**
-  - a known gap line, verbatim;
-  - or a template, with `{skill}` replaced by the requirement's first skill tag's display name and `{related}` by the related fact's phrase;
-  - for a must-have with no skill tag (a degree, a language, an "other" requirement), no template applies: the block shows "Needs your line" and blocks until the owner types one or picks a known line.
+  - a known gap line that names one of the requirement's skills, verbatim;
+  - or, for a `skill` or `experience` requirement, a template, with `{skill}` replaced by the display name of the requirement's first skill tag that no approved fact has, so a line never says the owner lacks a skill the profile shows, and `{related}` by the related fact's phrase;
+  - for a must-have with no skill tag, a degree, a language or an "other" requirement, or one whose every skill appears in an approved fact, no template applies: the block shows "Needs your line" and blocks until the owner types one or picks a known line (the owner's rule, 2026-10-12).
   
   In a message kit, several gaps merge into one line ("I haven't used Kubernetes or Kafka professionally; the closest is …") so the 600-character limit can hold them.
 
 ## Fit check
 
-Code checks every fit row against the facts it cites, taking the strongest depth and the most years among them:
+Code checks every fit row against the facts it cites (the owner's rule, 2026-10-12):
 
-- a `met` verdict needs, for a `skill` or `experience` requirement, at least one cited fact sharing a skill tag, a depth at least the requirement's (`production` above `professional` above `side-project` above `learning`; `any` accepts all), and years at least the requirement's when it states some;
+- a `met` verdict needs, for a `skill` or `experience` requirement, for every skill tag the requirement names, one cited fact with that tag, a depth at least the requirement's (`production` above `professional` above `side-project` above `learning`; `any` accepts all) and years at least the requirement's when it states some, the depth and the years from that same fact;
 - a `met` verdict for an `education` requirement needs a cited `education` fact; for a `language` or `other` requirement, the owner's tick;
 - anything short of that makes the row `fit_unverified`, counted as `partial`, so a must-have needs a gap line;
 - a requirement with no fit row at all is flagged `fit_missing`.

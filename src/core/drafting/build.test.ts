@@ -92,11 +92,26 @@ describe("acceptedInstructions", () => {
     });
   });
 
+  it("takes only a limit in words, reading thousands with commas", () => {
+    const limitOf = (value: string) =>
+      acceptedInstructions({
+        ...record().roles[0]!,
+        instructions: [instruction({ kind: "word_limit", value })],
+      }).wordLimit;
+
+    expect(limitOf("Max 120 words")).toBe(120);
+    expect(limitOf("1,000 words")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("one page")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("2-3 paragraphs")).toBe(BODY_WORD_LIMIT);
+    expect(limitOf("500 characters")).toBe(BODY_WORD_LIMIT);
+  });
+
   it("keeps the 180-word limit when the post allows more, and refuses a keyword that is a link, too long or on two lines", () => {
     const base = record().roles[0]!;
     const keywords = [
       "see https://example.com",
       "www.example.com",
+      "evil.co/x",
       "x".repeat(41),
       `two${String.fromCharCode(10)}lines`,
     ];
@@ -127,6 +142,17 @@ describe("subjectFor", () => {
   it("fills in only {name} and {role}", () => {
     expect(subjectFor("{role} | {name} | {company} {x}", "Sam Rivera", "Engineer")).toBe(
       "Engineer | Sam Rivera | {company} {x}",
+    );
+  });
+
+  it('fills in a title holding "$&" or "$\'" as plain text', () => {
+    expect(subjectFor("{role} – {name}", "Sam", "C$$ & $& Dev $'")).toBe("C$$ & $& Dev $' – Sam");
+  });
+
+  it("drops direction marks, which would make the subject read otherwise than it is sent", () => {
+    const override = String.fromCharCode(0x202e);
+    expect(subjectFor(null, "Sam", `Engineer${override}reganaM`)).toBe(
+      "Application: EngineerreganaM – Sam",
     );
   });
 
@@ -169,6 +195,38 @@ describe("gapLine", () => {
     templateId: "",
     relatedFactId: "",
     ...overrides,
+  });
+
+  it("uses a known gap line only for a requirement naming one of its skills, aliases included", () => {
+    expect(gapLine(requirement(["k8s"]), choice({ knownLineId: "K-kubernetes" }), profile)).toBe(
+      "I haven't run Kubernetes in production; I deploy containers with Docker.",
+    );
+    expect(gapLine(requirement(["aws"]), choice({ knownLineId: "K-kubernetes" }), profile)).toBe(
+      NEEDS_YOUR_LINE,
+    );
+  });
+
+  it("names in a template the first skill no approved fact has, never one the profile shows", () => {
+    const either = requirement(["docker", "kubernetes"]);
+
+    expect(gapLine(either, choice({ templateId: "G-learning" }), profile)).toBe(
+      "I am learning Kubernetes now.",
+    );
+    expect(gapLine(requirement(["docker"]), choice({ templateId: "G-learning" }), profile)).toBe(
+      NEEDS_YOUR_LINE,
+    );
+  });
+
+  it("builds no template line for a degree, a language or another requirement", () => {
+    for (const kind of ["education", "language", "other"] as const) {
+      expect(
+        gapLine(
+          { ...requirement(["arabic"]), kind },
+          choice({ templateId: "G-learning" }),
+          profile,
+        ),
+      ).toBe(NEEDS_YOUR_LINE);
+    }
   });
 
   it("uses a known gap line verbatim", () => {
@@ -231,14 +289,14 @@ describe("buildEmailKit", () => {
           gap: { requirement_id: "", known_line_id: "", template_id: "", related_fact_id: "" },
         },
         {
-          id: "S2",
+          id: "S9",
           text: "The model's own wording, which code replaces.",
           paragraph_break: false,
           class: "gap",
           fact_ids: [],
           fields: [],
           gap: {
-            requirement_id: "R1",
+            requirement_id: "R5",
             known_line_id: "K-kubernetes",
             template_id: "",
             related_fact_id: "",
@@ -247,10 +305,25 @@ describe("buildEmailKit", () => {
       ],
     };
     const source = record();
+    const role: Role = {
+      ...source.roles[0]!,
+      requirements: [
+        ...source.roles[0]!.requirements,
+        {
+          id: "R5",
+          text: "Kubernetes in production",
+          priority: "must",
+          kind: "skill",
+          skills: ["k8s"],
+          depth: "production",
+          years: -1,
+        },
+      ],
+    };
 
     const { kit, fit } = buildEmailKit(answer, {
       record: source,
-      role: source.roles[0]!,
+      role,
       ownerName: "Sam Rivera",
       accepted: { subjectFormat: null, wordLimit: 180, keyword: null },
       profile,
@@ -263,9 +336,11 @@ describe("buildEmailKit", () => {
       "I would like to apply.",
       "I haven't run Kubernetes in production; I deploy containers with Docker.",
     ]);
+    // IDs by position, whatever the model numbered them.
+    expect(kit.blocks.map((block) => block.id)).toEqual(["S1", "S2"]);
     expect(kit.blocks[0]!.gap).toBeNull();
     expect(kit.blocks[1]!.gap).toEqual({
-      requirementId: "R1",
+      requirementId: "R5",
       knownLineId: "K-kubernetes",
       templateId: "",
       relatedFactId: "",
