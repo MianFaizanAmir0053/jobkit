@@ -264,6 +264,64 @@ describe("jobView", () => {
     ]);
   });
 
+  it("blocks an address as not checked when its kept checks stopped at a stricter rule it now passes", async () => {
+    await seedSample();
+    const stages = pipeline();
+    const beside: Pipeline = {
+      ...stages,
+      draft: { ...stages.draft, alongside: () => ["address_read", "address_checks"] },
+      address_read: addressReadStage({ db, storage, random, models: models() }),
+      address_checks: addressChecksStage({ db, dns: offlineDns() }),
+    };
+    const id = await pasted("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], beside);
+    // As an older, stricter rule left them: the strict check failed, so no other check ran.
+    await db.query(
+      `update {{schema}}.job_stage_runs
+          set output = jsonb_set(output, '{checks}', $2::jsonb)
+        where job_id = $1 and stage = 'address_checks'`,
+      [
+        id,
+        JSON.stringify([
+          {
+            kind: "syntax",
+            blocking: true,
+            message: "This address did not pass the strict check. Type it yourself from the post.",
+          },
+        ]),
+      ],
+    );
+
+    expect((await jobView({ db, clock }, id))?.addressChecks).toEqual([
+      {
+        kind: "not_checked",
+        blocking: true,
+        message: "This address has not been checked as it stands. Check it against the post.",
+      },
+    ]);
+  });
+
+  it("marks the email's step failed when a stage beside the draft fails the job", async () => {
+    await seedSample();
+    const stages = pipeline();
+    const broken: Pipeline = {
+      ...stages,
+      draft: { ...stages.draft, alongside: () => ["address_read"] },
+      address_read: {
+        callsModel: false,
+        input: () => ({}),
+        run: async () => ({ ok: false as const, reason: "The second read broke.", retry: false }),
+      },
+    };
+    const id = await pasted("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], broken);
+
+    const view = (await jobView({ db, clock }, id))!;
+
+    expect(view.failure?.stage).toBe("address_read");
+    expect(view.steps.find((step) => step.stage === "draft")?.status).toBe("failed");
+  });
+
   it("takes a read made for another contact as no second read of this one", async () => {
     await seedSample();
     const stages = pipeline();

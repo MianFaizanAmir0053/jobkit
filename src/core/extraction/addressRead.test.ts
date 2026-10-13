@@ -102,6 +102,56 @@ describe("inPastedText", () => {
     expect(inPastedText("email", "jobs@example.com", "CV to éjobs@example.com")).toBe(false);
   });
 
+  it("takes punctuation, a curly quote, an emoji or an invisible character as an address's edge", () => {
+    const [open, close] = [String.fromCodePoint(0x201c), String.fromCodePoint(0x201d)];
+    const zeroWidthSpace = String.fromCodePoint(0x200b);
+    // An envelope with the variation selector that makes it an emoji.
+    const envelope = String.fromCodePoint(0x2709, 0xfe0f);
+
+    expect(inPastedText("email", "hr@acme.com", "Email:hr@acme.com")).toBe(true);
+    expect(inPastedText("email", "hr@acme.com", `Send CV to ${open}hr@acme.com${close}`)).toBe(
+      true,
+    );
+    expect(inPastedText("email", "hr@acme.com", `Send CV to${zeroWidthSpace}hr@acme.com`)).toBe(
+      true,
+    );
+    expect(inPastedText("email", "hr@acme.com", `${envelope}hr@acme.com, today`)).toBe(true);
+    expect(inPastedText("email", "hr@acme.com", "Send CV to hr@acme.com...")).toBe(true);
+  });
+
+  it("finds an address in WhatsApp's bold or italic marks", () => {
+    expect(inPastedText("email", "hr@acme.com", "Send CV at *hr@acme.com*")).toBe(true);
+    expect(inPastedText("email", "hr@acme.com", "Send CV at _hr@acme.com_.")).toBe(true);
+    // Not marks: the underscores are part of a longer address.
+    expect(inPastedText("email", "hr@acme.com", "Send CV at careers_hr@acme.com_")).toBe(false);
+  });
+
+  it("never takes a character an address can hold as its edge", () => {
+    const curlyApostrophe = String.fromCodePoint(0x2019);
+    const acute = String.fromCodePoint(0x301);
+
+    for (const before of ["careers_", "careers.", "careers-", "careers+", "1", "x@", "{"]) {
+      expect(inPastedText("email", "hr@acme.com", `CV to ${before}hr@acme.com`), before).toBe(
+        false,
+      );
+    }
+    expect(inPastedText("email", "souza@acme.com", `CV to d${curlyApostrophe}souza@acme.com`)).toBe(
+      false,
+    );
+    for (const after of ["-pk", "_pk", "2", ".pk", acute]) {
+      expect(inPastedText("email", "hr@acme.com", `CV to hr@acme.com${after} now`), after).toBe(
+        false,
+      );
+    }
+  });
+
+  it("never reads a number across a line break", () => {
+    expect(inPastedText("whatsapp", "0300 1234567", "Salary: 80,000\n0300 1234567")).toBe(true);
+    expect(inPastedText("whatsapp", "0300 1234567", "0300 1234567\n0321 7654321")).toBe(true);
+    expect(inPastedText("whatsapp", "0321 7654321", "0300 1234567\r\n0321 7654321")).toBe(true);
+    expect(inPastedText("whatsapp", "0300 1234567", "Call 0300\n1234567")).toBe(false);
+  });
+
   it("finds an empty contact nowhere", () => {
     expect(inPastedText("email", " ", post)).toBe(false);
     expect(inPastedText("whatsapp", "", post)).toBe(false);

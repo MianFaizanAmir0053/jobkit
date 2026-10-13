@@ -2,6 +2,7 @@ import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { type Agreement, agreement, type ContactKind } from "@/core/extraction/addressRead";
 import { type AddressReadOutput, contactOf } from "@/core/extraction/addressReadStage";
+import { isStrictAddress } from "@/core/extraction/contacts";
 import type { EligibilityOutput } from "@/core/extraction/eligibility";
 import {
   type ExtractOutput,
@@ -73,6 +74,12 @@ const STEPS: readonly { stage: StageName; label: string }[] = [
   { stage: "judge", label: "Check every sentence separately" },
 ];
 
+/** The stages that run beside draft (B9), shown on its step: one that fails the job fails that step. */
+const SHOWN_ON: Partial<Record<StageName, StageName>> = {
+  address_read: "draft",
+  address_checks: "draft",
+};
+
 /**
  * What eligibility and the judge gave on the thin path before their checks
  * were built: `{ result: "not_checked" }` and `{ checked: false }`. Neither
@@ -133,17 +140,30 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
                 : { ok: false, reason: "no_second_read" },
           }
         : null,
-    // Checks for another address, or none once the drafting group ran, block as not checked.
     addressChecks:
-      contact?.kind !== "email"
-        ? null
-        : checks?.checked && checks.address === contact.contact.trim()
-          ? checks.checks
-          : read?.checked
-            ? [NOT_CHECKED]
-            : null,
+      contact?.kind === "email" ? addressChecksOf(contact.contact, checks, read) : null,
     application: role ? await applicationOf(deps.db, id, role.id) : null,
   };
+}
+
+/**
+ * The checks of the address as it stands. Checks for another address, or
+ * none once the drafting group ran, block as not checked; so do checks that
+ * stopped at an older, stricter rule's strict check the address now passes,
+ * since the checks after it never ran.
+ */
+function addressChecksOf(
+  contact: string,
+  checks: AddressChecksOutput | undefined,
+  read: AddressReadOutput | undefined,
+): AddressCheck[] | null {
+  const address = contact.trim();
+  const current =
+    checks?.checked &&
+    checks.address === address &&
+    !(checks.checks.some((check) => check.kind === "syntax") && isStrictAddress(address));
+  if (current) return checks.checks;
+  return read?.checked ? [NOT_CHECKED] : null;
 }
 
 async function failureOf(db: Db, job: Job): Promise<JobView["failure"]> {
@@ -170,11 +190,12 @@ async function stepsOf(db: Db, job: Job, unchecked: ReadonlySet<StageName>): Pro
     [job.id],
   );
   const last = new Map(rows.map((row) => [row.stage, row.outcome]));
+  const failedStep = job.failedStage ? (SHOWN_ON[job.failedStage] ?? job.failedStage) : null;
   return STEPS.map(({ stage, label }) => {
     const outcome = last.get(stage);
     let status: Step["status"] = "waiting";
     // A stage running again, as after "Read it again", is running, whatever it gave before.
-    if (job.state === "failed" && job.failedStage === stage) status = "failed";
+    if (job.state === "failed" && failedStep === stage) status = "failed";
     else if (kindOf(job.state) === "running" && job.pendingStage === stage) status = "running";
     else if (outcome === "ok" || outcome === "reused") {
       status = unchecked.has(stage) ? "not_checked" : "done";

@@ -283,8 +283,8 @@ Modules register stages; the runner owns their order, the job's state and the bo
 | `eligibility` | the record's output hash; the chosen role; the profile version; the owner's eligibility decision; the role's zone's offset from UTC that day, on which the overlap turns |
 | `draft` | the record's output hash; the chosen role; the profile version; the kit type; the owner's declined instructions; model, effort and prompt version |
 | `draft_answers` | the IDs and texts of questions not yet answered; the profile version; model, effort and prompt version |
-| `address_read` | the crop's hash, by the screenshot's hash, the box and the crop's rules it is made from; model and prompt version; for pasted text, the text's hash and the contact |
-| `address_checks` | the address as it now stands (extracted or typed by the owner), and the company's name the name check reads |
+| `address_read` | the contact and its kind, which the output is for; from a screenshot, the crop's hash, by the screenshot's hash, the box and the crop's rules it is made from, with the model, whether this machine has it, effort, the token limit and the prompt version; from pasted text, the text's hash and the matching's version |
+| `address_checks` | the address as it now stands (extracted or typed by the owner), the company's name the name check reads, and the checks' version |
 | `judge` | the output hash of `draft` or `draft_answers`; the cited facts' hash; model, effort and prompt version |
 
 So the owner's override re-runs `extract`; an edited address re-runs only `address_checks`, and the draft, the verdicts and the owner's edits stay; new screenshots re-run what reads them and nothing else.

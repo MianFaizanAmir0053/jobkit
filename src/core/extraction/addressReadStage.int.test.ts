@@ -85,7 +85,11 @@ function passing(next: ReturnType<NonNullable<StageDefinition["next"]>>): StageD
 }
 
 /** The pipeline, the second read's storage given apart so a test can break it alone. */
-function pipeline(gemini: "set" | "missing" = "set", readStorage: Storage = storage): Pipeline {
+function pipeline(
+  gemini: "set" | "missing" = "set",
+  readStorage: Storage = storage,
+  storageMs?: number,
+): Pipeline {
   return {
     extract: extractStage({ db, storage, random, models: models(gemini) }),
     eligibility: passing({ state: "drafting", pending: "draft" }),
@@ -94,7 +98,13 @@ function pipeline(gemini: "set" | "missing" = "set", readStorage: Storage = stor
       alongside: () => ["address_read"],
     },
     judge: passing({ state: "kit_ready", pending: null }),
-    address_read: addressReadStage({ db, storage: readStorage, random, models: models(gemini) }),
+    address_read: addressReadStage({
+      db,
+      storage: readStorage,
+      random,
+      models: models(gemini),
+      ...(storageMs === undefined ? {} : { storageMs }),
+    }),
   };
 }
 
@@ -157,8 +167,9 @@ async function run(
   id: string,
   gemini: "set" | "missing" = "set",
   readStorage: Storage = storage,
+  storageMs?: number,
 ): Promise<void> {
-  const deps = { db, clock, pipeline: pipeline(gemini, readStorage) };
+  const deps = { db, clock, pipeline: pipeline(gemini, readStorage, storageMs) };
   const lease = await claimJob(deps, id);
   if (!lease) throw new Error("not claimed");
   await runJob(deps, lease);
@@ -319,6 +330,25 @@ describe("address_read from a screenshot", () => {
     const unread = await queuedJob([await png(800, 600)]);
     llm = fakeLlm([answer(withBox(box))]);
     await run(unread, "set", down);
+
+    expect((await loadJob(db, unread))?.state).toBe("kit_ready");
+    expect((await readOf(unread)).second).toEqual({ problem: "no_crop" });
+  });
+
+  it("gives up on storage that does not answer, as on storage that fails", async () => {
+    const never = () => new Promise<never>(() => {});
+    const unstored = await queuedJob([await png(800, 600)]);
+    llm = fakeLlm([answer(withBox(box)), answer({ contact: "jobs@example.com" })]);
+    await run(unstored, "set", { ...storage, put: never }, 50);
+
+    expect(await readOf(unstored)).toMatchObject({
+      second: { read: "jobs@example.com" },
+      cropPath: null,
+    });
+
+    const unread = await queuedJob([await png(800, 600)]);
+    llm = fakeLlm([answer(withBox(box))]);
+    await run(unread, "set", { ...storage, get: never }, 50);
 
     expect((await loadJob(db, unread))?.state).toBe("kit_ready");
     expect((await readOf(unread)).second).toEqual({ problem: "no_crop" });

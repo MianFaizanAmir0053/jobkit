@@ -26,12 +26,13 @@ import type { Role } from "./record";
  * settled by `agreement` wherever it is needed.
  *
  * A read that cannot happen is never a failed job: a box that does not fit
- * its screenshot, a screenshot storage cannot give, a crop that cannot be
- * made, a model call that fails or throws, an answer that is not storable
- * text each leave the second read missing, and no Gemini key on this
- * machine is recorded as such; either blocks the contact until the owner
- * retypes it. A crop that cannot be stored is still read. The output names
- * the contact it was for, so a read is never taken for another contact.
+ * its screenshot, a screenshot storage cannot give within STORAGE_MS after
+ * a second try, a crop that cannot be made, a model call that fails or
+ * throws, an answer that is not storable text each leave the second read
+ * missing, and no Gemini key on this machine is recorded as such; either
+ * blocks the contact until the owner retypes it. A crop that cannot be
+ * stored in time is still read. The output names the contact it was for, so
+ * a read is never taken for another contact.
  */
 
 export const ADDRESS_READ = {
@@ -115,7 +116,16 @@ export interface AddressReadDeps {
   storage: Storage;
   random: Random;
   models: ModelCallDeps;
+  /** How long one storage call may take; STORAGE_MS unless a test shortens it. */
+  storageMs?: number;
 }
+
+/**
+ * A storage call that takes longer has failed: a hung one would hold the
+ * drafting group until its invocation was killed, and three such starts
+ * fail the job, which a read that cannot happen never does.
+ */
+export const STORAGE_MS = 10_000;
 
 /** The contact the second read checks: an email or WhatsApp route's, when the record has one. */
 export function contactOf(role: Role | null): { kind: ContactKind; contact: string } | null {
@@ -198,14 +208,20 @@ export function addressReadStage(deps: AddressReadDeps): StageDefinition {
 
       const image = (await postImages(deps.db, ctx.job.id))[input.position];
       if (image?.sha256 !== input.image) return { ok: false, reason: CHANGED_POST, retry: true };
-      const bytes = await getTwice(() => deps.storage.get(image.storagePath));
+      const storageMs = deps.storageMs ?? STORAGE_MS;
+      const bytes = await getTwice(() =>
+        within(storageMs, () => deps.storage.get(image.storagePath)),
+      );
       const crop =
         bytes && hashOf(bytes) === input.image ? await cropContact(bytes, input.box) : null;
       if (!crop) return done({ problem: "no_crop" });
       // The read needs the crop's bytes, not a stored copy: one that cannot be stored is still read.
-      let cropPath: string | null = `jobs/${ctx.job.id}/crops/${hashOf(crop)}.png`;
+      const path = `jobs/${ctx.job.id}/crops/${hashOf(crop)}.png`;
+      let cropPath: string | null = path;
       try {
-        await deps.storage.put(cropPath, crop, "image/png", { overwrite: true });
+        await within(storageMs, () =>
+          deps.storage.put(path, crop, "image/png", { overwrite: true }),
+        );
       } catch {
         cropPath = null;
       }
@@ -244,7 +260,20 @@ function hasModel(models: ModelCallDeps, model: string): boolean {
   }
 }
 
-/** A storage read, tried once more after a passing failure; null when it fails twice. */
+/** The call's result, or a throw once it has taken longer than `ms`; the call itself is left to finish. */
+async function within<T>(ms: number, call: () => Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Storage took longer than ${ms} ms.`)), ms);
+  });
+  try {
+    return await Promise.race([call(), late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** A storage read, tried once more after a passing failure or a timeout; null when it fails twice. */
 async function getTwice(read: () => Promise<Uint8Array | null>): Promise<Uint8Array | null> {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {

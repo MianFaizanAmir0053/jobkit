@@ -26,7 +26,8 @@ const LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
  * and a domain of such labels with a registrable name under a public suffix
  * (tldts), so "hr@acme" and "hr@co.uk" fail. Lengths stay within RFC 5321's:
  * 64 for the local part, 63 for a label, 254 in all. Nothing is trimmed: a
- * space anywhere fails.
+ * space anywhere fails. The address checks keep its result: raise
+ * ADDRESS_CHECKS_VERSION (addressChecks.ts) when what it accepts changes.
  */
 export function isStrictAddress(address: string): boolean {
   if (address.length > 254) return false;
@@ -64,7 +65,9 @@ const SPACING = new RegExp(
  * pass: "+" or "00" and an international number; "92" and ten digits; "03"
  * and nine digits, a Pakistani mobile, which gains its 92. The result must
  * have its country's length, and a listed country's number never has a 0
- * straight after its code.
+ * straight after its code. The second read of pasted text keeps what it
+ * found with it: raise MATCHING_VERSION (addressRead.ts) when the forms or
+ * NUMBER_LENGTHS change.
  */
 export function normaliseWhatsAppNumber(text: string): NumberResult {
   const spaced = text.replace(SPACING, "");
