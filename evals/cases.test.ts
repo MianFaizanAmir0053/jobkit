@@ -228,6 +228,38 @@ describe("listCases", () => {
     ]);
   });
 
+  it("leaves out a reply to mail the import left out for a style example", async () => {
+    writeFileSync(
+      join(archive, "import.json"),
+      JSON.stringify({
+        jobkitFrom: "2099-01-01T00:00:00.000Z",
+        leftOut: [{ messageId: "<first@example.com>", answers: [], wordsSha256: "0".repeat(64) }],
+      }),
+    );
+    mailCase("2026-03-18-00000002", {
+      subject: "Re: Application - Engineer",
+      id: "<reply@example.com>",
+      inReplyTo: "<first@example.com>",
+      body: "Attached again, as asked.",
+    });
+    mailCase("2026-03-19-00000003", { subject: "Other", id: "<o@example.com>", body: "Other." });
+
+    const { cases } = await listCases(archive, NO_EXAMPLES);
+
+    expect(cases.map(({ id, leftOut }) => [id, leftOut])).toEqual([
+      ["2026-03-18-00000002", "style_example"],
+      ["2026-03-19-00000003", null],
+    ]);
+  });
+
+  it("leaves out sent mail with no date, which cannot show it came before jobkit", async () => {
+    mailCase("2026-03-16-00000001", { date: "sometime" });
+
+    const { cases } = await listCases(archive, NO_EXAMPLES);
+
+    expect(cases[0]?.leftOut).toBe("after_jobkit");
+  });
+
   it("leaves out mail sent from the day jobkit began drafting, which may be a model's words", async () => {
     writeFileSync(
       join(archive, "import.json"),

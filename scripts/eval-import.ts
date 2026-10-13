@@ -16,10 +16,18 @@
  * skipped and could not read. Nothing leaves the laptop: it reads and
  * writes local files only.
  */
-import { existsSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { join, resolve } from "node:path";
 
-import { importEmlFolder, importMbox, jobkitFromOf, styleExamplesOf } from "../evals/import";
+import {
+  dayOf,
+  importEmlFolder,
+  importMbox,
+  jobkitFromOf,
+  keepImportRecord,
+  styleExamplesOf,
+  underPrivate,
+} from "../evals/import";
 
 import { loadLocalEnv } from "./ops";
 
@@ -45,14 +53,6 @@ function parseArgs(args: readonly string[]): Map<string, string> {
   return values;
 }
 
-/** A day as the laptop's midnight: "2026-09-30". */
-function dayOf(text: string): Date {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
-  const day = match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
-  if (!day || Number.isNaN(day.getTime())) throw new Error(`--jobkit-from takes a day: YYYY-MM-DD`);
-  return day;
-}
-
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const mbox = args.get("--mbox");
@@ -63,10 +63,14 @@ async function main(): Promise<void> {
     );
   }
   const archive = resolve(args.get("--archive") ?? join("private", "archive"));
-  // Real mail stays where git and the commit guard ignore it.
-  const inside = relative(resolve("private"), archive);
-  if (inside === "" || inside.startsWith("..") || inside.split(sep)[0] === "..") {
-    throw new Error("--archive must be a folder under private/.");
+  // Real mail stays where git and the commit guard ignore it, on this laptop.
+  if (!underPrivate(resolve("private"), archive)) {
+    throw new Error("--archive must be a folder under private/, on this laptop.");
+  }
+  // The source must be there before anything is kept, the day jobkit began drafting included.
+  const source = resolve((mbox ?? eml)!);
+  if (!existsSync(source) || statSync(source).isFile() !== Boolean(mbox)) {
+    throw new Error(mbox ? `No mbox file at ${source}` : `No folder at ${source}`);
   }
   // A downloaded message carries no Sent label: it counts only from the owner's address.
   const owner =
@@ -83,6 +87,8 @@ async function main(): Promise<void> {
   }
   const given = args.get("--jobkit-from");
   const jobkitFrom = jobkitFromOf(archive, given ? dayOf(given) : null);
+  // Kept before any case is written, so the archive never holds mail without it.
+  keepImportRecord(archive, { jobkitFrom, leftOut: [] });
   const options = {
     attachment: args.get("--attachment") ?? "resume.pdf",
     styleExamples: examples,
@@ -91,8 +97,10 @@ async function main(): Promise<void> {
   };
 
   const report = mbox
-    ? await importMbox(resolve(mbox), archive, options)
-    : await importEmlFolder(resolve(eml!), archive, options);
+    ? await importMbox(source, archive, options)
+    : await importEmlFolder(source, archive, options);
+  // Mail left out for a style example, so its replies and resends are left out when cases are read.
+  keepImportRecord(archive, { jobkitFrom, leftOut: report.leftOut });
 
   console.log(`New cases in ${archive}: ${report.cases.length}`);
   for (const entry of report.cases) console.log(`  ${entry.id}  ${entry.subject}`);
@@ -104,7 +112,7 @@ async function main(): Promise<void> {
     console.log(`Removed from the archive after they were given a split: ${report.removed}`);
   }
   console.log(
-    `Skipped: ${report.skipped.not_sent} not marked Sent or not from you, ${report.skipped.no_resume} without the CV, ${report.skipped.style_example} matching a style example, ${report.skipped.after_jobkit} sent from ${jobkitFrom.toLocaleString()} on, when jobkit may have drafted them`,
+    `Skipped: ${report.skipped.not_sent} not marked Sent or not from you, ${report.skipped.no_resume} without the CV, ${report.skipped.style_example} matching a style example, ${report.skipped.after_jobkit} sent from ${jobkitFrom.toLocaleString()} on, when jobkit may have drafted them, or with no date`,
   );
   for (const entry of report.malformed) {
     console.log(`Could not read message ${entry.file ?? entry.index}: ${entry.error}`);

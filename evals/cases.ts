@@ -16,12 +16,14 @@ import { z } from "zod";
 import { ROUTE_KINDS } from "@/core/extraction/record";
 
 import {
+  bodiesOf,
   bodyText,
   DISMISSED,
   holdsStyleExample,
   IMPORT_FILE,
-  keptJobkitFrom,
-  normalised,
+  importRecordOf,
+  threadOf,
+  wordsSha256,
 } from "./import";
 import { assignSplits, type Split, type SplitOutcome, TEST_SIZE } from "./split";
 import {
@@ -300,19 +302,11 @@ const labelledUnderSchema = z.object({
   cropSha256: z.string().nullable().optional(),
 });
 
-/** Message IDs in a header: "<a@x> <b@x>". */
-function messageIds(header: string | undefined): string[] {
-  return header?.match(/<[^<>\s]+>/g) ?? [];
-}
-
-/** A subject without the replies' and forwards' prefixes. */
-function bareSubject(subject: string): string {
-  return normalised(subject.replace(/^(?:\s*(?:re|fwd?)\s*:)+/i, ""));
-}
-
 /** What a sent email gives the archive, kept by the file's time and size so the archive is parsed once. */
 interface MailRead {
   email: NonNullable<CaseDetail["email"]>;
+  /** Its plain-text and HTML bodies, which a style example is looked for in. */
+  bodies: string[];
   messageId: string | null;
   answers: string[];
   words: string;
@@ -326,7 +320,6 @@ async function readMail(file: string): Promise<MailRead> {
   const cached = mailCache.get(file);
   if (cached?.stamp === stamp) return cached.mail;
   const parsed = await PostalMime.parse(readFileSync(file));
-  const text = bodyText(parsed);
   const sent = new Date(parsed.date ?? "");
   const name = (address: { name: string; address?: string }) =>
     address.address ? `${address.name} <${address.address}>`.trim() : address.name;
@@ -336,11 +329,10 @@ async function readMail(file: string): Promise<MailRead> {
       to: (parsed.to ?? []).map((address) => address.address ?? address.name).join(", "),
       subject: parsed.subject ?? "",
       date: Number.isNaN(sent.getTime()) ? null : sent.toISOString(),
-      text,
+      text: bodyText(parsed),
     },
-    messageId: messageIds(parsed.messageId)[0] ?? null,
-    answers: [...messageIds(parsed.inReplyTo), ...messageIds(parsed.references)],
-    words: `${bareSubject(parsed.subject ?? "")}\n${normalised(text)}`,
+    bodies: bodiesOf(parsed),
+    ...threadOf(parsed),
   };
   mailCache.set(file, { stamp, mail });
   return mail;
@@ -415,12 +407,12 @@ async function readFolder(
       }
       read.email = mail.email;
       read.thread = { messageId: mail.messageId, answers: mail.answers, words: mail.words };
-      if (holdsStyleExample(mail.email.text, options.styleExamples)) {
+      if (holdsStyleExample(mail.bodies, options.styleExamples)) {
         read.leftOut = "style_example";
       } else if (
         jobkitFrom &&
-        mail.email.date !== null &&
-        Date.parse(mail.email.date) >= jobkitFrom.getTime()
+        // Undated mail cannot show it came before jobkit began drafting.
+        (mail.email.date === null || Date.parse(mail.email.date) >= jobkitFrom.getTime())
       ) {
         read.leftOut = "after_jobkit";
       }
@@ -524,7 +516,8 @@ interface ArchiveState {
  * ten cases hold test places.
  */
 async function stateOf(archive: string, options: CaseOptions): Promise<ArchiveState> {
-  const jobkitFrom = keptJobkitFrom(archive);
+  const imported = importRecordOf(archive);
+  const jobkitFrom = imported?.jobkitFrom ?? null;
   const reads: FolderRead[] = [];
   for (const id of caseIds(archive)) {
     reads.push(await readFolder(archive, id, options, jobkitFrom));
@@ -541,6 +534,25 @@ async function stateOf(archive: string, options: CaseOptions): Promise<ArchiveSt
     );
   }
   const all = [...reads, ...aside];
+  // A reply to, or a resend of, mail the import left out for a style example is that application.
+  const leftOutIds = new Set(
+    (imported?.leftOut ?? []).flatMap((mail) => [
+      ...(mail.messageId ? [mail.messageId] : []),
+      ...mail.answers,
+    ]),
+  );
+  const leftOutWords = new Set((imported?.leftOut ?? []).map((mail) => mail.wordsSha256));
+  for (const read of all) {
+    const thread = read.thread;
+    if (!thread || read.leftOut !== null) continue;
+    if (
+      (thread.messageId && leftOutIds.has(thread.messageId)) ||
+      thread.answers.some((id) => leftOutIds.has(id)) ||
+      leftOutWords.has(wordsSha256(thread.words))
+    ) {
+      read.leftOut = "style_example";
+    }
+  }
   const applications = applicationsOf(all);
   const shown = new Set(
     all.filter((read) => read.leftOut === "style_example").map((read) => applications.get(read.id)),

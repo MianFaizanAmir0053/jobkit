@@ -6,6 +6,7 @@ import {
   readFileSync,
   renameSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,13 +14,20 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import PostalMime from "postal-mime";
+
 import {
+  bodyText,
+  dayOf,
   importEmlFolder,
   importMbox,
+  importRecordOf,
   jobkitFromOf,
   judgeMessage,
+  keepImportRecord,
   mboxMessages,
   styleExamplesOf,
+  underPrivate,
 } from "./import";
 import { appendSplitEvents } from "./splitFile";
 
@@ -75,6 +83,43 @@ function message(
     'Content-Type: multipart/mixed; boundary="b1"',
     "",
     ...parts,
+  ].join(CRLF);
+}
+
+/**
+ * A sent application with plain-text and HTML parts, as Gmail sends one
+ * written in its composer, with resume.pdf attached.
+ */
+function alternative(text: string, html: string): string {
+  return [
+    "From: Sam Rivera <sam@example.com>",
+    "To: jobs@northwind.example",
+    "Subject: Application - Senior Engineer",
+    "Date: Mon, 16 Mar 2026 10:00:00 +0500",
+    "Message-ID: <alternative@example.com>",
+    "X-Gmail-Labels: Sent",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/mixed; boundary="b1"',
+    "",
+    "--b1",
+    'Content-Type: multipart/alternative; boundary="b2"',
+    "",
+    "--b2",
+    "Content-Type: text/plain; charset=UTF-8",
+    "",
+    text,
+    "--b2",
+    "Content-Type: text/html; charset=UTF-8",
+    "",
+    html,
+    "--b2--",
+    "--b1",
+    'Content-Type: application/pdf; name="resume.pdf"',
+    'Content-Disposition: attachment; filename="resume.pdf"',
+    "Content-Transfer-Encoding: base64",
+    "",
+    "JVBERi0xLjQK",
+    "--b1--",
   ].join(CRLF);
 }
 
@@ -152,9 +197,46 @@ describe("judgeMessage", () => {
   it("excludes a message whose body holds a style example, however it is spaced", async () => {
     const example = "I am applying for the Senior Engineer role.\n\nKind regards,";
 
-    expect(await judgeMessage(raw(message()), { ...options, styleExamples: [example] })).toEqual({
+    expect(
+      await judgeMessage(raw(message()), { ...options, styleExamples: [example] }),
+    ).toMatchObject({ kind: "skipped", reason: "style_example" });
+  });
+
+  it("finds a style example copied from the email as Gmail shows it, its link and bold included", async () => {
+    // Copied from the rendered email: the link's words, no address, no marks.
+    const example = "I built my portfolio with React and Node.js, shipping to thousands of users.";
+    const email = alternative(
+      "I built my portfolio <https://sam.example/portfolio> with *React* and Node.js, shipping to thousands of users.",
+      '<p>I built <a href="https://sam.example/portfolio">my portfolio</a> with <b>React</b> and Node.js, shipping to thousands&nbsp;of users.</p>',
+    );
+
+    expect(await judgeMessage(raw(email), { ...options, styleExamples: [example] })).toMatchObject({
       kind: "skipped",
       reason: "style_example",
+    });
+  });
+
+  it("reads the HTML when the plain-text part is empty", async () => {
+    const email = alternative("", "<p>I am applying for the Senior Engineer role &amp; more.</p>");
+
+    expect(bodyText(await PostalMime.parse(raw(email)))).toContain(
+      "I am applying for the Senior Engineer role & more.",
+    );
+    expect(
+      await judgeMessage(raw(email), {
+        ...options,
+        styleExamples: ["I am applying for the Senior Engineer role & more."],
+      }),
+    ).toMatchObject({ kind: "skipped", reason: "style_example" });
+  });
+
+  it("leaves out mail with no date once the day jobkit began drafting is known", async () => {
+    const undated = message({ date: "" });
+    const jobkitFrom = new Date("2026-03-17T00:00:00+05:00");
+
+    expect(await judgeMessage(raw(undated), { ...options, jobkitFrom })).toEqual({
+      kind: "skipped",
+      reason: "after_jobkit",
     });
   });
 
@@ -189,10 +271,9 @@ describe("judgeMessage", () => {
     });
     const example = "Dear Hiring Team, I am applying for the Senior Engineer role.";
 
-    expect(await judgeMessage(raw(quoted), { ...options, styleExamples: [example] })).toEqual({
-      kind: "skipped",
-      reason: "style_example",
-    });
+    expect(await judgeMessage(raw(quoted), { ...options, styleExamples: [example] })).toMatchObject(
+      { kind: "skipped", reason: "style_example" },
+    );
   });
 
   it("reports a message with no headers as malformed", async () => {
@@ -277,7 +358,8 @@ describe("importMbox", () => {
     mkdirSync(join(archive, "_dismissed"));
     renameSync(join(archive, folders[0]!), join(archive, "_dismissed", folders[0]!));
     // Cut short by an interrupted import: written again.
-    writeFileSync(join(archive, folders[1]!, "email.eml"), "From: half");
+    const whole = readFileSync(join(archive, folders[1]!, "email.eml"));
+    writeFileSync(join(archive, folders[1]!, "email.eml"), whole.subarray(0, 40));
     const third = await importMbox(file, archive, options);
     expect(third).toMatchObject({ cases: [], dismissed: 1, repaired: 1, alreadyImported: 0 });
     expect(existsSync(join(archive, folders[0]!))).toBe(false);
@@ -285,6 +367,56 @@ describe("importMbox", () => {
       "X-Gmail-Labels: Sent,Opened",
     );
     expect(readdirSync(join(archive, folders[1]!))).toEqual(["email.eml"]);
+  });
+
+  it("keeps the copy it has of a message, rather than write another export's over it", async () => {
+    const archive = join(dir, "archive");
+    const first = join(dir, "first.mbox");
+    writeFileSync(
+      first,
+      ["From 1 Mon Mar 16 05:00:00 +0000 2026", message(), ""].join(CRLF),
+      "latin1",
+    );
+    const { id } = (await importMbox(first, archive, options)).cases[0]!;
+    const kept = readFileSync(join(archive, id, "email.eml"));
+    // A later export of the same message, its labels changed since.
+    const later = join(dir, "later.mbox");
+    writeFileSync(
+      later,
+      ["From 1 Mon Mar 16 05:00:00 +0000 2026", message({ labels: "Sent,Important" }), ""].join(
+        CRLF,
+      ),
+      "latin1",
+    );
+
+    expect(await importMbox(later, archive, options)).toMatchObject({
+      alreadyImported: 1,
+      repaired: 0,
+    });
+    expect(readFileSync(join(archive, id, "email.eml"))).toEqual(kept);
+  });
+
+  it("records mail it left out for a style example, so its replies and resends are left out too", async () => {
+    const example = "I am applying for the Senior Engineer role.\n\nKind regards,";
+    const file = join(dir, "Sent.mbox");
+    writeFileSync(
+      file,
+      ["From 1 Mon Mar 16 05:00:00 +0000 2026", message(), ""].join(CRLF),
+      "latin1",
+    );
+
+    const report = await importMbox(file, join(dir, "archive"), {
+      ...options,
+      styleExamples: [example],
+    });
+
+    expect(report.leftOut).toEqual([
+      {
+        messageId: "<application-1@example.com>",
+        answers: [],
+        wordsSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      },
+    ]);
   });
 
   it("never brings back a case the split file knows that the archive no longer holds", async () => {
@@ -347,15 +479,70 @@ describe("jobkitFromOf", () => {
 
   it("needs the day on the first import, keeps it for later ones, and never moves it later", () => {
     const archive = join(dir, "archive");
+    const keep = (day: Date) => keepImportRecord(archive, { jobkitFrom: day, leftOut: [] });
 
     expect(() => jobkitFromOf(archive, null)).toThrow(/--jobkit-from/);
     const first = new Date("2026-10-13T00:00:00+05:00");
     expect(jobkitFromOf(archive, first)).toEqual(first);
+    // Working the day out writes nothing: an import that then fails keeps no day.
+    expect(existsSync(join(archive, "import.json"))).toBe(false);
+    keep(first);
     expect(jobkitFromOf(archive, null)).toEqual(first);
     expect(() => jobkitFromOf(archive, new Date("2027-10-13T00:00:00+05:00"))).toThrow(/later day/);
-    expect(jobkitFromOf(archive, null)).toEqual(first);
     const earlier = new Date("2026-09-30T00:00:00+05:00");
     expect(jobkitFromOf(archive, earlier)).toEqual(earlier);
+    keep(earlier);
     expect(jobkitFromOf(archive, null)).toEqual(earlier);
+  });
+
+  it("keeps the mail left out from every import, each once", () => {
+    const archive = join(dir, "archive");
+    const day = new Date("2026-10-13T00:00:00+05:00");
+    const mail = { messageId: "<a@example.com>", answers: [], wordsSha256: "0".repeat(64) };
+
+    keepImportRecord(archive, { jobkitFrom: day, leftOut: [mail] });
+    keepImportRecord(archive, { jobkitFrom: day, leftOut: [mail] });
+
+    expect(importRecordOf(archive)).toEqual({ jobkitFrom: day, leftOut: [mail] });
+  });
+});
+
+describe("dayOf", () => {
+  it("reads a day as the laptop's midnight, and refuses one the calendar does not have", () => {
+    expect(dayOf("2026-09-30")).toEqual(new Date(2026, 8, 30));
+    expect(dayOf("2024-02-29")).toEqual(new Date(2024, 1, 29));
+    expect(() => dayOf("2026-09-31")).toThrow(/YYYY-MM-DD/);
+    expect(() => dayOf("2026-02-29")).toThrow(/YYYY-MM-DD/);
+    expect(() => dayOf("30-09-2026")).toThrow(/YYYY-MM-DD/);
+  });
+});
+
+describe("underPrivate", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "jobkit-private-"));
+    mkdirSync(join(dir, "private"));
+    mkdirSync(join(dir, "elsewhere"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("takes a folder under private/, by its real path, and refuses one anywhere else", () => {
+    const base = join(dir, "private");
+
+    expect(underPrivate(base, join(base, "archive"))).toBe(true);
+    expect(underPrivate(base, join(base, "new", "archive"))).toBe(true);
+    expect(underPrivate(base, base)).toBe(false);
+    expect(underPrivate(base, join(dir, "elsewhere"))).toBe(false);
+    expect(underPrivate(base, join(base, "..", "elsewhere"))).toBe(false);
+    // Another drive or a share: relative() gives back an absolute path.
+    expect(underPrivate(base, "Z:\\archive")).toBe(false);
+    expect(underPrivate(base, "\\\\nas\\share\\archive")).toBe(false);
+    // A junction under private/ that leads outside it.
+    symlinkSync(join(dir, "elsewhere"), join(base, "linked"), "junction");
+    expect(underPrivate(base, join(base, "linked", "archive"))).toBe(false);
   });
 });

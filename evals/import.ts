@@ -5,11 +5,12 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   statSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 import PostalMime, { type Email } from "postal-mime";
@@ -31,14 +32,27 @@ import { knownCaseIds } from "./splitFile";
  * (amendment A10); the labelling page checks the examples again. A message
  * that cannot be read is reported and passed over. A case already in the
  * archive is not written again, and one the split file names that is no
- * longer in the archive was removed, and is not brought back.
+ * longer in the archive was removed, and is not brought back. Mail left
+ * out for a style example is recorded, so the archive leaves out its
+ * replies and resends too.
  */
 
 export type SkipReason = "not_sent" | "no_resume" | "style_example" | "after_jobkit";
 
+/**
+ * A message the import left out for a style example, as the archive needs
+ * it to leave out the rest of its application: its message ID, those it
+ * answers, and the SHA-256 of its words, which a resend shares.
+ */
+export interface LeftOutMail {
+  messageId: string | null;
+  answers: string[];
+  wordsSha256: string;
+}
+
 export type ImportOutcome =
   | { kind: "case"; id: string; subject: string }
-  | { kind: "skipped"; reason: SkipReason }
+  | { kind: "skipped"; reason: SkipReason; leftOut?: LeftOutMail }
   | { kind: "malformed"; error: string };
 
 export interface ImportOptions {
@@ -64,6 +78,8 @@ export interface ImportReport {
   removed: number;
   /** Cases whose email.eml was missing or cut short, written again. */
   repaired: number;
+  /** The mail left out for a style example, which the import record keeps. */
+  leftOut: LeftOutMail[];
 }
 
 /**
@@ -89,33 +105,104 @@ export function normalised(text: string): string {
   return text.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
-/** An HTML body's words, for a message with no plain-text part. */
+const ENTITIES: Readonly<Record<string, string>> = {
+  nbsp: " ",
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+};
+
+/** An HTML body's words: its text, with its tags gone and its entities read. */
 function textOfHtml(html: string): string {
   return html
     .replace(/<(style|script)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<br\s*\/?>|<\/(?:p|div|li|tr|h\d)>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&");
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, digits: string) => String.fromCodePoint(Number(digits)))
+    .replace(/&([a-z]+);/gi, (entity, name: string) => ENTITIES[name.toLowerCase()] ?? entity);
 }
 
 /** A style example this short could match by chance, so it is not compared. */
 const MIN_EXAMPLE_LENGTH = 40;
 
-/** A message's words: its plain text, else its HTML's. */
+/** A message's words: its plain text, else, when that is empty, its HTML's. */
 export function bodyText(email: Email): string {
-  return email.text ?? textOfHtml(email.html ?? "");
+  return email.text?.trim() ? email.text : textOfHtml(email.html ?? "");
+}
+
+/** Each of a message's bodies, plain and HTML, that holds any words. */
+export function bodiesOf(email: Email): string[] {
+  return [email.text ?? "", textOfHtml(email.html ?? "")].filter((body) => body.trim() !== "");
 }
 
 /**
- * Whether a body holds one of the style examples, with case and spacing
- * normalised and a reply's quote marks taken off, so a reply quoting the
- * example holds it too (A10).
+ * A text's words for comparing with a style example, which the owner copies
+ * from an email as Gmail shows it: quote marks, links and their addresses,
+ * list markers, emphasis and punctuation taken off, case and spacing
+ * normalised. Gmail's plain text writes a link as "words <https://…>" and
+ * bold as "*words*"; the copied example has the words alone.
  */
-export function holdsStyleExample(body: string, styleExamples: readonly string[]): boolean {
-  const words = normalised(body.replace(/^[ \t]*(?:>[ \t]?)+/gm, ""));
+export function wordsOf(text: string): string {
+  const words = text
+    .replace(/^[ \t]*(?:>[ \t]?)+/gm, "")
+    .replace(/<(?:https?:|mailto:)[^>\s]*>/gi, " ")
+    .replace(/\b(?:https?:\/\/|www\.)\S+/gi, " ")
+    .replace(/^[ \t]*(?:[-*•]|\d+[.)])[ \t]+/gm, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ");
+  return normalised(words);
+}
+
+/**
+ * Whether a message's bodies hold one of the style examples, word for word
+ * (A10): in its plain text or its HTML, quoted in a reply or not.
+ */
+export function holdsStyleExample(
+  bodies: string | readonly string[],
+  styleExamples: readonly string[],
+): boolean {
+  const texts = (typeof bodies === "string" ? [bodies] : bodies).map(
+    (body) => ` ${wordsOf(body)} `,
+  );
   return styleExamples
-    .map(normalised)
-    .some((example) => example.length >= MIN_EXAMPLE_LENGTH && words.includes(example));
+    .map(wordsOf)
+    .some(
+      (example) =>
+        example.length >= MIN_EXAMPLE_LENGTH && texts.some((text) => text.includes(` ${example} `)),
+    );
+}
+
+/** Message IDs in a header: "<a@x> <b@x>". */
+function messageIds(header: string | undefined): string[] {
+  return header?.match(/<[^<>\s]+>/g) ?? [];
+}
+
+/** A subject without the replies' and forwards' prefixes. */
+function bareSubject(subject: string): string {
+  return normalised(subject.replace(/^(?:\s*(?:re|fwd?)\s*:)+/i, ""));
+}
+
+/**
+ * Where a sent email sits among the owner's applications: its message ID,
+ * those it answers, and its subject and words, which a resend repeats.
+ */
+export function threadOf(email: Email): {
+  messageId: string | null;
+  answers: string[];
+  words: string;
+} {
+  return {
+    messageId: messageIds(email.messageId)[0] ?? null,
+    answers: [...messageIds(email.inReplyTo), ...messageIds(email.references)],
+    words: `${bareSubject(email.subject ?? "")}\n${normalised(bodyText(email))}`,
+  };
+}
+
+/** The SHA-256 of a thread's words, as the import record keeps them. */
+export function wordsSha256(words: string): string {
+  return createHash("sha256").update(words).digest("hex");
 }
 
 /** A case's ID: the day it was sent and a hash of its message ID, the same on every import. */
@@ -155,12 +242,22 @@ export async function judgeMessage(
   if (!email.attachments.some((part) => (part.filename ?? "").trim().toLowerCase() === wanted)) {
     return { kind: "skipped", reason: "no_resume" };
   }
+  // Undated mail cannot show it came before jobkit began drafting, so it is left out too.
   const sent = new Date(email.date ?? "").getTime();
-  if (options.jobkitFrom && sent >= options.jobkitFrom.getTime()) {
+  if (options.jobkitFrom && (Number.isNaN(sent) || sent >= options.jobkitFrom.getTime())) {
     return { kind: "skipped", reason: "after_jobkit" };
   }
-  if (holdsStyleExample(bodyText(email), options.styleExamples)) {
-    return { kind: "skipped", reason: "style_example" };
+  if (holdsStyleExample(bodiesOf(email), options.styleExamples)) {
+    const thread = threadOf(email);
+    return {
+      kind: "skipped",
+      reason: "style_example",
+      leftOut: {
+        messageId: thread.messageId,
+        answers: thread.answers,
+        wordsSha256: wordsSha256(thread.words),
+      },
+    };
   }
   return { kind: "case", id: caseId(email, raw), subject: email.subject ?? "" };
 }
@@ -174,6 +271,7 @@ function emptyReport(): ImportReport {
     dismissed: 0,
     removed: 0,
     repaired: 0,
+    leftOut: [],
   };
 }
 
@@ -184,9 +282,10 @@ export const DISMISSED = "_dismissed";
  * Counts one message's outcome, writing a kept one as a new case unless it
  * is one already, was set aside, or was removed after it was given a split
  * (`known`, the cases the split file names); a case whose email.eml is
- * missing or differs, as one cut short by an interrupted import, is written
- * again. The file is written whole, so an interruption never leaves half
- * of it.
+ * missing, or cut short (the start of this message alone), is written
+ * again. A whole copy that differs, as another export's with other labels,
+ * is kept as it is. The file is written whole, so an interruption never
+ * leaves half of it.
  */
 function take(
   report: ImportReport,
@@ -200,6 +299,7 @@ function take(
     report.malformed.push({ ...where, error: outcome.error });
   } else if (outcome.kind === "skipped") {
     report.skipped[outcome.reason]++;
+    if (outcome.leftOut) report.leftOut.push(outcome.leftOut);
   } else {
     if (existsSync(join(archive, DISMISSED, outcome.id))) {
       report.dismissed++;
@@ -212,9 +312,14 @@ function take(
       report.removed++;
       return;
     }
-    if (existed && existsSync(file) && Buffer.compare(readFileSync(file), raw) === 0) {
-      report.alreadyImported++;
-      return;
+    if (existed && existsSync(file)) {
+      const kept = readFileSync(file);
+      const cutShort =
+        kept.length < raw.length && Buffer.compare(kept, raw.subarray(0, kept.length)) === 0;
+      if (!cutShort) {
+        report.alreadyImported++;
+        return;
+      }
     }
     mkdirSync(folder, { recursive: true });
     writeFileSync(`${file}.tmp`, raw);
@@ -269,18 +374,58 @@ export async function importEmlFolder(
   return report;
 }
 
-/** The archive's record of when jobkit may have begun drafting the owner's mail. */
+/**
+ * The archive's import record: from when jobkit may have drafted the
+ * owner's mail, and the mail left out for a style example.
+ */
 export const IMPORT_FILE = "import.json";
 
 const importRecordSchema = z.object({
   jobkitFrom: z.string().refine((text) => !Number.isNaN(Date.parse(text))),
+  leftOut: z
+    .array(
+      z.object({
+        messageId: z.string().nullable(),
+        answers: z.array(z.string()),
+        wordsSha256: z.string(),
+      }),
+    )
+    .optional(),
 });
+
+export interface ImportRecord {
+  jobkitFrom: Date;
+  leftOut: LeftOutMail[];
+}
+
+/** The archive's import record, or null before the first import. */
+export function importRecordOf(archive: string): ImportRecord | null {
+  const file = join(archive, IMPORT_FILE);
+  if (!existsSync(file)) return null;
+  const record = importRecordSchema.parse(JSON.parse(readFileSync(file, "utf8")));
+  return { jobkitFrom: new Date(record.jobkitFrom), leftOut: record.leftOut ?? [] };
+}
 
 /** The day the archive keeps as jobkit's first drafting, or null before the first import. */
 export function keptJobkitFrom(archive: string): Date | null {
+  return importRecordOf(archive)?.jobkitFrom ?? null;
+}
+
+/**
+ * Keeps the import record, written whole: the day, and the mail left out,
+ * added to what earlier imports left out, each once.
+ */
+export function keepImportRecord(archive: string, record: ImportRecord): void {
+  const kept = importRecordOf(archive)?.leftOut ?? [];
+  const seen = new Set(kept.map((mail) => JSON.stringify(mail)));
+  const leftOut = [...kept, ...record.leftOut.filter((mail) => !seen.has(JSON.stringify(mail)))];
+  mkdirSync(archive, { recursive: true });
   const file = join(archive, IMPORT_FILE);
-  if (!existsSync(file)) return null;
-  return new Date(importRecordSchema.parse(JSON.parse(readFileSync(file, "utf8"))).jobkitFrom);
+  writeFileSync(
+    `${file}.tmp`,
+    `${JSON.stringify({ jobkitFrom: record.jobkitFrom.toISOString(), leftOut }, null, 2)}\n`,
+  );
+  renameSync(`${file}.tmp`, file);
 }
 
 /**
@@ -288,7 +433,9 @@ export function keptJobkitFrom(archive: string): Date | null {
  * first import must be told (the day of the first application sent through
  * jobkit, or today if none was), since jobkit may already be in use when
  * the export arrives; later imports keep that day. A later day than the
- * one kept is refused: it would let in mail jobkit drafted.
+ * one kept is refused: it would let in mail jobkit drafted. Working the
+ * day out writes nothing: the import keeps it (keepImportRecord) once its
+ * source has been found.
  */
 export function jobkitFromOf(archive: string, given: Date | null): Date {
   const kept = keptJobkitFrom(archive);
@@ -302,13 +449,47 @@ export function jobkitFromOf(archive: string, given: Date | null): Date {
       `The archive keeps ${kept.toISOString()} as the day jobkit began drafting; a later day would let in mail it drafted. Give that day or an earlier one.`,
     );
   }
-  const from = given ?? kept!;
-  mkdirSync(archive, { recursive: true });
-  writeFileSync(
-    join(archive, IMPORT_FILE),
-    `${JSON.stringify({ jobkitFrom: from.toISOString() }, null, 2)}\n`,
-  );
-  return from;
+  return given ?? kept!;
+}
+
+/** A day as the laptop's midnight: "2026-09-30". A day the calendar does not have is refused. */
+export function dayOf(text: string): Date {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  const [year, month, day] = match ? [Number(match[1]), Number(match[2]), Number(match[3])] : [];
+  const date = match ? new Date(year!, month! - 1, day!) : null;
+  if (
+    !date ||
+    date.getFullYear() !== year ||
+    date.getMonth() !== month! - 1 ||
+    date.getDate() !== day
+  ) {
+    throw new Error(`--jobkit-from takes a day: YYYY-MM-DD`);
+  }
+  return date;
+}
+
+/** The deepest folder of a path that exists, by its real path, with the rest joined on. */
+function realOf(path: string): string {
+  const missing: string[] = [];
+  let at = resolve(path);
+  while (!existsSync(at)) {
+    const up = dirname(at);
+    if (up === at) return resolve(path);
+    missing.unshift(at.slice(up.length).replace(/^[\\/]+/, ""));
+    at = up;
+  }
+  return join(realpathSync.native(at), ...missing);
+}
+
+/**
+ * Whether an archive lies under private/, where git and the commit guard
+ * ignore it: by real paths, so a junction or link out of private/ is
+ * refused, as are another drive and a network share, which relative()
+ * gives back whole.
+ */
+export function underPrivate(privateDir: string, archive: string): boolean {
+  const inside = relative(realOf(privateDir), realOf(archive));
+  return inside !== "" && !inside.startsWith("..") && !isAbsolute(inside);
 }
 
 /**
