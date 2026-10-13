@@ -14,27 +14,15 @@ import { existsSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
 import { systemClock } from "@/adapters/clock";
-import { createLocalStorage } from "@/adapters/localStorage";
-import { createPgDb } from "@/adapters/pg";
-import { createSupabaseStorage } from "@/adapters/supabaseStorage";
 import { listVersions } from "@/core/profile/profile";
 import { activateByHash, seedProfile, type SeedResult } from "@/core/profile/seed";
-import type { Db, Storage } from "@/core/ports";
-import { BUCKET, SCHEMA } from "@/server/container";
-import { openLocalDb } from "@/server/db/localDb";
-import { applyMigrations, bootstrapForTests, loadMigrations } from "@/server/db/migrate";
 import { loadProfileFile } from "@/server/profileFile";
 
-import {
-  askOnTerminal,
-  confirmProduction,
-  loadOpsEnv,
-  parseTarget,
-  productionRef,
-  refuseSwallowedFlags,
-  requireValues,
-  type Target,
-} from "./ops";
+import { parseTarget, refuseSwallowedFlags, type Target } from "./ops";
+import { openTarget } from "./targets";
+
+/** The script's name in the local database's lock. */
+const HOLDER = "npm run profile:seed";
 
 type Command =
   { kind: "seed"; file: string } | { kind: "list" } | { kind: "activate"; hashStart: string };
@@ -72,7 +60,7 @@ async function main(): Promise<void> {
     command.kind === "list"
       ? "list the profile versions in"
       : "change the active profile version in";
-  const { db, where } = await open(target, doing);
+  const { db, where } = await openTarget(target, doing, HOLDER);
   try {
     if (command.kind === "activate")
       return report(await activateByHash(db, command.hashStart), where);
@@ -104,7 +92,7 @@ async function seed(file: string, target: Target): Promise<void> {
   // Named before production asks for its reference, so the public sample cannot go there unseen.
   const approved = checked.profile.facts.filter((fact) => fact.approved).length;
   const what = `seed ${relative(process.cwd(), file)} (${checked.profile.owner.name}, ${approved} approved facts, hash ${checked.hash.slice(0, 12)}) into`;
-  const { db, storage, where } = await open(target, what);
+  const { db, storage, where } = await openTarget(target, what, HOLDER);
   try {
     report(await seedProfile({ db, storage, clock: systemClock }, checked), where);
   } finally {
@@ -120,35 +108,6 @@ function report(result: SeedResult, where: string): void {
     unchanged: "Nothing changed; the active profile version is",
   }[result.status];
   console.log(`${said} ${result.versionId} in ${where}.`);
-}
-
-async function open(
-  target: Target,
-  doing: string,
-): Promise<{ db: Db & { close(): Promise<void> }; storage: Storage; where: string }> {
-  if (target === "local") {
-    const data = join(process.cwd(), ".data");
-    const db = await openLocalDb(data, { schema: SCHEMA, holder: "npm run profile:seed" });
-    await bootstrapForTests(db);
-    await applyMigrations(db, loadMigrations(join(process.cwd(), "db", "migrations")));
-    const storage = createLocalStorage({
-      root: join(data, "storage"),
-      origin: "http://localhost:3000",
-    });
-    return { db, storage, where: "the local database" };
-  }
-  const env = loadOpsEnv();
-  requireValues(env, ["DATABASE_URL", "SUPABASE_URL", "SUPABASE_SECRET_KEY"]);
-  const ref = productionRef(env);
-  console.log(`This will ${doing} production (${ref}).`);
-  await confirmProduction(ref, askOnTerminal);
-  const db = createPgDb({ connectionString: env.DATABASE_URL!, schema: SCHEMA, max: 1 });
-  const storage = createSupabaseStorage({
-    url: env.SUPABASE_URL!,
-    secretKey: env.SUPABASE_SECRET_KEY!,
-    bucket: BUCKET,
-  });
-  return { db, storage, where: `production (${ref})` };
 }
 
 main().catch((error: unknown) => {
