@@ -1,5 +1,5 @@
 import type { KitFlag, KitFlagKind } from "@/core/drafting/validate";
-import { type BlockVerdict, isBlocking } from "@/core/drafting/verdict";
+import { type BlockVerdict, isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
 import { isStrictAddress, normaliseWhatsAppNumber } from "@/core/extraction/contacts";
 
 import type { AddressCheck } from "./addressChecks";
@@ -63,7 +63,10 @@ const JUDGE_WORDS = {
 };
 
 /** The judge's findings on a sentence, both when it also speaks for the company. */
-function judgeMessage(verdict: BlockVerdict): string {
+export function judgeMessage(verdict: BlockVerdict): string {
+  if (verdict.note === NEVER_WEIGHED) {
+    return "The separate check never weighed this sentence: check it against your facts.";
+  }
   const fact =
     verdict.verdict === "overstated"
       ? JUDGE_WORDS.overstated
@@ -101,15 +104,26 @@ function passesStrict(kind: "email" | "whatsapp", value: string): boolean {
   return kind === "email" ? isStrictAddress(value) : normaliseWhatsAppNumber(value).ok;
 }
 
-/** The open reasons, the most serious first; none opens every outbound control. */
+/** A flag's place in FLAG_ORDER; a kind this code does not know goes last. */
+export function flagRank(kind: string): number {
+  const rank = FLAG_ORDER.indexOf(kind as KitFlagKind);
+  return rank === -1 ? FLAG_ORDER.length : rank;
+}
+
+/**
+ * The open reasons, the most serious first; none opens every outbound
+ * control. A kit marked sent is held for that alone.
+ */
 export function canHandOff(input: GateInput): GateReason[] {
-  const reasons: GateReason[] = [];
   if (input.sent) {
-    reasons.push({
-      kind: "sent",
-      message: "You marked this email sent, so nothing goes out from this page again.",
-    });
+    return [
+      {
+        kind: "sent",
+        message: "You marked this email sent, so nothing goes out from this page again.",
+      },
+    ];
   }
+  const reasons: GateReason[] = [];
   if (input.scam && input.scam.signals.length > 0 && !input.scam.overridden) {
     reasons.push({
       kind: "scam",
@@ -145,8 +159,7 @@ export function canHandOff(input: GateInput): GateReason[] {
   for (const check of input.addressChecks) {
     if (check.blocking) reasons.push({ kind: "address_check", check, message: check.message });
   }
-  const rank = (flag: KitFlag) => FLAG_ORDER.indexOf(flag.kind);
-  for (const flag of [...input.flags].sort((a, b) => rank(a) - rank(b))) {
+  for (const flag of [...input.flags].sort((a, b) => flagRank(a.kind) - flagRank(b.kind))) {
     reasons.push({ kind: "flag", flag, message: flag.message });
   }
   const checked = new Set(input.checked);

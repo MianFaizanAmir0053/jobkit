@@ -19,9 +19,18 @@ export const ADDRESS_CHECKS_VERSION = 2;
 
 export type MailHost = "mx" | "implicit_mx" | "null_mx" | "none" | "unchecked";
 
+/** Every kind of address check, which stored decisions are read against. */
+export const ADDRESS_CHECK_KINDS = [
+  "syntax",
+  "mail_host",
+  "free_mail",
+  "company",
+  "not_checked",
+] as const;
+
 export interface AddressCheck {
   /** "not_checked": the address as it stands has no checks, which the job view says. */
-  kind: "syntax" | "mail_host" | "free_mail" | "company" | "not_checked";
+  kind: (typeof ADDRESS_CHECK_KINDS)[number];
   /** A blocking check stops every handoff until the address is fixed; a warning only shows. */
   blocking: boolean;
   message: string;

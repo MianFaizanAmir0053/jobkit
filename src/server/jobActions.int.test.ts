@@ -13,6 +13,7 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { draftStage } from "@/core/drafting/draftStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
+import { passingJudge } from "@/core/drafting/testJudge";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
@@ -25,6 +26,7 @@ import type { Db, QueryResult, Row } from "@/core/ports";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 import { openForJob } from "@/core/review/applications";
+import { flagKey } from "@/core/review/decisions";
 import { jobView } from "@/core/review/jobView";
 import type { AppConfig } from "@/server/config";
 import { createTestDb, insertTestJobs } from "@/server/db/testDb";
@@ -32,12 +34,14 @@ import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 import {
   applyAgainRoute,
   draftAnyway,
+  gate,
   readAgain,
   retry,
   review,
   role,
   sent,
   skip,
+  takeBack,
 } from "./jobActions";
 import { startPipeline } from "./jobs";
 
@@ -75,16 +79,8 @@ const deps = () => ({
     extract: extractStage({ db, storage, random, models: models() }),
     eligibility: eligibilityStage({ db, clock }),
     draft: draftStage({ db, random, models: models() }),
-    // The judge has its own tests; here it passes every kit.
-    judge: {
-      callsModel: false,
-      input: () => ({}),
-      run: async () => ({
-        ok: true as const,
-        output: { checked: true, verdicts: [], markers: [] },
-      }),
-      next: () => ({ state: "kit_ready" as const, pending: null }),
-    },
+    // The judge has its own tests; here it finds every sentence supported.
+    judge: passingJudge(),
   },
   schedule: (task: () => Promise<unknown>) => {
     scheduled.push(task);
@@ -124,6 +120,38 @@ async function signedIn(): Promise<string> {
     { kind: "google", label: "laptop" },
   );
   return token;
+}
+
+/**
+ * The owner clears what holds a kit through the review route, as on the
+ * page: the address no second read confirmed, typed as the post gives it,
+ * and each flag and sentence checked.
+ */
+async function clearedOnPage(id: string, cookie: string): Promise<void> {
+  const view = (await jobView({ db, clock }, id))!;
+  const actions: object[] = [];
+  if (view.kitParts?.contact?.needsRetype) {
+    actions.push({ kind: "retype", value: "jobs@example.com" });
+  }
+  for (const [place] of (view.kitParts?.flags ?? []).entries()) {
+    actions.push({ kind: "check_flag", flag: flagKey(place) });
+  }
+  for (const reason of view.review?.gate ?? []) {
+    if (reason.kind === "judge") actions.push({ kind: "check", blockId: reason.blockId });
+  }
+  for (const action of actions) {
+    const body = JSON.stringify({ action, kit: view.kitKey });
+    await review(post(`/api/jobs/${id}/review`, body, cookie), deps(), id);
+  }
+}
+
+/** The kit as the job page shows it, which every decision names. */
+const kitOf = async (id: string) => (await jobView({ db, clock }, id))!.kitKey!;
+
+function get(path: string, cookie?: string): NextRequest {
+  const headers: Record<string, string> = {};
+  if (cookie) headers.cookie = `jobkit_session=${cookie}`;
+  return new NextRequest(`${ORIGIN}${path}`, { headers });
 }
 
 function post(path: string, body: string, cookie?: string, origin = ORIGIN): NextRequest {
@@ -329,6 +357,11 @@ describe("the job page's routes", () => {
     expect((await sent(post(`/api/jobs/${ready}/sent`, "{}", cookie), deps(), ready)).status).toBe(
       400,
     );
+    // Held: no second read confirmed the address.
+    expect((await sent(post(`/api/jobs/${ready}/sent`, no, cookie), deps(), ready)).status).toBe(
+      409,
+    );
+    await clearedOnPage(ready, cookie);
     const response = await sent(post(`/api/jobs/${ready}/sent`, no, cookie), deps(), ready);
 
     expect(response.status).toBe(200);
@@ -336,19 +369,44 @@ describe("the job page's routes", () => {
     expect(
       (await sent(post(`/api/jobs/${picking}/sent`, no, cookie), deps(), picking)).status,
     ).toBe(409);
+    // A mistaken tap is taken back, and the kit opens again.
+    expect(
+      (await takeBack(post(`/api/jobs/${ready}/take-back`, "", cookie), deps(), ready)).status,
+    ).toBe(200);
+    expect((await jobView({ db, clock }, ready))!.application?.status).toBe("kit_ready");
+  });
+
+  it("read the gate as it stands, for a page drawn before it changed", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+
+    const held = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
+    expect(await held.json()).toEqual({ kit: await kitOf(ready), open: false });
+    await clearedOnPage(ready, cookie);
+
+    const open = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
+    expect(await open.json()).toEqual({ kit: await kitOf(ready), open: true });
+    expect((await gate(get(`/api/jobs/${ready}/gate`), deps(), ready)).status).toBe(401);
   });
 
   it("record a decision on a ready kit, and refuse one the kit has no place for", async () => {
     await seedSample();
     const cookie = await signedIn();
     const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
-    const typed = JSON.stringify({ action: { kind: "retype", value: "jobs@example.com" } });
+    const kit = await kitOf(ready);
+    const typed = JSON.stringify({ action: { kind: "retype", value: "jobs@example.com" }, kit });
 
     const response = await review(post(`/api/jobs/${ready}/review`, typed, cookie), deps(), ready);
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ gate: expect.any(Array) });
-    const nowhere = JSON.stringify({ action: { kind: "check", blockId: "S9" } });
+    // A page drawn on another kit: the owner must look again.
+    const stale = JSON.stringify({ action: { kind: "check", blockId: "S1" }, kit: "another kit" });
+    expect(
+      (await review(post(`/api/jobs/${ready}/review`, stale, cookie), deps(), ready)).status,
+    ).toBe(409);
+    const nowhere = JSON.stringify({ action: { kind: "check", blockId: "S9" }, kit });
     expect(
       (await review(post(`/api/jobs/${ready}/review`, nowhere, cookie), deps(), ready)).status,
     ).toBe(409);
@@ -397,10 +455,13 @@ describe("the job page's routes", () => {
     expect(keys).toHaveLength(1);
     const applyAgain = (body: string) =>
       applyAgainRoute(post(`/api/jobs/${ready}/apply-again`, body, cookie), deps(), ready);
+    const kit = await kitOf(ready);
 
-    expect((await applyAgain(JSON.stringify({ keys: ["application:x:post"] }))).status).toBe(409);
-    expect((await applyAgain("{}")).status).toBe(400);
-    expect((await applyAgain(JSON.stringify({ keys }))).status).toBe(200);
+    expect((await applyAgain(JSON.stringify({ keys: ["application:x:post"], kit }))).status).toBe(
+      409,
+    );
+    expect((await applyAgain(JSON.stringify({ keys }))).status).toBe(400);
+    expect((await applyAgain(JSON.stringify({ keys, kit }))).status).toBe(200);
     expect((await jobView({ db, clock }, ready))!.duplicates[0]!.covered).toBe(true);
   });
 
@@ -416,6 +477,7 @@ describe("the job page's routes", () => {
       sent,
       review,
       applyAgainRoute,
+      takeBack,
     ] as const;
 
     for (const action of actions) {

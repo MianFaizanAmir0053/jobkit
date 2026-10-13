@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { BlockVerdict } from "@/core/drafting/judge";
+import { NEVER_WEIGHED } from "@/core/drafting/verdict";
 import type { KitFlag } from "@/core/drafting/validate";
 
 import type { AddressCheck } from "./addressChecks";
@@ -155,6 +156,35 @@ describe("canHandOff", () => {
     );
   });
 
+  it("holds a kit marked sent for that alone: nothing else matters once it went", () => {
+    expect(
+      kinds({ ...CLEAR, sent: true, flags: [FLAG], scam: { signals: ["fee"], overridden: false } }),
+    ).toEqual(["sent"]);
+  });
+
+  it("says a sentence the separate check never weighed was never weighed, not that it lacks a fact", () => {
+    const [reason] = canHandOff({
+      ...CLEAR,
+      verdicts: [verdict("S1", { verdict: "unsupported", note: NEVER_WEIGHED })],
+    });
+
+    expect(reason?.message).toMatch(/never weighed/);
+  });
+
+  it("puts a flag of a kind it does not know after the rest", () => {
+    const strange = {
+      kind: "from_a_later_version",
+      at: "body",
+      message: "?",
+    } as unknown as KitFlag;
+
+    expect(
+      canHandOff({ ...CLEAR, flags: [strange, FLAG] }).map((reason) =>
+        reason.kind === "flag" ? reason.flag.kind : reason.kind,
+      ),
+    ).toEqual(["over_limit", "from_a_later_version"]);
+  });
+
   it("names both findings on a sentence that overstates and claims something of the company", () => {
     const [reason] = canHandOff({
       ...CLEAR,
@@ -181,11 +211,9 @@ describe("canHandOff", () => {
       ],
       duplicates: [{ reason: "the same company and role", applyAgain: false }],
       scam: { signals: ["asks for a fee"], overridden: false },
-      sent: true,
     });
 
     expect(open.map((reason) => reason.kind)).toEqual([
-      "sent",
       "scam",
       "duplicate",
       "contact",

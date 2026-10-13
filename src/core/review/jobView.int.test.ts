@@ -26,8 +26,33 @@ import { validateProfile } from "@/core/profile/validate";
 import { createTestDb } from "@/server/db/testDb";
 
 import { addressChecksStage } from "./addressChecksStage";
+import { flagKey } from "./decisions";
 import { jobView, listJobViews } from "./jobView";
+import { recordReview } from "./kitReview";
 import { markSent } from "./markSent";
+
+/**
+ * The owner clears what holds a kit, as before sending it: the address no
+ * second read confirmed, typed as the post gives it, each sentence and flag
+ * checked, each file promised.
+ */
+async function cleared(id: string): Promise<void> {
+  const decide = (action: Parameters<typeof recordReview>[2]) =>
+    recordReview({ db, clock, dns: offlineDns() }, id, action);
+  const view = (await jobView({ db, clock }, id))!;
+  if (view.kitParts?.contact?.needsRetype) {
+    await decide({ kind: "retype", value: "jobs@example.com" });
+  }
+  for (const reason of view.review?.gate ?? []) {
+    if (reason.kind === "judge") await decide({ kind: "check", blockId: reason.blockId });
+  }
+  for (const [place] of (view.kitParts?.flags ?? []).entries()) {
+    await decide({ kind: "check_flag", flag: flagKey(place) });
+  }
+  for (const attachment of view.kitParts?.attachments ?? []) {
+    await decide({ kind: "attach", id: attachment.id, ticked: true });
+  }
+}
 
 /* What the job page and the jobs list read, and Mark sent, on the thin path. */
 
@@ -434,6 +459,7 @@ describe("markSent", () => {
     await seedSample();
     const id = await pasted();
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await cleared(id);
 
     expect(await markSent({ db, clock }, id, null, { changedInGmail: true })).toEqual({
       ok: true,
@@ -492,6 +518,7 @@ describe("markSent", () => {
           [id],
         )
       ).rows.map((row) => row.status);
+    await cleared(id);
 
     await expect(
       markSent({ db: losing(db), clock }, id, null, { changedInGmail: true }),
@@ -511,6 +538,7 @@ describe("markSent", () => {
     await seedSample();
     const id = await pasted();
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await cleared(id);
     await markSent({ db, clock }, id, null, { changedInGmail: true });
     const { rows } = await db.query<{ id: string; sent_at: Date }>(
       "select id, sent_at from {{schema}}.applications where job_id = $1",
@@ -544,6 +572,7 @@ describe("markSent", () => {
     await seedSample();
     const id = await pasted();
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await cleared(id);
     await markSent({ db, clock }, id, null, { changedInGmail: false });
 
     await expect(
@@ -616,6 +645,7 @@ describe("listJobViews", () => {
     await seedSample();
     const sentJob = await pasted();
     await run(sentJob, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await cleared(sentJob);
     await markSent({ db, clock }, sentJob, null, { changedInGmail: false });
     const started = await startJob(
       { db, clock, storage },

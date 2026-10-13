@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { AddressCheck } from "./addressChecks";
+import { ADDRESS_CHECKS_VERSION, type AddressCheck } from "./addressChecks";
 import { canHandOff } from "./canHandOff";
 import {
   decide,
   flagKey,
   gateInputOf,
+  keptLookup,
   type KitParts,
   NO_DECISIONS,
   reviewActionSchema,
@@ -47,7 +48,7 @@ describe("decide", () => {
     for (const action of [
       { kind: "check", blockId: "S2" },
       { kind: "check", blockId: "S2" },
-      { kind: "check_flag", flag: "fit_unverified:R2" },
+      { kind: "check_flag", flag: "F1" },
       { kind: "attach", id: "A2", ticked: true },
       { kind: "continue_anyway" },
     ] as const) {
@@ -57,15 +58,14 @@ describe("decide", () => {
 
     expect(decisions).toEqual({
       checked: ["S2"],
-      flagsChecked: ["fit_unverified:R2"],
+      flagsChecked: ["F1"],
       retyped: { value: "jobs@example.com", checks: [] },
       attached: ["A2"],
       continueAnyway: true,
+      lookups: [{ address: "jobs@example.com", version: ADDRESS_CHECKS_VERSION, checks: [] }],
     });
     expect(decide(decisions, { kind: "uncheck", blockId: "S2" }).checked).toEqual([]);
-    expect(
-      decide(decisions, { kind: "uncheck_flag", flag: "fit_unverified:R2" }).flagsChecked,
-    ).toEqual([]);
+    expect(decide(decisions, { kind: "uncheck_flag", flag: "F1" }).flagsChecked).toEqual([]);
     expect(decide(decisions, { kind: "attach", id: "A2", ticked: false }).attached).toEqual([]);
     expect(decide(decisions, { kind: "retype", value: "  " }).retyped).toBeNull();
   });
@@ -82,8 +82,31 @@ describe("decide", () => {
     );
   });
 
-  it("names a flag by its kind and where it points", () => {
-    expect(flagKey(FLAG)).toBe("fit_unverified:R2");
+  it("names a flag by its place among the kit's, so two alike are told apart", () => {
+    expect(flagKey(0)).toBe("F1");
+    expect(reviewActionSchema.safeParse({ kind: "check_flag", flag: "F12" }).success).toBe(true);
+    expect(
+      reviewActionSchema.safeParse({ kind: "check_flag", flag: "fit_unverified:R2" }).success,
+    ).toBe(false);
+  });
+
+  it("keeps the first checks found for each address typed, so a lookup that fails later changes nothing", () => {
+    const blocking: AddressCheck = {
+      kind: "mail_host",
+      blocking: true,
+      message: "No mail server.",
+    };
+    let decisions = decide(NO_DECISIONS, { kind: "retype", value: "jobs@deadco.example" }, [
+      blocking,
+    ]);
+    decisions = decide(decisions, { kind: "retype", value: "jobs@other.example" }, []);
+
+    expect(keptLookup(decisions, "jobs@deadco.example")).toEqual([blocking]);
+    expect(keptLookup(decisions, "jobs@unknown.example")).toBeNull();
+    // Typed again, with what a failed lookup would give: the first finding stands.
+    decisions = decide(decisions, { kind: "retype", value: "jobs@deadco.example" }, []);
+    expect(decisions.lookups).toHaveLength(2);
+    expect(keptLookup(decisions, "jobs@deadco.example")).toEqual([blocking]);
   });
 });
 
@@ -95,7 +118,7 @@ describe("gateInputOf", () => {
     const decided = [
       { kind: "continue_anyway" },
       { kind: "check", blockId: "S2" },
-      { kind: "check_flag", flag: "fit_unverified:R2" },
+      { kind: "check_flag", flag: "F1" },
       { kind: "attach", id: "A2", ticked: true },
     ] as const;
     const decisions = decide(
@@ -148,10 +171,11 @@ describe("gateInputOf", () => {
   it("forgets decisions the kit no longer has a place for", () => {
     const decisions: ReviewDecisions = {
       checked: ["S9"],
-      flagsChecked: ["over_limit:body"],
+      flagsChecked: ["F9"],
       retyped: null,
       attached: ["A9"],
       continueAnyway: false,
+      lookups: [],
     };
 
     const input = gateInputOf({ ...PARTS, blocks: ["S1"] }, decisions);

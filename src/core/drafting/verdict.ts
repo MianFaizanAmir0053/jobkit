@@ -14,6 +14,12 @@ export interface BlockVerdict {
   note: string;
 }
 
+/**
+ * The note on a sentence the separate check never weighed, as in a kit from
+ * before it was built: the sentence counts as unsupported (drafting spec).
+ */
+export const NEVER_WEIGHED = "The separate check never weighed this sentence.";
+
 /** Whether a verdict holds the kit back: overstated, unsupported, or a claim about the company. */
 export function isBlocking(verdict: BlockVerdict): boolean {
   return (

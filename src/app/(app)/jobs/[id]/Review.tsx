@@ -7,13 +7,17 @@ import { Button } from "@/components/ui/button";
 
 import { messageFor } from "./ActionButton";
 
-/** Posts one of the owner's decisions on the kit, then renders the page again with the gate it leaves. */
-async function decide(jobId: string, action: object): Promise<string | null> {
+/**
+ * Posts one of the owner's decisions on the kit the page shows, then renders
+ * the page again with the gate it leaves. A page drawn on another kit is
+ * refused, and drawn again.
+ */
+async function decide(jobId: string, kit: string, action: object): Promise<string | null> {
   try {
     const response = await fetch(`/api/jobs/${jobId}/review`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ action, kit }),
     });
     return response.ok ? null : messageFor(response.status);
   } catch {
@@ -21,13 +25,18 @@ async function decide(jobId: string, action: object): Promise<string | null> {
   }
 }
 
-/** The owner types the address or number from the post; it counts once it passes the strict check. */
+/**
+ * The owner types the address or number as they read it in the post, never
+ * from jobkit's own reading; it counts once it passes the strict check.
+ */
 export function RetypeField({
   jobId,
+  kit,
   kind,
   value,
 }: {
   jobId: string;
+  kit: string;
   kind: "email" | "whatsapp";
   value: string | null;
 }) {
@@ -39,7 +48,7 @@ export function RetypeField({
     event.preventDefault();
     const typed = String(new FormData(event.currentTarget).get("contact") ?? "");
     setBusy(true);
-    setError(await decide(jobId, { kind: "retype", value: typed }));
+    setError(await decide(jobId, kit, { kind: "retype", value: typed }));
     setBusy(false);
     router.refresh();
   }
@@ -48,8 +57,8 @@ export function RetypeField({
     <form onSubmit={(event) => void save(event)} className="mt-2 flex flex-wrap items-end gap-2">
       <label className="flex flex-col gap-1 text-sm">
         {kind === "email"
-          ? "The address, as the post gives it"
-          : "The number, with its country code"}
+          ? "The address, as you read it in the post"
+          : "The number, as you read it in the post, with its country code"}
         <input
           name="contact"
           defaultValue={value ?? ""}
@@ -77,12 +86,14 @@ export function RetypeField({
  */
 export function AttachTick({
   jobId,
+  kit,
   id,
   name,
   ticked,
   disabled = false,
 }: {
   jobId: string;
+  kit: string;
   id: string;
   name: string;
   ticked: boolean;
@@ -94,7 +105,7 @@ export function AttachTick({
 
   async function toggle(next: boolean) {
     setBusy(true);
-    setError(await decide(jobId, { kind: "attach", id, ticked: next }));
+    setError(await decide(jobId, kit, { kind: "attach", id, ticked: next }));
     setBusy(false);
     router.refresh();
   }

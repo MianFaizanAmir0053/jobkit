@@ -4,7 +4,7 @@ import type { KitFlag } from "@/core/drafting/validate";
 import type { BlockVerdict } from "@/core/drafting/verdict";
 import { isStrictAddress } from "@/core/extraction/contacts";
 
-import type { AddressCheck } from "./addressChecks";
+import { ADDRESS_CHECK_KINDS, ADDRESS_CHECKS_VERSION, type AddressCheck } from "./addressChecks";
 import type { GateInput } from "./canHandOff";
 
 /**
@@ -26,15 +26,29 @@ export interface TypedContact {
   checks: AddressCheck[] | null;
 }
 
+/**
+ * The checks of an address the owner typed, as first found: kept with the
+ * checks' version, so typing it again while DNS fails never turns a finding
+ * that holds the kit into one that does not (review spec, "Stage
+ * address_checks").
+ */
+export interface AddressLookup {
+  address: string;
+  version: number;
+  checks: AddressCheck[];
+}
+
 export interface ReviewDecisions {
   /** Sentences marked "I checked this", by block ID. */
   checked: string[];
-  /** validate's flags marked "I checked this", by flagKey. */
+  /** validate's flags marked "I checked this", by their place among the kit's (flagKey). */
   flagsChecked: string[];
   retyped: TypedContact | null;
   /** Required attachments the owner will attach in Gmail, by their place in the post's list ("A1"). */
   attached: string[];
   continueAnyway: boolean;
+  /** Every address the owner typed, with its checks as first found. */
+  lookups: AddressLookup[];
 }
 
 export const NO_DECISIONS: ReviewDecisions = {
@@ -43,10 +57,11 @@ export const NO_DECISIONS: ReviewDecisions = {
   retyped: null,
   attached: [],
   continueAnyway: false,
+  lookups: [],
 };
 
 const addressCheckSchema = z.object({
-  kind: z.enum(["syntax", "mail_host", "free_mail", "company", "not_checked"]),
+  kind: z.enum(ADDRESS_CHECK_KINDS),
   blocking: z.boolean(),
   message: z.string(),
 });
@@ -59,14 +74,17 @@ export const decisionsSchema = z.object({
     .nullable(),
   attached: z.array(z.string()),
   continueAnyway: z.boolean(),
+  lookups: z.array(
+    z.object({ address: z.string(), version: z.number(), checks: z.array(addressCheckSchema) }),
+  ),
 });
 
 /** One decision, as the page posts it. A typed contact fits RFC 5321's 254 characters with room. */
 export const reviewActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("check"), blockId: z.string().min(1).max(20) }),
   z.strictObject({ kind: z.literal("uncheck"), blockId: z.string().min(1).max(20) }),
-  z.strictObject({ kind: z.literal("check_flag"), flag: z.string().min(1).max(100) }),
-  z.strictObject({ kind: z.literal("uncheck_flag"), flag: z.string().min(1).max(100) }),
+  z.strictObject({ kind: z.literal("check_flag"), flag: z.string().regex(/^F\d{1,4}$/) }),
+  z.strictObject({ kind: z.literal("uncheck_flag"), flag: z.string().regex(/^F\d{1,4}$/) }),
   z.strictObject({ kind: z.literal("retype"), value: z.string().max(320) }),
   z.strictObject({
     kind: z.literal("attach"),
@@ -78,9 +96,22 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
 
 export type ReviewAction = z.infer<typeof reviewActionSchema>;
 
-/** A flag's name among the kit's: its kind and where it points. */
-export function flagKey(flag: KitFlag): string {
-  return `${flag.kind}:${flag.at}`;
+/**
+ * A flag's name among the kit's: its place in validate's list ("F1"), so
+ * two flags of one kind at one place are told apart, and a long place
+ * never makes a name too long. Decisions count only for the kit they were
+ * made on, so a place names one flag.
+ */
+export function flagKey(index: number): string {
+  return `F${index + 1}`;
+}
+
+/** The checks kept for an address the owner typed before, at the checks' version; null for none. */
+export function keptLookup(decisions: ReviewDecisions, address: string): AddressCheck[] | null {
+  const kept = decisions.lookups.find(
+    (lookup) => lookup.address === address && lookup.version === ADDRESS_CHECKS_VERSION,
+  );
+  return kept ? kept.checks : null;
 }
 
 const without = (list: readonly string[], item: string) => list.filter((each) => each !== item);
@@ -108,7 +139,18 @@ export function decide(
       return { ...decisions, flagsChecked: without(decisions.flagsChecked, action.flag) };
     case "retype": {
       const value = action.value.trim();
-      return { ...decisions, retyped: value === "" ? null : { value, checks: typedChecks } };
+      if (value === "") return { ...decisions, retyped: null };
+      // The checks first found for this address stand; a later lookup never replaces them.
+      const kept = keptLookup(decisions, value);
+      const checks = kept ?? typedChecks;
+      const lookups =
+        kept === null && typedChecks !== null
+          ? [
+              ...decisions.lookups,
+              { address: value, version: ADDRESS_CHECKS_VERSION, checks: typedChecks },
+            ]
+          : decisions.lookups;
+      return { ...decisions, retyped: { value, checks }, lookups };
     }
     case "attach":
       return {
@@ -174,7 +216,7 @@ export function gateInputOf(parts: KitParts, decisions: ReviewDecisions): GateIn
   const attached = new Set(decisions.attached);
   return {
     sent: parts.sent,
-    flags: parts.flags.filter((flag) => !flagsChecked.has(flagKey(flag))),
+    flags: parts.flags.filter((_, place) => !flagsChecked.has(flagKey(place))),
     verdicts: parts.verdicts.filter((verdict) => blocks.has(verdict.blockId)),
     checked: decisions.checked.filter((id) => blocks.has(id)),
     // Confirming a changed sentence comes with the block editor (Task 29).

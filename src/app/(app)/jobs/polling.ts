@@ -22,8 +22,13 @@ export function browserPage(): PageHooks {
       const handler = () => {
         if (!document.hidden) listener();
       };
+      // A page restored from the back-forward cache is shown again too.
       document.addEventListener("visibilitychange", handler);
-      return () => document.removeEventListener("visibilitychange", handler);
+      window.addEventListener("pageshow", handler);
+      return () => {
+        document.removeEventListener("visibilitychange", handler);
+        window.removeEventListener("pageshow", handler);
+      };
     },
     now: () => performance.now(),
   };
@@ -122,6 +127,67 @@ export function refreshList(
   const stopShown = page.onShown(tick);
   const timer = setInterval(tick, LIST_TICK_MS);
   const first = setTimeout(tick, 0);
+  return () => {
+    stopped = true;
+    clearTimeout(first);
+    clearInterval(timer);
+    stopShown();
+  };
+}
+
+/** A kit's outbound controls ask the server about its gate this often while the page is shown. */
+export const GATE_CHECK_MS = 15_000;
+
+/** What the server says of a kit's gate: the kit as it stands, and whether nothing holds it. */
+export interface GateAnswer {
+  kit: string | null;
+  open: boolean;
+}
+
+/** Asks the server about a kit's gate; null when it cannot be asked, as when offline. */
+export function readGate(jobId: string): Promise<GateAnswer | null> {
+  return fetch(`/api/jobs/${jobId}/gate`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(ADVANCE_TIMEOUT_MS),
+  })
+    .then(async (response) => (response.ok ? ((await response.json()) as GateAnswer) : null))
+    .catch(() => null);
+}
+
+/**
+ * Watches a kit's gate for its outbound controls (review spec, "The outbound
+ * gate"): asks the server as soon as the page is free, every GATE_CHECK_MS
+ * while it is shown and at once when it is shown again, one ask at a time
+ * and never while hidden, so a page drawn before the gate closed, in
+ * another tab, on the other device or brought back by Back, learns of it.
+ * Each answer goes to `settle`, none once stopped. Returns a function that
+ * stops it.
+ */
+export function watchGate<T>(
+  read: () => Promise<T>,
+  settle: (answer: T) => void,
+  page: PageHooks,
+): () => void {
+  let stopped = false;
+  let busy = false;
+
+  const ask = () => {
+    if (stopped || busy || page.hidden()) return;
+    busy = true;
+    void read()
+      .then(
+        (answer) => {
+          if (!stopped) settle(answer);
+        },
+        () => undefined,
+      )
+      .finally(() => {
+        busy = false;
+      });
+  };
+  const stopShown = page.onShown(ask);
+  const timer = setInterval(ask, GATE_CHECK_MS);
+  const first = setTimeout(ask, 0);
   return () => {
     stopped = true;
     clearTimeout(first);

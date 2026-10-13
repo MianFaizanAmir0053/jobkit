@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { JudgeOutput } from "@/core/drafting/judgeStage";
+import { NEVER_WEIGHED } from "@/core/drafting/verdict";
 import { type Agreement, agreement, type ContactKind } from "@/core/extraction/addressRead";
 import { type AddressReadOutput, contactOf } from "@/core/extraction/addressReadStage";
 import { isStrictAddress, normaliseWhatsAppNumber } from "@/core/extraction/contacts";
@@ -102,9 +103,6 @@ const NOT_CHECKED: AddressCheck = {
   message: "This address has not been checked as it stands. Check it against the post.",
 };
 
-/** A kit the separate check never weighed: each sentence counts as unsupported (drafting spec). */
-const NEVER_WEIGHED = "The separate check never weighed this sentence.";
-
 /** The stages whose outputs make a kit, so a decision made on one counts for it alone. */
 const KIT_STAGES: readonly StageName[] = [
   "extract",
@@ -179,27 +177,29 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     contact?.kind === "email" ? addressChecksOf(contact.contact, checks, read) : null;
   const ready = job.state === "kit_ready";
   const application = role ? await applicationOf(deps.db, id, role.id) : null;
-  // A kit that ran before its application opened with it is weighed against every earlier one too.
+  const hasKit = Boolean(draft && role && extraction);
+  const kitKey =
+    hasKit && role
+      ? sha256Hex(canonicalJson({ role: role.id, outputs: Object.fromEntries(outputs) }))
+      : null;
+  const decisions = kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey) : null;
+  const needsRetype = role ? needsRetypeOf(role, settled, addressChecks) : false;
+  const handoff = hasKit && role ? handoffOf(role, needsRetype, decisions ?? NO_DECISIONS) : null;
+  // A kit that ran before its application opened with it is weighed against every earlier one
+  // too, at the address it goes to.
   const duplicates = application
     ? await kitDuplicatesOf(deps.db, application.id)
     : ready && role && extraction
-      ? await unopenedDuplicates(deps.db, role, extraction)
+      ? await unopenedDuplicates(deps.db, role, extraction, handoff)
       : [];
   const kitParts =
     draft && role && extraction
       ? kitPartsOf({
           draft,
-          verdicts: judge?.checked
-            ? judge.verdicts
-            : draft.kit.blocks.map((block) => ({
-                blockId: block.id,
-                verdict: "unsupported" as const,
-                companyClaim: false,
-                note: NEVER_WEIGHED,
-              })),
+          verdicts: verdictsOf(draft, judge),
           role,
           extraction,
-          settled,
+          needsRetype,
           addressChecks,
           duplicates,
           sent:
@@ -208,11 +208,6 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
             application?.status === "bounced",
         })
       : null;
-  const kitKey =
-    kitParts && role
-      ? sha256Hex(canonicalJson({ role: role.id, outputs: Object.fromEntries(outputs) }))
-      : null;
-  const decisions = kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey) : null;
   return {
     id,
     state: job.state,
@@ -241,59 +236,99 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       ready && kitParts && decisions
         ? { decisions, gate: canHandOff(gateInputOf(kitParts, decisions)) }
         : null,
-    handoff: role && kitParts ? handoffOf(role, kitParts, decisions ?? NO_DECISIONS) : null,
+    handoff,
   };
+}
+
+/**
+ * The judge's verdict on each of the kit's sentences. One the separate
+ * check never weighed, in a kit from before it was built or with no
+ * verdict of its own, counts as unsupported (drafting spec).
+ */
+function verdictsOf(
+  draft: DraftOutput,
+  judge: JudgeOutput | PassedThrough | undefined,
+): KitParts["verdicts"] {
+  const given = judge?.checked ? judge.verdicts : [];
+  return draft.kit.blocks.map(
+    (block) =>
+      given.find((verdict) => verdict.blockId === block.id) ?? {
+        blockId: block.id,
+        verdict: "unsupported" as const,
+        companyClaim: false,
+        note: NEVER_WEIGHED,
+      },
+  );
+}
+
+/**
+ * Whether the owner must type an email or WhatsApp contact in place of the
+ * post's: when the post gave none, when it fails the strict check, when its
+ * second read did not agree or never ran, or when one of its address's
+ * checks holds it. The address the owner types is checked on its own.
+ */
+function needsRetypeOf(
+  role: Role,
+  settled: JobView["contact"],
+  addressChecks: AddressCheck[] | null,
+): boolean {
+  const { kind, address } = role.route;
+  if (kind !== "email" && kind !== "whatsapp") return false;
+  const given = address.trim();
+  const passes = kind === "email" ? isStrictAddress(given) : normaliseWhatsAppNumber(given).ok;
+  const held = (addressChecks ?? []).some((check) => check.blocking);
+  return given === "" || !passes || settled?.agreement.ok !== true || held;
 }
 
 /**
  * Where the kit goes: the post's contact, unless the kit needs the owner to
  * type one; then what they typed, once it passes the strict check.
  */
-function handoffOf(role: Role, parts: KitParts, decisions: ReviewDecisions): JobView["handoff"] {
-  if (!parts.contact) return null;
-  if (!parts.contact.needsRetype) return { to: role.route.address.trim(), typed: false };
+function handoffOf(
+  role: Role,
+  needsRetype: boolean,
+  decisions: ReviewDecisions,
+): JobView["handoff"] {
+  const { kind, address } = role.route;
+  if (kind !== "email" && kind !== "whatsapp") return null;
+  if (!needsRetype) return { to: address.trim(), typed: false };
   const typed = decisions.retyped?.value ?? "";
-  const passes =
-    parts.contact.kind === "email" ? isStrictAddress(typed) : normaliseWhatsAppNumber(typed).ok;
+  const passes = kind === "email" ? isStrictAddress(typed) : normaliseWhatsAppNumber(typed).ok;
   return { to: passes ? typed : "", typed: true };
 }
 
-/** The matches of a kit with no application yet, from what extract read; none is covered. */
+/**
+ * The matches of a kit with no application yet, from what extract read and
+ * the address it goes to, the owner's typed one included; none is covered.
+ */
 async function unopenedDuplicates(
   db: Db,
   role: Role,
   extraction: ExtractOutput,
+  handoff: JobView["handoff"],
 ): Promise<JobView["duplicates"]> {
+  const to = handoff?.typed && handoff.to !== "" ? handoff.to : role.route.address;
   const matches = await findDuplicates(db, {
     company: extraction.record.company.name,
     role: role.title,
-    address: contactForLedger(role.route.kind, role.route.address),
+    address: contactForLedger(role.route.kind, to),
     fingerprint: postFingerprint(role.requirements.map((requirement) => requirement.text)),
   });
   return matches.map((match) => ({ ...match, covered: false }));
 }
 
-/**
- * What the gate reads from a kit. An email or WhatsApp contact must be
- * typed by the owner when the post gave none, when it fails the strict
- * check, when its second read did not agree or never ran, or when one of
- * its address's checks holds it: the address the owner types is checked
- * on its own. The CV needs no tick: the page says to attach it in Gmail.
- */
+/** What the gate reads from a kit. The CV needs no tick: the page says to attach it in Gmail. */
 function kitPartsOf(parts: {
   draft: DraftOutput;
   verdicts: KitParts["verdicts"];
   role: Role;
   extraction: ExtractOutput;
-  settled: JobView["contact"];
+  needsRetype: boolean;
   addressChecks: AddressCheck[] | null;
   duplicates: JobView["duplicates"];
   sent: boolean;
 }): KitParts {
-  const { kind, address } = parts.role.route;
-  const typed = address.trim();
-  const passes = kind === "email" ? isStrictAddress(typed) : normaliseWhatsAppNumber(typed).ok;
-  const held = (parts.addressChecks ?? []).some((check) => check.blocking);
+  const { kind } = parts.role.route;
   return {
     blocks: parts.draft.kit.blocks.map((block) => block.id),
     flags: parts.draft.flags,
@@ -302,12 +337,7 @@ function kitPartsOf(parts: {
       attachment.is_cv ? [] : [{ id: `A${i + 1}`, name: attachment.name }],
     ),
     contact:
-      kind === "email" || kind === "whatsapp"
-        ? {
-            kind,
-            needsRetype: typed === "" || !passes || parts.settled?.agreement.ok !== true || held,
-          }
-        : null,
+      kind === "email" || kind === "whatsapp" ? { kind, needsRetype: parts.needsRetype } : null,
     addressChecks: parts.addressChecks ?? [],
     scamSignals: [...parts.extraction.record.scam_signals, ...parts.extraction.backstop].map(
       (signal) => signal.quote || signal.kind,
@@ -337,8 +367,8 @@ export async function decisionsOf(
   );
   const parsed = storedDecisionsSchema.safeParse(rows[0]?.decisions);
   if (!parsed.success || parsed.data.kit !== kitKey) return NO_DECISIONS;
-  const { checked, flagsChecked, retyped, attached, continueAnyway } = parsed.data;
-  return { checked, flagsChecked, retyped, attached, continueAnyway };
+  const { checked, flagsChecked, retyped, attached, continueAnyway, lookups } = parsed.data;
+  return { checked, flagsChecked, retyped, attached, continueAnyway, lookups };
 }
 
 /** The decisions as kit_reviews keeps them. */

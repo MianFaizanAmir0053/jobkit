@@ -11,6 +11,7 @@ import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { draftStage } from "@/core/drafting/draftStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
+import { passingJudge } from "@/core/drafting/testJudge";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import { pickRole } from "@/core/extraction/owner";
@@ -76,15 +77,7 @@ const pipeline = (): Pipeline =>
       extract: extractStage({ db, storage, random, models: models() }),
       eligibility: eligibilityStage({ db, clock }),
       draft: draftStage({ db, random, models: models() }),
-      judge: {
-        callsModel: false,
-        input: () => ({}),
-        run: async () => ({
-          ok: true as const,
-          output: { checked: true, verdicts: [], markers: [] },
-        }),
-        next: () => ({ state: "kit_ready" as const, pending: null }),
-      },
+      judge: passingJudge(),
     },
     { db, clock },
   );
@@ -313,6 +306,36 @@ describe("duplicates in the gate", () => {
     expect((await jobView({ db, clock }, id))!.duplicates[0]!.covered).toBe(true);
   });
 
+  it("weigh a typed address against earlier applications on a kit that ran before applications opened", async () => {
+    await sentToGlobex();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], {
+      extract: extractStage({ db, storage, random, models: models() }),
+      eligibility: eligibilityStage({ db, clock }),
+      draft: draftStage({ db, random, models: models() }),
+      judge: passingJudge(),
+    });
+    expect(await statusesOf(id)).toEqual([]);
+
+    await recordReview({ db, clock, dns: offlineDns() }, id, {
+      kind: "retype",
+      value: "hr@example.org",
+    });
+
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.duplicates).toEqual([
+      expect.objectContaining({ reason: "address", company: "Globex", covered: false }),
+    ]);
+    const applied = await applyAgainForJob(
+      { db, clock },
+      id,
+      view.duplicates.map((match) => match.key),
+      { sessionId: null },
+    );
+    expect(applied.ok && applied.gate.map((reason) => reason.kind)).not.toContain("duplicate");
+    expect(await addressOf(id)).toBe("hr@example.org");
+  });
+
   it("hold a kit that ran before applications opened with it, which Apply again then opens", async () => {
     const earlier = "33333333-3333-4333-8333-333333333333";
     await insertTestJobs(db, [earlier]);
@@ -340,15 +363,7 @@ describe("duplicates in the gate", () => {
       extract: extractStage({ db, storage, random, models: models() }),
       eligibility: eligibilityStage({ db, clock }),
       draft: draftStage({ db, random, models: models() }),
-      judge: {
-        callsModel: false,
-        input: () => ({}),
-        run: async () => ({
-          ok: true as const,
-          output: { checked: true, verdicts: [], markers: [] },
-        }),
-        next: () => ({ state: "kit_ready" as const, pending: null }),
-      },
+      judge: passingJudge(),
     });
     expect(await statusesOf(id)).toEqual([]);
 

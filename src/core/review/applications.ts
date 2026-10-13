@@ -84,10 +84,18 @@ export async function openForJob(
   );
 }
 
-/** The job reached its kit: its application, opened if need be, becomes kit_ready. */
-export async function kitReadyForJob(deps: Deps, jobId: string): Promise<void> {
-  const applicationId = await openForJob(deps, jobId, null);
-  if (applicationId) await changeStatus(deps, applicationId, "kit_ready", null);
+/**
+ * The job reached its kit: its application, opened if need be, becomes
+ * kit_ready. The session is the owner's when their tap opened it, as Apply
+ * again does on a kit from before applications opened with their jobs.
+ */
+export async function kitReadyForJob(
+  deps: Deps,
+  jobId: string,
+  sessionId: string | null = null,
+): Promise<void> {
+  const applicationId = await openForJob(deps, jobId, sessionId);
+  if (applicationId) await changeStatus(deps, applicationId, "kit_ready", sessionId);
 }
 
 /** The owner skipped the job: its application, if a role was ever chosen, is skipped. */

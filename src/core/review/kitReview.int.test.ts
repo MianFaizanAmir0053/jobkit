@@ -28,8 +28,8 @@ import { addressChecksStage } from "./addressChecksStage";
 import type { GateReason } from "./canHandOff";
 import { flagKey, NO_DECISIONS } from "./decisions";
 import { jobView } from "./jobView";
-import { recordReview } from "./kitReview";
-import { markSent } from "./markSent";
+import { applyAgainForJob, recordReview } from "./kitReview";
+import { markSent, takeBackSent } from "./markSent";
 
 /* The owner's decisions on a kit, kept with the gate they leave: review AC1 and AC4. */
 
@@ -199,6 +199,7 @@ describe("recordReview", () => {
         retyped: { value: "jobs@example.com", checks: expect.any(Array) },
         attached: [],
         continueAnyway: false,
+        lookups: expect.any(Array),
       },
       gate: typed.ok ? typed.gate : [],
     });
@@ -210,17 +211,18 @@ describe("recordReview", () => {
       draft: CITING_NOTHING,
     });
     const view = (await jobView({ db, clock }, id))!;
-    const flag = view.kitParts!.flags.find((each) => each.kind === "invalid_citation")!;
+    const place = view.kitParts!.flags.findIndex((each) => each.kind === "invalid_citation");
     const open = (gate: readonly GateReason[]) =>
-      gate.some((reason) => reason.kind === "flag" && flagKey(reason.flag) === flagKey(flag));
+      gate.some((reason) => reason.kind === "flag" && reason.flag.kind === "invalid_citation");
     expect(open(view.review!.gate)).toBe(true);
 
-    const checked = await recordReview(deps(), id, { kind: "check_flag", flag: flagKey(flag) });
+    const checked = await recordReview(deps(), id, { kind: "check_flag", flag: flagKey(place) });
 
     expect(checked.ok && open(checked.gate)).toBe(false);
-    expect(await recordReview(deps(), id, { kind: "check_flag", flag: "over_limit:body" })).toEqual(
-      { ok: false, reason: "not-in-kit" },
-    );
+    expect(await recordReview(deps(), id, { kind: "check_flag", flag: "F99" })).toEqual({
+      ok: false,
+      reason: "not-in-kit",
+    });
   });
 
   it("checks an address the owner types, which then stands in for the post's, checks and all", async () => {
@@ -246,6 +248,57 @@ describe("recordReview", () => {
       to: "jobs@northwind-careers.com",
       typed: true,
     });
+  });
+
+  it("keeps the first checks of an address typed, so typing it again while DNS fails changes nothing", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply on our site.");
+    const dead = await recordReview(deps(mailOnly([])), id, {
+      kind: "retype",
+      value: "jobs@nomail-northwind.com",
+    });
+    expect(dead.ok && kinds(dead.gate)).toEqual(["address_check", "judge"]);
+    const timingOut: Dns = { lookup: async () => ({ kind: "timeout" }) };
+
+    const again = await recordReview(deps(timingOut), id, {
+      kind: "retype",
+      value: "jobs@nomail-northwind.com",
+    });
+
+    expect(again.ok && kinds(again.gate)).toEqual(["address_check", "judge"]);
+  });
+
+  it("refuses a decision made on another kit than the one that stands", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    const { kitKey } = (await jobView({ db, clock }, id))!;
+
+    expect(
+      await recordReview(deps(), id, { kind: "check", blockId: "S1" }, { kit: "another kit" }),
+    ).toEqual({ ok: false, reason: "changed" });
+    expect(
+      await recordReview(deps(), id, { kind: "check", blockId: "S1" }, { kit: kitKey! }),
+    ).toMatchObject({ ok: true });
+    expect(await applyAgainForJob({ db, clock }, id, ["x"], { kit: "another kit" })).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+  });
+
+  it("refuses Mark sent while anything holds the kit, and takes back a mistaken tap", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toEqual({
+      ok: false,
+      reason: "held",
+    });
+    await recordReview(deps(), id, { kind: "check", blockId: "S1" });
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+
+    expect(await takeBackSent({ db, clock }, id, null)).toEqual({ ok: true });
+
+    expect(kinds((await jobView({ db, clock }, id))!.review!.gate)).toEqual([]);
+    expect(await takeBackSent({ db, clock }, id, null)).toEqual({ ok: false, reason: "not-sent" });
   });
 
   it("keeps decisions only for the kit they were made on", async () => {
@@ -303,7 +356,7 @@ describe("recordReview", () => {
       { kind: "attach", id: "A1", ticked: true },
       { kind: "continue_anyway" },
       { kind: "retype", value: "other@example.com" },
-      { kind: "check_flag", flag: "over_limit:body" },
+      { kind: "check_flag", flag: "F1" },
     ] as const) {
       expect(await recordReview(deps(), id, action), action.kind).toEqual({
         ok: false,

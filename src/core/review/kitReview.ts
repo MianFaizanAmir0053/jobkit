@@ -11,6 +11,7 @@ import type { GateReason } from "./canHandOff";
 import {
   decide,
   flagKey,
+  keptLookup,
   type KitParts,
   NO_DECISIONS,
   type ReviewAction,
@@ -21,22 +22,30 @@ import { type JobView, jobView, storedDecisions } from "./jobView";
 /**
  * Recording the owner's decisions on a ready kit (review spec, "The
  * outbound gate"): one decision at a time, checked against what the kit
- * holds, kept in the job's kit_reviews row for the kit it was made on, with
- * the gate's open reasons as they then stand. The row is locked before the
- * kit is read, so two decisions made at once are both kept, and a decision
- * made as the kit is marked sent finds it sent and is refused. An email
- * address the owner types is checked like the post's (review spec, "Stage
- * address_checks"), and when it passes, it becomes the application's, so
- * the duplicate check runs on it (ledger spec, "Duplicate check"). "Apply
- * again" goes to the ledger, which keeps it on the application, opening one
- * for a kit that ran before applications opened with their jobs.
+ * holds and refused when the page that made it showed another kit, kept in
+ * the job's kit_reviews row for the kit it was made on, with the gate's
+ * open reasons as they then stand. The row is locked before the kit is
+ * read, so two decisions made at once are both kept, and a decision made
+ * as the kit is marked sent finds it sent and is refused. An email address
+ * the owner types is checked like the post's (review spec, "Stage
+ * address_checks"), once: the checks first found for it stand. When it
+ * passes, it becomes the application's, so the duplicate check runs on it
+ * (ledger spec, "Duplicate check"). "Apply again" goes to the ledger, which
+ * keeps it on the application, opening one for a kit that ran before
+ * applications opened with their jobs.
  */
 
 export type ReviewOutcome =
   | { ok: true; decisions: ReviewDecisions; gate: GateReason[] }
-  | { ok: false; reason: "not-found" | "not-ready" | "not-in-kit" | "sent" };
+  | { ok: false; reason: "not-found" | "not-ready" | "not-in-kit" | "sent" | "changed" };
 
 type Refusal = Extract<ReviewOutcome, { ok: false }>;
+
+/** The kit the page showed, which a decision names, and the session whose tap it is. */
+export interface DecisionMade {
+  kit?: string;
+  sessionId?: string | null;
+}
 
 /** Whether the kit has a place for the decision. */
 function fits(action: ReviewAction, parts: KitParts): boolean {
@@ -46,7 +55,7 @@ function fits(action: ReviewAction, parts: KitParts): boolean {
       return parts.blocks.includes(action.blockId);
     case "check_flag":
     case "uncheck_flag":
-      return parts.flags.some((flag) => flagKey(flag) === action.flag);
+      return parts.flags.some((_, place) => flagKey(place) === action.flag);
     case "retype":
       return parts.contact?.needsRetype === true;
     case "attach":
@@ -58,12 +67,13 @@ function fits(action: ReviewAction, parts: KitParts): boolean {
 
 /**
  * Locks the job's review row, made first if need be, and reads the kit as it
- * then stands: a refusal when there is no ready kit to decide on, or it was
- * marked sent.
+ * then stands: a refusal when there is no ready kit to decide on, when the
+ * page showed another kit, or when it was marked sent.
  */
 async function lockedKit(
   deps: { db: Db; clock: Clock },
   jobId: string,
+  made: DecisionMade,
 ): Promise<{ view: JobView & { kitParts: KitParts; kitKey: string } } | Refusal> {
   const role = await chosenRole(deps.db, jobId);
   if (role) {
@@ -84,6 +94,7 @@ async function lockedKit(
   if (view.state !== "kit_ready" || !view.role || !kitParts || !kitKey) {
     return { ok: false, reason: "not-ready" };
   }
+  if (made.kit !== undefined && made.kit !== kitKey) return { ok: false, reason: "changed" };
   if (kitParts.sent) return { ok: false, reason: "sent" };
   return { view: { ...view, kitParts, kitKey } };
 }
@@ -102,21 +113,23 @@ async function keep(
     [jobId, roleId, storedDecisions(kitKey, decisions), deps.clock.now()],
   );
   const now = await jobView(deps, jobId);
-  const gate = now?.review?.gate ?? [];
+  // Under the row's lock the kit stays ready: losing it here undoes the decision, never keeps it.
+  if (!now?.review) throw new Error(`The kit of job ${jobId} was gone as its decision was kept.`);
   await deps.db.query(
     "update {{schema}}.kit_reviews set gate = $3::jsonb where job_id = $1 and role_id = $2",
-    [jobId, roleId, JSON.stringify(gate)],
+    [jobId, roleId, JSON.stringify(now.review.gate)],
   );
-  return { ok: true, decisions: now?.review?.decisions ?? decisions, gate };
+  return { ok: true, decisions: now.review.decisions, gate: now.review.gate };
 }
 
 /**
  * The checks of an email address the owner typed, made before the review
- * row is locked, since a lookup can take three seconds; none for a number,
- * or for an address that fails the strict check.
+ * row is locked, since a lookup can take three seconds: those first found
+ * for it, when it was typed before; none for a number, or for an address
+ * that fails the strict check.
  */
 async function typedChecks(
-  deps: { db: Db; dns: Dns },
+  deps: { db: Db; clock: Clock; dns: Dns },
   jobId: string,
   value: string,
 ): Promise<AddressCheck[] | null> {
@@ -124,19 +137,24 @@ async function typedChecks(
   const role = await chosenRole(deps.db, jobId);
   const extraction = await currentExtraction(deps.db, jobId);
   if (role?.route.kind !== "email" || !extraction || !isStrictAddress(typed)) return null;
-  return checkAddress(deps.dns, typed, extraction.record.company.name);
+  const decisions = (await jobView(deps, jobId))?.review?.decisions ?? NO_DECISIONS;
+  return (
+    keptLookup(decisions, typed) ??
+    (await checkAddress(deps.dns, typed, extraction.record.company.name))
+  );
 }
 
 export async function recordReview(
   deps: { db: Db; clock: Clock; dns: Dns },
   jobId: string,
   action: ReviewAction,
+  made: DecisionMade = {},
 ): Promise<ReviewOutcome> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   const checks = action.kind === "retype" ? await typedChecks(deps, jobId, action.value) : null;
   return deps.db.tx(async (tx): Promise<ReviewOutcome> => {
     const at = { db: tx, clock: deps.clock };
-    const locked = await lockedKit(at, jobId);
+    const locked = await lockedKit(at, jobId, made);
     if (!("view" in locked)) return locked;
     const { view } = locked;
     if (!fits(action, view.kitParts)) return { ok: false, reason: "not-in-kit" };
@@ -153,17 +171,20 @@ export async function recordReview(
 /**
  * "Apply again" on the duplicate banner: covers the matches the banner
  * showed, and no others (ledger spec, "Duplicate check"), then keeps the
- * gate as it now stands.
+ * gate as it now stands. A kit from before applications opened with their
+ * jobs has its application opened, by the owner's tap, at the address the
+ * kit goes to.
  */
 export async function applyAgainForJob(
   deps: { db: Db; clock: Clock },
   jobId: string,
   keys: readonly string[],
+  made: DecisionMade = {},
 ): Promise<ReviewOutcome> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   return deps.db.tx(async (tx): Promise<ReviewOutcome> => {
     const at = { db: tx, clock: deps.clock };
-    const locked = await lockedKit(at, jobId);
+    const locked = await lockedKit(at, jobId, made);
     if (!("view" in locked)) return locked;
     const { view } = locked;
     const shown = new Set(view.duplicates.map((match) => match.key));
@@ -171,10 +192,15 @@ export async function applyAgainForJob(
       return { ok: false, reason: "not-in-kit" };
     }
     const roleId = view.role!.id;
-    // A kit that ran before applications opened with their jobs: its application opens now.
-    if (!(await applicationIdOf(tx, jobId, roleId))) await kitReadyForJob(at, jobId);
+    if (!(await applicationIdOf(tx, jobId, roleId))) {
+      await kitReadyForJob(at, jobId, made.sessionId ?? null);
+    }
     const applicationId = await applicationIdOf(tx, jobId, roleId);
     if (!applicationId) return { ok: false, reason: "not-ready" };
+    const typed = view.handoff?.typed && view.handoff.to !== "" ? view.handoff.to : null;
+    const contact =
+      typed && view.kitParts.contact ? contactForLedger(view.kitParts.contact.kind, typed) : null;
+    if (contact) await setAddress(at, applicationId, contact);
     await applyAgain(at, applicationId, keys);
     return keep(at, jobId, roleId, view.kitKey, view.review?.decisions ?? NO_DECISIONS);
   });

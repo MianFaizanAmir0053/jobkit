@@ -13,10 +13,11 @@ const SETTLE_MS = 500;
 /**
  * After the Gmail handoff (review spec, "Handoffs"): "Did you send it?" with
  * Mark sent and Not yet; Mark sent then asks "Did you change anything in
- * Gmail?", with Back for a mistaken tap, since a sent kit cannot be taken
- * back yet, and the answer is recorded with the sent status (ledger spec,
- * "Factual edits"). Yes and No sit where Mark sent was, so for half a
- * second a tap on them is taken as the rest of a double tap and ignored.
+ * Gmail?", with Back for a mistaken tap, and the answer is recorded with the
+ * sent status (ledger spec, "Factual edits"). The page offers it only once
+ * nothing holds the email back. Yes and No sit where Mark sent was, so for
+ * half a second a tap on them is taken as the rest of a double tap and
+ * ignored.
  */
 export function MarkSent({ jobId }: { jobId: string }) {
   const router = useRouter();
@@ -52,7 +53,11 @@ export function MarkSent({ jobId }: { jobId: string }) {
     return (
       <p className="text-sm text-muted-foreground">
         Come back and mark it sent once you have.{" "}
-        <button type="button" className="underline" onClick={() => setStep("sent?")}>
+        <button
+          type="button"
+          className="inline-flex min-h-11 items-center underline"
+          onClick={() => setStep("sent?")}
+        >
           I have sent it
         </button>
       </p>
@@ -65,6 +70,7 @@ export function MarkSent({ jobId }: { jobId: string }) {
           <p className="text-sm">Did you send it?</p>
           <div className="flex gap-2">
             <Button
+              className="min-h-11"
               onClick={(event) => {
                 askedAt.current = event.timeStamp;
                 setStep("changed?");
@@ -72,7 +78,7 @@ export function MarkSent({ jobId }: { jobId: string }) {
             >
               Mark sent
             </Button>
-            <Button variant="outline" onClick={() => setStep("later")}>
+            <Button variant="outline" className="min-h-11" onClick={() => setStep("later")}>
               Not yet
             </Button>
           </div>
@@ -81,13 +87,23 @@ export function MarkSent({ jobId }: { jobId: string }) {
         <>
           <p className="text-sm">Did you change anything in Gmail?</p>
           <div className="flex gap-2">
-            <Button disabled={busy} onClick={(event) => answer(true, event)}>
+            <Button
+              className="min-h-11 min-w-11"
+              disabled={busy}
+              onClick={(event) => answer(true, event)}
+            >
               Yes
             </Button>
-            <Button disabled={busy} variant="outline" onClick={(event) => answer(false, event)}>
+            <Button
+              className="min-h-11 min-w-11"
+              disabled={busy}
+              variant="outline"
+              onClick={(event) => answer(false, event)}
+            >
               No
             </Button>
             <Button
+              className="min-h-11"
               disabled={busy}
               variant="ghost"
               onClick={() => {

@@ -12,11 +12,12 @@ import type { RunnerDeps } from "@/core/platform/runner";
 import type { Dns } from "@/core/ports";
 import { openForJob, skippedForJob } from "@/core/review/applications";
 import { reviewActionSchema } from "@/core/review/decisions";
+import { jobView } from "@/core/review/jobView";
 import { applyAgainForJob, recordReview } from "@/core/review/kitReview";
-import { markSent } from "@/core/review/markSent";
+import { markSent, takeBackSent } from "@/core/review/markSent";
 import { isUuid } from "@/lib/uuid";
 import type { AppConfig } from "@/server/config";
-import { NO_STORE, readLimited, refusal, sessionForChange } from "@/server/http";
+import { NO_STORE, readLimited, refusal, sessionForChange, sessionForRead } from "@/server/http";
 import { startPipeline } from "@/server/jobs";
 
 /**
@@ -144,7 +145,10 @@ export async function draftAnyway(
   return ok(202);
 }
 
-const reviewBody = z.object({ action: reviewActionSchema });
+/** The kit the page showed, which every decision names: one made on another kit is refused. */
+const kitShown = z.string().min(1).max(100);
+
+const reviewBody = z.object({ action: reviewActionSchema, kit: kitShown });
 
 /**
  * POST /api/jobs/<id>/review: one of the owner's decisions on a ready kit,
@@ -169,13 +173,19 @@ export async function review(
   }
   const parsed = reviewBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
-  const outcome = await recordReview(deps, jobId, parsed.data.action);
+  const outcome = await recordReview(deps, jobId, parsed.data.action, {
+    kit: parsed.data.kit,
+    sessionId: actor.session.id,
+  });
   if (!outcome.ok) return refusal(outcome.reason === "not-found" ? 404 : 409, outcome.reason);
   return ok(200, { gate: outcome.gate });
 }
 
 /** The keys of the matches the banner showed: every one, however many earlier kits there were. */
-const applyAgainBody = z.object({ keys: z.array(z.string().min(1).max(200)).min(1).max(500) });
+const applyAgainBody = z.object({
+  keys: z.array(z.string().min(1).max(200)).min(1).max(500),
+  kit: kitShown,
+});
 
 /**
  * POST /api/jobs/<id>/apply-again: "Apply again" on the duplicate banner,
@@ -200,9 +210,44 @@ export async function applyAgainRoute(
   }
   const parsed = applyAgainBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
-  const outcome = await applyAgainForJob(deps, jobId, parsed.data.keys);
+  const outcome = await applyAgainForJob(deps, jobId, parsed.data.keys, {
+    kit: parsed.data.kit,
+    sessionId: actor.session.id,
+  });
   if (!outcome.ok) return refusal(outcome.reason === "not-found" ? 404 : 409, outcome.reason);
   return ok(200, { gate: outcome.gate });
+}
+
+/** POST /api/jobs/<id>/take-back: takes back a mistaken Mark sent, opening the kit again. */
+export async function takeBack(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const taken = await takeBackSent(deps, jobId, actor.session.id);
+  if (!taken.ok) return refusal(taken.reason === "not-found" ? 404 : 409, taken.reason);
+  return ok();
+}
+
+/**
+ * GET /api/jobs/<id>/gate: the kit as it stands and whether its gate is
+ * open, so a page drawn earlier, in another tab or on the other device,
+ * opens its outbound controls only while the server agrees (review spec,
+ * "The outbound gate").
+ */
+export async function gate(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
+  const actor = await sessionForRead(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const view = await jobView(deps, jobId);
+  if (!view) return refusal(404, "not-found");
+  return ok(200, {
+    kit: view.kitKey,
+    open: view.review !== null && view.review.gate.length === 0,
+  });
 }
 
 const sentBody = z.object({ changedInGmail: z.boolean() });

@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { JOB_POLL, LIST_TICK_MS, type PageHooks, pollJob, refreshList } from "./polling";
+import {
+  GATE_CHECK_MS,
+  JOB_POLL,
+  LIST_TICK_MS,
+  type PageHooks,
+  pollJob,
+  refreshList,
+  watchGate,
+} from "./polling";
 
-/* Polling on the job page and the jobs list: platform spec B9, review spec "Jobs list". */
+/* Polling on the job page and the jobs list (platform spec B9, review spec "Jobs list"), and the kit's gate (review spec, "The outbound gate"). */
 
 function fakePage() {
   let hidden = false;
@@ -167,5 +175,51 @@ describe("refreshList", () => {
     show();
     expect(advance).toHaveBeenCalledTimes(2);
     stop();
+  });
+});
+
+describe("watchGate", () => {
+  it("asks the server at once, every 15 seconds while shown, and at once when shown again", async () => {
+    const { page, hide, show } = fakePage();
+    const read = vi.fn(async () => ({ kit: "K", open: true }));
+    const answers: unknown[] = [];
+
+    const stop = watchGate(read, (answer) => answers.push(answer), page);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(GATE_CHECK_MS);
+    expect(read).toHaveBeenCalledTimes(2);
+    hide();
+    await vi.advanceTimersByTimeAsync(GATE_CHECK_MS * 4);
+    expect(read).toHaveBeenCalledTimes(2);
+    show();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(answers).toEqual([
+      { kit: "K", open: true },
+      { kit: "K", open: true },
+      { kit: "K", open: true },
+    ]);
+    stop();
+  });
+
+  it("asks once at a time, and says nothing once stopped", async () => {
+    const { page, show } = fakePage();
+    const pending: ((answer: { kit: string; open: boolean }) => void)[] = [];
+    const read = vi.fn(
+      () => new Promise<{ kit: string; open: boolean }>((resolve) => pending.push(resolve)),
+    );
+    const settle = vi.fn();
+
+    const stop = watchGate(read, settle, page);
+    await vi.advanceTimersByTimeAsync(GATE_CHECK_MS * 3);
+    show();
+    expect(read).toHaveBeenCalledTimes(1);
+    stop();
+    pending[0]!({ kit: "K", open: true });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(settle).not.toHaveBeenCalled();
   });
 });
