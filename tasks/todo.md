@@ -116,6 +116,7 @@ The owner wants to try a job on the laptop as soon as possible, so the thinnest 
 
 - [ ] **Task 22: Drafting core and `validate`** — Owns: drafting AC4, AC5, AC6, AC7, AC8, AC10, AC12; extraction AC2.
   - Kit types and blocks, the keyword topic classifier, fixed answers, code-built subject, greeting and gap lines, the fit check, `validate(kit, context)` as a pure shared function; the schema-counting test extended to drafting's schemas.
+  - Topic classifier and fixed answers done (2026-10-14): `src/core/drafting/topics.ts`, the keyword table (sponsorship before work authorisation, so "without sponsorship" is a sponsorship question), the decision between the two classifiers (agree: fixed; one, or two that differ: the owner's choice, offered the keyword table's topic; addressed to AI: never answered) and each topic's answer from the profile, or "Needs your answer" with why. Left: kit types and `needs_kit_type`, and wiring the decision into `draft` (with Task 23) and the review page (Task 30).
   - Verify: `npm test`. Depends on: 14, 15. Files: src/core/drafting/{kit,topics,fit,gapLines,validate}.ts and tests. Scope: M (two commits).
 - [ ] **Task 23: `draft`** — Owns: drafting AC1, AC2, AC3.
   - Verify: `npm test` with the fake model. Depends on: 9, 10, 22. Files: src/core/drafting/{draftStage,prompts}.ts. Scope: S.

@@ -45,6 +45,8 @@ Two classifiers label every screening question with a fixed-answer topic: a keyw
 - When both classifiers give the same topic, code answers from the profile, marked "from your profile".
 - When only one gives a topic ("Have you integrated Visa payments?" trips the keyword table but not the drafter), the owner chooses on the review page: use the profile's answer, or treat it as an ordinary question to be drafted.
 - When the topic needs a parameter the question does not give or the profile does not hold (no currency, an unlisted country), the answer shows "Needs your answer" and blocks until the owner types it.
+- When the two classifiers name different topics, the owner chooses as above, offered the keyword table's topic.
+- The question gives a currency by its code or sign, a place by its name or, for a short one, its code in capitals ("UK", "UAE", never "in" or a sentence's "Do"), and a skill by the shared vocabulary. A place falls under a listed region that takes it in, and the owner's home country needs no entry: there the owner may work, with no sponsor.
 
 The model never writes the answer to a topic question.
 
