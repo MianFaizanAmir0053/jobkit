@@ -25,7 +25,8 @@
     "eval:import": "tsx scripts/eval-import.ts",
     "eval:render": "tsx scripts/eval-render.ts",
     "eval:pull": "tsx scripts/eval-pull.ts",
-    "eval:split": "tsx scripts/eval-split.ts"
+    "eval:split": "tsx scripts/eval-split.ts",
+    "eval:summary": "tsx scripts/eval-summary.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",
