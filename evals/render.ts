@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 import type { Browser, Page } from "@playwright/test";
 import { parse } from "yaml";
@@ -13,22 +13,46 @@ import { z } from "zod";
  * refused, never cut off. Everything is inline and offline, so a post
  * renders to the same bytes on every run with the same Chrome. The
  * installed Chrome updates itself, so each run's manifest records its
- * version and each image's hash, and the next run names what changed.
+ * version, each image's hash and the hash of the post it shows, and the
+ * next run names what changed; an image whose post was edited since it was
+ * rendered is vouched for by no manifest.
  */
-
-const postSchema = z.object({
-  id: z.string().min(1),
-  text: z.string().min(1),
-  render: z.object({ width: z.number().int().positive(), height: z.number().int().positive() }),
-});
-
-export type SyntheticPost = z.infer<typeof postSchema>;
 
 /** CSS pixels across a phone's screen. */
 const PHONE_WIDTH = 360;
 
+const postSchema = z
+  .object({
+    id: z.string().min(1),
+    text: z.string().min(1),
+    render: z.object({ width: z.number().int().positive(), height: z.number().int().positive() }),
+  })
+  .superRefine(({ id, render: { width, height } }, ctx) => {
+    // A whole number of device pixels to each CSS pixel, and a height they divide: else the
+    // page's height is rounded, and the image is drawn at another height than the post gives.
+    if (width % PHONE_WIDTH !== 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["render", "width"],
+        message: `${id}'s render width ${width} is not a multiple of ${PHONE_WIDTH}.`,
+      });
+    } else if (height % (width / PHONE_WIDTH) !== 0) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["render", "height"],
+        message: `${id}'s render height ${height} is not a multiple of ${width / PHONE_WIDTH}.`,
+      });
+    }
+  });
+
+export type SyntheticPost = z.infer<typeof postSchema>;
+
 export function loadSyntheticPosts(file: string): SyntheticPost[] {
-  return z.array(postSchema).parse(parse(readFileSync(file, "utf8")));
+  const parsed = z.array(postSchema).safeParse(parse(readFileSync(file, "utf8")));
+  if (!parsed.success) {
+    throw new Error(`${file}: ${parsed.error.issues.map((issue) => issue.message).join(" ")}`);
+  }
+  return parsed.data;
 }
 
 function escapeHtml(text: string): string {
@@ -136,35 +160,61 @@ export async function renderPost(browser: Browser, post: SyntheticPost): Promise
   });
 }
 
-/** What a render run made: the browser's version and each image's SHA-256. */
+const sha256 = (data: Uint8Array | string) => createHash("sha256").update(data).digest("hex");
+
+/**
+ * What a post's image shows: the SHA-256 of its page and its render size,
+ * so an edit to its text, or to the page around it, is a new source.
+ */
+export function sourceOf(post: SyntheticPost): string {
+  return sha256(JSON.stringify([postHtml(post), post.render.width, post.render.height]));
+}
+
+/** What a render run made: the browser's version, and each image's SHA-256 and its post's source. */
 export interface RenderManifest {
   browser: string;
   images: Record<string, string>;
+  sources: Record<string, string>;
 }
 
 export const manifestSchema = z.object({
   browser: z.string(),
   images: z.record(z.string(), z.string()),
+  sources: z.record(z.string(), z.string()),
 });
+
+const byName = <T>(entries: Record<string, T>) =>
+  Object.entries(entries).sort(([a], [b]) => a.localeCompare(b));
 
 export function manifestOf(
   browser: string,
-  images: Readonly<Record<string, Uint8Array>>,
+  renders: Readonly<Record<string, { bytes: Uint8Array; source: string }>>,
 ): RenderManifest {
   return {
     browser,
-    images: Object.fromEntries(
-      Object.entries(images)
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([name, bytes]) => [name, createHash("sha256").update(bytes).digest("hex")]),
-    ),
+    images: Object.fromEntries(byName(renders).map(([name, { bytes }]) => [name, sha256(bytes)])),
+    sources: Object.fromEntries(byName(renders).map(([name, { source }]) => [name, source])),
   };
 }
 
-/** What differs from the last run's renders: images whose bytes changed, and the browser, if it did. */
+/** The manifest a run left; null with none, and a stop naming the file when it cannot be read. */
+export function readManifest(file: string): RenderManifest | null {
+  if (!existsSync(file)) return null;
+  try {
+    return manifestSchema.parse(JSON.parse(readFileSync(file, "utf8")));
+  } catch {
+    throw new Error(`${file} cannot be read: run npm run eval:render again.`);
+  }
+}
+
+/**
+ * What differs from the last run's renders: images whose bytes changed, or
+ * whose posts were edited, and the browser, if it changed.
+ */
 export function changedRenders(previous: RenderManifest | null, current: RenderManifest) {
   const before = previous?.images ?? {};
   const now = current.images;
+  const sources = previous?.sources ?? {};
   const names = (images: Record<string, string>) => Object.keys(images).sort();
   return {
     browser:
@@ -174,5 +224,34 @@ export function changedRenders(previous: RenderManifest | null, current: RenderM
     changed: names(now).filter((name) => Object.hasOwn(before, name) && before[name] !== now[name]),
     added: names(now).filter((name) => !Object.hasOwn(before, name)),
     removed: names(before).filter((name) => !Object.hasOwn(now, name)),
+    edited: names(now).filter(
+      (name) => Object.hasOwn(sources, name) && sources[name] !== current.sources[name],
+    ),
   };
+}
+
+/**
+ * Why the manifest does not vouch for the images of these posts, as the
+ * runner needs before it scores them: an image missing, one whose bytes are
+ * not those rendered, or one rendered from a post since edited. None when
+ * it vouches for all.
+ */
+export function checkRenders(
+  posts: readonly SyntheticPost[],
+  manifest: RenderManifest,
+  imageOf: (name: string) => Uint8Array | null,
+): string[] {
+  const problems: string[] = [];
+  for (const post of posts) {
+    const name = `${post.id}.png`;
+    const bytes = imageOf(name);
+    if (!bytes || !Object.hasOwn(manifest.images, name)) {
+      problems.push(`${name} has not been rendered: run npm run eval:render.`);
+    } else if (manifest.sources[name] !== sourceOf(post)) {
+      problems.push(`${name} shows its post as it was before an edit: run npm run eval:render.`);
+    } else if (manifest.images[name] !== sha256(bytes)) {
+      problems.push(`${name} is not the image the last render made: run npm run eval:render.`);
+    }
+  }
+  return problems;
 }
