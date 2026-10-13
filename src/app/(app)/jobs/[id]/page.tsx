@@ -313,7 +313,7 @@ function KitPanel({
     .filter((step) => step.status === "not_checked")
     .map((step) => step.label.toLowerCase());
   // The second read and the address checks: either one blocking keeps the address out of Gmail.
-  const noun = view.contact?.kind === "whatsapp" ? "number" : "address";
+  const noun = role.route.kind === "whatsapp" ? "number" : "address";
   const disputed =
     view.contact && !view.contact.agreement.ok
       ? contactWords(view.contact.agreement.reason, noun)
@@ -389,7 +389,7 @@ function KitPanel({
                 {check.message}
               </p>
             ))}
-            {view.contact?.agreement.ok && (
+            {view.contact?.agreement.ok && blocking.length === 0 && (!byEmail || strict) && (
               <p className="mt-1 text-muted-foreground">Read a second time: it matches.</p>
             )}
           </dd>

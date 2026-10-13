@@ -115,10 +115,17 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     draftedAnyway: await draftedAnyway(deps.db, id),
     draft: draft ?? null,
     judge: judge?.checked ? judge : null,
-    // Settled against the contact as it stands now, so a read of another one never passes it.
+    // Settled against the contact as it stands now: a read made for another contact is no second
+    // read of this one, and blocks it as a missing read does.
     contact:
-      read?.checked && contact && read.kind === contact.kind
-        ? { kind: contact.kind, agreement: agreement(contact.kind, contact.contact, read.second) }
+      read?.checked && contact
+        ? {
+            kind: contact.kind,
+            agreement:
+              read.kind === contact.kind && read.contact === contact.contact
+                ? agreement(contact.kind, contact.contact, read.second)
+                : { ok: false, reason: "no_second_read" },
+          }
         : null,
     addressChecks:
       checks?.checked && contact?.kind === "email" && checks.address === contact.contact.trim()

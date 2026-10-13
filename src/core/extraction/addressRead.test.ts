@@ -74,6 +74,10 @@ describe("inPastedText", () => {
     expect(inPastedText("whatsapp", "98765 43210", "Call 98765 43210")).toBe(false);
   });
 
+  it("finds a number followed by more digits in brackets", () => {
+    expect(inPastedText("whatsapp", "0300 1234567", "WhatsApp 0300-1234567 (9am-5pm)")).toBe(true);
+  });
+
   it("finds an empty contact nowhere", () => {
     expect(inPastedText("email", " ", post)).toBe(false);
     expect(inPastedText("whatsapp", "", post)).toBe(false);

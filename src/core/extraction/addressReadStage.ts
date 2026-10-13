@@ -26,9 +26,12 @@ import type { Role } from "./record";
  * settled by `agreement` wherever it is needed.
  *
  * A read that cannot happen is never a failed job: a box that does not fit
- * its screenshot, a crop that cannot be made, a model call that fails, or
- * no Gemini key on this machine each leave the second read missing, which
- * blocks the contact until the owner retypes it.
+ * its screenshot, a screenshot storage cannot give, a crop that cannot be
+ * made, a model call that fails or throws, an answer that is not storable
+ * text, or no Gemini key on this machine each leave the second read
+ * missing, which blocks the contact until the owner retypes it. A crop
+ * that cannot be stored is still read. The output names the contact it
+ * was for, so a read is never taken for another contact.
  */
 
 export const ADDRESS_READ = {
@@ -46,7 +49,17 @@ Copy the contact the request names exactly as the image writes it, character by 
 /** How the user turn is laid out; raise it when readContent changes. */
 const LAYOUT_VERSION = 1;
 
-export const contactReadSchema = z.strictObject({ contact: z.string() });
+/** Raise it when crop.ts changes how a crop is cut, so a read of the old crop is not reused. */
+const CROP_VERSION = 1;
+
+const NUL = String.fromCharCode(0);
+
+/** The second model's answer: text a database can store, with no NUL and no lone surrogate. */
+export const contactReadSchema = z.strictObject({
+  contact: z
+    .string()
+    .refine((text) => !text.includes(NUL) && text.isWellFormed(), "is not text that can be kept"),
+});
 
 // The rules, the layout, the schema and the crop's own rules, so a change to any reads again.
 const PROMPT = sha256Hex(
@@ -54,37 +67,41 @@ const PROMPT = sha256Hex(
     rules: ADDRESS_READ_RULES,
     layout: LAYOUT_VERSION,
     schema: z.toJSONSchema(contactReadSchema),
-    crop: CROP,
+    crop: { ...CROP, version: CROP_VERSION },
   }),
 );
 
 export const CHANGED_POST = "The post changed while its contact was being read. It is read again.";
-export const UNREAD_SCREENSHOT = "A screenshot could not be read from storage just now.";
-export const CROP_NOT_STORED = "The contact's crop could not be stored just now.";
 
 /**
  * B9: the crop's hash, the model and the prompt. The crop is made from the
  * screenshot, the box and the crop's rules alone, so those stand for it
- * here and nothing is read from storage before the stage runs. A contact
- * from pasted text is checked against the text's hash.
+ * here and nothing is read from storage before the stage runs. Whether
+ * this machine has the model is part of it, so a read missed for want of a
+ * key happens once the key is set. A contact from pasted text is checked
+ * against the text's hash. Each names the contact, which the output is for.
  */
 type AddressReadInput =
   | {
       from: "crop";
       kind: ContactKind;
+      contact: string;
       image: string;
       position: number;
       box: ImageBox;
       model: string;
+      available: boolean;
       effort: Effort;
       prompt: string;
     }
   | { from: "pasted"; kind: ContactKind; contact: string; text: string }
-  | { from: "nothing"; kind: ContactKind };
+  | { from: "nothing"; kind: ContactKind; contact: string };
 
 export interface AddressReadOutput {
   checked: true;
   kind: ContactKind;
+  /** The contact this read was for. */
+  contact: string;
   second: SecondRead;
   /** Where the crop is stored, for the review page; null without one. */
   cropPath: string | null;
@@ -132,10 +149,12 @@ export function addressReadStage(deps: AddressReadDeps): StageDefinition {
         return {
           from: "crop",
           kind: found.kind,
+          contact: found.contact,
           image: image.sha256,
           position: box.image,
           box,
           model: ADDRESS_READ.model,
+          available: hasModel(deps.models, ADDRESS_READ.model),
           effort: ADDRESS_READ.effort,
           prompt: PROMPT,
         };
@@ -144,7 +163,7 @@ export function addressReadStage(deps: AddressReadDeps): StageDefinition {
       if (text.trim() !== "") {
         return { from: "pasted", kind: found.kind, contact: found.contact, text: sha256Hex(text) };
       }
-      return { from: "nothing", kind: found.kind };
+      return { from: "nothing", kind: found.kind, contact: found.contact };
     },
 
     async run(ctx, raw): Promise<StageResult> {
@@ -153,6 +172,7 @@ export function addressReadStage(deps: AddressReadDeps): StageDefinition {
         const output: AddressReadOutput = {
           checked: true,
           kind: input.kind,
+          contact: input.contact,
           second,
           cropPath,
           markers,
@@ -169,42 +189,62 @@ export function addressReadStage(deps: AddressReadDeps): StageDefinition {
 
       const image = (await postImages(deps.db, ctx.job.id))[input.position];
       if (image?.sha256 !== input.image) return { ok: false, reason: CHANGED_POST, retry: true };
-      let bytes: Uint8Array | null;
-      try {
-        bytes = await deps.storage.get(image.storagePath);
-      } catch {
-        return { ok: false, reason: UNREAD_SCREENSHOT, retry: true };
-      }
+      const bytes = await getTwice(() => deps.storage.get(image.storagePath));
       const crop =
         bytes && hashOf(bytes) === input.image ? await cropContact(bytes, input.box) : null;
       if (!crop) return done({ problem: "no_crop" });
-      const cropPath = `jobs/${ctx.job.id}/crops/${hashOf(crop)}.png`;
+      // The read needs the crop's bytes, not a stored copy: one that cannot be stored is still read.
+      let cropPath: string | null = `jobs/${ctx.job.id}/crops/${hashOf(crop)}.png`;
       try {
         await deps.storage.put(cropPath, crop, "image/png", { overwrite: true });
       } catch {
-        return { ok: false, reason: CROP_NOT_STORED, retry: true };
+        cropPath = null;
       }
 
       // No Gemini key here: no second read, which the owner settles by retyping the contact.
-      try {
-        deps.models.llmFor(input.model);
-      } catch {
-        return done({ read: null }, cropPath);
-      }
+      if (!input.available) return done({ read: null }, cropPath);
       const marker = Buffer.from(deps.random.bytes(16)).toString("hex");
-      const called = await callModel(deps.models, {
-        stage: "address_read",
-        jobId: ctx.job.id,
-        model: input.model,
-        system: ADDRESS_READ_RULES,
-        content: readContent(input.kind, crop, marker),
-        schema: contactReadSchema,
-        effort: input.effort,
-        maxTokens: ADDRESS_READ.maxTokens,
-      });
-      return done({ read: called.ok ? called.output.contact : null }, cropPath, [marker]);
+      let read: string | null = null;
+      try {
+        const called = await callModel(deps.models, {
+          stage: "address_read",
+          jobId: ctx.job.id,
+          model: input.model,
+          system: ADDRESS_READ_RULES,
+          content: readContent(input.kind, crop, marker),
+          schema: contactReadSchema,
+          effort: input.effort,
+          maxTokens: ADDRESS_READ.maxTokens,
+        });
+        if (called.ok) read = called.output.contact;
+      } catch {
+        // A call that throws (a provider's own error, a model that would not load) is a read that did not happen.
+      }
+      return done({ read }, cropPath, [marker]);
     },
   };
+}
+
+/** Whether this machine has the model: a missing key throws when the model is asked for. */
+function hasModel(models: ModelCallDeps, model: string): boolean {
+  try {
+    models.llmFor(model);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** A storage read, tried once more after a passing failure; null when it fails twice. */
+async function getTwice(read: () => Promise<Uint8Array | null>): Promise<Uint8Array | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await read();
+    } catch {
+      // Try once more.
+    }
+  }
+  return null;
 }
 
 function hashOf(bytes: Uint8Array): string {

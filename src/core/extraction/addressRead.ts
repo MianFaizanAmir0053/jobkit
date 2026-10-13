@@ -59,10 +59,22 @@ export function inPastedText(kind: ContactKind, contact: string, text: string): 
   if (kind === "email") return holdsWhole(text, wanted);
   const number = normaliseWhatsAppNumber(wanted);
   if (!number.ok) return false;
-  return [...text.matchAll(NUMBER_RUN)].some(([run]) => {
-    const found = normaliseWhatsAppNumber(run);
-    return found.ok && found.number === number.number;
-  });
+  // A run can carry what follows the number ("0300-1234567 (9am"), so it is tried at every length.
+  return [...text.matchAll(NUMBER_RUN)].some(([run]) =>
+    endingsOnDigits(run).some((candidate) => {
+      const found = normaliseWhatsAppNumber(candidate);
+      return found.ok && found.number === number.number;
+    }),
+  );
+}
+
+/** A run cut after each of its digits, longest first. */
+function endingsOnDigits(run: string): string[] {
+  const endings: string[] = [];
+  for (let end = run.length; end > 0; end--) {
+    if (/\d/.test(run[end - 1]!)) endings.push(run.slice(0, end));
+  }
+  return endings;
 }
 
 /** Whether `address` stands in `text` as a whole address: "jobs@x.com" is not in "xjobs@x.com.uk". */

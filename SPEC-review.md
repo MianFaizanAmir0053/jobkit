@@ -59,7 +59,7 @@ Runs for email routes in the `drafting` group, and again whenever the owner edit
 - **Syntax:** the strict address check (extraction spec). Failure is blocking.
 - **Mail host:** MX records for the domain. With no MX, an A or AAAA record counts as the implicit MX of RFC 5321. A null MX (a single MX record pointing to ".", RFC 7505) or no records at all is blocking. A DNS timeout (3 seconds) gives "Couldn't check the mail server", a warning.
 - **Free-mail domain** (gmail.com, googlemail.com, yahoo.*, outlook.com, hotmail.*, live.com, icloud.com, proton.me, protonmail.com, aol.com, gmx.*, yandex.*, mail.com, rediffmail.com): warning, "A personal address, not a company one."
-- **Company mismatch:** the registrable domain's label (`tldts`) compared with the normalised company name, ignoring hyphens and words such as "careers", "jobs", "hr" and "recruitment". No overlap gives a warning, never a block, because agencies and parent companies are common.
+- **Company mismatch:** the registrable domain's label (`tldts`) compared with the normalised company name, ignoring hyphens and words such as "careers", "jobs", "hr" and "recruitment". No overlap gives a warning, never a block, because agencies and parent companies are common; a domain made only of such words ("careers-hiring.com") names no company and warns too.
 
 There is no domain-age check (amendment A5).
 

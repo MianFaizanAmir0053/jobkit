@@ -21,7 +21,7 @@ import {
   type StageDefinition,
   stageOutput,
 } from "@/core/platform/runner";
-import type { Random } from "@/core/ports";
+import type { Random, Storage } from "@/core/ports";
 import { createTestDb } from "@/server/db/testDb";
 
 import { agreement } from "./addressRead";
@@ -84,7 +84,8 @@ function passing(next: ReturnType<NonNullable<StageDefinition["next"]>>): StageD
   };
 }
 
-function pipeline(gemini: "set" | "missing" = "set"): Pipeline {
+/** The pipeline, the second read's storage given apart so a test can break it alone. */
+function pipeline(gemini: "set" | "missing" = "set", readStorage: Storage = storage): Pipeline {
   return {
     extract: extractStage({ db, storage, random, models: models(gemini) }),
     eligibility: passing({ state: "drafting", pending: "draft" }),
@@ -93,7 +94,7 @@ function pipeline(gemini: "set" | "missing" = "set"): Pipeline {
       alongside: () => ["address_read"],
     },
     judge: passing({ state: "kit_ready", pending: null }),
-    address_read: addressReadStage({ db, storage, random, models: models(gemini) }),
+    address_read: addressReadStage({ db, storage: readStorage, random, models: models(gemini) }),
   };
 }
 
@@ -152,8 +153,12 @@ async function queuedJob(images: readonly Uint8Array[], pastedText = ""): Promis
   return started.jobId;
 }
 
-async function run(id: string, gemini: "set" | "missing" = "set"): Promise<void> {
-  const deps = { db, clock, pipeline: pipeline(gemini) };
+async function run(
+  id: string,
+  gemini: "set" | "missing" = "set",
+  readStorage: Storage = storage,
+): Promise<void> {
+  const deps = { db, clock, pipeline: pipeline(gemini, readStorage) };
   const lease = await claimJob(deps, id);
   if (!lease) throw new Error("not claimed");
   await runJob(deps, lease);
@@ -208,6 +213,7 @@ describe("address_read from a screenshot", () => {
     expect(read).toMatchObject({
       checked: true,
       kind: "email",
+      contact: "jobs@example.com",
       second: { read: "jobs@example.com" },
     });
     expect(agreement("email", "jobs@example.com", read.second)).toEqual({ ok: true });
@@ -260,6 +266,75 @@ describe("address_read from a screenshot", () => {
     expect(read.second).toEqual({ read: null });
     expect(await storage.get(read.cropPath!)).not.toBeNull();
     expect(llm.calls).toHaveLength(1);
+  });
+
+  it("leaves the read missing when the call throws, or answers what cannot be kept", async () => {
+    const thrown = await queuedJob([await png(800, 600)]);
+    llm = fakeLlm([
+      answer(withBox(box)),
+      () => {
+        throw new Error("the provider's own error");
+      },
+    ]);
+    await run(thrown);
+
+    expect((await loadJob(db, thrown))?.state).toBe("kit_ready");
+    expect((await readOf(thrown)).second).toEqual({ read: null });
+
+    const nul = String.fromCharCode(0);
+    const unkeepable = await queuedJob([await png(800, 600)]);
+    llm = fakeLlm([
+      answer(withBox(box)),
+      answer({ contact: `jobs${nul}@example.com` }),
+      answer({ contact: `jobs${nul}@example.com` }),
+    ]);
+    await run(unkeepable);
+
+    expect((await loadJob(db, unkeepable))?.state).toBe("kit_ready");
+    expect((await readOf(unkeepable)).second).toEqual({ read: null });
+  });
+
+  it("reads a crop that cannot be stored, and has none for a screenshot storage cannot give", async () => {
+    const full: Storage = {
+      ...storage,
+      put: async () => {
+        throw new Error("over quota");
+      },
+    };
+    const unstored = await queuedJob([await png(800, 600)]);
+    llm = fakeLlm([answer(withBox(box)), answer({ contact: "jobs@example.com" })]);
+    await run(unstored, "set", full);
+
+    expect(await readOf(unstored)).toMatchObject({
+      second: { read: "jobs@example.com" },
+      cropPath: null,
+    });
+
+    const down: Storage = {
+      ...storage,
+      get: async () => {
+        throw new Error("storage is down");
+      },
+    };
+    const unread = await queuedJob([await png(800, 600)]);
+    llm = fakeLlm([answer(withBox(box))]);
+    await run(unread, "set", down);
+
+    expect((await loadJob(db, unread))?.state).toBe("kit_ready");
+    expect((await readOf(unread)).second).toEqual({ problem: "no_crop" });
+  });
+
+  it("reads again once this machine has a Gemini key", async () => {
+    const id = await queuedJob([await png(800, 600)]);
+    llm = fakeLlm([answer(withBox(box))]);
+    await run(id, "missing");
+    const job = (await loadJob(db, id))!;
+    const ctx = { job, outputOf: (stage: "extract") => stageOutput(db, id, stage) };
+    const inputWith = (gemini: "set" | "missing") =>
+      addressReadStage({ db, storage, random, models: models(gemini) }).input(ctx);
+
+    expect(await inputWith("missing")).toMatchObject({ available: false });
+    expect(await inputWith("set")).toMatchObject({ available: true });
   });
 
   it("has no crop to read for a box that does not fit its screenshot", async () => {

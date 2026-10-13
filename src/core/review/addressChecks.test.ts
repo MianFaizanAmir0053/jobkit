@@ -46,9 +46,9 @@ describe("mailHostOf", () => {
     expect(await mailHostOf(fakeDns({ "acme.com MX": { kind: "timeout" } }), "acme.com")).toBe(
       "unchecked",
     );
-    expect(
-      await mailHostOf(fakeDns({ "acme.com A": { kind: "failed" } }), "acme.com"),
-    ).toBe("unchecked");
+    expect(await mailHostOf(fakeDns({ "acme.com A": { kind: "failed" } }), "acme.com")).toBe(
+      "unchecked",
+    );
   });
 });
 
@@ -91,9 +91,9 @@ describe("checkAddress", () => {
       ["free_mail", "warns"],
     ]);
     const agency = fakeDns({ "talentbridge.io MX": records("mx.talentbridge.io") });
-    expect(kinds(await checkAddress(agency, "jobs@talentbridge.io", "Northwind Analytics"))).toEqual(
-      [["company", "warns"]],
-    );
+    expect(
+      kinds(await checkAddress(agency, "jobs@talentbridge.io", "Northwind Analytics")),
+    ).toEqual([["company", "warns"]]);
   });
 
   it("asks the DNS about the address's own domain", async () => {
@@ -116,6 +116,11 @@ describe("companyMatches", () => {
   it("does not match an agency's or another company's domain", () => {
     expect(companyMatches("talentbridge.io", "Northwind Analytics")).toBe(false);
     expect(companyMatches("hrsolutions.com", "Northwind")).toBe(false);
+  });
+
+  it("does not match a domain made only of recruiting words", () => {
+    expect(companyMatches("careers-hiring.com", "Acme")).toBe(false);
+    expect(companyMatches("jobs.com", "Acme")).toBe(false);
   });
 
   it("matches anything when the post names no company, since there is nothing to compare", () => {

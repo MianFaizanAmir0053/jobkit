@@ -237,6 +237,30 @@ describe("jobView", () => {
     });
   });
 
+  it("takes a read made for another contact as no second read of this one", async () => {
+    await seedSample();
+    const stages = pipeline();
+    const beside: Pipeline = {
+      ...stages,
+      draft: { ...stages.draft, alongside: () => ["address_read"] },
+      address_read: addressReadStage({ db, storage, random, models: models() }),
+    };
+    const id = await pasted("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], beside);
+    // As if the role, or its contact, had changed since the read.
+    await db.query(
+      `update {{schema}}.job_stage_runs
+          set output = jsonb_set(output, '{contact}', '"someone@else.example"')
+        where job_id = $1 and stage = 'address_read'`,
+      [id],
+    );
+
+    expect((await jobView({ db, clock }, id))?.contact).toEqual({
+      kind: "email",
+      agreement: { ok: false, reason: "no_second_read" },
+    });
+  });
+
   it("has no second read for a job whose read never ran", async () => {
     await seedSample();
     const id = await pasted();

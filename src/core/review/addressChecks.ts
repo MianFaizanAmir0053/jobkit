@@ -132,12 +132,14 @@ function wordsOf(name: string): string[] {
  * Whether a domain's name overlaps the company's: one holds a word of the
  * other's three letters or more, they are the same once joined, or the
  * domain is the name's initials ("ibm.com"). A post that names no company
- * leaves nothing to compare, so it matches.
+ * leaves nothing to compare, so it matches; a domain made only of
+ * recruiting words ("careers-hiring.com") names none, so it does not.
  */
 export function companyMatches(domain: string, company: string): boolean {
   const words = wordsOf(company).filter((word) => !NAME_FILLER.has(word));
   const label = labelOf(domain);
-  if (words.length === 0 || label === "") return true;
+  if (words.length === 0) return true;
+  if (label === "") return false;
   const joined = words.join("");
   const initials = words.map((word) => word[0]).join("");
   return (
