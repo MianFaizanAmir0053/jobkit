@@ -5,11 +5,15 @@ import { NextResponse, type NextRequest } from "next/server";
 import {
   adoptScreenshot,
   archiveFile,
+  CaseChanged,
   dismissCase,
+  LabelsRefused,
   labelsSchema,
   NoCase,
   saveLabels,
+  shownSchema,
 } from "../../evals/cases";
+import { styleExamplesOf } from "../../evals/import";
 import type { Clock, Db } from "@/core/ports";
 import { type AppConfig, appConfig } from "@/server/config";
 import type { Container } from "@/server/container";
@@ -43,6 +47,8 @@ export interface LabellingDeps {
   /** Whether this server may answer at all: labellingAllowed. */
   allowed: boolean;
   archive: string;
+  /** The profile file whose style examples leave a case out. */
+  profile: string;
 }
 
 export function labellingDeps(container: Container): LabellingDeps {
@@ -52,6 +58,7 @@ export function labellingDeps(container: Container): LabellingDeps {
     config: appConfig(),
     allowed: labellingAllowed(process.env, container.kind),
     archive: ARCHIVE,
+    profile: PROFILE,
   };
 }
 
@@ -83,14 +90,27 @@ export async function postLabels(
   if (!actor.ok) return actor.response;
   const body = await jsonBody(request, 64 * 1024);
   if (body === "too-large") return refusal(413, "too-large");
-  const labels = labelsSchema.safeParse(body);
+  // The labels, and what the page showed of the case, which they must record.
+  const sent = (body ?? {}) as { labels?: unknown; shown?: unknown };
+  const labels = labelsSchema.safeParse(sent.labels);
   if (!labels.success) {
     const fields = [...new Set(labels.error.issues.map((issue) => String(issue.path[0] ?? "")))];
     return refusal(400, "bad-labels", { fields });
   }
+  const shown = shownSchema.safeParse(sent.shown);
+  if (!shown.success) return refusal(400, "bad-request");
   try {
-    saveLabels(deps.archive, caseId, labels.data, deps.clock.now());
+    await saveLabels(
+      deps.archive,
+      caseId,
+      { labels: labels.data, shown: shown.data, at: deps.clock.now() },
+      { styleExamples: styleExamplesOf(deps.profile).examples },
+    );
   } catch (error) {
+    if (error instanceof LabelsRefused) {
+      return refusal(400, "bad-labels", { fields: error.fields });
+    }
+    if (error instanceof CaseChanged) return refusal(409, "changed");
     return failed(error);
   }
   return NextResponse.json({ saved: true }, { headers: NO_STORE });

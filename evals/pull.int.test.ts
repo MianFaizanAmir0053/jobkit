@@ -242,6 +242,23 @@ describe("pullKeptJobs", () => {
     ]);
   });
 
+  it("says when a case's crop was replaced, since a crop answer judged the one before", async () => {
+    const jobId = await jobWith([await png(10)]);
+    await readWithCrop(jobId, await png(150));
+    await keep(jobId);
+    const archive = join(root, "archive");
+    await pullKeptJobs({ db, storage }, archive);
+    // Read again, with another crop, and kept again.
+    await readWithCrop(jobId, await png(160));
+    await keep(jobId);
+
+    const second = await pullKeptJobs({ db, storage }, archive);
+
+    expect(second.notes).toEqual([
+      `live-2026-10-06-${jobId.slice(0, 8)}: its crop was replaced by the one the job now holds, so answer the crop question on its page again.`,
+    ]);
+  });
+
   it("copies the stored crop of the contact and the pasted text with the images", async () => {
     const crop = await png(150);
     const jobId = await jobWith([await png(10)], "Apply at jobs@example.com");

@@ -38,6 +38,7 @@ const LABELS: Labels = {
   eligibility: "eligible",
   must: [],
   cropShowsContact: null,
+  seenInJobkit: false,
 };
 
 let dir: string;

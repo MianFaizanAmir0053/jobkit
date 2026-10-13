@@ -38,14 +38,26 @@ const LABELS = {
   contact: "jobs@northwind.example",
   eligibility: "eligible",
   must: ["4+ years with React"],
-  cropShowsContact: true,
+  cropShowsContact: null,
+  seenInJobkit: false,
 };
+
+/** What the case page showed of a case with no split, no pre-labels and no crop. */
+const SHOWN = { split: null, prelabelsSha256: null, cropSha256: null };
+const BODY = { labels: LABELS, shown: SHOWN };
 
 let db: PgliteDb;
 let clock: FakeClock;
 let archive: string;
 
-const deps = (allowed = true): LabellingDeps => ({ db, clock, config, allowed, archive });
+const deps = (allowed = true): LabellingDeps => ({
+  db,
+  clock,
+  config,
+  allowed,
+  archive,
+  profile: join(archive, "profile.yaml"),
+});
 
 async function signedIn(kind: "google" | "paired" = "google"): Promise<string> {
   const { token } = await issueSession(
@@ -83,6 +95,10 @@ beforeEach(() => {
   archive = mkdtempSync(join(tmpdir(), "jobkit-labelling-"));
   mkdirSync(join(archive, CASE));
   writeFileSync(join(archive, CASE, "email.eml"), "Subject: Application\r\n\r\nHello");
+  writeFileSync(
+    join(archive, "import.json"),
+    JSON.stringify({ jobkitFrom: "2099-01-01T00:00:00.000Z" }),
+  );
   mkdirSync(join(archive, "_screenshots"));
   writeFileSync(join(archive, "_screenshots", "Screenshot_20260314-101500.png"), "image");
 });
@@ -104,9 +120,9 @@ describe("the labelling routes", () => {
   it("are not there at all where labelling is not allowed", async () => {
     const cookie = await signedIn();
 
-    expect(
-      (await postLabels(request("POST", "/x", cookie, LABELS), deps(false), CASE)).status,
-    ).toBe(404);
+    expect((await postLabels(request("POST", "/x", cookie, BODY), deps(false), CASE)).status).toBe(
+      404,
+    );
     expect(
       (await postAdopt(request("POST", "/x", cookie, { file: "a.png" }), deps(false), CASE)).status,
     ).toBe(404);
@@ -116,7 +132,7 @@ describe("the labelling routes", () => {
   });
 
   it("answer only the laptop's own session", async () => {
-    expect((await postLabels(request("POST", "/x", undefined, LABELS), deps(), CASE)).status).toBe(
+    expect((await postLabels(request("POST", "/x", undefined, BODY), deps(), CASE)).status).toBe(
       401,
     );
     const phone = await signedIn("paired");
@@ -132,7 +148,7 @@ describe("the labelling routes", () => {
   it("save a case's labels, refusing ones that do not fit and cases that do not exist", async () => {
     const cookie = await signedIn();
 
-    const saved = await postLabels(request("POST", "/x", cookie, LABELS), deps(), CASE);
+    const saved = await postLabels(request("POST", "/x", cookie, BODY), deps(), CASE);
 
     expect(saved.status).toBe(200);
     expect(JSON.parse(readFileSync(join(archive, CASE, "labels.json"), "utf8"))).toMatchObject({
@@ -140,16 +156,42 @@ describe("the labelling routes", () => {
       labelledAt: "2026-10-06T09:00:00.000Z",
     });
     const unfit = await postLabels(
-      request("POST", "/x", cookie, { ...LABELS, route: "fax", company: 7 }),
+      request("POST", "/x", cookie, {
+        labels: { ...LABELS, route: "fax", company: 7 },
+        shown: SHOWN,
+      }),
       deps(),
       CASE,
     );
     expect(unfit.status).toBe(400);
     expect(await unfit.json()).toEqual({ error: "bad-labels", fields: ["company", "route"] });
+    // A crop answer for a case whose page shows no crop.
+    const cropless = await postLabels(
+      request("POST", "/x", cookie, {
+        labels: { ...LABELS, cropShowsContact: true },
+        shown: SHOWN,
+      }),
+      deps(),
+      CASE,
+    );
+    expect(await cropless.json()).toEqual({ error: "bad-labels", fields: ["cropShowsContact"] });
     expect(
-      (await postLabels(request("POST", "/x", cookie, LABELS), deps(), "2026-01-01-00000000"))
-        .status,
+      (await postLabels(request("POST", "/x", cookie, BODY), deps(), "2026-01-01-00000000")).status,
     ).toBe(404);
+  });
+
+  it("refuse labels saved from a page that showed the case otherwise than it now stands", async () => {
+    const cookie = await signedIn();
+
+    const stale = await postLabels(
+      request("POST", "/x", cookie, { labels: LABELS, shown: { ...SHOWN, split: "dev" } }),
+      deps(),
+      CASE,
+    );
+
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: "changed" });
+    expect(existsSync(join(archive, CASE, "labels.json"))).toBe(false);
   });
 
   it("set a case aside as not an application, and only a case", async () => {

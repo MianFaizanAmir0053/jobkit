@@ -23,6 +23,7 @@ const EMPTY: LabelValues = {
   eligibility: "",
   must: [],
   cropShowsContact: null,
+  seenInJobkit: null,
 };
 
 const SPLIT_WORDS = {
@@ -74,8 +75,10 @@ function Screenshot({ folder, file }: { folder: string; file: string }) {
  * One case to label (evals spec, "Labelling"): the email that was sent, or
  * a kept job's pasted text, the post's screenshots, the pool's screenshots
  * taken in the three days before the email, and the labels. Only a dev
- * case shows anything a model made: its pre-labels, and the crop a kept
- * job's second read stored, with the crop question.
+ * case shows anything a model made: its pre-labels, once every test case
+ * is labelled, and the crop a kept job's second read stored, with the crop
+ * question. The form sends back what the page showed, which the labels
+ * record.
  */
 // Typed by hand: next typegen leaves local-only pages out, as every build does.
 export default async function CasePage(props: { params: Promise<{ caseId: string }> }) {
@@ -91,7 +94,14 @@ export default async function CasePage(props: { params: Promise<{ caseId: string
     found.source === "mail"
       ? poolCandidates(ARCHIVE, found.date ? new Date(found.date) : null)
       : [];
-  const initial = found.labels ?? found.prelabels ?? EMPTY;
+  // A crop answer stands only for the crop it judged.
+  const initial = found.labels
+    ? {
+        ...found.labels,
+        cropShowsContact: found.cropChanged ? null : found.labels.cropShowsContact,
+      }
+    : (found.prelabels ?? EMPTY);
+  const showsCrop = found.cropFile !== null && found.shown.cropSha256 !== null;
 
   return (
     <section aria-labelledby="case-heading" className="flex flex-col gap-4">
@@ -184,9 +194,9 @@ export default async function CasePage(props: { params: Promise<{ caseId: string
         </Panel>
       )}
 
-      {found.cropFile && found.split === "dev" && (
+      {showsCrop && (
         <Panel title="The crop jobkit read the contact from">
-          <Screenshot folder={found.id} file={found.cropFile} />
+          <Screenshot folder={found.id} file={found.cropFile!} />
         </Panel>
       )}
 
@@ -196,7 +206,10 @@ export default async function CasePage(props: { params: Promise<{ caseId: string
           routes={ROUTE_KINDS}
           initial={initial}
           suggested={found.labels === null && found.prelabels !== null}
-          hasCrop={found.cropFile !== null && found.split === "dev"}
+          hasCrop={showsCrop}
+          cropChanged={found.cropChanged}
+          askSeen={found.source === "mail"}
+          shown={found.shown}
         />
       </Panel>
     </section>

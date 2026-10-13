@@ -18,9 +18,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   adoptScreenshot,
   archiveFile,
+  CaseChanged,
   dismissCase,
   fixSplit,
   type Labels,
+  LabelsRefused,
   listCases,
   POOL,
   poolCandidates,
@@ -124,7 +126,21 @@ const LABELS: Labels = {
   eligibility: "eligible",
   must: ["4+ years with React"],
   cropShowsContact: null,
+  seenInJobkit: false,
 };
+
+/** A kept job's labels: its post was read by jobkit, so the question is not asked. */
+const LIVE_LABELS: Labels = { ...LABELS, seenInJobkit: null };
+
+/** Saves labels as the case page would: with what the page showed of the case. */
+async function label(
+  id: string,
+  labels: Labels = LABELS,
+  at = new Date("2026-10-13T12:00:00Z"),
+): Promise<void> {
+  const { shown } = (await readCase(archive, id, NO_EXAMPLES))!;
+  await saveLabels(archive, id, { labels, shown, at }, NO_EXAMPLES);
+}
 
 beforeEach(() => {
   archive = mkdtempSync(join(tmpdir(), "jobkit-cases-"));
@@ -265,7 +281,7 @@ describe("listCases", () => {
     mailCase("2026-03-16-00000001");
     mailCase("2026-03-16-00000002", { subject: "Two", id: "<b@example.com>" });
     writeSplits({ "2026-03-16-00000001": "dev" });
-    saveLabels(archive, "2026-03-16-00000001", LABELS, new Date("2026-10-13T12:00:00Z"));
+    await label("2026-03-16-00000001");
 
     rmSync(join(archive, "split.json"));
     rmSync(join(archive, "split.json.bak"));
@@ -425,9 +441,9 @@ describe("fixSplit", () => {
     mailCase(resend, { subject: "Designer at Globex", id: "<b@example.com>", body: "My CV." }, 0);
     await fixSplit(archive, NO_EXAMPLES);
     expect(splitFile()[shown]).toBe("dev");
-    // Labelled with its pre-labels shown, then set aside as the extra; a test place frees.
+    // Labelled in dev, then set aside as the extra; a test place frees.
     writeFileSync(join(archive, shown, "prelabels.json"), JSON.stringify(LABELS));
-    saveLabels(archive, shown, LABELS, new Date("2026-10-13T12:00:00Z"));
+    await label(shown);
     dismissCase(archive, shown);
     dismissCase(archive, ten[0]!);
     writeFileSync(join(archive, resend, "post-1.png"), "image");
@@ -520,7 +536,7 @@ describe("fixSplit", () => {
   it("refuses to begin again when cases were labelled under a split that is gone", async () => {
     mailCase("2026-03-16-00000001");
     writeSplits({ "2026-03-16-00000001": "dev" });
-    saveLabels(archive, "2026-03-16-00000001", LABELS, new Date("2026-10-13T12:00:00Z"));
+    await label("2026-03-16-00000001");
     rmSync(join(archive, "split.json"));
     rmSync(join(archive, "split.json.bak"));
 
@@ -546,7 +562,7 @@ describe("readCase and saveLabels", () => {
     expect(before?.email?.text).toContain("I am applying for the role.");
     expect(before?.prelabels).toBeNull();
 
-    saveLabels(archive, "2026-03-16-8282e9a1", LABELS, new Date("2026-10-13T12:00:00Z"));
+    await label("2026-03-16-8282e9a1");
 
     const after = await readCase(archive, "2026-03-16-8282e9a1", NO_EXAMPLES);
     expect(after?.labels).toEqual(LABELS);
@@ -554,43 +570,121 @@ describe("readCase and saveLabels", () => {
     expect(after?.prelabels).toBeNull();
   });
 
-  it("keeps with saved labels their split, whether pre-labels were shown, and the crop they judged", async () => {
-    liveCase("live-2026-10-06-1a2b3c4d", { "post-1.png": "image", "crop.png": "crop bytes" });
-    writeFileSync(
-      join(archive, "live-2026-10-06-1a2b3c4d", "prelabels.json"),
-      JSON.stringify(LABELS),
-    );
+  it("records exactly what the page showed: the split, the pre-labels and the crop", async () => {
+    const id = "live-2026-10-06-1a2b3c4d";
+    liveCase(id, { "post-1.png": "image", "crop.png": "crop bytes" });
+    writeFileSync(join(archive, id, "prelabels.json"), JSON.stringify(LABELS));
     await fixSplit(archive, NO_EXAMPLES);
 
-    saveLabels(
-      archive,
-      "live-2026-10-06-1a2b3c4d",
-      { ...LABELS, cropShowsContact: true },
-      new Date("2026-10-13T12:00:00Z"),
-    );
+    await label(id, { ...LIVE_LABELS, cropShowsContact: true });
 
-    expect(
-      JSON.parse(readFileSync(join(archive, "live-2026-10-06-1a2b3c4d", "labels.json"), "utf8")),
-    ).toMatchObject({
+    const sha = (text: string) => createHash("sha256").update(text).digest("hex");
+    expect(JSON.parse(readFileSync(join(archive, id, "labels.json"), "utf8"))).toMatchObject({
       labelledAt: "2026-10-13T12:00:00.000Z",
       split: "dev",
       prelabelsShown: true,
-      cropSha256: createHash("sha256").update("crop bytes").digest("hex"),
+      prelabelsSha256: sha(JSON.stringify(LABELS)),
+      cropSha256: sha("crop bytes"),
+    });
+    expect((await readCase(archive, id, NO_EXAMPLES))?.labelledUnder).toEqual({
+      labelledAt: "2026-10-13T12:00:00.000Z",
+      split: "dev",
+      prelabelsShown: true,
+      cropSha256: sha("crop bytes"),
     });
   });
 
-  it("shows a dev case's pre-labels at once, and none for a case not yet in a split", async () => {
+  it("refuses to save once the case changed from what the page showed", async () => {
+    const id = "live-2026-10-06-1a2b3c4d";
+    liveCase(id, { "post-1.png": "image", "crop.png": "crop A" });
+    await fixSplit(archive, NO_EXAMPLES);
+    const { shown } = (await readCase(archive, id, NO_EXAMPLES))!;
+    // The kept job is pulled again with another crop while the page is open.
+    writeFileSync(join(archive, id, "crop.png"), "crop B");
+
+    await expect(
+      saveLabels(
+        archive,
+        id,
+        { labels: { ...LIVE_LABELS, cropShowsContact: true }, shown, at: new Date() },
+        NO_EXAMPLES,
+      ),
+    ).rejects.toBeInstanceOf(CaseChanged);
+    expect(existsSync(join(archive, id, "labels.json"))).toBe(false);
+  });
+
+  it("starts the crop question afresh when the crop changed since it was answered", async () => {
+    const id = "live-2026-10-06-1a2b3c4d";
+    liveCase(id, { "post-1.png": "image", "crop.png": "crop A" });
+    await fixSplit(archive, NO_EXAMPLES);
+    await label(id, { ...LIVE_LABELS, cropShowsContact: true });
+    expect((await readCase(archive, id, NO_EXAMPLES))?.cropChanged).toBe(false);
+
+    writeFileSync(join(archive, id, "crop.png"), "crop B");
+
+    expect((await readCase(archive, id, NO_EXAMPLES))?.cropChanged).toBe(true);
+  });
+
+  it("shows a dev case's pre-labels only once every test case is labelled, and none without a split", async () => {
     mailCase("2026-03-16-8282e9a1");
     mailCase("2026-03-16-00000002", { subject: "Another", id: "<b@example.com>" });
-    writeSplits({ "2026-03-16-8282e9a1": "dev" });
+    mailCase("2026-03-16-00000003", { subject: "Third", id: "<c@example.com>" });
+    writeSplits({ "2026-03-16-8282e9a1": "dev", "2026-03-16-00000003": "test" });
     for (const id of ["2026-03-16-8282e9a1", "2026-03-16-00000002"]) {
-      writeFileSync(join(archive, id, "prelabels.json"), JSON.stringify(LABELS));
+      writeFileSync(
+        join(archive, id, "prelabels.json"),
+        JSON.stringify({ ...LABELS, cropShowsContact: true, seenInJobkit: true }),
+      );
     }
+    const prelabels = async (id: string) => (await readCase(archive, id, NO_EXAMPLES))?.prelabels;
 
-    expect((await readCase(archive, "2026-03-16-8282e9a1", NO_EXAMPLES))?.prelabels).toEqual(
-      LABELS,
+    // A test case is still unlabelled: a model's reading would shape its labels.
+    expect(await prelabels("2026-03-16-8282e9a1")).toBeNull();
+
+    await label("2026-03-16-00000003");
+
+    // Never a crop answer or a seen-in-jobkit answer from a model.
+    expect(await prelabels("2026-03-16-8282e9a1")).toEqual({
+      ...LABELS,
+      cropShowsContact: null,
+      seenInJobkit: null,
+    });
+    expect(await prelabels("2026-03-16-00000002")).toBeNull();
+  });
+
+  it("asks a crop answer only where the crop is shown, and needs it there", async () => {
+    const id = "live-2026-10-06-1a2b3c4d";
+    liveCase(id, { "post-1.png": "image", "crop.png": "crop" });
+    mailCase("2026-03-16-8282e9a1");
+    await fixSplit(archive, NO_EXAMPLES);
+
+    await expect(
+      label("2026-03-16-8282e9a1", { ...LABELS, cropShowsContact: true }),
+    ).rejects.toEqual(new LabelsRefused(["cropShowsContact"]));
+    await expect(label(id, LIVE_LABELS)).rejects.toEqual(new LabelsRefused(["cropShowsContact"]));
+    await label(id, { ...LIVE_LABELS, cropShowsContact: false });
+  });
+
+  it("asks whether sent mail's post went through jobkit, and keeps such a case out of test", async () => {
+    mailCase("2026-03-16-00000001");
+    mailCase("2026-03-16-00000002", { subject: "Two", id: "<b@example.com>" });
+    liveCase("live-2026-10-06-1a2b3c4d");
+
+    await expect(label("2026-03-16-00000001", { ...LABELS, seenInJobkit: null })).rejects.toEqual(
+      new LabelsRefused(["seenInJobkit"]),
     );
-    expect((await readCase(archive, "2026-03-16-00000002", NO_EXAMPLES))?.prelabels).toBeNull();
+    await expect(label("live-2026-10-06-1a2b3c4d", LABELS)).rejects.toEqual(
+      new LabelsRefused(["seenInJobkit"]),
+    );
+    // Tried on the laptop once: its labels can never be blind.
+    await label("2026-03-16-00000001", { ...LABELS, seenInJobkit: true });
+
+    await fixSplit(archive, NO_EXAMPLES);
+
+    expect(splitFile()).toMatchObject({
+      "2026-03-16-00000001": "dev",
+      "2026-03-16-00000002": "test",
+    });
   });
 
   it("shows a kept job's pasted text and crop apart from its screenshots", async () => {
@@ -613,23 +707,19 @@ describe("readCase and saveLabels", () => {
   it("refuses labels that do not fit, and any case ID that is not a case's", async () => {
     mailCase("2026-03-16-8282e9a1");
 
-    expect(() =>
-      saveLabels(
-        archive,
-        "2026-03-16-8282e9a1",
-        { ...LABELS, route: "carrier pigeon" } as unknown as Labels,
-        new Date(),
-      ),
-    ).toThrow();
-    // An email route has an address; and no must-haves is said, never left empty.
-    expect(() =>
-      saveLabels(archive, "2026-03-16-8282e9a1", { ...LABELS, contact: "" }, new Date()),
-    ).toThrow();
-    expect(() =>
-      saveLabels(archive, "2026-03-16-8282e9a1", { ...LABELS, must: [] }, new Date()),
-    ).toThrow();
-    saveLabels(archive, "2026-03-16-8282e9a1", { ...LABELS, must: [], noMust: true }, new Date());
-    expect(() => saveLabels(archive, "../escape", LABELS, new Date())).toThrow();
+    await expect(
+      label("2026-03-16-8282e9a1", { ...LABELS, route: "carrier pigeon" } as unknown as Labels),
+    ).rejects.toThrow();
+    // An email route has an address; and no must-haves is said, never left empty, nor said
+    // beside listed ones.
+    await expect(label("2026-03-16-8282e9a1", { ...LABELS, contact: "" })).rejects.toThrow();
+    await expect(label("2026-03-16-8282e9a1", { ...LABELS, must: [] })).rejects.toThrow();
+    await expect(label("2026-03-16-8282e9a1", { ...LABELS, noMust: true })).rejects.toThrow();
+    await label("2026-03-16-8282e9a1", { ...LABELS, must: [], noMust: true });
+    const shown = { split: null, prelabelsSha256: null, cropSha256: null };
+    await expect(
+      saveLabels(archive, "../escape", { labels: LABELS, shown, at: new Date() }, NO_EXAMPLES),
+    ).rejects.toThrow();
     expect(await readCase(archive, "../escape", NO_EXAMPLES)).toBeNull();
     expect(await readCase(archive, "2026-01-01-00000000", NO_EXAMPLES)).toBeNull();
   });

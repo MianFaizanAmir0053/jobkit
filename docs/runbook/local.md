@@ -18,6 +18,8 @@ The thin path (the owner's choice, 2026-10-12) is built first so the owner can t
 
 5. Before Open in Gmail and the copy buttons work, the page lists what holds them under "Before you send": type a disputed address yourself, press "I checked this" on each flagged sentence and flag, tick any file besides the CV you will attach, and press "Apply again" if you mean to apply to a job you applied to before. Once you mark the email sent, nothing goes out from that page again.
 
+A post you try in jobkit cannot be a blind test case for the evaluation, since you saw jobkit's reading of it. The labelling page asks, for each sent email, whether you ever ran its post through jobkit: answer it honestly, and a post you did goes to `dev`.
+
 ## Not in the thin path yet
 
 - the phone: test on the laptop first; the phone follows through a tunnel to the dev server.

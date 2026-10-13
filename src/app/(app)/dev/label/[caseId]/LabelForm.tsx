@@ -5,6 +5,8 @@ import { type FormEvent, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
+import type { Shown } from "../../../../../../evals/cases";
+
 export interface LabelValues {
   company: string;
   role: string;
@@ -14,6 +16,7 @@ export interface LabelValues {
   must: string[];
   noMust?: boolean;
   cropShowsContact: boolean | null;
+  seenInJobkit: boolean | null;
 }
 
 const ELIGIBILITY = ["eligible", "unclear", "likely_ineligible"] as const;
@@ -23,9 +26,11 @@ const FIELD = "w-full rounded-md border border-border bg-transparent px-2 py-1";
 /**
  * One case's labels (evals spec, "Labelling"): company, role, route, the
  * exact address or number, the eligibility outcome, the must-have
- * requirements and, for a case with a crop, whether it shows the contact.
- * Saved to the case's labels.json; filled from pre-labels only where the
- * page allows. Nothing starts chosen: each choice must be made.
+ * requirements, for a case with a crop whether it shows the contact, and
+ * for sent mail whether its post ever went through jobkit. Saved to the
+ * case's labels.json with what the page showed, which a case changed since
+ * refuses; filled from pre-labels only where the page allows. Nothing
+ * starts chosen: each choice must be made.
  */
 export function LabelForm({
   caseId,
@@ -33,12 +38,20 @@ export function LabelForm({
   initial,
   suggested,
   hasCrop,
+  cropChanged,
+  askSeen,
+  shown,
 }: {
   caseId: string;
   routes: readonly string[];
   initial: LabelValues;
   suggested: boolean;
   hasCrop: boolean;
+  /** The saved crop answer judged another crop: it is asked again. */
+  cropChanged: boolean;
+  /** Sent mail: whether the post ever went through jobkit is asked. */
+  askSeen: boolean;
+  shown: Shown;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -63,17 +76,20 @@ export function LabelForm({
         .filter((line) => line !== ""),
       noMust: form.get("noMust") === "on",
       cropShowsContact: hasCrop ? crop === "yes" : null,
+      seenInJobkit: askSeen ? text("seen") === "yes" : null,
     };
     setBusy(true);
     try {
       const response = await fetch(`/api/dev/label/${caseId}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(labels),
+        body: JSON.stringify({ labels, shown }),
       });
       if (response.ok) {
         setNote("Saved.");
         router.refresh();
+      } else if (response.status === 409) {
+        setNote("This case changed since the page was shown. Reload it, and check it again.");
       } else {
         const answer = (await response.json().catch(() => null)) as { fields?: string[] } | null;
         setNote(
@@ -89,8 +105,9 @@ export function LabelForm({
     }
   }
 
-  const crop =
-    initial.cropShowsContact === true ? "yes" : initial.cropShowsContact === false ? "no" : "";
+  const answer = (value: boolean | null) => (value === true ? "yes" : value === false ? "no" : "");
+  const crop = answer(initial.cropShowsContact);
+  const seen = answer(initial.seenInJobkit);
 
   return (
     <form onSubmit={(event) => void save(event)} className="flex flex-col gap-3 text-sm">
@@ -141,6 +158,24 @@ export function LabelForm({
         <input type="checkbox" name="noMust" defaultChecked={initial.noMust === true} />
         The post names no must-have requirements
       </label>
+      {askSeen && (
+        <label className="flex flex-col gap-1">
+          Did you ever run this post through jobkit, on the laptop or the phone? If you did, its
+          labels cannot be blind, and it is never a test case.
+          <select name="seen" defaultValue={seen} required className={FIELD}>
+            <option value="" disabled>
+              Choose
+            </option>
+            <option value="no">No, never</option>
+            <option value="yes">Yes</option>
+          </select>
+        </label>
+      )}
+      {hasCrop && cropChanged && (
+        <p className="text-destructive">
+          The crop changed since you answered: look at it again before you choose.
+        </p>
+      )}
       {hasCrop && (
         <label className="flex flex-col gap-1">
           Does the crop above show the whole address or number?

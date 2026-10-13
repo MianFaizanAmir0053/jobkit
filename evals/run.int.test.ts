@@ -63,6 +63,7 @@ async function evalCase(id: string, labels: Partial<Labels>, shade = 10): Promis
       eligibility: "eligible",
       must: [],
       cropShowsContact: null,
+      seenInJobkit: false,
       ...labels,
     },
   };

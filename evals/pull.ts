@@ -131,8 +131,14 @@ async function copyCrop(
   if (`${sha256(bytes)}.png` !== basename(read.cropPath)) {
     return "its crop does not match its hash, so it was left out.";
   }
-  writeFileSync(join(folder, "crop.png"), bytes);
-  return null;
+  // A crop label judged the crop before: replacing it means answering the crop question again.
+  const target = join(folder, "crop.png");
+  const replaced =
+    existsSync(target) && Buffer.compare(readFileSync(target), Buffer.from(bytes)) !== 0;
+  writeFileSync(target, bytes);
+  return replaced
+    ? "its crop was replaced by the one the job now holds, so answer the crop question on its page again."
+    : null;
 }
 
 /**

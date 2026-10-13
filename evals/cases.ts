@@ -91,6 +91,12 @@ export const labelsSchema = z
     noMust: z.boolean().optional(),
     /** Whether the crop shows the whole contact; null with no crop to judge. */
     cropShowsContact: z.boolean().nullable(),
+    /**
+     * For sent mail, whether the post was ever run through jobkit, as on the
+     * laptop from the phone's screenshots: then its labels cannot be blind.
+     * Null for a kept job, whose post jobkit read.
+     */
+    seenInJobkit: z.boolean().nullable(),
   })
   .superRefine((labels, ctx) => {
     if (ROUTES_WITH_CONTACT.has(labels.route) && labels.contact === "") {
@@ -107,9 +113,54 @@ export const labelsSchema = z
         message: "List the must-haves, or say the post names none.",
       });
     }
+    if (labels.must.length > 0 && labels.noMust === true) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["noMust"],
+        message: "The post names must-haves, or none: not both.",
+      });
+    }
   });
 
 export type Labels = z.infer<typeof labelsSchema>;
+
+/**
+ * What the case page showed of a case, sent back with its labels, so they
+ * record exactly that: the split it showed, and the SHA-256 of the
+ * pre-labels and of the crop it showed, or null for none.
+ */
+export const shownSchema = z.strictObject({
+  split: z.enum(["test", "dev"]).nullable(),
+  prelabelsSha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable(),
+  cropSha256: z
+    .string()
+    .regex(/^[0-9a-f]{64}$/)
+    .nullable(),
+});
+
+export type Shown = z.infer<typeof shownSchema>;
+
+/** The case changed since its page showed it: the owner must look at it again. */
+export class CaseChanged extends Error {}
+
+/** Labels that do not fit their case, such as a crop answer where no crop is shown: which fields. */
+export class LabelsRefused extends Error {
+  constructor(readonly fields: string[]) {
+    super(`These labels do not fit the case: ${fields.join(", ")}.`);
+  }
+}
+
+/** What saving recorded with a case's labels. */
+export interface LabelledUnder {
+  labelledAt: string | null;
+  split: Split | null;
+  prelabelsShown: boolean | null;
+  /** The crop a crop label judged; null without one. */
+  cropSha256: string | null;
+}
 
 /** The profile's style examples, as text (styleExamplesOf), which leave a sent email out. */
 export interface CaseOptions {
@@ -156,8 +207,18 @@ export interface CaseDetail extends CaseSummary {
   /** A kept job's pasted text; null without any. */
   pastedText: string | null;
   labels: Labels | null;
-  /** Pre-labels to start from: a dev case's alone. */
+  /** What saving recorded with the labels; null before they are saved. */
+  labelledUnder: LabelledUnder | null;
+  /**
+   * Pre-labels to start from: a dev case's alone, once every test case is
+   * labelled, without a crop or seen-in-jobkit answer, which only the owner
+   * gives.
+   */
   prelabels: Labels | null;
+  /** What the page shows, which saving checks again and records. */
+  shown: Shown;
+  /** Whether the saved crop answer judged another crop than the one shown now. */
+  cropChanged: boolean;
 }
 
 export interface Archive {
@@ -221,14 +282,21 @@ function readJson<T>(file: string, schema: z.ZodType<T>): T | null {
 
 const sourceSchema = z.object({ jobId: z.string(), receivedAt: z.string() });
 
-/** A labels file as saved, read without its refinements, or what saving adds: z.object drops unknown keys. */
-const savedLabelsSchema = z.object(labelsSchema.shape);
+/**
+ * A labels file as saved, read without its refinements, or what saving
+ * adds: z.object drops unknown keys. One saved before the seen-in-jobkit
+ * question reads as unanswered.
+ */
+const savedLabelsSchema = z
+  .object({ ...labelsSchema.shape, seenInJobkit: z.boolean().nullable().optional() })
+  .transform((labels): Labels => ({ ...labels, seenInJobkit: labels.seenInJobkit ?? null }));
 
 /** What saving adds to a case's labels: when, under which split, and what the owner was shown. */
 const labelledUnderSchema = z.object({
   labelledAt: z.string().optional(),
   split: z.enum(["test", "dev"]).nullable().optional(),
   prelabelsShown: z.boolean().optional(),
+  prelabelsSha256: z.string().nullable().optional(),
   cropSha256: z.string().nullable().optional(),
 });
 
@@ -288,11 +356,15 @@ interface FolderRead {
   receivedAt: string | null;
   screenshotFiles: string[];
   cropFile: string | null;
+  /** The SHA-256 of the crop as it is now; null without one. */
+  cropSha256: string | null;
   pastedText: string | null;
   labels: Labels | null;
   /** What saving recorded with the labels. */
   labelledUnder: z.infer<typeof labelledUnderSchema> | null;
   prelabels: Labels | null;
+  /** The SHA-256 of the pre-labels file, when it can be read. */
+  prelabelsSha256: string | null;
   leftOut: LeftOut | null;
   problem: string | null;
 }
@@ -313,16 +385,19 @@ async function readFolder(
     receivedAt: null,
     screenshotFiles: images.filter((file) => file !== CROP_FILE),
     cropFile: images.includes(CROP_FILE) ? CROP_FILE : null,
+    cropSha256: images.includes(CROP_FILE) ? sha256(readFileSync(join(folder, CROP_FILE))) : null,
     pastedText: null,
     labels: null,
     labelledUnder: null,
     prelabels: null,
+    prelabelsSha256: null,
     leftOut: null,
     problem: null,
   };
   try {
     // Pre-labels a model wrote may not fit: they are only suggestions, so they are passed over.
     read.prelabels = readJson(join(folder, "prelabels.json"), savedLabelsSchema);
+    if (read.prelabels) read.prelabelsSha256 = sha256(readFileSync(join(folder, "prelabels.json")));
   } catch {
     read.prelabels = null;
   }
@@ -378,11 +453,13 @@ function isReady(read: FolderRead): boolean {
 /**
  * Whether a case's labels can be blind: never a kept live job's, whose
  * owner has seen jobkit's reading of it, nor one labelled with pre-labels
- * shown, nor one whose labels do not record what was shown.
+ * shown, nor one whose post the owner ran through jobkit, nor one whose
+ * labels do not record either.
  */
 function canBeBlind(read: FolderRead): boolean {
   if (read.source !== "mail") return false;
-  return read.labels === null || read.labelledUnder?.prelabelsShown === false;
+  if (read.labels === null) return true;
+  return read.labelledUnder?.prelabelsShown === false && read.labels.seenInJobkit === false;
 }
 
 /**
@@ -535,9 +612,23 @@ function planOf(state: ArchiveState): SplitOutcome {
 }
 
 function detailOf(read: FolderRead, state: ArchiveState, held: ReadonlySet<string>): CaseDetail {
-  const { applications } = state;
-  const split = state.record.assigned[read.id] ?? null;
+  const { applications, record } = state;
+  const split = record.assigned[read.id] ?? null;
   const application = applications.get(read.id);
+  // A dev case's pre-labels wait until every test case is labelled, so none shaped a blind label.
+  const testLabelled = state.reads
+    .filter((each) => each.leftOut === null && record.assigned[each.id] === "test")
+    .every((each) => each.labels !== null);
+  const prelabels =
+    split === "dev" && testLabelled && read.prelabels
+      ? { ...read.prelabels, cropShowsContact: null, seenInJobkit: null }
+      : null;
+  const shown: Shown = {
+    split,
+    prelabelsSha256: prelabels ? read.prelabelsSha256 : null,
+    cropSha256: split === "dev" ? read.cropSha256 : null,
+  };
+  const under = read.labelledUnder;
   return {
     id: read.id,
     split,
@@ -559,7 +650,21 @@ function detailOf(read: FolderRead, state: ArchiveState, held: ReadonlySet<strin
     cropFile: read.cropFile,
     pastedText: read.pastedText,
     labels: read.labels,
-    prelabels: split === "dev" ? read.prelabels : null,
+    labelledUnder:
+      read.labels && under
+        ? {
+            labelledAt: under.labelledAt ?? null,
+            split: under.split ?? null,
+            prelabelsShown: under.prelabelsShown ?? null,
+            cropSha256: under.cropSha256 ?? null,
+          }
+        : null,
+    prelabels,
+    shown,
+    cropChanged:
+      read.labels !== null &&
+      read.labels.cropShowsContact !== null &&
+      (under?.cropSha256 ?? null) !== shown.cropSha256,
   };
 }
 
@@ -672,32 +777,48 @@ export async function fixSplit(
 }
 
 /**
- * Saves a case's labels, checked against the schema, with when they were
- * saved, the split they were made under, whether pre-labels were shown
- * (a dev case's are), and the SHA-256 of the crop a crop label judged. The
- * file is written whole.
+ * Saves a case's labels, checked against the schema and against the case:
+ * a crop answer only where the page shows a crop, and needed there; the
+ * seen-in-jobkit answer for sent mail alone. The page sends what it showed,
+ * and a case that changed since (another split, other pre-labels, another
+ * crop) is refused, so the labels record exactly what the owner saw: when
+ * they were saved, the split, whether and which pre-labels were shown, and
+ * the crop a crop answer judged. The file is written whole.
  */
-export function saveLabels(archive: string, id: string, labels: Labels, at: Date): void {
+export async function saveLabels(
+  archive: string,
+  id: string,
+  save: { labels: Labels; shown: Shown; at: Date },
+  options: CaseOptions,
+): Promise<void> {
   if (!CASE_ID.test(id) || !existsSync(join(archive, id))) throw new NoCase(`No case ${id}`);
-  const checked = labelsSchema.parse(labels);
-  const split = readSplitRecord(archive)?.assigned[id] ?? null;
-  let prelabels = null;
-  try {
-    prelabels = readJson(join(archive, id, "prelabels.json"), savedLabelsSchema);
-  } catch {
-    // Pre-labels that cannot be read were never shown.
+  const checked = labelsSchema.parse(save.labels);
+  const current = await readCase(archive, id, options);
+  if (!current) throw new NoCase(`No case ${id}`);
+  const { shown } = save;
+  if (
+    current.shown.split !== shown.split ||
+    current.shown.prelabelsSha256 !== shown.prelabelsSha256 ||
+    current.shown.cropSha256 !== shown.cropSha256
+  ) {
+    throw new CaseChanged(`Case ${id} changed since its page showed it.`);
   }
-  const crop = join(archive, id, CROP_FILE);
+  const fields: string[] = [];
+  if ((checked.cropShowsContact !== null) !== (shown.cropSha256 !== null)) {
+    fields.push("cropShowsContact");
+  }
+  if ((checked.seenInJobkit !== null) !== (current.source === "mail")) fields.push("seenInJobkit");
+  if (fields.length > 0) throw new LabelsRefused(fields);
   writeWhole(
     join(archive, id, "labels.json"),
     `${JSON.stringify(
       {
         ...checked,
-        labelledAt: at.toISOString(),
-        split,
-        prelabelsShown: split === "dev" && prelabels !== null,
-        cropSha256:
-          checked.cropShowsContact !== null && existsSync(crop) ? sha256(readFileSync(crop)) : null,
+        labelledAt: save.at.toISOString(),
+        split: shown.split,
+        prelabelsShown: shown.prelabelsSha256 !== null,
+        prelabelsSha256: shown.prelabelsSha256,
+        cropSha256: checked.cropShowsContact !== null ? shown.cropSha256 : null,
       },
       null,
       2,
