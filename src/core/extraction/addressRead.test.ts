@@ -37,10 +37,21 @@ describe("agreement", () => {
     });
   });
 
-  it("never passes two reads of a number that does not normalise", () => {
+  it("asks the owner to check a number whose country code jobkit cannot read, whatever the second read", () => {
     expect(agreement("whatsapp", "98765 43210", { read: "98765 43210" })).toEqual({
       ok: false,
-      reason: "disagree",
+      reason: "bad_number",
+    });
+    expect(agreement("whatsapp", "98765 43210", { inText: true })).toEqual({
+      ok: false,
+      reason: "bad_number",
+    });
+  });
+
+  it("says when the machine had no second model", () => {
+    expect(agreement("email", "jobs@example.com", { problem: "no_model" })).toEqual({
+      ok: false,
+      reason: "no_model",
     });
   });
 
@@ -76,6 +87,19 @@ describe("inPastedText", () => {
 
   it("finds a number followed by more digits in brackets", () => {
     expect(inPastedText("whatsapp", "0300 1234567", "WhatsApp 0300-1234567 (9am-5pm)")).toBe(true);
+    expect(inPastedText("whatsapp", "0300 1234567", "WhatsApp +92 (0)300 1234567")).toBe(true);
+  });
+
+  it("never finds a number with its last digits missing inside a longer one", () => {
+    expect(inPastedText("whatsapp", "+974 5512 345", "WhatsApp +974 5512 3456")).toBe(false);
+    expect(inPastedText("whatsapp", "+974 5512 3456", "WhatsApp +974 5512 3456")).toBe(true);
+  });
+
+  it("takes an address's edges from the sentence: brackets and quotes, never a letter or an apostrophe", () => {
+    expect(inPastedText("email", "jobs@example.com", "Apply (jobs@example.com) today")).toBe(true);
+    expect(inPastedText("email", "jobs@example.com", 'Write to "jobs@example.com"!')).toBe(true);
+    expect(inPastedText("email", "souza@acme.com", "CV to d'souza@acme.com")).toBe(false);
+    expect(inPastedText("email", "jobs@example.com", "CV to éjobs@example.com")).toBe(false);
   });
 
   it("finds an empty contact nowhere", () => {

@@ -59,6 +59,12 @@ export interface JobView {
   application: { status: ApplicationStatus; sentAt: Date | null } | null;
 }
 
+const NOT_CHECKED: AddressCheck = {
+  kind: "not_checked",
+  blocking: true,
+  message: "This address has not been checked as it stands. Check it against the post.",
+};
+
 /** The thin path's stages, in order. */
 const STEPS: readonly { stage: StageName; label: string }[] = [
   { stage: "extract", label: "Read the post" },
@@ -127,10 +133,15 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
                 : { ok: false, reason: "no_second_read" },
           }
         : null,
+    // Checks for another address, or none once the drafting group ran, block as not checked.
     addressChecks:
-      checks?.checked && contact?.kind === "email" && checks.address === contact.contact.trim()
-        ? checks.checks
-        : null,
+      contact?.kind !== "email"
+        ? null
+        : checks?.checked && checks.address === contact.contact.trim()
+          ? checks.checks
+          : read?.checked
+            ? [NOT_CHECKED]
+            : null,
     application: role ? await applicationOf(deps.db, id, role.id) : null,
   };
 }

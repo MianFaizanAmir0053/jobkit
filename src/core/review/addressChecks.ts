@@ -11,10 +11,17 @@ import type { Dns } from "@/core/ports";
  * names unlike the company's. There is no domain-age check (amendment A5).
  */
 
+/**
+ * Raise it when these checks, or isStrictAddress in contacts.ts, change what
+ * they find, so a kept result is not reused.
+ */
+export const ADDRESS_CHECKS_VERSION = 2;
+
 export type MailHost = "mx" | "implicit_mx" | "null_mx" | "none" | "unchecked";
 
 export interface AddressCheck {
-  kind: "syntax" | "mail_host" | "free_mail" | "company";
+  /** "not_checked": the address as it stands has no checks, which the job view says. */
+  kind: "syntax" | "mail_host" | "free_mail" | "company" | "not_checked";
   /** A blocking check stops every handoff until the address is fixed; a warning only shows. */
   blocking: boolean;
   message: string;

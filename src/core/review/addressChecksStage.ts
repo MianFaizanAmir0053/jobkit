@@ -3,7 +3,7 @@ import { chosenRole } from "@/core/extraction/owner";
 import type { StageDefinition, StageResult } from "@/core/platform/runner";
 import type { Db, Dns } from "@/core/ports";
 
-import { type AddressCheck, checkAddress } from "./addressChecks";
+import { ADDRESS_CHECKS_VERSION, type AddressCheck, checkAddress } from "./addressChecks";
 
 /**
  * The `address_checks` stage (review spec, "Stage address_checks"): the
@@ -12,9 +12,6 @@ import { type AddressCheck, checkAddress } from "./addressChecks";
  * the company the name check reads; a later lookup of the same address is
  * the same result reused, so a DNS answer is kept as first found.
  */
-
-/** Raise it when addressChecks.ts changes what it finds, so a kept result is not reused. */
-const CHECKS_VERSION = 1;
 
 export interface AddressChecksOutput {
   checked: true;
@@ -41,7 +38,7 @@ export function addressChecksStage(deps: { db: Db; dns: Dns }): StageDefinition 
       return {
         address: role.route.address.trim(),
         company: extraction.record.company.name,
-        version: CHECKS_VERSION,
+        version: ADDRESS_CHECKS_VERSION,
       };
     },
 

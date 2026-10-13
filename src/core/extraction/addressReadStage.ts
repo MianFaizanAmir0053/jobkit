@@ -9,7 +9,7 @@ import { type ImageBox, mapBox } from "@/core/shared/tileGeometry";
 import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 
-import { type ContactKind, inPastedText, type SecondRead } from "./addressRead";
+import { type ContactKind, inPastedText, MATCHING_VERSION, type SecondRead } from "./addressRead";
 import { CROP, cropContact } from "./crop";
 import { postImages, readExtractOutput } from "./extract";
 import { chosenRole } from "./owner";
@@ -28,10 +28,10 @@ import type { Role } from "./record";
  * A read that cannot happen is never a failed job: a box that does not fit
  * its screenshot, a screenshot storage cannot give, a crop that cannot be
  * made, a model call that fails or throws, an answer that is not storable
- * text, or no Gemini key on this machine each leave the second read
- * missing, which blocks the contact until the owner retypes it. A crop
- * that cannot be stored is still read. The output names the contact it
- * was for, so a read is never taken for another contact.
+ * text each leave the second read missing, and no Gemini key on this
+ * machine is recorded as such; either blocks the contact until the owner
+ * retypes it. A crop that cannot be stored is still read. The output names
+ * the contact it was for, so a read is never taken for another contact.
  */
 
 export const ADDRESS_READ = {
@@ -49,7 +49,7 @@ Copy the contact the request names exactly as the image writes it, character by 
 /** How the user turn is laid out; raise it when readContent changes. */
 const LAYOUT_VERSION = 1;
 
-/** Raise it when crop.ts changes how a crop is cut, so a read of the old crop is not reused. */
+/** Raise it when crop.ts, or uprightSize in tiles.ts, changes how a crop is cut, so a read of the old crop is not reused. */
 const CROP_VERSION = 1;
 
 const NUL = String.fromCharCode(0);
@@ -77,9 +77,10 @@ export const CHANGED_POST = "The post changed while its contact was being read. 
  * B9: the crop's hash, the model and the prompt. The crop is made from the
  * screenshot, the box and the crop's rules alone, so those stand for it
  * here and nothing is read from storage before the stage runs. Whether
- * this machine has the model is part of it, so a read missed for want of a
- * key happens once the key is set. A contact from pasted text is checked
- * against the text's hash. Each names the contact, which the output is for.
+ * this machine has the model is part of it, so when the drafting group runs
+ * again with a key now set, as after Retry, the read happens. A contact from
+ * pasted text is checked against the text's hash and the matching's version.
+ * Each names the contact, which the output is for.
  */
 type AddressReadInput =
   | {
@@ -92,9 +93,10 @@ type AddressReadInput =
       model: string;
       available: boolean;
       effort: Effort;
+      maxTokens: number;
       prompt: string;
     }
-  | { from: "pasted"; kind: ContactKind; contact: string; text: string }
+  | { from: "pasted"; kind: ContactKind; contact: string; text: string; matching: number }
   | { from: "nothing"; kind: ContactKind; contact: string };
 
 export interface AddressReadOutput {
@@ -156,12 +158,19 @@ export function addressReadStage(deps: AddressReadDeps): StageDefinition {
           model: ADDRESS_READ.model,
           available: hasModel(deps.models, ADDRESS_READ.model),
           effort: ADDRESS_READ.effort,
+          maxTokens: ADDRESS_READ.maxTokens,
           prompt: PROMPT,
         };
       }
       const text = await pastedText(deps.db, ctx.job.id);
       if (text.trim() !== "") {
-        return { from: "pasted", kind: found.kind, contact: found.contact, text: sha256Hex(text) };
+        return {
+          from: "pasted",
+          kind: found.kind,
+          contact: found.contact,
+          text: sha256Hex(text),
+          matching: MATCHING_VERSION,
+        };
       }
       return { from: "nothing", kind: found.kind, contact: found.contact };
     },
@@ -202,7 +211,7 @@ export function addressReadStage(deps: AddressReadDeps): StageDefinition {
       }
 
       // No Gemini key here: no second read, which the owner settles by retyping the contact.
-      if (!input.available) return done({ read: null }, cropPath);
+      if (!input.available) return done({ problem: "no_model" }, cropPath);
       const marker = Buffer.from(deps.random.bytes(16)).toString("hex");
       let read: string | null = null;
       try {
@@ -214,7 +223,7 @@ export function addressReadStage(deps: AddressReadDeps): StageDefinition {
           content: readContent(input.kind, crop, marker),
           schema: contactReadSchema,
           effort: input.effort,
-          maxTokens: ADDRESS_READ.maxTokens,
+          maxTokens: input.maxTokens,
         });
         if (called.ok) read = called.output.contact;
       } catch {

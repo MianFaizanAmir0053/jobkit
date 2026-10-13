@@ -237,6 +237,33 @@ describe("jobView", () => {
     });
   });
 
+  it("blocks an address whose checks are for another address, or missing after the read", async () => {
+    await seedSample();
+    const stages = pipeline();
+    const beside: Pipeline = {
+      ...stages,
+      draft: { ...stages.draft, alongside: () => ["address_read", "address_checks"] },
+      address_read: addressReadStage({ db, storage, random, models: models() }),
+      address_checks: addressChecksStage({ db, dns: offlineDns() }),
+    };
+    const id = await pasted("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], beside);
+    await db.query(
+      `update {{schema}}.job_stage_runs
+          set output = jsonb_set(output, '{address}', '"earlier@example.com"')
+        where job_id = $1 and stage = 'address_checks'`,
+      [id],
+    );
+
+    expect((await jobView({ db, clock }, id))?.addressChecks).toEqual([
+      {
+        kind: "not_checked",
+        blocking: true,
+        message: "This address has not been checked as it stands. Check it against the post.",
+      },
+    ]);
+  });
+
   it("takes a read made for another contact as no second read of this one", async () => {
     await seedSample();
     const stages = pipeline();

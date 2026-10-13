@@ -318,7 +318,9 @@ function KitPanel({
     view.contact && !view.contact.agreement.ok
       ? contactWords(view.contact.agreement.reason, noun)
       : null;
+  // The To line already says when the address fails the strict check.
   const blocking = (view.addressChecks ?? []).filter((check) => check.blocking);
+  const blockingShown = blocking.filter((check) => check.kind !== "syntax");
   const warnings = (view.addressChecks ?? []).filter((check) => !check.blocking);
   const unread =
     view.contact === null &&
@@ -379,7 +381,7 @@ function KitPanel({
               </span>
             )}
             {disputed && <p className="mt-1 text-destructive">{disputed}</p>}
-            {blocking.map((check) => (
+            {blockingShown.map((check) => (
               <p key={check.kind} className="mt-1 text-destructive">
                 {check.message}
               </p>
@@ -533,6 +535,10 @@ function contactWords(reason: AgreementProblem, noun: "address" | "number"): str
       return `jobkit could not find the ${noun} on the screenshot. Type it yourself from the post.`;
     case "no_crop":
       return `jobkit could not cut the ${noun} out of the screenshot. Type it yourself from the post.`;
+    case "no_model":
+      return `This machine has no Gemini key, so the ${noun} was not read a second time. Type it yourself from the screenshot.`;
+    case "bad_number":
+      return "jobkit cannot read this number's country code. Check it, and type it yourself from the post.";
     case "not_in_text":
       return `This ${noun} is not in the pasted text as written. Type it yourself from the post.`;
   }

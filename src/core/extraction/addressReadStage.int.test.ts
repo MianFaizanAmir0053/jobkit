@@ -263,7 +263,7 @@ describe("address_read from a screenshot", () => {
 
     expect((await loadJob(db, noKey))?.state).toBe("kit_ready");
     const read = await readOf(noKey);
-    expect(read.second).toEqual({ read: null });
+    expect(read.second).toEqual({ problem: "no_model" });
     expect(await storage.get(read.cropPath!)).not.toBeNull();
     expect(llm.calls).toHaveLength(1);
   });
