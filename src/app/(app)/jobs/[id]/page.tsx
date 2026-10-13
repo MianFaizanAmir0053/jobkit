@@ -14,7 +14,7 @@ import type { JobView, Step } from "@/core/review/jobView";
 import { appConfig } from "@/server/config";
 import { jobForViewer, requireSession, viewerTimeZone } from "@/server/dal";
 
-import { formatTime, placeOfFlag, STATE_WORDS } from "../words";
+import { duplicateLine, formatTime, placeOfFlag, STATE_WORDS } from "../words";
 
 import { ActionButton } from "./ActionButton";
 import { CopyButton } from "./CopyButton";
@@ -349,8 +349,32 @@ function KitPanel({
   const checked = new Set(decisions.checked);
   const reviewUrl = `/api/jobs/${view.id}/review`;
 
+  const repeats = view.duplicates.filter((match) => !match.covered);
+
   return (
     <div className="flex flex-col gap-4">
+      {repeats.length > 0 && (
+        <Panel title="You may have applied before">
+          <ul className="list-disc pl-5 text-sm">
+            {repeats.map((match) => {
+              const line = duplicateLine(match, timeZone);
+              return (
+                <li key={match.key}>
+                  {line.what}
+                  <span className="text-muted-foreground"> ({line.when})</span>
+                </li>
+              );
+            })}
+          </ul>
+          <ActionButton
+            url={`/api/jobs/${view.id}/apply-again`}
+            label="Apply again"
+            variant="outline"
+            body={{ keys: repeats.map((match) => match.key) }}
+          />
+        </Panel>
+      )}
+
       {(unread || unchecked.length > 0) && (
         <Panel title="Not checked yet">
           {unread && (

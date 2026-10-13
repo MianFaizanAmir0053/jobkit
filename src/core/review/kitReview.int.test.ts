@@ -170,11 +170,17 @@ describe("recordReview", () => {
 
   it("refuses a decision the kit has no place for", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    // The pasted post gives the address the record has: nothing to type.
+    expect((await jobView({ db, clock }, id))!.kitParts!.contact).toEqual({
+      kind: "email",
+      needsRetype: false,
+    });
 
     for (const action of [
       { kind: "check", blockId: "S9" },
       { kind: "attach", name: "Portfolio", ticked: true },
       { kind: "continue_anyway" },
+      { kind: "retype", value: "other@example.com" },
     ] as const) {
       expect(await recordReview({ db, clock }, id, action), action.kind).toEqual({
         ok: false,

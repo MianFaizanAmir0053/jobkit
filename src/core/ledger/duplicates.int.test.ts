@@ -118,6 +118,7 @@ describe("duplicatesOf", () => {
         company: "Acme (Pvt) Ltd",
         role: "Front-End Developer",
         at: expect.any(Date),
+        applied: true,
         key: expect.stringMatching(/^application:[0-9a-f-]{36}:company-role$/),
       },
     ]);
@@ -128,7 +129,7 @@ describe("duplicatesOf", () => {
     const id = await newShare({ address: "  JOBS@acme.example ", requirements: ["Vue"] });
 
     expect(await duplicatesOf(db, id)).toEqual([
-      expect.objectContaining({ reason: "address", role: "Backend Engineer" }),
+      expect.objectContaining({ reason: "address", role: "Backend Engineer", applied: true }),
     ]);
   });
 
@@ -149,7 +150,7 @@ describe("duplicatesOf", () => {
     const id = await newShare({ address: null, requirements: [] });
 
     expect(await duplicatesOf(db, id)).toEqual([
-      expect.objectContaining({ reason: "drafted", source: "application" }),
+      expect.objectContaining({ reason: "drafted", source: "application", applied: false }),
     ]);
   });
 
@@ -181,6 +182,7 @@ describe("duplicatesOf", () => {
         company: "Acme",
         role: "Frontend Developer",
         at: clock.now(),
+        applied: true,
         key: expect.stringMatching(/^manual-run:[0-9a-f-]{36}:company-role$/),
       },
       {
@@ -189,6 +191,7 @@ describe("duplicatesOf", () => {
         company: "Acme Ltd",
         role: "Front End Developer",
         at: new Date("2026-05-04T00:00:00Z"),
+        applied: true,
         key: expect.stringMatching(/^earlier:[0-9a-f-]{36}:company-role$/),
       },
     ]);
@@ -386,7 +389,7 @@ describe("duplicateGate and applyAgain", () => {
     });
 
     expect(await duplicateGate(db, repeat)).toMatchObject({ cleared: false });
-    expect(await duplicateGate(db, fresh)).toEqual({ matches: [], cleared: true });
+    expect(await duplicateGate(db, fresh)).toEqual({ matches: [], covers: [], cleared: true });
 
     const keys = await shown(repeat);
     expect(await applyAgain(deps(), repeat, keys)).toBe(true);

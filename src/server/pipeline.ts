@@ -8,6 +8,7 @@ import type { Role } from "@/core/extraction/record";
 import type { StageName } from "@/core/platform/jobStates";
 import type { Pipeline } from "@/core/platform/runner";
 import { addressChecksStage } from "@/core/review/addressChecksStage";
+import { trackApplications } from "@/core/review/applications";
 import type { Container } from "@/server/container";
 import { modelCallDeps } from "@/server/models";
 
@@ -19,6 +20,11 @@ import { modelCallDeps } from "@/server/models";
  */
 export function appPipeline(container: Container): Pipeline {
   const models = modelCallDeps(container);
+  // The application's statuses follow the job: it opens at the role and is kit_ready with the kit.
+  return trackApplications(stagesOf(container, models), container);
+}
+
+function stagesOf(container: Container, models: ReturnType<typeof modelCallDeps>): Pipeline {
   return {
     extract: extractStage({
       db: container.db,

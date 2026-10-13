@@ -9,8 +9,9 @@ import {
 } from "@/core/extraction/owner";
 import { loadJob, retryJob, skipJob } from "@/core/platform/jobs";
 import type { RunnerDeps } from "@/core/platform/runner";
+import { openForJob, skippedForJob } from "@/core/review/applications";
 import { reviewActionSchema } from "@/core/review/decisions";
-import { recordReview } from "@/core/review/kitReview";
+import { applyAgainForJob, recordReview } from "@/core/review/kitReview";
 import { markSent } from "@/core/review/markSent";
 import { isUuid } from "@/lib/uuid";
 import type { AppConfig } from "@/server/config";
@@ -62,6 +63,8 @@ export async function skip(request: NextRequest, deps: Deps, jobId: string): Pro
   const skipped =
     job.state === "needs_role_pick" ? await skipRolePick(deps, jobId) : await skipJob(deps, jobId);
   if (!skipped.ok) return refusal(skipped.reason === "not-found" ? 404 : 409, skipped.reason);
+  // Its application, if a role was ever chosen, is skipped with it (ledger spec, "Statuses").
+  await skippedForJob(deps, jobId, actor.session.id);
   return ok();
 }
 
@@ -89,6 +92,8 @@ export async function role(
   if (!parsed.success) return refusal(400, "invalid");
   const picked = await pickRole(deps, jobId, parsed.data.roleId);
   if (!picked.ok) return refusal(picked.reason === "not-found" ? 404 : 409, picked.reason);
+  // A role is chosen: its application opens (ledger spec, "Statuses").
+  await openForJob(deps, jobId, actor.session.id);
   await startPipeline(deps, jobId, startedAt);
   return ok(202);
 }
@@ -153,6 +158,36 @@ export async function review(
   const parsed = reviewBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
   const outcome = await recordReview(deps, jobId, parsed.data.action);
+  if (!outcome.ok) return refusal(outcome.reason === "not-found" ? 404 : 409, outcome.reason);
+  return ok(200, { gate: outcome.gate });
+}
+
+const applyAgainBody = z.object({ keys: z.array(z.string().min(1).max(200)).min(1).max(20) });
+
+/**
+ * POST /api/jobs/<id>/apply-again: "Apply again" on the duplicate banner,
+ * with the keys of the matches it showed, answered with the gate's open
+ * reasons as they now stand.
+ */
+export async function applyAgainRoute(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await readLimited(request, 8 * 1024);
+  if (body === "too-large") return refusal(413, "too-large");
+  let json: unknown = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    // Not JSON: refused below.
+  }
+  const parsed = applyAgainBody.safeParse(json);
+  if (!parsed.success) return refusal(400, "invalid");
+  const outcome = await applyAgainForJob(deps, jobId, parsed.data.keys);
   if (!outcome.ok) return refusal(outcome.reason === "not-found" ? 404 : 409, outcome.reason);
   return ok(200, { gate: outcome.gate });
 }

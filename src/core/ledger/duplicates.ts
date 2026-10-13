@@ -23,6 +23,11 @@ export interface DuplicateMatch {
   /** When it was sent or submitted, drafted, run, or applied for. */
   at: Date;
   /**
+   * Whether the earlier application went out: sent or submitted, run by
+   * hand, or made before jobkit. False for a kit that was never sent.
+   */
+  applied: boolean;
+  /**
    * The match itself: the earlier row and the reason. The banner sends the
    * keys it showed back with the owner's tap, and a match with any other
    * key holds the application again, a drafted kit that is later sent
@@ -99,6 +104,7 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
       company: row.company,
       role: row.role,
       at: appliedAt ?? row.kit_ready_at,
+      applied: appliedAt !== null,
     };
     if (sameCompanyRole(row.company, row.role)) {
       add({ ...earlier, reason: appliedAt ? "company-role" : "drafted" }, row.id);
@@ -122,6 +128,7 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
           company: run.company,
           role: run.role,
           at: run.stopped_at,
+          applied: true,
         },
         run.id,
       );
@@ -144,6 +151,7 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
       company: row.company,
       role: row.role,
       at: new Date(`${row.applied_on}T00:00:00Z`),
+      applied: true,
     };
     if (sameCompanyRole(row.company, row.role)) add({ ...earlier, reason: "company-role" }, row.id);
     if (atAddress(row.address)) add({ ...earlier, reason: "address" }, row.id);
@@ -170,11 +178,15 @@ export async function duplicatesOf(
 export async function duplicateGate(
   db: Db,
   applicationId: string,
-): Promise<{ matches: DuplicateMatch[]; cleared: boolean } | null> {
+): Promise<{ matches: DuplicateMatch[]; covers: string[]; cleared: boolean } | null> {
   const own = await ownRow(db, applicationId);
   if (!own) return null;
   const covered = new Set(own.covers);
-  return { matches: own.matches, cleared: own.matches.every((match) => covered.has(match.key)) };
+  return {
+    matches: own.matches,
+    covers: own.covers,
+    cleared: own.matches.every((match) => covered.has(match.key)),
+  };
 }
 
 /**

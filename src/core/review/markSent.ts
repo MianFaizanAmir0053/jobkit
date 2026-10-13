@@ -1,18 +1,21 @@
-import { isStrictAddress } from "@/core/extraction/contacts";
 import { chosenRole, currentExtraction } from "@/core/extraction/owner";
-import { changeStatus, openApplication } from "@/core/ledger/statuses";
+import { changeStatus, setAddress } from "@/core/ledger/statuses";
 import { loadJob } from "@/core/platform/jobs";
 import type { Clock, Db } from "@/core/ports";
 
+import { applicationIdOf, contactForLedger, openForJob } from "./applications";
+import { decisionsOf } from "./jobView";
+
 /**
  * "Mark sent" on a ready email kit (review spec, "Handoffs"; ledger spec,
- * "Statuses" and "Factual edits"): the chosen role's application is opened,
- * if this is its first kit, then marked kit_ready and sent, each with its
- * audit row, and the kit's outcome is recorded with the owner's answer to
- * "Did you change anything in Gmail?" in the same transaction as sent, so
- * neither is kept without the other. Only a role whose route is email is
- * marked sent; a second tap changes nothing. Before real use there is no
- * timing arm.
+ * "Statuses" and "Factual edits"): the chosen role's application, opened
+ * at the role pick or, for a job from before that, here, keeps the address
+ * the email went to, the owner's typed one when they typed it. It is
+ * marked kit_ready and sent, each with its audit row, and the kit's
+ * outcome is recorded with the owner's answer to "Did you change anything
+ * in Gmail?" in the same transaction as sent, so neither is kept without
+ * the other. Only a role whose route is email is marked sent; a second tap
+ * changes nothing. Before real use there is no timing arm.
  */
 
 export type MarkSent =
@@ -33,22 +36,15 @@ export async function markSent(
   if (!extraction || !role) return { ok: false, reason: "not-ready" };
   // Sending another way is Mark submitted, which comes with form and message kits.
   if (role.route.kind !== "email") return { ok: false, reason: "not-email" };
-  const address = role.route.address;
-  const applicationId = await openApplication(
-    deps,
-    {
-      jobId,
-      roleId: role.id,
-      company: extraction.record.company.name,
-      role: role.title,
-      address: isStrictAddress(address) ? address : null,
-      route: "email",
-      requirements: role.requirements.map((requirement) => requirement.text),
-      arm: null,
-      jobKind: "real",
-    },
-    sessionId,
+  const applicationId =
+    (await applicationIdOf(deps.db, jobId, role.id)) ?? (await openForJob(deps, jobId, sessionId));
+  if (!applicationId) return { ok: false, reason: "not-ready" };
+  // A retype is kept only when the kit needs one: the email went to the typed address.
+  const typed = contactForLedger(
+    "email",
+    (await decisionsOf(deps.db, jobId, role.id)).retyped ?? "",
   );
+  if (typed) await setAddress(deps, applicationId, typed);
   // Already kit_ready, or sent, after an earlier tap: the next move decides.
   await changeStatus(deps, applicationId, "kit_ready", sessionId);
   return deps.db.tx(async (tx): Promise<MarkSent> => {

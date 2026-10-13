@@ -12,6 +12,7 @@ import {
 } from "@/core/extraction/extract";
 import { chosenRole, draftedAnyway } from "@/core/extraction/owner";
 import type { Role } from "@/core/extraction/record";
+import { type DuplicateMatch, duplicateGate } from "@/core/ledger/duplicates";
 import type { ApplicationStatus } from "@/core/ledger/statuses";
 import { expireUploads, type Job, jobStatus } from "@/core/platform/jobs";
 import { kindOf, type JobState, type StageName, type StateKind } from "@/core/platform/jobStates";
@@ -66,6 +67,8 @@ export interface JobView {
   /** The email address's checks; null before they ran, or for another route. */
   addressChecks: AddressCheck[] | null;
   application: { status: ApplicationStatus; sentAt: Date | null } | null;
+  /** The ledger's matches for the application, each with whether "Apply again" covered it. */
+  duplicates: (DuplicateMatch & { covered: boolean })[];
   /** What the outbound gate reads from the kit; null before there is one. */
   kitParts: KitParts | null;
   /** The owner's decisions on the kit, and the gate's open reasons with them; null before there is a kit. */
@@ -148,6 +151,9 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
         })
       : null;
   const decisions = kitParts && role ? await decisionsOf(deps.db, id, role.id) : null;
+  const application = role ? await applicationOf(deps.db, id, role.id) : null;
+  const duplicates = application ? await duplicatesOf(deps.db, application.id) : [];
+  if (kitParts) kitParts.duplicates = duplicateParts(duplicates);
   return {
     id,
     state: job.state,
@@ -168,7 +174,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     judge: judge?.checked ? judge : null,
     contact: settled,
     addressChecks,
-    application: role ? await applicationOf(deps.db, id, role.id) : null,
+    application: application && { status: application.status, sentAt: application.sentAt },
+    duplicates,
     kitParts,
     review:
       kitParts && decisions
@@ -181,9 +188,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
  * What the gate reads from a kit. An email or WhatsApp contact must be
  * typed by the owner when the post gave none, when it fails the strict
  * check, or when its second read did not agree or never ran. Duplicate
- * matches come with the application, which the thin path opens only at
- * Mark sent: until it opens at the role pick, as the ledger spec has it,
- * none holds a kit back.
+ * matches come with the application, opened at the role pick, and are
+ * added by jobView.
  */
 function kitPartsOf(parts: {
   draft: DraftOutput;
@@ -285,12 +291,43 @@ async function applicationOf(
   db: Db,
   jobId: string,
   roleId: string,
-): Promise<JobView["application"]> {
-  const { rows } = await db.query<{ status: ApplicationStatus; sent_at: Date | null }>(
-    "select status, sent_at from {{schema}}.applications where job_id = $1 and role_id = $2",
+): Promise<{ id: string; status: ApplicationStatus; sentAt: Date | null } | null> {
+  const { rows } = await db.query<{ id: string; status: ApplicationStatus; sent_at: Date | null }>(
+    "select id, status, sent_at from {{schema}}.applications where job_id = $1 and role_id = $2",
     [jobId, roleId],
   );
-  return rows[0] ? { status: rows[0].status, sentAt: rows[0].sent_at } : null;
+  return rows[0] ? { id: rows[0].id, status: rows[0].status, sentAt: rows[0].sent_at } : null;
+}
+
+/** The application's duplicate matches, each with whether "Apply again" covered it. */
+export async function duplicatesOf(db: Db, applicationId: string): Promise<JobView["duplicates"]> {
+  const gate = await duplicateGate(db, applicationId);
+  if (!gate) return [];
+  const covered = new Set(gate.covers);
+  return gate.matches.map((match) => ({ ...match, covered: covered.has(match.key) }));
+}
+
+/** The matches as the gate reads them. */
+export function duplicateParts(matches: JobView["duplicates"]): KitParts["duplicates"] {
+  return matches.map((match) => ({ reason: duplicateWords(match), covered: match.covered }));
+}
+
+/**
+ * A duplicate match as the gate names it: what matched, and the earlier
+ * application. The banner above gives its day, in the owner's time zone.
+ */
+function duplicateWords(match: DuplicateMatch): string {
+  const earlier = `${match.company}, ${match.role}`;
+  switch (match.reason) {
+    case "company-role":
+      return `the same company and role as ${earlier}`;
+    case "address":
+      return `the same address as ${earlier}`;
+    case "post":
+      return `a post much like ${earlier}`;
+    case "drafted":
+      return `a kit already drafted for ${earlier}`;
+  }
 }
 
 export interface JobListItem {
