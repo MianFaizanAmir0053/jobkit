@@ -103,6 +103,7 @@ The owner wants to try a job on the laptop as soon as possible, so the thinnest 
   - Split, scorer (exact match, Wilson, precision and recall, McNemar), runner with budget on the evaluation keys and a local database, reports and aggregate summary.
   - The runner calls `assertLocalOnly` (src/server/localOnly.ts) on both `process.env` and `loadLocalEnv()` before anything else (platform AC13), and takes its models from `modelsFor("development", …)`.
   - Before comparing models older than the 5.x family (Claude Haiku 4.5 in ADR entry 2), check the Claude adapter's request shape against them: it sends `output_config.effort` and no `thinking` parameter, which suits the 5.x models; an older one may reject the effort setting or need thinking set.
+  - Scorer done (2026-10-13): `evals/score.ts`, with Wilson 95% intervals (exactly 0 or 1 at the ends), precision and recall with theirs, McNemar's exact test on whole numbers (exact for small counts, a probability for any), "no difference shown" unless p < 0.05, and field matches (company and role by the ledger's keys, the contact as jobkit would use it). Left: the runner, reports and the aggregate summary.
   - From Task 19's review: the runner takes only cases with a split and never one excluded for a style example (`listCases` and `fixSplit` read the profile's examples), and records the render manifest's hash in each report.
   - Verify: `npm test`. Depends on: 10, 19. Files: evals/{split,score,run,summary}.ts and tests. Scope: M.
 - [ ] **Task 21: Live extraction evaluation** — Owns: none.

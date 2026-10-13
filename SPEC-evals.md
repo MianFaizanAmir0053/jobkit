@@ -39,7 +39,7 @@ Production timing and cost come from the ledger's Stats and Spend pages, not fro
 
 ## Metrics
 
-- **Extraction:** per-field accuracy for company, role and route (after normalisation), exact match for the address or number, and agreement on the eligibility outcome, each with its count and a Wilson 95% interval, pooled and per route.
+- **Extraction:** per-field accuracy for company, role and route (company and role after the ledger's normalisation), exact match for the address or number (an address without case or surrounding space; a number as the number jobkit would message, or by its digits when its country code cannot be read, since jobkit never guesses one), and agreement on the eligibility outcome, each with its count and a Wilson 95% interval, pooled and per route.
 - **Second read:** how often the Gemini read agreed with the labelled contact, how often it caught an Opus misread, and how often it raised a false alarm.
 - **Crop:** the share of email and WhatsApp cases whose crop the owner ticked as showing the contact.
 - **Judge:** recall and precision for "not supported" on the frozen judge set, with intervals, and separately on claim sentences from live drafts.
