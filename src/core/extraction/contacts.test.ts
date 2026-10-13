@@ -91,7 +91,7 @@ describe("normaliseWhatsAppNumber", () => {
   });
 
   it.each([
-    ["ten digits with no country code", "98765 43210"],
+    ["ten digits with no country code", "202 555 0143"],
     ["a Pakistani number without its trunk 0", "300-1234567"],
     ["a Pakistani number two digits short", "+92 300 12345"],
     ["a trunk 0 repeated without brackets", "+92 0300 1234567"],

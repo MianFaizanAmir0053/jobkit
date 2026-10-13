@@ -38,11 +38,11 @@ describe("agreement", () => {
   });
 
   it("asks the owner to check a number whose country code jobkit cannot read, whatever the second read", () => {
-    expect(agreement("whatsapp", "98765 43210", { read: "98765 43210" })).toEqual({
+    expect(agreement("whatsapp", "202 555 0143", { read: "202 555 0143" })).toEqual({
       ok: false,
       reason: "bad_number",
     });
-    expect(agreement("whatsapp", "98765 43210", { inText: true })).toEqual({
+    expect(agreement("whatsapp", "202 555 0143", { inText: true })).toEqual({
       ok: false,
       reason: "bad_number",
     });
@@ -82,7 +82,7 @@ describe("inPastedText", () => {
     expect(inPastedText("whatsapp", "+92 300 1234567", post)).toBe(true);
     expect(inPastedText("whatsapp", "923001234567", post)).toBe(true);
     expect(inPastedText("whatsapp", "0300 1234568", post)).toBe(false);
-    expect(inPastedText("whatsapp", "98765 43210", "Call 98765 43210")).toBe(false);
+    expect(inPastedText("whatsapp", "202 555 0143", "Call 202 555 0143")).toBe(false);
   });
 
   it("finds a number followed by more digits in brackets", () => {

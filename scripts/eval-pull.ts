@@ -48,11 +48,17 @@ async function main(): Promise<void> {
     }
     const report = await pullKeptJobs({ db, storage }, archive);
     console.log(`From ${where}, new or completed cases in ${archive}: ${report.cases.length}`);
-    for (const entry of report.cases) console.log(`  ${entry.id}  ${entry.images} image(s)`);
+    for (const entry of report.cases) {
+      const added = entry.existing
+        ? ", added to a case already in the archive: check its labels"
+        : "";
+      console.log(`  ${entry.id}  ${entry.images} image(s)${added}`);
+    }
+    for (const note of report.notes) console.log(`  ${note}`);
     for (const entry of report.failed) {
       console.log(`Kept for the next pull: job ${entry.jobId}: ${entry.reason}`);
     }
-    if (report.failed.length > 0) {
+    if (report.failed.some((entry) => entry.reason.includes("is gone from storage"))) {
       console.log(
         "A job whose image is gone stays kept until you release it: npm run eval:pull -- --release <job ID>",
       );

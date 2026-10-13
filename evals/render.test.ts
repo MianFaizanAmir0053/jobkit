@@ -1,11 +1,16 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { type Browser, chromium } from "@playwright/test";
 import sharp from "sharp";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import type { JobRecord } from "@/core/extraction/record";
+import { mapBox, tileSpans } from "@/core/shared/tileGeometry";
+
 import {
   changedRenders,
+  lineBox,
   loadSyntheticPosts,
   manifestOf,
   postHeight,
@@ -101,6 +106,47 @@ describe("renderPost", () => {
     const size = await sharp(first).metadata();
     expect([size.format, size.width, size.height]).toEqual(["png", 1080, 2400]);
     expect(Buffer.compare(first, second)).toBe(0);
+  });
+
+  // Three posts that lay out differently (the first, right-to-left Urdu, the tall one): every
+  // post in a second browser would load the whole suite's run enough to time other tests out.
+  // eval:render's manifest checks every post across runs.
+  it("renders posts to the same bytes in a second launch of the browser", async (ctx) => {
+    if (!browser) return ctx.skip();
+    const posts = loadSyntheticPosts(POSTS).filter((post) =>
+      ["S01-email-simple", "S08-urdu", "S12-tall-dubai"].includes(post.id),
+    );
+    expect(posts).toHaveLength(3);
+    const again = await chromium.launch({ channel: "chrome" });
+    try {
+      for (const post of posts) {
+        const first = await renderPost(browser, post);
+        expect(Buffer.compare(first, await renderPost(again, post)), post.id).toBe(0);
+      }
+    } finally {
+      await again.close();
+    }
+  }, 120_000);
+
+  it("draws the tall post's contact inside the box its recorded reading gives", async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tall = loadSyntheticPosts(POSTS).find((post) => post.id === "S12-tall-dubai")!;
+    const record = JSON.parse(
+      readFileSync(
+        join(process.cwd(), "evals", "synthetic", "records", "S12-tall-dubai.json"),
+        "utf8",
+      ),
+    ) as JobRecord;
+    const { width, height } = tall.render;
+    const tiles = tileSpans(width, height).map((span) => ({ image: 0, ...span, width }));
+    const recorded = mapBox(record.roles[0]!.route.box, tiles)!;
+
+    const drawn = (await lineBox(browser, tall, "Apply by email"))!;
+
+    expect(drawn.left).toBeGreaterThanOrEqual(recorded.x1);
+    expect(drawn.right).toBeLessThanOrEqual(recorded.x2);
+    expect(drawn.top).toBeGreaterThanOrEqual(recorded.y1);
+    expect(drawn.bottom).toBeLessThanOrEqual(recorded.y2);
   });
 
   it("refuses a post taller than its render size, which the screenshot would cut off", async (ctx) => {

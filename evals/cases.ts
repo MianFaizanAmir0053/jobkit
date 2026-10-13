@@ -1,4 +1,6 @@
+import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -9,13 +11,20 @@ import {
 } from "node:fs";
 import { extname, join } from "node:path";
 
-import PostalMime, { type Email } from "postal-mime";
+import PostalMime from "postal-mime";
 import { z } from "zod";
 
 import { ROUTE_KINDS } from "@/core/extraction/record";
 
-import { bodyText, holdsStyleExample, IMPORT_FILE, normalised } from "./import";
-import { assignSplits, type Split } from "./split";
+import {
+  bodyText,
+  DISMISSED,
+  holdsStyleExample,
+  IMPORT_FILE,
+  keptJobkitFrom,
+  normalised,
+} from "./import";
+import { assignSplits, type Split, TEST_SIZE } from "./split";
 
 /**
  * The case archive (evals spec, "Case sources", "Labelling" and "Splits"):
@@ -23,24 +32,31 @@ import { assignSplits, type Split } from "./split";
  * or a kept job's (`source.json`, with its pasted text and the stored crop
  * of its contact when it had them), with the post's screenshots and, once
  * labelled, `labels.json`. Screenshots not yet matched to a case wait in
- * `_screenshots/`. A case gets its split from `npm run eval:split` once it
- * is ready to label, never from viewing the page, and keeps it in
- * `split.json`. Pre-labels (`prelabels.json`) are shown for a dev case at
- * once, and for any other case only after its own labels are saved, so the
- * blind labels are never shaped by a model (amendment A10). A sent email
- * holding one of the profile's style examples is left out, however late
- * the example was chosen (A10).
+ * `_screenshots/`; cases the owner set aside as not applications wait in
+ * `_dismissed/`. A case gets its split from `npm run eval:split`, never from
+ * viewing the page, and keeps it in `split.json`, with the last version in
+ * `split.json.bak`. Pre-labels (`prelabels.json`) are shown for a dev case
+ * alone: a test case's stay hidden even after its labels are saved, so the
+ * blind labels are never shaped by a model (amendment A10). A kept live
+ * job's owner has seen jobkit's reading of it, so it is never in test. A
+ * sent email is left out when its application holds one of the profile's
+ * style examples, however late the example was chosen, or when it was sent
+ * from the day jobkit began drafting (A10).
  */
 
 /** A case folder's name: a sent email's ("2026-03-16-8282e9a1") or a kept job's ("live-…"). */
 export const CASE_ID = /^(?:live-)?(?:\d{4}-\d{2}-\d{2}|undated)-[0-9a-f]{8}$/;
 
+/** A case, or a screenshot in the pool, that is not there: the labelling routes answer 404. */
+export class NoCase extends Error {}
+
 /** The folder of screenshots not yet matched to a case. */
 export const POOL = "_screenshots";
 
 const SPLIT_FILE = "split.json";
-/** The archive's own files at its top; its own folders start with "_" (the pool, eval:pull's). */
-const OWN_FILES = new Set([SPLIT_FILE, IMPORT_FILE]);
+const SPLIT_BACKUP = "split.json.bak";
+/** The archive's own files at its top; its own folders start with "_" (the pool, the set-aside, eval:pull's). */
+const OWN_FILES = new Set([SPLIT_FILE, SPLIT_BACKUP, IMPORT_FILE]);
 const CROP_FILE = "crop.png";
 const PASTED_FILE = "pasted.txt";
 const IMAGE_TYPES: Readonly<Record<string, string>> = {
@@ -52,17 +68,39 @@ const IMAGE_TYPES: Readonly<Record<string, string>> = {
 /** Screenshots this long before the email was sent are offered for its case. */
 const MATCH_WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
 
-export const labelsSchema = z.strictObject({
-  company: z.string().trim().max(200),
-  role: z.string().trim().max(200),
-  route: z.enum(ROUTE_KINDS),
-  /** The exact address or number; empty when the route has none. */
-  contact: z.string().trim().max(300),
-  eligibility: z.enum(["eligible", "unclear", "likely_ineligible"]),
-  must: z.array(z.string().trim().min(1).max(300)).max(40),
-  /** Whether the stored crop shows the contact; null with no crop to judge. */
-  cropShowsContact: z.boolean().nullable(),
-});
+/** Routes that always have an address or number, which the labels must give. */
+const ROUTES_WITH_CONTACT: ReadonlySet<string> = new Set(["email", "whatsapp"]);
+
+export const labelsSchema = z
+  .strictObject({
+    company: z.string().trim().max(200),
+    role: z.string().trim().max(200),
+    route: z.enum(ROUTE_KINDS),
+    /** The exact address, number or link; empty only for a route that has none. */
+    contact: z.string().trim().max(2000),
+    eligibility: z.enum(["eligible", "unclear", "likely_ineligible"]),
+    must: z.array(z.string().trim().min(1).max(300)).max(40),
+    /** Said when the post names no must-have, so an empty list is never merely unfilled. */
+    noMust: z.boolean().optional(),
+    /** Whether the crop shows the whole contact; null with no crop to judge. */
+    cropShowsContact: z.boolean().nullable(),
+  })
+  .superRefine((labels, ctx) => {
+    if (ROUTES_WITH_CONTACT.has(labels.route) && labels.contact === "") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["contact"],
+        message: "An email or WhatsApp route has an address or number.",
+      });
+    }
+    if (labels.must.length === 0 && labels.noMust !== true) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["must"],
+        message: "List the must-haves, or say the post names none.",
+      });
+    }
+  });
 
 export type Labels = z.infer<typeof labelsSchema>;
 
@@ -70,6 +108,9 @@ export type Labels = z.infer<typeof labelsSchema>;
 export interface CaseOptions {
   styleExamples: readonly string[];
 }
+
+/** Why a case is never scored: its application holds a style example, or jobkit may have drafted it. */
+export type LeftOut = "style_example" | "after_jobkit";
 
 export interface CaseSummary {
   id: string;
@@ -82,8 +123,8 @@ export interface CaseSummary {
   /** The post's screenshots: every image in the folder but the crop. */
   screenshots: number;
   labelled: boolean;
-  /** Its email holds one of the profile's style examples, so it is never scored (A10). */
-  leftOut: boolean;
+  /** Why it is never scored (A10), or null. */
+  leftOut: LeftOut | null;
   /** Other cases that seem the same application: a resend, or a reply in its thread. */
   sameAs: string[];
   /** What in its folder cannot be read; such a case is not ready to label. */
@@ -98,7 +139,7 @@ export interface CaseDetail extends CaseSummary {
   /** A kept job's pasted text; null without any. */
   pastedText: string | null;
   labels: Labels | null;
-  /** Pre-labels to start from: for a dev case, or once the case's own labels are saved. */
+  /** Pre-labels to start from: a dev case's alone. */
   prelabels: Labels | null;
 }
 
@@ -111,13 +152,15 @@ export interface Archive {
 export interface SplitReport {
   /** Cases given a split by this run. */
   added: number;
-  /** Cases ready to label in each split. */
-  test: number;
+  /** The cases this run put in test, and how many it put in dev. */
+  test: string[];
   dev: number;
-  /** Cases not ready to label: no screenshots yet, or a file that cannot be read. */
+  /** Cases with no split, not left out, and not ready: no screenshots yet, or a file that cannot be read. */
   waiting: number;
-  /** Cases whose email holds a style example. */
+  /** Cases left out (A10). */
   leftOut: number;
+  /** Ready cases left without a split: their application is in a full test set. */
+  held: string[];
 }
 
 function isImage(file: string): boolean {
@@ -138,41 +181,38 @@ function caseIds(archive: string): string[] {
 
 const splitSchema = z.record(z.string(), z.enum(["test", "dev"]));
 
-/**
- * The splits given so far. A file that cannot be read stops everything:
- * assigning the cases again could put a case labelled with suggestions in
- * the test set.
- */
-function savedSplits(archive: string): Record<string, Split> {
-  const file = join(archive, SPLIT_FILE);
-  if (!existsSync(file)) return {};
-  try {
-    return splitSchema.parse(JSON.parse(readFileSync(file, "utf8")));
-  } catch {
-    throw new Error(
-      `${file} cannot be read. Restore it from a backup before labelling or running anything: each case must keep the split it was given.`,
-    );
-  }
-}
-
 /** Writes a file whole: a crash leaves the old one, never half of the new. */
 function writeWhole(file: string, text: string): void {
   writeFileSync(`${file}.tmp`, text);
   renameSync(`${file}.tmp`, file);
 }
 
+const sha256 = (bytes: Uint8Array | string) => createHash("sha256").update(bytes).digest("hex");
+
 /** A JSON file checked against its schema; null when there is none, a throw naming it when it does not fit. */
 function readJson<T>(file: string, schema: z.ZodType<T>): T | null {
   if (!existsSync(file)) return null;
-  const parsed = schema.safeParse(JSON.parse(readFileSync(file, "utf8")));
+  let parsed;
+  try {
+    parsed = schema.safeParse(JSON.parse(readFileSync(file, "utf8")));
+  } catch {
+    throw new Error(`${file} is not JSON.`);
+  }
   if (!parsed.success) throw new Error(`${file} does not hold what it should.`);
   return parsed.data;
 }
 
 const sourceSchema = z.object({ jobId: z.string(), receivedAt: z.string() });
 
-/** A labels file as saved, read without what saving adds (labelledAt): z.object drops unknown keys. */
+/** A labels file as saved, read without its refinements, or what saving adds: z.object drops unknown keys. */
 const savedLabelsSchema = z.object(labelsSchema.shape);
+
+/** What saving adds to a case's labels: when, under which split, and what the owner was shown. */
+const labelledUnderSchema = z.object({
+  split: z.enum(["test", "dev"]).nullable().optional(),
+  prelabelsShown: z.boolean().optional(),
+  cropSha256: z.string().nullable().optional(),
+});
 
 /** Message IDs in a header: "<a@x> <b@x>". */
 function messageIds(header: string | undefined): string[] {
@@ -182,6 +222,42 @@ function messageIds(header: string | undefined): string[] {
 /** A subject without the replies' and forwards' prefixes. */
 function bareSubject(subject: string): string {
   return normalised(subject.replace(/^(?:\s*(?:re|fwd?)\s*:)+/i, ""));
+}
+
+/** What a sent email gives the archive, kept by the file's time and size so the archive is parsed once. */
+interface MailRead {
+  email: NonNullable<CaseDetail["email"]>;
+  messageId: string | null;
+  answers: string[];
+  words: string;
+}
+
+const mailCache = new Map<string, { stamp: string; mail: MailRead }>();
+
+async function readMail(file: string): Promise<MailRead> {
+  const { mtimeMs, size } = statSync(file);
+  const stamp = `${mtimeMs}:${size}`;
+  const cached = mailCache.get(file);
+  if (cached?.stamp === stamp) return cached.mail;
+  const parsed = await PostalMime.parse(readFileSync(file));
+  const text = bodyText(parsed);
+  const sent = new Date(parsed.date ?? "");
+  const name = (address: { name: string; address?: string }) =>
+    address.address ? `${address.name} <${address.address}>`.trim() : address.name;
+  const mail: MailRead = {
+    email: {
+      from: parsed.from ? name(parsed.from) : "",
+      to: (parsed.to ?? []).map((address) => address.address ?? address.name).join(", "),
+      subject: parsed.subject ?? "",
+      date: Number.isNaN(sent.getTime()) ? null : sent.toISOString(),
+      text,
+    },
+    messageId: messageIds(parsed.messageId)[0] ?? null,
+    answers: [...messageIds(parsed.inReplyTo), ...messageIds(parsed.references)],
+    words: `${bareSubject(parsed.subject ?? "")}\n${normalised(text)}`,
+  };
+  mailCache.set(file, { stamp, mail });
+  return mail;
 }
 
 /** One case's folder as read, before splits and the archive's other cases. */
@@ -196,12 +272,19 @@ interface FolderRead {
   cropFile: string | null;
   pastedText: string | null;
   labels: Labels | null;
+  /** What saving recorded with the labels. */
+  labelledUnder: z.infer<typeof labelledUnderSchema> | null;
   prelabels: Labels | null;
-  leftOut: boolean;
+  leftOut: LeftOut | null;
   problem: string | null;
 }
 
-async function readFolder(archive: string, id: string, options: CaseOptions): Promise<FolderRead> {
+async function readFolder(
+  archive: string,
+  id: string,
+  options: CaseOptions,
+  jobkitFrom: Date | null,
+): Promise<FolderRead> {
   const folder = join(archive, id);
   const images = readdirSync(folder).filter(isImage).sort();
   const read: FolderRead = {
@@ -214,39 +297,40 @@ async function readFolder(archive: string, id: string, options: CaseOptions): Pr
     cropFile: images.includes(CROP_FILE) ? CROP_FILE : null,
     pastedText: null,
     labels: null,
+    labelledUnder: null,
     prelabels: null,
-    leftOut: false,
+    leftOut: null,
     problem: null,
   };
+  try {
+    // Pre-labels a model wrote may not fit: they are only suggestions, so they are passed over.
+    read.prelabels = readJson(join(folder, "prelabels.json"), savedLabelsSchema);
+  } catch {
+    read.prelabels = null;
+  }
   try {
     if (read.source === "mail") {
       const file = join(folder, "email.eml");
       if (!existsSync(file)) throw new Error("There is no email.eml in its folder.");
-      let parsed: Email;
+      let mail: MailRead;
       try {
-        parsed = await PostalMime.parse(readFileSync(file));
+        mail = await readMail(file);
       } catch (error) {
         throw new Error(
           `Its email.eml cannot be read: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
-      const text = bodyText(parsed);
-      const sent = new Date(parsed.date ?? "");
-      const name = (address: { name: string; address?: string }) =>
-        address.address ? `${address.name} <${address.address}>`.trim() : address.name;
-      read.email = {
-        from: parsed.from ? name(parsed.from) : "",
-        to: (parsed.to ?? []).map((address) => address.address ?? address.name).join(", "),
-        subject: parsed.subject ?? "",
-        date: Number.isNaN(sent.getTime()) ? null : sent.toISOString(),
-        text,
-      };
-      read.thread = {
-        messageId: messageIds(parsed.messageId)[0] ?? null,
-        answers: [...messageIds(parsed.inReplyTo), ...messageIds(parsed.references)],
-        words: `${bareSubject(parsed.subject ?? "")}\n${normalised(text)}`,
-      };
-      read.leftOut = holdsStyleExample(text, options.styleExamples);
+      read.email = mail.email;
+      read.thread = { messageId: mail.messageId, answers: mail.answers, words: mail.words };
+      if (holdsStyleExample(mail.email.text, options.styleExamples)) {
+        read.leftOut = "style_example";
+      } else if (
+        jobkitFrom &&
+        mail.email.date !== null &&
+        Date.parse(mail.email.date) >= jobkitFrom.getTime()
+      ) {
+        read.leftOut = "after_jobkit";
+      }
     } else {
       const source = readJson(join(folder, "source.json"), sourceSchema);
       if (!source) {
@@ -256,17 +340,30 @@ async function readFolder(archive: string, id: string, options: CaseOptions): Pr
       const pasted = join(folder, PASTED_FILE);
       read.pastedText = existsSync(pasted) ? readFileSync(pasted, "utf8") : null;
     }
-    read.labels = readJson(join(folder, "labels.json"), savedLabelsSchema);
-    read.prelabels = readJson(join(folder, "prelabels.json"), savedLabelsSchema);
+    const labelsFile = join(folder, "labels.json");
+    read.labels = readJson(labelsFile, savedLabelsSchema);
+    read.labelledUnder = readJson(labelsFile, labelledUnderSchema);
   } catch (error) {
     read.problem = error instanceof Error ? error.message : String(error);
   }
   return read;
 }
 
-/** Ready to label, and so to be given a split: readable, not left out, with the post's screenshots. */
+/** Ready to label: readable, not left out, with the post's screenshots or a kept job's pasted text. */
 function isReady(read: FolderRead): boolean {
-  return read.problem === null && !read.leftOut && read.screenshotFiles.length > 0;
+  const post =
+    read.screenshotFiles.length > 0 ||
+    (read.source === "live" && (read.pastedText ?? "").trim() !== "");
+  return read.problem === null && read.leftOut === null && post;
+}
+
+/**
+ * Whether a case's labels can be blind: never a kept live job's, whose
+ * owner has seen jobkit's reading of it, nor one labelled with pre-labels
+ * shown.
+ */
+function canBeBlind(read: FolderRead): boolean {
+  return read.source === "mail" && read.labelledUnder?.prelabelsShown !== true;
 }
 
 /**
@@ -306,14 +403,60 @@ function applicationsOf(reads: readonly FolderRead[]): Map<string, string> {
   return new Map(reads.map((read) => [read.id, root(read.id)]));
 }
 
-/** Every case's folder read, and the applications they make. */
+/**
+ * Every case's folder read, and the applications they make. An application
+ * one of whose emails holds a style example is left out whole: a resend or
+ * a reply is the post the drafter was shown.
+ */
 async function scan(
   archive: string,
   options: CaseOptions,
 ): Promise<{ reads: FolderRead[]; applications: Map<string, string> }> {
+  const jobkitFrom = keptJobkitFrom(archive);
   const reads: FolderRead[] = [];
-  for (const id of caseIds(archive)) reads.push(await readFolder(archive, id, options));
-  return { reads, applications: applicationsOf(reads) };
+  for (const id of caseIds(archive)) {
+    reads.push(await readFolder(archive, id, options, jobkitFrom));
+  }
+  const applications = applicationsOf(reads);
+  const shown = new Set(
+    reads
+      .filter((read) => read.leftOut === "style_example")
+      .map((read) => applications.get(read.id)),
+  );
+  for (const read of reads) {
+    if (shown.has(applications.get(read.id))) read.leftOut = "style_example";
+  }
+  return { reads, applications };
+}
+
+/**
+ * The splits given so far. A file that cannot be read stops everything, as
+ * does a missing one while its last copy waits, or while cases were
+ * labelled under a split: assigning the cases again could put a case
+ * labelled with suggestions in the test set.
+ */
+function savedSplits(archive: string, reads: readonly FolderRead[]): Record<string, Split> {
+  const file = join(archive, SPLIT_FILE);
+  if (!existsSync(file)) {
+    if (existsSync(join(archive, SPLIT_BACKUP))) {
+      throw new Error(
+        `${file} is missing, but ${SPLIT_BACKUP} holds the last splits: copy it back to ${SPLIT_FILE} first.`,
+      );
+    }
+    if (reads.some((read) => read.labelledUnder?.split)) {
+      throw new Error(
+        `${file} is missing, yet cases were labelled under a split: restore it before giving or reading splits.`,
+      );
+    }
+    return {};
+  }
+  try {
+    return splitSchema.parse(JSON.parse(readFileSync(file, "utf8")));
+  } catch {
+    throw new Error(
+      `${file} cannot be read. Copy ${SPLIT_BACKUP} over it before labelling or running anything: each case must keep the split it was given.`,
+    );
+  }
 }
 
 function detailOf(
@@ -341,7 +484,7 @@ function detailOf(
     cropFile: read.cropFile,
     pastedText: read.pastedText,
     labels: read.labels,
-    prelabels: split === "dev" || read.labels !== null ? read.prelabels : null,
+    prelabels: split === "dev" ? read.prelabels : null,
   };
 }
 
@@ -361,8 +504,8 @@ const ORDER: Readonly<Record<string, number>> = { test: 0, none: 1, dev: 2 };
 
 /** Every case, the test cases first, then those with no split yet, then dev, each by date. */
 export async function listCases(archive: string, options: CaseOptions): Promise<Archive> {
-  const splits = savedSplits(archive);
   const { reads, applications } = await scan(archive, options);
+  const splits = savedSplits(archive, reads);
   const cases = reads.map((read): CaseSummary => {
     const detail = detailOf(read, splits[read.id] ?? null, applications);
     return {
@@ -394,8 +537,8 @@ export async function readCase(
   options: CaseOptions,
 ): Promise<CaseDetail | null> {
   if (!CASE_ID.test(id) || !existsSync(join(archive, id))) return null;
-  const splits = savedSplits(archive);
   const { reads, applications } = await scan(archive, options);
+  const splits = savedSplits(archive, reads);
   const read = reads.find((each) => each.id === id);
   return read ? detailOf(read, splits[id] ?? null, applications) : null;
 }
@@ -403,50 +546,134 @@ export async function readCase(
 /**
  * Gives a split to every case ready to label that has none (`npm run
  * eval:split`), which the owner runs once the cases they mean to keep have
- * their screenshots, and again for cases that arrive later; the cases of
- * one application share a split.
+ * their screenshots, and again for cases that arrive later. While test has
+ * a free place and cases still wait, it refuses unless told to go on
+ * (`partial`), so the test set is a draw from all the cases, never the
+ * first ones matched. The last split file is kept as split.json.bak.
  */
-export async function fixSplit(archive: string, options: CaseOptions): Promise<SplitReport> {
-  const saved = savedSplits(archive);
+export async function fixSplit(
+  archive: string,
+  options: CaseOptions,
+  opts: { partial?: boolean } = {},
+): Promise<SplitReport> {
   const { reads, applications } = await scan(archive, options);
-  const ready = reads.filter(isReady).map((read) => read.id);
-  const splits = assignSplits(ready, saved, (id) => applications.get(id) ?? id);
-  const added = Object.keys(splits).filter((id) => !Object.hasOwn(saved, id)).length;
-  if (added > 0) {
+  const saved = savedSplits(archive, reads);
+  const present = reads.filter((read) => read.leftOut === null);
+  const ready = present.filter(isReady);
+  const waiting = present.filter((read) => !isReady(read) && !Object.hasOwn(saved, read.id));
+  const testPlaces = TEST_SIZE - present.filter((read) => saved[read.id] === "test").length;
+  // Only a case that could take a test place holds the draw up: a kept live job never can.
+  const contenders = waiting.filter(canBeBlind);
+  if (testPlaces > 0 && contenders.length > 0 && !opts.partial) {
+    const many = contenders.length === 1 ? "1 case is" : `${contenders.length} cases are`;
+    throw new Error(
+      `${many} still waiting for screenshots, or has a file that cannot be read, while test has ${testPlaces} free places: add the screenshots, set aside what is not an application, or run npm run eval:split -- --partial to fill test without them.`,
+    );
+  }
+  const byId = new Map(reads.map((read) => [read.id, read]));
+  const { splits, held } = assignSplits({
+    ready: ready.map((read) => read.id),
+    present: present.map((read) => read.id),
+    assigned: saved,
+    groupOf: (id) => applications.get(id) ?? id,
+    blind: (id) => canBeBlind(byId.get(id)!),
+  });
+  const added = Object.keys(splits).filter((id) => !Object.hasOwn(saved, id));
+  if (added.length > 0) {
+    const file = join(archive, SPLIT_FILE);
+    if (existsSync(file)) copyFileSync(file, join(archive, SPLIT_BACKUP));
     const ordered = Object.fromEntries(
       Object.entries(splits).sort(([a], [b]) => a.localeCompare(b)),
     );
-    writeWhole(join(archive, SPLIT_FILE), `${JSON.stringify(ordered, null, 2)}\n`);
+    writeWhole(file, `${JSON.stringify(ordered, null, 2)}\n`);
   }
   return {
-    added,
-    test: ready.filter((id) => splits[id] === "test").length,
-    dev: ready.filter((id) => splits[id] === "dev").length,
-    waiting: reads.filter((read) => !read.leftOut && !isReady(read)).length,
-    leftOut: reads.filter((read) => read.leftOut).length,
+    added: added.length,
+    test: added.filter((id) => splits[id] === "test").sort(),
+    dev: added.filter((id) => splits[id] === "dev").length,
+    waiting: waiting.length,
+    leftOut: reads.filter((read) => read.leftOut !== null).length,
+    held,
   };
 }
 
-/** Saves a case's labels, checked against the schema, with when they were saved. */
+/**
+ * Saves a case's labels, checked against the schema, with when they were
+ * saved, the split they were made under, whether pre-labels were shown
+ * (a dev case's are), and the SHA-256 of the crop a crop label judged. The
+ * file is written whole.
+ */
 export function saveLabels(archive: string, id: string, labels: Labels, at: Date): void {
-  if (!CASE_ID.test(id) || !existsSync(join(archive, id))) throw new Error(`No case ${id}`);
+  if (!CASE_ID.test(id) || !existsSync(join(archive, id))) throw new NoCase(`No case ${id}`);
   const checked = labelsSchema.parse(labels);
-  writeFileSync(
+  const file = join(archive, SPLIT_FILE);
+  const split = existsSync(file)
+    ? (splitSchema.parse(JSON.parse(readFileSync(file, "utf8")))[id] ?? null)
+    : null;
+  let prelabels = null;
+  try {
+    prelabels = readJson(join(archive, id, "prelabels.json"), savedLabelsSchema);
+  } catch {
+    // Pre-labels that cannot be read were never shown.
+  }
+  const crop = join(archive, id, CROP_FILE);
+  writeWhole(
     join(archive, id, "labels.json"),
-    `${JSON.stringify({ ...checked, labelledAt: at.toISOString() }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        ...checked,
+        labelledAt: at.toISOString(),
+        split,
+        prelabelsShown: split === "dev" && prelabels !== null,
+        cropSha256:
+          checked.cropShowsContact !== null && existsSync(crop) ? sha256(readFileSync(crop)) : null,
+      },
+      null,
+      2,
+    )}\n`,
   );
 }
 
 /**
+ * Sets aside a case that is not an application, moving its folder to
+ * `_dismissed/`: out of the list and of its split's count, and never
+ * brought back by an import. Moving the folder back undoes it.
+ */
+export function dismissCase(archive: string, id: string): void {
+  if (!CASE_ID.test(id) || !existsSync(join(archive, id))) throw new NoCase(`No case ${id}`);
+  const aside = join(archive, DISMISSED, id);
+  if (existsSync(aside)) throw new Error(`A case ${id} is already set aside`);
+  mkdirSync(join(archive, DISMISSED), { recursive: true });
+  renameSync(join(archive, id), aside);
+}
+
+/**
  * When a screenshot was taken: from a phone's file name, which gives the
- * phone's local time and so the laptop's, else the file's time.
+ * phone's local time and so the laptop's, when it names a real time; else
+ * the file's time.
  */
 function takenAt(folder: string, file: string): Date {
   const match = /(\d{4})-?(\d{2})-?(\d{2})[-_ ]?(\d{2})-?(\d{2})-?(\d{2})/.exec(file);
   if (match) {
-    const [, year, month, day, hour, minute, second] = match.map(Number);
-    const parsed = new Date(year!, month! - 1, day!, hour!, minute!, second!);
-    if (!Number.isNaN(parsed.getTime())) return parsed;
+    const [year, month, day, hour, minute, second] = match.slice(1).map(Number) as [
+      number,
+      number,
+      number,
+      number,
+      number,
+      number,
+    ];
+    const parsed = new Date(year, month - 1, day, hour, minute, second);
+    const real =
+      year >= 2000 &&
+      year <= 2100 &&
+      parsed.getFullYear() === year &&
+      parsed.getMonth() === month - 1 &&
+      parsed.getDate() === day &&
+      parsed.getHours() === hour &&
+      parsed.getMinutes() === minute &&
+      parsed.getSeconds() === second;
+    if (real) return parsed;
   }
   return statSync(join(folder, file)).mtime;
 }
@@ -472,10 +699,10 @@ export function poolCandidates(
 
 /** Moves a screenshot from the pool into a case's folder, renamed if the case already has one by that name. */
 export function adoptScreenshot(archive: string, id: string, file: string): string {
-  if (!CASE_ID.test(id) || !existsSync(join(archive, id))) throw new Error(`No case ${id}`);
-  if (!isPlainName(file) || !isImage(file)) throw new Error(`Not a screenshot: ${file}`);
+  if (!CASE_ID.test(id) || !existsSync(join(archive, id))) throw new NoCase(`No case ${id}`);
+  if (!isPlainName(file) || !isImage(file)) throw new NoCase(`Not a screenshot: ${file}`);
   const from = join(archive, POOL, file);
-  if (!existsSync(from)) throw new Error(`No screenshot ${file} in the pool`);
+  if (!existsSync(from)) throw new NoCase(`No screenshot ${file} in the pool`);
   let name = file;
   for (let n = 2; existsSync(join(archive, id, name)) || name === CROP_FILE; n++) {
     name = `${file.slice(0, -extname(file).length)}-${n}${extname(file)}`;

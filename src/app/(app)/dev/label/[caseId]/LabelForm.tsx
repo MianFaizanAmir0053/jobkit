@@ -12,6 +12,7 @@ export interface LabelValues {
   contact: string;
   eligibility: string;
   must: string[];
+  noMust?: boolean;
   cropShowsContact: boolean | null;
 }
 
@@ -60,6 +61,7 @@ export function LabelForm({
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => line !== ""),
+      noMust: form.get("noMust") === "on",
       cropShowsContact: hasCrop ? crop === "yes" : null,
     };
     setBusy(true);
@@ -69,8 +71,17 @@ export function LabelForm({
         headers: { "content-type": "application/json" },
         body: JSON.stringify(labels),
       });
-      setNote(response.ok ? "Saved." : "That did not save. Check the fields and try again.");
-      if (response.ok) router.refresh();
+      if (response.ok) {
+        setNote("Saved.");
+        router.refresh();
+      } else {
+        const answer = (await response.json().catch(() => null)) as { fields?: string[] } | null;
+        setNote(
+          answer?.fields?.length
+            ? `That did not save. Check: ${answer.fields.join(", ")}.`
+            : "That did not save. Try again.",
+        );
+      }
     } catch {
       setNote("The connection dropped. Try again.");
     } finally {
@@ -105,7 +116,8 @@ export function LabelForm({
         </select>
       </label>
       <label className="flex flex-col gap-1">
-        The exact address or number (empty when the route has none)
+        The exact address, number or link (needed for email and WhatsApp; empty when the route has
+        none)
         <input name="contact" defaultValue={initial.contact} className={FIELD} />
       </label>
       <label className="flex flex-col gap-1">
@@ -124,6 +136,10 @@ export function LabelForm({
       <label className="flex flex-col gap-1">
         Must-have requirements, one a line, as the post words them
         <textarea name="must" defaultValue={initial.must.join("\n")} rows={5} className={FIELD} />
+      </label>
+      <label className="flex items-center gap-2">
+        <input type="checkbox" name="noMust" defaultChecked={initial.noMust === true} />
+        The post names no must-have requirements
       </label>
       {hasCrop && (
         <label className="flex flex-col gap-1">
@@ -148,6 +164,40 @@ export function LabelForm({
         )}
       </div>
     </form>
+  );
+}
+
+/** "Not an application": sets the case aside, where no import brings it back, and goes back to the list. */
+export function DismissButton({ caseId }: { caseId: string }) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function dismiss() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`/api/dev/label/${caseId}/dismiss`, { method: "POST" });
+      if (response.ok) router.push("/dev/label");
+      else setError("It could not be set aside.");
+    } catch {
+      setError("The connection dropped. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <span className="inline-flex flex-col gap-1">
+      <Button size="sm" variant="outline" disabled={busy} onClick={() => void dismiss()}>
+        Not an application
+      </Button>
+      {error && (
+        <span role="alert" className="text-sm text-destructive">
+          {error}
+        </span>
+      )}
+    </span>
   );
 }
 

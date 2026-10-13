@@ -88,6 +88,35 @@ function cardBottom(page: Page): Promise<number> {
   );
 }
 
+/** Where the post's line starting with `start` is drawn, in the screenshot's pixels; null with no such line. */
+export function lineBox(
+  browser: Browser,
+  post: SyntheticPost,
+  start: string,
+): Promise<{ left: number; top: number; right: number; bottom: number } | null> {
+  const scale = post.render.width / PHONE_WIDTH;
+  return onPage(browser, post, (page) =>
+    page.evaluate(
+      ([wanted, factor]) => {
+        const line = [...document.querySelectorAll("p")].find((p) =>
+          (p.textContent ?? "").startsWith(wanted),
+        );
+        if (!line) return null;
+        const range = document.createRange();
+        range.selectNodeContents(line);
+        const box = range.getBoundingClientRect();
+        return {
+          left: box.left * factor,
+          top: box.top * factor,
+          right: box.right * factor,
+          bottom: box.bottom * factor,
+        };
+      },
+      [start, scale] as const,
+    ),
+  );
+}
+
 /** The post's height as laid out, in CSS pixels. */
 export function postHeight(browser: Browser, post: SyntheticPost): Promise<number> {
   return onPage(browser, post, cardBottom);

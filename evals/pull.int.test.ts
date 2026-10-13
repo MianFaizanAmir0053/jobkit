@@ -142,7 +142,9 @@ describe("pullKeptJobs", () => {
     const report = await pullKeptJobs({ db, storage }, archive);
 
     expect(report.failed).toEqual([]);
-    expect(report.cases).toEqual([{ id: `live-2026-10-06-${keptJob.slice(0, 8)}`, images: 2 }]);
+    expect(report.cases).toEqual([
+      { id: `live-2026-10-06-${keptJob.slice(0, 8)}`, images: 2, existing: false },
+    ]);
     const folder = join(archive, report.cases[0]!.id);
     expect(readdirSync(folder).sort()).toEqual(["post-1.png", "post-2.png", "source.json"]);
     expect(sha256(readFileSync(join(folder, "post-2.png")))).toBe(sha256(images[1]!));
@@ -153,7 +155,11 @@ describe("pullKeptJobs", () => {
     expect(await kept(keptJob)).toEqual([false, false]);
     expect(await kept(otherJob)).toEqual([false]);
 
-    expect(await pullKeptJobs({ db, storage }, archive)).toEqual({ cases: [], failed: [] });
+    expect(await pullKeptJobs({ db, storage }, archive)).toEqual({
+      cases: [],
+      failed: [],
+      notes: [],
+    });
   });
 
   it("keeps a job's flag, says why, and makes no case, when an image cannot be copied", async () => {
@@ -176,7 +182,11 @@ describe("pullKeptJobs", () => {
     // Released by hand, the job is left to the purge.
     expect(await releaseKeptJob(db, jobId)).toBe(2);
     expect(await kept(jobId)).toEqual([false, false]);
-    expect(await pullKeptJobs({ db, storage }, archive)).toEqual({ cases: [], failed: [] });
+    expect(await pullKeptJobs({ db, storage }, archive)).toEqual({
+      cases: [],
+      failed: [],
+      notes: [],
+    });
   });
 
   it("clears only the flags of the images it copied, not one kept while it ran", async () => {
@@ -196,8 +206,40 @@ describe("pullKeptJobs", () => {
 
     const report = await pullKeptJobs({ db, storage: busy }, join(root, "archive"));
 
-    expect(report.cases).toEqual([{ id: `live-2026-10-06-${jobId.slice(0, 8)}`, images: 1 }]);
+    expect(report.cases).toEqual([
+      { id: `live-2026-10-06-${jobId.slice(0, 8)}`, images: 1, existing: false },
+    ]);
     expect(await kept(jobId)).toEqual([false, true]);
+  });
+
+  it("says when it adds to a case already in the archive, and when a crop could not be copied", async () => {
+    const jobId = await jobWith([await png(10), await png(20)]);
+    await db.query(
+      "update {{schema}}.job_images set kept_for_eval = true where job_id = $1 and position = 0",
+      [jobId],
+    );
+    const archive = join(root, "archive");
+    const first = await pullKeptJobs({ db, storage }, archive);
+    expect(first.cases).toEqual([
+      { id: `live-2026-10-06-${jobId.slice(0, 8)}`, images: 1, existing: false },
+    ]);
+    // Kept again later, with a crop whose bytes no longer match its name.
+    await keep(jobId);
+    await readWithCrop(jobId, await png(150));
+    const { rows } = await db.query<{ output: { cropPath: string } }>(
+      "select output from {{schema}}.job_stage_runs where job_id = $1 and stage = 'address_read'",
+      [jobId],
+    );
+    await storage.put(rows[0]!.output.cropPath, await png(151), "image/png", { overwrite: true });
+
+    const second = await pullKeptJobs({ db, storage }, archive);
+
+    expect(second.cases).toEqual([
+      { id: `live-2026-10-06-${jobId.slice(0, 8)}`, images: 2, existing: true },
+    ]);
+    expect(second.notes).toEqual([
+      `live-2026-10-06-${jobId.slice(0, 8)}: its crop does not match its hash, so it was left out.`,
+    ]);
   });
 
   it("copies the stored crop of the contact and the pasted text with the images", async () => {

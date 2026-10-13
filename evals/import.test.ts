@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -159,14 +168,30 @@ describe("judgeMessage", () => {
     expect((await judgeMessage(raw(message()), { ...options, jobkitFrom })).kind).toBe("case");
   });
 
-  it("takes a message downloaded by hand, which has no Gmail labels, when told it was sent", async () => {
+  it("takes a message downloaded by hand, which has no Gmail labels, as sent when it is from the owner", async () => {
     const downloaded = raw(message({ labels: null }));
+    const owner = { ...options, owner: "SAM@example.com" };
 
     expect(await judgeMessage(downloaded, options)).toEqual({
       kind: "skipped",
       reason: "not_sent",
     });
-    expect((await judgeMessage(downloaded, options, false)).kind).toBe("case");
+    expect((await judgeMessage(downloaded, owner, false)).kind).toBe("case");
+    expect(
+      await judgeMessage(downloaded, { ...options, owner: "someone@example.org" }, false),
+    ).toEqual({ kind: "skipped", reason: "not_sent" });
+  });
+
+  it("finds a style example in a reply that quotes it", async () => {
+    const quoted = message({
+      body: "Attached again.\n\n> Dear Hiring Team,\n> I am applying for the\n> Senior Engineer role.",
+    });
+    const example = "Dear Hiring Team, I am applying for the Senior Engineer role.";
+
+    expect(await judgeMessage(raw(quoted), { ...options, styleExamples: [example] })).toEqual({
+      kind: "skipped",
+      reason: "style_example",
+    });
   });
 
   it("reports a message with no headers as malformed", async () => {
@@ -198,6 +223,12 @@ describe("importMbox", () => {
     });
     expect(styleExamplesOf(join(dir, "none.yaml")).problems).toEqual([
       `no profile at ${join(dir, "none.yaml")}`,
+    ]);
+    // A folder named as an example is no example, and stops nothing.
+    mkdirSync(join(dir, "style"));
+    writeFileSync(join(dir, "folder.yaml"), "style_examples:\n  - style\n");
+    expect(styleExamplesOf(join(dir, "folder.yaml")).problems).toEqual([
+      "style example style cannot be read",
     ]);
   });
 
@@ -240,6 +271,19 @@ describe("importMbox", () => {
     const again = await importMbox(file, archive, options);
     expect(again.cases).toEqual([]);
     expect(again.alreadyImported).toBe(2);
+
+    // Set aside as not an application: never brought back.
+    mkdirSync(join(archive, "_dismissed"));
+    renameSync(join(archive, folders[0]!), join(archive, "_dismissed", folders[0]!));
+    // Cut short by an interrupted import: written again.
+    writeFileSync(join(archive, folders[1]!, "email.eml"), "From: half");
+    const third = await importMbox(file, archive, options);
+    expect(third).toMatchObject({ cases: [], dismissed: 1, repaired: 1, alreadyImported: 0 });
+    expect(existsSync(join(archive, folders[0]!))).toBe(false);
+    expect(readFileSync(join(archive, folders[1]!, "email.eml"), "latin1")).toContain(
+      "X-Gmail-Labels: Sent,Opened",
+    );
+    expect(readdirSync(join(archive, folders[1]!))).toEqual(["email.eml"]);
   });
 
   it("imports a folder of downloaded .eml files by the same rules, naming any it cannot read", async () => {
@@ -259,7 +303,10 @@ describe("importMbox", () => {
     writeFileSync(join(downloaded, "notes.txt"), "not mail");
     const archive = join(dir, "archive");
 
-    const report = await importEmlFolder(downloaded, archive, options);
+    const report = await importEmlFolder(downloaded, archive, {
+      ...options,
+      owner: "sam@example.com",
+    });
 
     expect(report.cases).toHaveLength(1);
     expect(report.skipped).toMatchObject({ no_resume: 1 });
@@ -279,15 +326,17 @@ describe("jobkitFromOf", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("is the first import's time unless a day is given, kept in the archive for later imports", () => {
+  it("needs the day on the first import, keeps it for later ones, and never moves it later", () => {
     const archive = join(dir, "archive");
 
-    const first = jobkitFromOf(archive, null, new Date("2026-10-13T08:00:00Z"));
-
-    expect(first.toISOString()).toBe("2026-10-13T08:00:00.000Z");
-    expect(jobkitFromOf(archive, null, new Date("2026-11-01T08:00:00Z"))).toEqual(first);
-    const given = new Date("2026-09-30T00:00:00+05:00");
-    expect(jobkitFromOf(archive, given, new Date("2026-11-01T08:00:00Z"))).toEqual(given);
-    expect(jobkitFromOf(archive, null, new Date("2026-12-01T08:00:00Z"))).toEqual(given);
+    expect(() => jobkitFromOf(archive, null)).toThrow(/--jobkit-from/);
+    const first = new Date("2026-10-13T00:00:00+05:00");
+    expect(jobkitFromOf(archive, first)).toEqual(first);
+    expect(jobkitFromOf(archive, null)).toEqual(first);
+    expect(() => jobkitFromOf(archive, new Date("2027-10-13T00:00:00+05:00"))).toThrow(/later day/);
+    expect(jobkitFromOf(archive, null)).toEqual(first);
+    const earlier = new Date("2026-09-30T00:00:00+05:00");
+    expect(jobkitFromOf(archive, earlier)).toEqual(earlier);
+    expect(jobkitFromOf(archive, null)).toEqual(earlier);
   });
 });

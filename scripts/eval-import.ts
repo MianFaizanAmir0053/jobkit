@@ -1,22 +1,27 @@
 /**
  *   npm run eval:import -- --mbox <file>                       a Takeout mbox of sent mail
  *   npm run eval:import -- --eml <folder>                      .eml files saved with Gmail's "Download message"
- *   npm run eval:import -- ... --archive <folder>              into another archive than private/archive
+ *   npm run eval:import -- ... --archive <folder>              into another archive under private/
  *   npm run eval:import -- ... --profile <file>                style examples from another profile file
  *   npm run eval:import -- ... --attachment cv.pdf             another CV file name than resume.pdf
- *   npm run eval:import -- ... --jobkit-from <YYYY-MM-DD>      the day you first applied through jobkit
+ *   npm run eval:import -- ... --jobkit-from <YYYY-MM-DD>      the day you first sent an application jobkit drafted
  *
  * Makes one case folder per sent application (evals spec, "Case sources"),
  * leaving out any whose body holds one of the profile's style examples,
  * and any sent from the day jobkit began drafting, whose words may be a
- * model's: the first import takes its own time as that day unless told
- * otherwise, and the archive keeps it. Reports what it kept, skipped and
- * could not read. Nothing leaves the laptop: it reads and writes local
- * files only.
+ * model's. The first import must be told that day (today, if jobkit has
+ * drafted nothing yet), and the archive keeps it; a later day is refused.
+ * Downloaded messages count only when they are from OWNER_EMAIL. Cases set
+ * aside as not applications are not brought back. Reports what it kept,
+ * skipped and could not read. Nothing leaves the laptop: it reads and
+ * writes local files only.
  */
-import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { join, relative, resolve, sep } from "node:path";
 
 import { importEmlFolder, importMbox, jobkitFromOf, styleExamplesOf } from "../evals/import";
+
+import { loadLocalEnv } from "./ops";
 
 const VALUED = new Set([
   "--mbox",
@@ -58,6 +63,17 @@ async function main(): Promise<void> {
     );
   }
   const archive = resolve(args.get("--archive") ?? join("private", "archive"));
+  // Real mail stays where git and the commit guard ignore it.
+  const inside = relative(resolve("private"), archive);
+  if (inside === "" || inside.startsWith("..") || inside.split(sep)[0] === "..") {
+    throw new Error("--archive must be a folder under private/.");
+  }
+  // A downloaded message carries no Sent label: it counts only from the owner's address.
+  const owner =
+    process.env.OWNER_EMAIL ?? (existsSync(".env.local") ? loadLocalEnv().OWNER_EMAIL : undefined);
+  if (eml && !owner) {
+    throw new Error("--eml needs OWNER_EMAIL in .env.local, to keep only mail you sent.");
+  }
   const profile = resolve(args.get("--profile") ?? join("private", "profile.yaml"));
   const { examples, problems } = styleExamplesOf(profile);
   for (const problem of problems) {
@@ -66,11 +82,12 @@ async function main(): Promise<void> {
     );
   }
   const given = args.get("--jobkit-from");
-  const jobkitFrom = jobkitFromOf(archive, given ? dayOf(given) : null, new Date());
+  const jobkitFrom = jobkitFromOf(archive, given ? dayOf(given) : null);
   const options = {
     attachment: args.get("--attachment") ?? "resume.pdf",
     styleExamples: examples,
     jobkitFrom,
+    ...(owner ? { owner } : {}),
   };
 
   const report = mbox
@@ -80,8 +97,11 @@ async function main(): Promise<void> {
   console.log(`New cases in ${archive}: ${report.cases.length}`);
   for (const entry of report.cases) console.log(`  ${entry.id}  ${entry.subject}`);
   console.log(`Already imported: ${report.alreadyImported}`);
+  if (report.repaired > 0)
+    console.log(`Written again, after an import cut short: ${report.repaired}`);
+  if (report.dismissed > 0) console.log(`Set aside as not applications: ${report.dismissed}`);
   console.log(
-    `Skipped: ${report.skipped.not_sent} not marked Sent, ${report.skipped.no_resume} without the CV, ${report.skipped.style_example} matching a style example, ${report.skipped.after_jobkit} sent from ${jobkitFrom.toLocaleString()} on, when jobkit may have drafted them`,
+    `Skipped: ${report.skipped.not_sent} not marked Sent or not from you, ${report.skipped.no_resume} without the CV, ${report.skipped.style_example} matching a style example, ${report.skipped.after_jobkit} sent from ${jobkitFrom.toLocaleString()} on, when jobkit may have drafted them`,
   );
   for (const entry of report.malformed) {
     console.log(`Could not read message ${entry.file ?? entry.index}: ${entry.error}`);

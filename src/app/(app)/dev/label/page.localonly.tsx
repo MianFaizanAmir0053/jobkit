@@ -23,7 +23,7 @@ export default async function LabellingPage() {
   await requireSession({ kind: "google" });
   const { examples, problems } = styleExamplesOf(PROFILE);
   const { cases, stray } = await listCases(ARCHIVE, { styleExamples: examples });
-  const test = cases.filter((entry) => entry.split === "test");
+  const test = cases.filter((entry) => entry.split === "test" && entry.leftOut === null);
   const testLeft = test.filter((entry) => !entry.labelled).length;
   const unsplit = cases.filter((entry) => entry.split === null && !entry.leftOut);
 
@@ -39,8 +39,8 @@ export default async function LabellingPage() {
         </p>
       ) : (
         <p className="text-sm text-muted-foreground">
-          No split yet. Add each case&apos;s screenshots and delete the folders that are not
-          applications, then run <code>npm run eval:split</code> to choose the ten test cases.
+          No split yet. Add each case&apos;s screenshots and set aside what is not an application on
+          its page, then run <code>npm run eval:split</code> to choose the ten test cases.
         </p>
       )}
       {test.length > 0 && unsplit.length > 0 && (
@@ -51,7 +51,8 @@ export default async function LabellingPage() {
       )}
       {problems.length > 0 && (
         <p className="text-sm text-destructive">
-          No case is left out for the style examples yet: {problems.join("; ")}.
+          Some style examples cannot be read, so the cases they match are not left out:{" "}
+          {problems.join("; ")}.
         </p>
       )}
       {stray.length > 0 && (
@@ -82,7 +83,9 @@ export default async function LabellingPage() {
                 <td className="py-1 pr-3">
                   {entry.leftOut ? "left out" : (entry.split ?? "none")}
                 </td>
-                <td className="py-1 pr-3">{entry.date?.slice(0, 10) ?? "undated"}</td>
+                <td className="py-1 pr-3">
+                  {entry.date ? new Date(entry.date).toLocaleDateString("en-CA") : "undated"}
+                </td>
                 <td className="py-1 pr-3">
                   <Link href={`/dev/label/${entry.id}`} className="underline">
                     {entry.title}

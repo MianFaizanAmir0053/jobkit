@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -16,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   adoptScreenshot,
   archiveFile,
+  dismissCase,
   fixSplit,
   type Labels,
   listCases,
@@ -41,6 +43,7 @@ interface Mail {
   id?: string;
   inReplyTo?: string;
   body?: string;
+  date?: string;
 }
 
 function eml({
@@ -48,12 +51,13 @@ function eml({
   id = "<a@example.com>",
   inReplyTo,
   body = `Dear Hiring Team,${CRLF}I am applying for the role.`,
+  date = SENT,
 }: Mail): string {
   return [
     "From: Sam Rivera <sam@example.com>",
     "To: jobs@northwind.example",
     `Subject: ${subject}`,
-    `Date: ${SENT}`,
+    `Date: ${date}`,
     `Message-ID: ${id}`,
     ...(inReplyTo ? [`In-Reply-To: ${inReplyTo}`] : []),
     "Content-Type: text/plain; charset=UTF-8",
@@ -84,11 +88,11 @@ function liveCase(id: string, files: Record<string, string> = { "post-1.png": "i
   }
 }
 
-/** Ten mail cases, each a different application. */
-function tenCases(): string[] {
-  return Array.from({ length: 10 }, (_, i) => {
-    const id = `2026-03-01-${(i + 1).toString(16).padStart(8, "0")}`;
-    mailCase(id, { subject: `Application ${i + 1}`, id: `<m${i + 1}@example.com>` });
+/** Mail cases, each a different application. */
+function mailCases(count: number, day = "2026-03-01"): string[] {
+  return Array.from({ length: count }, (_, i) => {
+    const id = `${day}-${(i + 1).toString(16).padStart(8, "0")}`;
+    mailCase(id, { subject: `Application ${day} ${i + 1}`, id: `<m${i + 1}-${day}@example.com>` });
     return id;
   });
 }
@@ -103,7 +107,7 @@ const LABELS: Labels = {
   contact: "jobs@northwind.example",
   eligibility: "eligible",
   must: ["4+ years with React"],
-  cropShowsContact: true,
+  cropShowsContact: null,
 };
 
 beforeEach(() => {
@@ -164,6 +168,49 @@ describe("listCases", () => {
     ]);
   });
 
+  it("leaves out a whole application when one of its emails holds a style example, quoted or not", async () => {
+    const example = "Thank you for considering my application for this position.";
+    mailCase("2026-03-16-00000001", {
+      id: "<first@example.com>",
+      body: `Dear team,${CRLF}${example}`,
+    });
+    mailCase("2026-03-18-00000002", {
+      subject: "Re: Application - Engineer",
+      id: "<reply@example.com>",
+      inReplyTo: "<first@example.com>",
+      body: `Attached again.${CRLF}${CRLF}> Dear team,${CRLF}> Thank you for considering${CRLF}> my application for this position.`,
+    });
+    mailCase("2026-03-19-00000003", { subject: "Other", id: "<o@example.com>", body: "Other." });
+
+    const { cases } = await listCases(archive, { styleExamples: [example] });
+
+    expect(cases.map(({ id, leftOut }) => [id, leftOut])).toEqual([
+      ["2026-03-16-00000001", "style_example"],
+      ["2026-03-18-00000002", "style_example"],
+      ["2026-03-19-00000003", null],
+    ]);
+  });
+
+  it("leaves out mail sent from the day jobkit began drafting, which may be a model's words", async () => {
+    writeFileSync(
+      join(archive, "import.json"),
+      JSON.stringify({ jobkitFrom: "2026-03-17T00:00:00.000+05:00" }),
+    );
+    mailCase("2026-03-16-00000001");
+    mailCase("2026-03-18-00000002", {
+      subject: "Later",
+      id: "<later@example.com>",
+      date: "Wed, 18 Mar 2026 10:00:00 +0500",
+    });
+
+    const { cases } = await listCases(archive, NO_EXAMPLES);
+
+    expect(cases.map(({ id, leftOut }) => [id, leftOut])).toEqual([
+      ["2026-03-16-00000001", null],
+      ["2026-03-18-00000002", "after_jobkit"],
+    ]);
+  });
+
   it("refuses a split file it cannot read, rather than assigning every case again", async () => {
     mailCase("2026-03-16-00000001");
     writeFileSync(join(archive, "split.json"), "{ half a file");
@@ -173,6 +220,19 @@ describe("listCases", () => {
     writeFileSync(join(archive, "split.json"), JSON.stringify({ "2026-03-16-00000001": "train" }));
     await expect(listCases(archive, NO_EXAMPLES)).rejects.toThrow(/split\.json/);
   });
+
+  it("ignores pre-labels it cannot read, but not labels", async () => {
+    mailCase("2026-03-16-00000001");
+    writeFileSync(join(archive, "2026-03-16-00000001", "prelabels.json"), '{ "company": 7 }');
+    mailCase("2026-03-16-00000002", { subject: "Two", id: "<b@example.com>" });
+    writeFileSync(join(archive, "2026-03-16-00000002", "labels.json"), "{ half");
+
+    const { cases } = await listCases(archive, NO_EXAMPLES);
+    const problem = (id: string) => cases.find((entry) => entry.id === id)?.problem;
+
+    expect(problem("2026-03-16-00000001")).toBeNull();
+    expect(problem("2026-03-16-00000002")).toMatch(/labels\.json/);
+  });
 });
 
 describe("fixSplit", () => {
@@ -180,12 +240,8 @@ describe("fixSplit", () => {
 
   it("gives a split only to cases ready to label: with screenshots, readable, and no style example", async () => {
     mailCase("2026-03-16-00000001");
-    mailCase(
-      "2026-03-16-00000002",
-      { subject: "Another", id: "<b@example.com>", body: "Other." },
-      0,
-    );
     liveCase("live-2026-10-06-1a2b3c4d");
+    liveCase("live-2026-10-07-2b3c4d5e", { "pasted.txt": "Apply at jobs@example.com" });
     mailCase("2026-03-16-00000003", {
       subject: "Third",
       id: "<c@example.com>",
@@ -194,37 +250,72 @@ describe("fixSplit", () => {
 
     const fixed = await fixSplit(archive, { styleExamples: [STYLE] });
 
-    expect(fixed).toEqual({ added: 2, test: 2, dev: 0, waiting: 1, leftOut: 1 });
+    expect(fixed).toEqual({
+      added: 3,
+      test: ["2026-03-16-00000001"],
+      dev: 2,
+      waiting: 0,
+      leftOut: 1,
+      held: [],
+    });
     expect(splitFile()).toEqual({
       "2026-03-16-00000001": "test",
-      "live-2026-10-06-1a2b3c4d": "test",
+      // A kept job's owner has seen jobkit's reading of it: its labels can never be blind.
+      "live-2026-10-06-1a2b3c4d": "dev",
+      "live-2026-10-07-2b3c4d5e": "dev",
     });
     expect(readdirSync(archive).filter((name) => name.endsWith(".tmp"))).toEqual([]);
-    const { cases } = await listCases(archive, { styleExamples: [STYLE] });
-    expect(cases.map(({ id, split, leftOut }) => [id, split, leftOut])).toEqual([
-      ["2026-03-16-00000001", "test", false],
-      ["live-2026-10-06-1a2b3c4d", "test", false],
-      ["2026-03-16-00000002", null, false],
-      ["2026-03-16-00000003", null, true],
-    ]);
+  });
+
+  it("will not fill test places while cases still wait for screenshots, unless told to go on", async () => {
+    mailCase("2026-03-16-00000001");
+    mailCase("2026-03-16-00000002", { subject: "Another", id: "<b@example.com>" }, 0);
+
+    await expect(fixSplit(archive, NO_EXAMPLES)).rejects.toThrow(/1 case.*--partial/);
+    expect(existsSync(join(archive, "split.json"))).toBe(false);
+
+    expect(await fixSplit(archive, NO_EXAMPLES, { partial: true })).toMatchObject({
+      added: 1,
+      waiting: 1,
+    });
+  });
+
+  it("does not wait for a kept live job, which can never take a test place", async () => {
+    mailCase("2026-03-16-00000001");
+    liveCase("live-2026-10-06-1a2b3c4d", {});
+
+    expect(await fixSplit(archive, NO_EXAMPLES)).toMatchObject({
+      test: ["2026-03-16-00000001"],
+      waiting: 1,
+    });
   });
 
   it("keeps every split it gave, and fills a place a deleted test case left with a new case", async () => {
-    const first = tenCases();
+    const first = mailCases(10);
     await fixSplit(archive, NO_EXAMPLES);
     rmSync(join(archive, first[0]!), { recursive: true });
-    mailCase("2026-03-20-0000000b", { subject: "Application 11", id: "<m11@example.com>" });
-    mailCase("2026-03-20-0000000c", { subject: "Application 12", id: "<m12@example.com>" });
+    mailCases(2, "2026-03-20");
 
     const fixed = await fixSplit(archive, NO_EXAMPLES);
 
-    expect(fixed).toMatchObject({ added: 2, test: 10, dev: 1 });
+    expect(fixed).toMatchObject({ added: 2, dev: 1 });
+    expect(fixed.test).toHaveLength(1);
     for (const id of first.slice(1)) expect(splitFile()[id]).toBe("test");
   });
 
+  it("keeps a test case's place while its screenshots are away", async () => {
+    const first = mailCases(10);
+    await fixSplit(archive, NO_EXAMPLES);
+    rmSync(join(archive, first[0]!, "post-1.png"));
+    mailCases(1, "2026-03-20");
+
+    const fixed = await fixSplit(archive, NO_EXAMPLES, { partial: true });
+
+    expect(fixed).toMatchObject({ test: [], dev: 1 });
+  });
+
   it("gives a resend, or a reply in its thread, the split of the email it repeats, and names them", async () => {
-    const nine = tenCases().slice(0, 9);
-    rmSync(join(archive, "2026-03-01-0000000a"), { recursive: true });
+    const nine = mailCases(9);
     writeFileSync(
       join(archive, "split.json"),
       JSON.stringify(Object.fromEntries(nine.map((id) => [id, "test"]))),
@@ -259,10 +350,33 @@ describe("fixSplit", () => {
     expect(sameAs("2026-03-16-00000001")).toEqual(["2026-03-17-00000002", "2026-03-18-00000003"]);
     expect(sameAs("2026-03-19-00000004")).toEqual([]);
   });
+
+  it("keeps the last split file as a copy, and refuses to begin again while one is missing", async () => {
+    mailCase("2026-03-16-00000001");
+    await fixSplit(archive, NO_EXAMPLES);
+    mailCase("2026-03-16-00000002", { subject: "Two", id: "<b@example.com>" });
+    await fixSplit(archive, NO_EXAMPLES);
+
+    expect(JSON.parse(readFileSync(join(archive, "split.json.bak"), "utf8"))).toEqual({
+      "2026-03-16-00000001": "test",
+    });
+
+    rmSync(join(archive, "split.json"));
+    await expect(fixSplit(archive, NO_EXAMPLES)).rejects.toThrow(/split\.json\.bak/);
+  });
+
+  it("refuses to begin again when cases were labelled under a split that is gone", async () => {
+    mailCase("2026-03-16-00000001");
+    writeFileSync(join(archive, "split.json"), JSON.stringify({ "2026-03-16-00000001": "dev" }));
+    saveLabels(archive, "2026-03-16-00000001", LABELS, new Date("2026-10-13T12:00:00Z"));
+    rmSync(join(archive, "split.json"));
+
+    await expect(fixSplit(archive, NO_EXAMPLES)).rejects.toThrow(/labelled under a split/);
+  });
 });
 
 describe("readCase and saveLabels", () => {
-  it("reads a sent email, and keeps a test case's pre-labels hidden until its labels are saved", async () => {
+  it("reads a sent email, and never shows a test case's pre-labels, even after its labels are saved", async () => {
     mailCase("2026-03-16-8282e9a1");
     writeFileSync(join(archive, "2026-03-16-8282e9a1", "prelabels.json"), JSON.stringify(LABELS));
     await fixSplit(archive, NO_EXAMPLES);
@@ -271,6 +385,7 @@ describe("readCase and saveLabels", () => {
 
     expect(before?.split).toBe("test");
     expect(before?.email).toMatchObject({
+      from: "Sam Rivera <sam@example.com>",
       subject: "Application - Engineer",
       to: "jobs@northwind.example",
       date: "2026-03-16T05:00:00.000Z",
@@ -283,11 +398,31 @@ describe("readCase and saveLabels", () => {
     const after = await readCase(archive, "2026-03-16-8282e9a1", NO_EXAMPLES);
     expect(after?.labels).toEqual(LABELS);
     expect(after?.labelled).toBe(true);
-    expect(after?.prelabels).toEqual(LABELS);
+    expect(after?.prelabels).toBeNull();
+  });
+
+  it("keeps with saved labels their split, whether pre-labels were shown, and the crop they judged", async () => {
+    liveCase("live-2026-10-06-1a2b3c4d", { "post-1.png": "image", "crop.png": "crop bytes" });
+    writeFileSync(
+      join(archive, "live-2026-10-06-1a2b3c4d", "prelabels.json"),
+      JSON.stringify(LABELS),
+    );
+    await fixSplit(archive, NO_EXAMPLES);
+
+    saveLabels(
+      archive,
+      "live-2026-10-06-1a2b3c4d",
+      { ...LABELS, cropShowsContact: true },
+      new Date("2026-10-13T12:00:00Z"),
+    );
+
     expect(
-      JSON.parse(readFileSync(join(archive, "2026-03-16-8282e9a1", "labels.json"), "utf8")),
+      JSON.parse(readFileSync(join(archive, "live-2026-10-06-1a2b3c4d", "labels.json"), "utf8")),
     ).toMatchObject({
       labelledAt: "2026-10-13T12:00:00.000Z",
+      split: "dev",
+      prelabelsShown: true,
+      cropSha256: createHash("sha256").update("crop bytes").digest("hex"),
     });
   });
 
@@ -333,9 +468,32 @@ describe("readCase and saveLabels", () => {
         new Date(),
       ),
     ).toThrow();
+    // An email route has an address; and no must-haves is said, never left empty.
+    expect(() =>
+      saveLabels(archive, "2026-03-16-8282e9a1", { ...LABELS, contact: "" }, new Date()),
+    ).toThrow();
+    expect(() =>
+      saveLabels(archive, "2026-03-16-8282e9a1", { ...LABELS, must: [] }, new Date()),
+    ).toThrow();
+    saveLabels(archive, "2026-03-16-8282e9a1", { ...LABELS, must: [], noMust: true }, new Date());
     expect(() => saveLabels(archive, "../escape", LABELS, new Date())).toThrow();
     expect(await readCase(archive, "../escape", NO_EXAMPLES)).toBeNull();
     expect(await readCase(archive, "2026-01-01-00000000", NO_EXAMPLES)).toBeNull();
+  });
+});
+
+describe("dismissCase", () => {
+  it("moves a case that is not an application aside, out of the list and its split's count", async () => {
+    mailCase("2026-03-16-00000001");
+    mailCase("2026-03-16-00000002", { subject: "Two", id: "<b@example.com>" });
+
+    dismissCase(archive, "2026-03-16-00000002");
+
+    expect(existsSync(join(archive, "_dismissed", "2026-03-16-00000002", "email.eml"))).toBe(true);
+    expect((await listCases(archive, NO_EXAMPLES)).cases.map((entry) => entry.id)).toEqual([
+      "2026-03-16-00000001",
+    ]);
+    expect(() => dismissCase(archive, "../escape")).toThrow();
   });
 });
 
@@ -349,12 +507,16 @@ describe("the screenshot pool", () => {
       "Screenshot_20260316-140000.png",
       "Screenshot_20260301-080000.png",
       "IMG_0001.PNG",
+      // No real time: a run of digits whose parts would roll over.
+      "received_10223456789012345.jpeg",
       "notes.txt",
     ]) {
       writeFileSync(join(archive, POOL, name), "image");
     }
     const taken = new Date("2026-03-15T12:00:00Z");
-    utimesSync(join(archive, POOL, "IMG_0001.PNG"), taken, taken);
+    for (const name of ["IMG_0001.PNG", "received_10223456789012345.jpeg"]) {
+      utimesSync(join(archive, POOL, name), taken, taken);
+    }
 
     const offered = poolCandidates(archive, new Date("2026-03-16T10:00:00Z")).map(
       (entry) => entry.file,
@@ -363,6 +525,7 @@ describe("the screenshot pool", () => {
     expect(offered).toEqual([
       "Screenshot_20260314-101500.png",
       "IMG_0001.PNG",
+      "received_10223456789012345.jpeg",
       "Screenshot_2026-03-16-09-00-00-123_com.linkedin.android.jpg",
       "Screenshot_20260316-140000.png",
     ]);

@@ -91,7 +91,7 @@
   tests: number with no country code is flagged, never guessed
   render: { width: 1080, height: 2400 }
   text: |
-    Hiring remote React Native developers. Message us on WhatsApp 98765 43210.
+    Hiring remote React Native developers. Message us on WhatsApp 202 555 0143.
   expect:
     route: whatsapp
     contact_flag: missing_country_code

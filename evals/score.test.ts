@@ -136,9 +136,9 @@ describe("fieldMatches", () => {
     expect(fieldMatches({ ...whatsapp, contact: "+92 300 1234567" }, whatsapp).contact).toBe(true);
     expect(fieldMatches({ ...whatsapp, contact: "+92 300 1234568" }, whatsapp).contact).toBe(false);
     // jobkit never guesses a country: a code the post did not give is a different reading.
-    const abroad = { ...whatsapp, contact: "98765 43210" };
-    expect(fieldMatches({ ...abroad, contact: "98765-43210" }, abroad).contact).toBe(true);
-    expect(fieldMatches({ ...abroad, contact: "+91 98765 43210" }, abroad).contact).toBe(false);
+    const abroad = { ...whatsapp, contact: "202 555 0143" };
+    expect(fieldMatches({ ...abroad, contact: "202-555-0143" }, abroad).contact).toBe(true);
+    expect(fieldMatches({ ...abroad, contact: "+1 202 555 0143" }, abroad).contact).toBe(false);
     const form = { ...label, route: "form", contact: "" };
     expect(fieldMatches(form, form).contact).toBe(true);
     expect(fieldMatches({ ...label, contact: " " }, label).contact).toBe(false);

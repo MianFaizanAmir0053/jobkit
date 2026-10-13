@@ -17,6 +17,7 @@ import {
   labellingAllowed,
   type LabellingDeps,
   postAdopt,
+  postDismiss,
   postLabels,
 } from "./labelling";
 
@@ -138,13 +139,30 @@ describe("the labelling routes", () => {
       ...LABELS,
       labelledAt: "2026-10-06T09:00:00.000Z",
     });
-    expect(
-      (await postLabels(request("POST", "/x", cookie, { ...LABELS, route: "fax" }), deps(), CASE))
-        .status,
-    ).toBe(400);
+    const unfit = await postLabels(
+      request("POST", "/x", cookie, { ...LABELS, route: "fax", company: 7 }),
+      deps(),
+      CASE,
+    );
+    expect(unfit.status).toBe(400);
+    expect(await unfit.json()).toEqual({ error: "bad-labels", fields: ["company", "route"] });
     expect(
       (await postLabels(request("POST", "/x", cookie, LABELS), deps(), "2026-01-01-00000000"))
         .status,
+    ).toBe(404);
+  });
+
+  it("set a case aside as not an application, and only a case", async () => {
+    const cookie = await signedIn();
+
+    expect((await postDismiss(request("POST", "/x", cookie), deps(false), CASE)).status).toBe(404);
+    const dismissed = await postDismiss(request("POST", "/x", cookie), deps(), CASE);
+
+    expect(await dismissed.json()).toEqual({ dismissed: true });
+    expect(existsSync(join(archive, "_dismissed", CASE, "email.eml"))).toBe(true);
+    expect((await postDismiss(request("POST", "/x", cookie), deps(), CASE)).status).toBe(404);
+    expect(
+      (await postDismiss(request("POST", "/x", cookie), deps(), "../_screenshots")).status,
     ).toBe(404);
   });
 

@@ -10,7 +10,7 @@ import { getContainer } from "@/server/container";
 import { requireSession } from "@/server/dal";
 import { ARCHIVE, labellingAllowed, PROFILE } from "@/server/labelling";
 
-import { AdoptButton, LabelForm, type LabelValues } from "./LabelForm";
+import { AdoptButton, DismissButton, LabelForm, type LabelValues } from "./LabelForm";
 
 export const metadata: Metadata = { title: "Label a case · jobkit" };
 
@@ -30,6 +30,16 @@ const SPLIT_WORDS = {
   dev: "A dev case.",
   none: "No split yet: label it from the post and the email alone. npm run eval:split gives it one once it has screenshots.",
 };
+
+const LEFT_OUT_WORDS = {
+  style_example:
+    "Left out: its application holds one of your style examples, so it is never scored.",
+  after_jobkit:
+    "Left out: it was sent once jobkit was drafting your email, so its words may be a model's. It is never scored.",
+};
+
+/** A day as the laptop's calendar has it: 2026-03-16. */
+const localDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA");
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -58,10 +68,10 @@ function Screenshot({ folder, file }: { folder: string; file: string }) {
 
 /**
  * One case to label (evals spec, "Labelling"): the email that was sent, or
- * a kept job's pasted text, the post's screenshots, the crop of the contact
- * a kept job's second read stored, the pool's screenshots taken in the
- * three days before the email, and the labels. Only a dev case shows
- * pre-labels before its own labels are saved.
+ * a kept job's pasted text, the post's screenshots, the pool's screenshots
+ * taken in the three days before the email, and the labels. Only a dev
+ * case shows anything a model made: its pre-labels, and the crop a kept
+ * job's second read stored, with the crop question.
  */
 // Typed by hand: next typegen leaves local-only pages out, as every build does.
 export default async function CasePage(props: { params: Promise<{ caseId: string }> }) {
@@ -90,25 +100,28 @@ export default async function CasePage(props: { params: Promise<{ caseId: string
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {SPLIT_WORDS[found.split ?? "none"]}{" "}
-          {found.date ? `Sent or kept on ${found.date.slice(0, 10)}.` : ""}
+          {found.date ? `Sent or kept on ${localDay(found.date)}.` : ""}
         </p>
         {found.leftOut && (
-          <p className="mt-1 text-sm text-destructive">
-            Left out: its email holds one of your style examples, so it is never scored.
-          </p>
+          <p className="mt-1 text-sm text-destructive">{LEFT_OUT_WORDS[found.leftOut]}</p>
         )}
         {found.sameAs.length > 0 && (
           <p className="mt-1 text-sm text-destructive">
-            Maybe the same application as {found.sameAs.join(", ")}: a resend or a reply. If so,
-            delete the extra folders; until then they share one split.
+            Maybe the same application as {found.sameAs.join(", ")}: a resend or a reply. If so, set
+            the extra ones aside as not applications; until then they share one split.
           </p>
         )}
         {found.problem && <p className="mt-1 text-sm text-destructive">{found.problem}</p>}
+        <div className="mt-2">
+          <DismissButton caseId={found.id} />
+        </div>
       </div>
 
       {found.email && (
         <Panel title="The email you sent">
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+            <dt className="text-muted-foreground">From</dt>
+            <dd>{found.email.from}</dd>
             <dt className="text-muted-foreground">To</dt>
             <dd>{found.email.to}</dd>
             <dt className="text-muted-foreground">Subject</dt>
@@ -167,7 +180,7 @@ export default async function CasePage(props: { params: Promise<{ caseId: string
         </Panel>
       )}
 
-      {found.cropFile && (
+      {found.cropFile && found.split === "dev" && (
         <Panel title="The crop jobkit read the contact from">
           <Screenshot folder={found.id} file={found.cropFile} />
         </Panel>
@@ -179,7 +192,7 @@ export default async function CasePage(props: { params: Promise<{ caseId: string
           routes={ROUTE_KINDS}
           initial={initial}
           suggested={found.labels === null && found.prelabels !== null}
-          hasCrop={found.cropFile !== null}
+          hasCrop={found.cropFile !== null && found.split === "dev"}
         />
       </Panel>
     </section>

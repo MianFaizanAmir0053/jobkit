@@ -30,9 +30,12 @@ const EXTENSIONS: Readonly<Record<string, string>> = {
 };
 
 export interface PullReport {
-  cases: { id: string; images: number }[];
+  /** Each case written; `existing` when it was in the archive already, perhaps labelled. */
+  cases: { id: string; images: number; existing: boolean }[];
   /** Jobs left kept because an image could not be copied, with why. */
   failed: { jobId: string; reason: string }[];
+  /** What a case lacks that it could have had, such as a crop that no longer matches. */
+  notes: string[];
 }
 
 type KeptImage = {
@@ -63,13 +66,15 @@ export async function pullKeptJobs(
   const jobs = new Map<string, KeptImage[]>();
   for (const row of rows) jobs.set(row.job_id, [...(jobs.get(row.job_id) ?? []), row]);
 
-  const report: PullReport = { cases: [], failed: [] };
+  const report: PullReport = { cases: [], failed: [], notes: [] };
   for (const [jobId, images] of jobs) {
     const { received_at: receivedAt, pasted_text: pastedText } = images[0]!;
     const id = `live-${receivedAt.toISOString().slice(0, 10)}-${jobId.slice(0, 8)}`;
     const folder = join(archive, id);
     // A case pulled before is completed where it is; a new one is put together aside.
-    const work = existsSync(folder) ? folder : join(archive, STAGING, id);
+    const existing = existsSync(folder);
+    const work = existing ? folder : join(archive, STAGING, id);
+    let cropNote: string | null = null;
     try {
       mkdirSync(work, { recursive: true });
       for (const image of images) {
@@ -84,7 +89,7 @@ export async function pullKeptJobs(
         if (sha256(bytes) !== image.sha256) throw new Error(`${name} does not match its hash`);
         writeFileSync(file, bytes);
       }
-      await copyCrop(deps, jobId, work);
+      cropNote = await copyCrop(deps, jobId, work);
       if (pastedText && pastedText.trim() !== "") {
         writeFileSync(join(work, "pasted.txt"), pastedText);
       }
@@ -102,23 +107,32 @@ export async function pullKeptJobs(
       "update {{schema}}.job_images set kept_for_eval = false where id = any($1::uuid[])",
       [images.map((image) => image.id)],
     );
-    report.cases.push({ id, images: images.length });
+    report.cases.push({ id, images: images.length, existing });
+    if (cropNote) report.notes.push(`${id}: ${cropNote}`);
   }
   return report;
 }
 
 /**
  * The crop the job's second read stored of its contact, for the crop
- * label, when it is still there and matches the hash its name holds.
+ * label, when it is still there and matches the hash its name holds; else
+ * why it was left out, or null for a job whose read stored none.
  */
-async function copyCrop(deps: { db: Db; storage: Storage }, jobId: string, folder: string) {
+async function copyCrop(
+  deps: { db: Db; storage: Storage },
+  jobId: string,
+  folder: string,
+): Promise<string | null> {
   const read = (await stageOutput(deps.db, jobId, "address_read"))?.output as
     { cropPath?: unknown } | undefined;
-  if (typeof read?.cropPath !== "string") return;
+  if (typeof read?.cropPath !== "string") return null;
   const bytes = await deps.storage.get(read.cropPath);
-  if (bytes && `${sha256(bytes)}.png` === basename(read.cropPath)) {
-    writeFileSync(join(folder, "crop.png"), bytes);
+  if (!bytes) return "its crop is gone from storage, so it was left out.";
+  if (`${sha256(bytes)}.png` !== basename(read.cropPath)) {
+    return "its crop does not match its hash, so it was left out.";
   }
+  writeFileSync(join(folder, "crop.png"), bytes);
+  return null;
 }
 
 /**

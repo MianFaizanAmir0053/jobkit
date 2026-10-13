@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   statSync,
+  renameSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
@@ -44,6 +45,8 @@ export interface ImportOptions {
   styleExamples: readonly string[];
   /** Mail sent from this time on is left out (jobkitFromOf); null leaves none out. */
   jobkitFrom: Date | null;
+  /** The owner's address: a downloaded message is taken as sent only when it is from it. */
+  owner?: string;
 }
 
 export interface ImportReport {
@@ -52,6 +55,10 @@ export interface ImportReport {
   /** Each malformed message by its place (1 for the first), its file for a downloaded one, and why. */
   malformed: { index: number; file?: string; error: string }[];
   alreadyImported: number;
+  /** Cases the owner set aside as not applications, which the import does not bring back. */
+  dismissed: number;
+  /** Cases whose email.eml was missing or cut short, written again. */
+  repaired: number;
 }
 
 /**
@@ -94,9 +101,13 @@ export function bodyText(email: Email): string {
   return email.text ?? textOfHtml(email.html ?? "");
 }
 
-/** Whether a body holds one of the style examples, with case and spacing normalised (A10). */
+/**
+ * Whether a body holds one of the style examples, with case and spacing
+ * normalised and a reply's quote marks taken off, so a reply quoting the
+ * example holds it too (A10).
+ */
 export function holdsStyleExample(body: string, styleExamples: readonly string[]): boolean {
-  const words = normalised(body);
+  const words = normalised(body.replace(/^[ \t]*(?:>[ \t]?)+/gm, ""));
   return styleExamples
     .map(normalised)
     .some((example) => example.length >= MIN_EXAMPLE_LENGTH && words.includes(example));
@@ -112,7 +123,8 @@ function caseId(email: Email, raw: Uint8Array): string {
 
 /**
  * What the import makes of one message. A Takeout message must carry
- * Gmail's Sent label; a downloaded one has none, and is taken as sent.
+ * Gmail's Sent label; a downloaded one has none, and is taken as sent when
+ * it is from the owner's address.
  */
 export async function judgeMessage(
   raw: Uint8Array,
@@ -128,6 +140,10 @@ export async function judgeMessage(
   if (email.headers.length === 0) return { kind: "malformed", error: "no headers" };
   const labels = email.headers.find((header) => header.key === "x-gmail-labels")?.value ?? "";
   if (fromTakeout && !labels.split(",").some((label) => label.trim().toLowerCase() === "sent")) {
+    return { kind: "skipped", reason: "not_sent" };
+  }
+  const from = email.from?.address?.trim().toLowerCase();
+  if (!fromTakeout && options.owner && from !== options.owner.trim().toLowerCase()) {
     return { kind: "skipped", reason: "not_sent" };
   }
   const wanted = options.attachment.trim().toLowerCase();
@@ -150,10 +166,20 @@ function emptyReport(): ImportReport {
     skipped: { not_sent: 0, no_resume: 0, style_example: 0, after_jobkit: 0 },
     malformed: [],
     alreadyImported: 0,
+    dismissed: 0,
+    repaired: 0,
   };
 }
 
-/** Counts one message's outcome, writing a kept one as a new case unless it is one already. */
+/** Where the owner's "Not an application" puts a case, out of the archive's list. */
+export const DISMISSED = "_dismissed";
+
+/**
+ * Counts one message's outcome, writing a kept one as a new case unless it
+ * is one already or was set aside; a case whose email.eml is missing or
+ * differs, as one cut short by an interrupted import, is written again. The
+ * file is written whole, so an interruption never leaves half of it.
+ */
 function take(
   report: ImportReport,
   archive: string,
@@ -166,14 +192,22 @@ function take(
   } else if (outcome.kind === "skipped") {
     report.skipped[outcome.reason]++;
   } else {
+    if (existsSync(join(archive, DISMISSED, outcome.id))) {
+      report.dismissed++;
+      return;
+    }
     const folder = join(archive, outcome.id);
-    if (existsSync(folder)) {
+    const file = join(folder, "email.eml");
+    const existed = existsSync(folder);
+    if (existed && existsSync(file) && Buffer.compare(readFileSync(file), raw) === 0) {
       report.alreadyImported++;
       return;
     }
     mkdirSync(folder, { recursive: true });
-    writeFileSync(join(folder, "email.eml"), raw);
-    report.cases.push({ id: outcome.id, subject: outcome.subject });
+    writeFileSync(`${file}.tmp`, raw);
+    renameSync(`${file}.tmp`, file);
+    if (existed) report.repaired++;
+    else report.cases.push({ id: outcome.id, subject: outcome.subject });
   }
 }
 
@@ -224,20 +258,38 @@ const importRecordSchema = z.object({
   jobkitFrom: z.string().refine((text) => !Number.isNaN(Date.parse(text))),
 });
 
-/**
- * From when sent mail may be jobkit's drafting, and so a model's words: the
- * day given, else the one an earlier import kept, else this first import's
- * time, since jobkit drafts nothing before the archive is set up. Kept in
- * the archive for every later import.
- */
-export function jobkitFromOf(archive: string, given: Date | null, now: Date): Date {
+/** The day the archive keeps as jobkit's first drafting, or null before the first import. */
+export function keptJobkitFrom(archive: string): Date | null {
   const file = join(archive, IMPORT_FILE);
-  const kept = existsSync(file)
-    ? new Date(importRecordSchema.parse(JSON.parse(readFileSync(file, "utf8"))).jobkitFrom)
-    : null;
-  const from = given ?? kept ?? now;
+  if (!existsSync(file)) return null;
+  return new Date(importRecordSchema.parse(JSON.parse(readFileSync(file, "utf8"))).jobkitFrom);
+}
+
+/**
+ * From when sent mail may be jobkit's drafting, and so a model's words. The
+ * first import must be told (the day of the first application sent through
+ * jobkit, or today if none was), since jobkit may already be in use when
+ * the export arrives; later imports keep that day. A later day than the
+ * one kept is refused: it would let in mail jobkit drafted.
+ */
+export function jobkitFromOf(archive: string, given: Date | null): Date {
+  const kept = keptJobkitFrom(archive);
+  if (!kept && !given) {
+    throw new Error(
+      "The first import needs --jobkit-from <YYYY-MM-DD>: the day you first sent an application jobkit drafted, or today if you never have.",
+    );
+  }
+  if (kept && given && given.getTime() > kept.getTime()) {
+    throw new Error(
+      `The archive keeps ${kept.toISOString()} as the day jobkit began drafting; a later day would let in mail it drafted. Give that day or an earlier one.`,
+    );
+  }
+  const from = given ?? kept!;
   mkdirSync(archive, { recursive: true });
-  writeFileSync(file, `${JSON.stringify({ jobkitFrom: from.toISOString() }, null, 2)}\n`);
+  writeFileSync(
+    join(archive, IMPORT_FILE),
+    `${JSON.stringify({ jobkitFrom: from.toISOString() }, null, 2)}\n`,
+  );
   return from;
 }
 
@@ -263,8 +315,11 @@ export function styleExamplesOf(profileFile: string): { examples: string[]; prob
   const problems: string[] = [];
   for (const path of listed) {
     const full = typeof path === "string" ? resolve(dirname(profileFile), path) : null;
-    if (full && existsSync(full)) examples.push(readFileSync(full, "utf8"));
-    else problems.push(`style example ${String(path)} cannot be read`);
+    if (full && existsSync(full) && statSync(full).isFile()) {
+      examples.push(readFileSync(full, "utf8"));
+    } else {
+      problems.push(`style example ${String(path)} cannot be read`);
+    }
   }
   return { examples, problems };
 }
