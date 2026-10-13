@@ -4,6 +4,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 import {
   adoptScreenshot,
+  AlreadySetAside,
   archiveFile,
   CaseChanged,
   dismissCase,
@@ -22,9 +23,11 @@ import { NO_STORE, readLimited, refusal, sessionForChange, sessionForRead } from
 /**
  * The labelling page's routes (evals spec, "Labelling"): saving a case's
  * labels, moving a screenshot from the pool into a case, setting a case
- * aside as not an application, and showing an image from the archive. They answer only on the laptop's dev server with
- * JOBKIT_LOCAL_EVALS=1, and only to the laptop's own session; their files
- * are local-only, so no build has them.
+ * aside as not an application, and showing an image from the archive. They
+ * answer only on the laptop's dev server with JOBKIT_LOCAL_EVALS=1, only to
+ * a request to the laptop's own address that came through no proxy, as a
+ * tunnel to the dev server is, and only to the laptop's own session; their
+ * files are local-only, so no build has them.
  */
 
 /** The evaluation archive: one folder per case, never committed (private/). */
@@ -32,6 +35,48 @@ export const ARCHIVE = join(process.cwd(), "private", "archive");
 
 /** The profile file, whose style examples leave a sent email out (amendment A10). */
 export const PROFILE = join(process.cwd(), "private", "profile.yaml");
+
+/** What a request says of where it came from: its host and any forwarding headers. */
+export interface RequestFrom {
+  host: string | null;
+  forwardedFor: string | null;
+  forwarded: string | null;
+}
+
+const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(["localhost", "127.0.0.1", "[::1]"]);
+
+/** An address of this machine: 127.0.0.0/8 or ::1, as IPv4 or mapped into IPv6. */
+function isLoopback(address: string): boolean {
+  const bare = address.trim().replace(/^::ffff:/i, "");
+  return bare === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(bare);
+}
+
+/**
+ * Whether a request is the laptop's own: to a loopback host, with every
+ * forwarded address a loopback one and no proxy's Forwarded header. The dev
+ * server fills X-Forwarded-For with the socket's address only when a proxy
+ * has not, so a tunnel's request carries the phone's address or its own
+ * host.
+ */
+export function fromLaptop(from: RequestFrom): boolean {
+  const host = (from.host ?? "").toLowerCase().replace(/:\d+$/, "");
+  if (!LOOPBACK_HOSTS.has(host)) return false;
+  if (from.forwarded) return false;
+  const forwarded = (from.forwardedFor ?? "")
+    .split(",")
+    .map((address) => address.trim())
+    .filter((address) => address !== "");
+  return forwarded.every(isLoopback);
+}
+
+/** Where a route's request came from, by its URL's host as Next built it and its headers. */
+function requestFrom(request: NextRequest): RequestFrom {
+  return {
+    host: request.headers.get("host") ?? request.nextUrl.host,
+    forwardedFor: request.headers.get("x-forwarded-for"),
+    forwarded: request.headers.get("forwarded"),
+  };
+}
 
 export function labellingAllowed(
   env: Readonly<Record<string, string | undefined>>,
@@ -85,7 +130,7 @@ export async function postLabels(
   deps: LabellingDeps,
   caseId: string,
 ): Promise<NextResponse> {
-  if (!deps.allowed) return notFound();
+  if (!deps.allowed || !fromLaptop(requestFrom(request))) return notFound();
   const actor = await sessionForChange(request, deps, { kind: "google" });
   if (!actor.ok) return actor.response;
   const body = await jsonBody(request, 64 * 1024);
@@ -121,7 +166,7 @@ export async function postAdopt(
   deps: LabellingDeps,
   caseId: string,
 ): Promise<NextResponse> {
-  if (!deps.allowed) return notFound();
+  if (!deps.allowed || !fromLaptop(requestFrom(request))) return notFound();
   const actor = await sessionForChange(request, deps, { kind: "google" });
   if (!actor.ok) return actor.response;
   const body = await jsonBody(request, 4 * 1024);
@@ -142,13 +187,14 @@ export async function postDismiss(
   deps: LabellingDeps,
   caseId: string,
 ): Promise<NextResponse> {
-  if (!deps.allowed) return notFound();
+  if (!deps.allowed || !fromLaptop(requestFrom(request))) return notFound();
   const actor = await sessionForChange(request, deps, { kind: "google" });
   if (!actor.ok) return actor.response;
   try {
     dismissCase(deps.archive, caseId);
     return NextResponse.json({ dismissed: true }, { headers: NO_STORE });
   } catch (error) {
+    if (error instanceof AlreadySetAside) return refusal(409, "already-set-aside");
     return failed(error);
   }
 }
@@ -159,7 +205,7 @@ export async function getArchiveImage(
   folder: string,
   file: string,
 ): Promise<NextResponse> {
-  if (!deps.allowed) return notFound();
+  if (!deps.allowed || !fromLaptop(requestFrom(request))) return notFound();
   const actor = await sessionForRead(request, deps, { kind: "google" });
   if (!actor.ok) return actor.response;
   const found = archiveFile(deps.archive, folder, file);

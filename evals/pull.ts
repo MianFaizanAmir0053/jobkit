@@ -5,6 +5,9 @@ import { basename, join } from "node:path";
 import { stageOutput } from "@/core/platform/runner";
 import type { Db, Storage } from "@/core/ports";
 
+import { DISMISSED } from "./import";
+import { knownCaseIds } from "./splitFile";
+
 /**
  * Live cases (evals spec, "Case sources"; intake spec, "Storage and
  * retention"): each job with images kept for evaluation becomes a case
@@ -18,6 +21,8 @@ import type { Db, Storage } from "@/core/ports";
  * of the images copied are cleared, so the 30-day purge then deletes the
  * cloud copy (amendment A7). A job whose image cannot be copied keeps its
  * flags for the next pull, or until `releaseKeptJob` leaves it to the purge.
+ * A case the owner set aside, or removed after it was given a split, is
+ * never brought back: its job is left to the purge.
  */
 
 /** Where a new case is put together before it joins the archive. */
@@ -67,10 +72,24 @@ export async function pullKeptJobs(
   for (const row of rows) jobs.set(row.job_id, [...(jobs.get(row.job_id) ?? []), row]);
 
   const report: PullReport = { cases: [], failed: [], notes: [] };
+  const known = knownCaseIds(archive);
   for (const [jobId, images] of jobs) {
     const { received_at: receivedAt, pasted_text: pastedText } = images[0]!;
     const id = `live-${receivedAt.toISOString().slice(0, 10)}-${jobId.slice(0, 8)}`;
     const folder = join(archive, id);
+    const gone = existsSync(join(archive, DISMISSED, id))
+      ? "set aside as not an application"
+      : !existsSync(folder) && known.has(id)
+        ? "removed from the archive after it was given a split"
+        : null;
+    if (gone) {
+      await deps.db.query(
+        "update {{schema}}.job_images set kept_for_eval = false where id = any($1::uuid[])",
+        [images.map((image) => image.id)],
+      );
+      report.notes.push(`${id}: ${gone}, so it was not brought back.`);
+      continue;
+    }
     // A case pulled before is completed where it is; a new one is put together aside.
     const existing = existsSync(folder);
     const work = existing ? folder : join(archive, STAGING, id);

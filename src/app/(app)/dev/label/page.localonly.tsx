@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -6,7 +7,7 @@ import { listCases } from "../../../../../evals/cases";
 import { styleExamplesOf } from "../../../../../evals/import";
 import { getContainer } from "@/server/container";
 import { requireSession } from "@/server/dal";
-import { ARCHIVE, labellingAllowed, PROFILE } from "@/server/labelling";
+import { ARCHIVE, fromLaptop, labellingAllowed, PROFILE } from "@/server/labelling";
 
 export const metadata: Metadata = { title: "Labelling · jobkit" };
 
@@ -19,7 +20,13 @@ export const metadata: Metadata = { title: "Labelling · jobkit" };
  */
 export default async function LabellingPage() {
   const container = await getContainer();
-  if (!labellingAllowed(process.env, container.kind)) notFound();
+  const sent = await headers();
+  const laptop = fromLaptop({
+    host: sent.get("host"),
+    forwardedFor: sent.get("x-forwarded-for"),
+    forwarded: sent.get("forwarded"),
+  });
+  if (!labellingAllowed(process.env, container.kind) || !laptop) notFound();
   await requireSession({ kind: "google" });
   const { examples, problems } = styleExamplesOf(PROFILE);
   const { cases, stray } = await listCases(ARCHIVE, { styleExamples: examples });

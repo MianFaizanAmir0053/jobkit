@@ -13,6 +13,7 @@ import type { AppConfig } from "@/server/config";
 import { createTestDb } from "@/server/db/testDb";
 
 import {
+  fromLaptop,
   getArchiveImage,
   labellingAllowed,
   type LabellingDeps,
@@ -107,6 +108,33 @@ afterEach(() => {
   rmSync(archive, { recursive: true, force: true });
 });
 
+describe("fromLaptop", () => {
+  it("is a request to the laptop's own address that came through no proxy", () => {
+    expect(fromLaptop({ host: "localhost:3000", forwardedFor: null, forwarded: null })).toBe(true);
+    expect(fromLaptop({ host: "127.0.0.1:3000", forwardedFor: "127.0.0.1", forwarded: null })).toBe(
+      true,
+    );
+    expect(fromLaptop({ host: "[::1]:3000", forwardedFor: "::1", forwarded: null })).toBe(true);
+    expect(
+      fromLaptop({ host: "localhost:3000", forwardedFor: "::ffff:127.0.0.1", forwarded: null }),
+    ).toBe(true);
+    // Through a tunnel to the dev server: another host, or the phone's address forwarded.
+    expect(fromLaptop({ host: "abc.ngrok-free.app", forwardedFor: null, forwarded: null })).toBe(
+      false,
+    );
+    expect(
+      fromLaptop({
+        host: "localhost:3000",
+        forwardedFor: "203.0.113.7, 127.0.0.1",
+        forwarded: null,
+      }),
+    ).toBe(false);
+    expect(
+      fromLaptop({ host: "localhost:3000", forwardedFor: null, forwarded: "for=203.0.113.7" }),
+    ).toBe(false);
+  });
+});
+
 describe("labellingAllowed", () => {
   it("is the laptop's dev server with JOBKIT_LOCAL_EVALS=1 only", () => {
     expect(labellingAllowed({ JOBKIT_LOCAL_EVALS: "1" }, "development")).toBe(true);
@@ -129,6 +157,15 @@ describe("the labelling routes", () => {
     expect(
       (await getArchiveImage(request("GET", "/x", cookie), deps(false), CASE, "a.png")).status,
     ).toBe(404);
+  });
+
+  it("are not there at all for a request that came through a tunnel", async () => {
+    const cookie = await signedIn();
+    const tunnelled = request("POST", "/x", cookie, BODY);
+    tunnelled.headers.set("x-forwarded-for", "203.0.113.7");
+
+    expect((await postLabels(tunnelled, deps(), CASE)).status).toBe(404);
+    expect(existsSync(join(archive, CASE, "labels.json"))).toBe(false);
   });
 
   it("answer only the laptop's own session", async () => {
@@ -206,6 +243,10 @@ describe("the labelling routes", () => {
     expect(
       (await postDismiss(request("POST", "/x", cookie), deps(), "../_screenshots")).status,
     ).toBe(404);
+    // A copy of the case back at the archive's top: it is set aside already.
+    mkdirSync(join(archive, CASE));
+    writeFileSync(join(archive, CASE, "email.eml"), "Subject: Application\r\n\r\nHello");
+    expect((await postDismiss(request("POST", "/x", cookie), deps(), CASE)).status).toBe(409);
   });
 
   it("move a pool screenshot into a case, and show it, but nothing outside the archive's images", async () => {

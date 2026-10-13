@@ -22,4 +22,4 @@ A post you try in jobkit cannot be a blind test case for the evaluation, since y
 
 ## Not in the thin path yet
 
-- the phone: test on the laptop first; the phone follows through a tunnel to the dev server.
+- the phone: test on the laptop first; the phone follows through a tunnel to the dev server. The labelling page and its routes answer only on the laptop itself, never through the tunnel.

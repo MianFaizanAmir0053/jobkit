@@ -1,5 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +23,7 @@ import type { ImageMeta } from "@/core/intake/limits";
 import { createTestDb } from "@/server/db/testDb";
 
 import { pullKeptJobs, releaseKeptJob } from "./pull";
+import { appendSplitEvents } from "./splitFile";
 
 /* Live cases: evals spec "Case sources", intake AC9's eval:pull clause. */
 
@@ -257,6 +266,35 @@ describe("pullKeptJobs", () => {
     expect(second.notes).toEqual([
       `live-2026-10-06-${jobId.slice(0, 8)}: its crop was replaced by the one the job now holds, so answer the crop question on its page again.`,
     ]);
+  });
+
+  it("never brings back a case set aside, nor one removed after it was given a split", async () => {
+    const archive = join(root, "archive");
+    const asideJob = await jobWith([await png(10)]);
+    const removedJob = await jobWith([await png(20)]);
+    await keep(asideJob);
+    await keep(removedJob);
+    const first = await pullKeptJobs({ db, storage }, archive);
+    const [aside, removed] = first.cases.map((entry) => entry.id) as [string, string];
+    mkdirSync(join(archive, "_dismissed"));
+    renameSync(join(archive, aside), join(archive, "_dismissed", aside));
+    appendSplitEvents(archive, [{ at: "2026-10-14T10:00:00.000Z", id: removed, split: "dev" }]);
+    rmSync(join(archive, removed), { recursive: true });
+    // Kept again on their job pages.
+    await keep(asideJob);
+    await keep(removedJob);
+
+    const again = await pullKeptJobs({ db, storage }, archive);
+
+    expect(again.cases).toEqual([]);
+    expect(again.notes).toEqual([
+      `${aside}: set aside as not an application, so it was not brought back.`,
+      `${removed}: removed from the archive after it was given a split, so it was not brought back.`,
+    ]);
+    expect(existsSync(join(archive, aside))).toBe(false);
+    expect(existsSync(join(archive, removed))).toBe(false);
+    // Left to the purge, as a released job is.
+    expect([...(await kept(asideJob)), ...(await kept(removedJob))]).toEqual([false, false]);
   });
 
   it("copies the stored crop of the contact and the pasted text with the images", async () => {

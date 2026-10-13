@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
@@ -8,7 +9,7 @@ import { styleExamplesOf } from "../../../../../../evals/import";
 import { ROUTE_KINDS } from "@/core/extraction/record";
 import { getContainer } from "@/server/container";
 import { requireSession } from "@/server/dal";
-import { ARCHIVE, labellingAllowed, PROFILE } from "@/server/labelling";
+import { ARCHIVE, fromLaptop, labellingAllowed, PROFILE } from "@/server/labelling";
 
 import { AdoptButton, DismissButton, LabelForm, type LabelValues } from "./LabelForm";
 
@@ -83,7 +84,13 @@ function Screenshot({ folder, file }: { folder: string; file: string }) {
 // Typed by hand: next typegen leaves local-only pages out, as every build does.
 export default async function CasePage(props: { params: Promise<{ caseId: string }> }) {
   const container = await getContainer();
-  if (!labellingAllowed(process.env, container.kind)) notFound();
+  const sent = await headers();
+  const laptop = fromLaptop({
+    host: sent.get("host"),
+    forwardedFor: sent.get("x-forwarded-for"),
+    forwarded: sent.get("forwarded"),
+  });
+  if (!labellingAllowed(process.env, container.kind) || !laptop) notFound();
   await requireSession({ kind: "google" });
   const { caseId } = await props.params;
   const found = await readCase(ARCHIVE, caseId, {

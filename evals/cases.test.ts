@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   adoptScreenshot,
+  AlreadySetAside,
   archiveFile,
   CaseChanged,
   dismissCase,
@@ -769,6 +770,15 @@ describe("dismissCase", () => {
       "2026-03-16-00000001",
     ]);
     expect(() => dismissCase(archive, "../escape")).toThrow();
+  });
+
+  it("will not set a case aside twice, saying so", () => {
+    mailCase("2026-03-16-00000001");
+    dismissCase(archive, "2026-03-16-00000001");
+    // A copy of it, back at the archive's top.
+    mailCase("2026-03-16-00000001");
+
+    expect(() => dismissCase(archive, "2026-03-16-00000001")).toThrow(AlreadySetAside);
   });
 });
 

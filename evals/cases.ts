@@ -61,6 +61,9 @@ export const CASE_ID = /^(?:live-)?(?:\d{4}-\d{2}-\d{2}|undated)-[0-9a-f]{8}$/;
 /** A case, or a screenshot in the pool, that is not there: the labelling routes answer 404. */
 export class NoCase extends Error {}
 
+/** A case already set aside, a copy of which is back at the archive's top. */
+export class AlreadySetAside extends Error {}
+
 /** The folder of screenshots not yet matched to a case. */
 export const POOL = "_screenshots";
 
@@ -849,7 +852,7 @@ export async function saveLabels(
 export function dismissCase(archive: string, id: string): void {
   if (!CASE_ID.test(id) || !existsSync(join(archive, id))) throw new NoCase(`No case ${id}`);
   const aside = join(archive, DISMISSED, id);
-  if (existsSync(aside)) throw new Error(`A case ${id} is already set aside`);
+  if (existsSync(aside)) throw new AlreadySetAside(`A case ${id} is already set aside`);
   mkdirSync(join(archive, DISMISSED), { recursive: true });
   renameSync(join(archive, id), aside);
 }
