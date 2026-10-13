@@ -208,6 +208,19 @@ describe("extract's input", () => {
       postConfirmed: true,
     });
   });
+
+  it("names the model an evaluation compares, when it is given one", async () => {
+    const id = await extractingJob([await png(1080, 2400, 10)]);
+    const compared = extractStage({
+      db,
+      storage,
+      random,
+      models: models(),
+      model: "claude-sonnet-5-5",
+    });
+
+    expect(await compared.input(await contextOf(id))).toMatchObject({ model: "claude-sonnet-5-5" });
+  });
 });
 
 describe("extract's run", () => {

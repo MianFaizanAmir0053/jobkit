@@ -21,6 +21,7 @@
     "db:migrate": "tsx scripts/migrate.ts",
     "ledger:import": "tsx scripts/ledger-import.ts",
     "profile:seed": "tsx scripts/profile-seed.ts",
+    "eval": "tsx scripts/eval-run.ts",
     "eval:import": "tsx scripts/eval-import.ts",
     "eval:render": "tsx scripts/eval-render.ts",
     "eval:pull": "tsx scripts/eval-pull.ts",

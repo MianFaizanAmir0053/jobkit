@@ -33,7 +33,7 @@ export const EXTRACT = {
 } as const;
 
 // The prompt as sent: its rules, the confirmation, the user turn's layout and the output's schema.
-const PROMPT = sha256Hex(
+export const EXTRACT_PROMPT = sha256Hex(
   canonicalJson({
     rules: extractSystemPrompt(false),
     confirmed: extractSystemPrompt(true),
@@ -55,6 +55,8 @@ export interface ExtractDeps {
   storage: Storage;
   random: Random;
   models: ModelCallDeps;
+  /** The model to call: EXTRACT.model, unless an evaluation compares another (evals spec). */
+  model?: string;
 }
 
 const flagKinds = Object.keys(FLAG_MESSAGES) as [RecordFlagKind, ...RecordFlagKind[]];
@@ -120,9 +122,9 @@ export function extractStage(deps: ExtractDeps): StageDefinition {
         images: images.map((image) => image.sha256),
         pastedText: rows[0]?.pasted_text ?? "",
         postConfirmed: rows[0]?.confirmed ?? false,
-        model: EXTRACT.model,
+        model: deps.model ?? EXTRACT.model,
         effort: EXTRACT.effort,
-        prompt: PROMPT,
+        prompt: EXTRACT_PROMPT,
       };
     },
 
