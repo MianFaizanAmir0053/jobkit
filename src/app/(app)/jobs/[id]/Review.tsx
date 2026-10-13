@@ -5,14 +5,18 @@ import { type FormEvent, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
+import { gateChanged, holdOutbound } from "../polling";
+
 import { messageFor } from "./ActionButton";
 
 /**
  * Posts one of the owner's decisions on the kit the page shows, then renders
  * the page again with the gate it leaves. A page drawn on another kit is
- * refused, and drawn again.
+ * refused, and drawn again. While it is in flight the outbound controls
+ * wait, and the job's pages in other tabs are told once it lands.
  */
 async function decide(jobId: string, kit: string, action: object): Promise<string | null> {
+  const release = holdOutbound();
   try {
     const response = await fetch(`/api/jobs/${jobId}/review`, {
       method: "POST",
@@ -22,6 +26,9 @@ async function decide(jobId: string, kit: string, action: object): Promise<strin
     return response.ok ? null : messageFor(response.status);
   } catch {
     return "The connection dropped. Try again.";
+  } finally {
+    release();
+    gateChanged(jobId);
   }
 }
 

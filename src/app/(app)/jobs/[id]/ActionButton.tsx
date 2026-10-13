@@ -5,6 +5,8 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
+import { gateChanged, holdOutbound } from "../polling";
+
 /** A refused answer in plain words, by its HTTP status. */
 export function messageFor(status: number): string {
   if (status === 401) return "You are signed out. Sign in again, then try.";
@@ -16,7 +18,9 @@ export function messageFor(status: number): string {
 /**
  * One of the owner's answers on the job page: it posts to the job's route,
  * then renders the page again from the server, which shows the job's new
- * state. A refusal says what to do in plain words.
+ * state. A refusal says what to do in plain words. An answer that can
+ * change a kit's gate names the job: while it is in flight the outbound
+ * controls wait, and the job's pages in other tabs are told once it lands.
  */
 export function ActionButton({
   url,
@@ -24,12 +28,15 @@ export function ActionButton({
   body,
   confirmText,
   variant = "default",
+  gateOf,
 }: {
   url: string;
   label: string;
   body?: object;
   confirmText?: string;
   variant?: "default" | "outline" | "destructive";
+  /** The job whose kit's gate the answer can change. */
+  gateOf?: string;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -39,6 +46,7 @@ export function ActionButton({
     if (confirmText && !window.confirm(confirmText)) return;
     setBusy(true);
     setError(null);
+    const release = gateOf ? holdOutbound() : () => undefined;
     try {
       const response = await fetch(url, {
         method: "POST",
@@ -51,6 +59,8 @@ export function ActionButton({
     } catch {
       setError("The connection dropped. Try again.");
     } finally {
+      release();
+      if (gateOf) gateChanged(gateOf);
       setBusy(false);
     }
   }

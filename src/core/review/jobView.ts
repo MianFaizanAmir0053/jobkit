@@ -183,7 +183,11 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       ? sha256Hex(canonicalJson({ role: role.id, outputs: Object.fromEntries(outputs) }))
       : null;
   const decisions = kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey) : null;
-  const needsRetype = role ? needsRetypeOf(role, settled, addressChecks) : false;
+  // An address or number the owner typed stands once it passes, even where the kit would no
+  // longer ask for one, as after an update that reads the post's as agreed: never the post's.
+  const needsRetype = role
+    ? needsRetypeOf(role, settled, addressChecks) || typedPasses(role, decisions ?? NO_DECISIONS)
+    : false;
   const handoff = hasKit && role ? handoffOf(role, needsRetype, decisions ?? NO_DECISIONS) : null;
   // A kit that ran before its application opened with it is weighed against every earlier one
   // too, at the address it goes to.
@@ -280,6 +284,15 @@ function needsRetypeOf(
   return given === "" || !passes || settled?.agreement.ok !== true || held;
 }
 
+/** Whether the owner typed an email address or number for the role that passes the strict check. */
+function typedPasses(role: Role, decisions: ReviewDecisions): boolean {
+  const { kind } = role.route;
+  const typed = decisions.retyped?.value ?? "";
+  if (typed === "") return false;
+  if (kind === "email") return isStrictAddress(typed);
+  return kind === "whatsapp" && normaliseWhatsAppNumber(typed).ok;
+}
+
 /**
  * Where the kit goes: the post's contact, unless the kit needs the owner to
  * type one; then what they typed, once it passes the strict check.
@@ -292,9 +305,7 @@ function handoffOf(
   const { kind, address } = role.route;
   if (kind !== "email" && kind !== "whatsapp") return null;
   if (!needsRetype) return { to: address.trim(), typed: false };
-  const typed = decisions.retyped?.value ?? "";
-  const passes = kind === "email" ? isStrictAddress(typed) : normaliseWhatsAppNumber(typed).ok;
-  return { to: passes ? typed : "", typed: true };
+  return { to: typedPasses(role, decisions) ? decisions.retyped!.value : "", typed: true };
 }
 
 /**

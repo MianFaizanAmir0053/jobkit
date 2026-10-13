@@ -106,10 +106,17 @@ export function flagKey(index: number): string {
   return `F${index + 1}`;
 }
 
-/** The checks kept for an address the owner typed before, at the checks' version; null for none. */
+/** An email address without surrounding space or case, which change nothing about where it goes. */
+export const emailKey = (address: string) => address.trim().toLowerCase();
+
+/**
+ * The checks kept for an address the owner typed before, in any case, at
+ * the checks' version; null for none.
+ */
 export function keptLookup(decisions: ReviewDecisions, address: string): AddressCheck[] | null {
   const kept = decisions.lookups.find(
-    (lookup) => lookup.address === address && lookup.version === ADDRESS_CHECKS_VERSION,
+    (lookup) =>
+      emailKey(lookup.address) === emailKey(address) && lookup.version === ADDRESS_CHECKS_VERSION,
   );
   return kept ? kept.checks : null;
 }

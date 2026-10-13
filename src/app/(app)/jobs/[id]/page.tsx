@@ -15,7 +15,7 @@ import type { JobView, Step } from "@/core/review/jobView";
 import { appConfig } from "@/server/config";
 import { jobForViewer, requireSession, viewerTimeZone } from "@/server/dal";
 
-import { duplicateLine, formatTime, placeOfFlag, STATE_WORDS } from "../words";
+import { duplicateLine, formatTime, placeOfFlag, STATE_WORDS, withoutContacts } from "../words";
 
 import { ActionButton } from "./ActionButton";
 import { JobPoller } from "./JobPoller";
@@ -251,6 +251,15 @@ function stopWords(view: JobView): string {
     : "No role was found in this post, even when it was read again.";
 }
 
+/**
+ * The contact the owner must type from the post, whose reading by jobkit
+ * the page then never shows, in the post's words either; null when none.
+ */
+function typing(view: JobView): "email" | "whatsapp" | null {
+  const contact = view.kitParts?.contact;
+  return contact?.needsRetype ? contact.kind : null;
+}
+
 function Panel({
   title,
   danger = false,
@@ -298,7 +307,7 @@ function ScamPanel({ view }: { view: JobView }) {
         {scam.map((signal, i) => (
           <li key={i}>
             {signal.quote ? (
-              <>&ldquo;{signal.quote}&rdquo;</>
+              <>&ldquo;{withoutContacts(signal.quote, typing(view))}&rdquo;</>
             ) : (
               <>A sign the post does not quote: {signal.kind.replaceAll("_", " ")}</>
             )}
@@ -315,6 +324,7 @@ function ScamPanel({ view }: { view: JobView }) {
           !view.kitParts?.sent && (
             <ActionButton
               url={`/api/jobs/${view.id}/review`}
+              gateOf={view.id}
               label="Continue anyway"
               variant="destructive"
               confirmText="This post shows signs of a scam. Continue with it anyway?"
@@ -345,6 +355,7 @@ function DuplicatePanel({ view, timeZone }: { view: JobView; timeZone: string })
       </ul>
       <ActionButton
         url={`/api/jobs/${view.id}/apply-again`}
+        gateOf={view.id}
         label="Apply again"
         variant="outline"
         body={{ keys: repeats.map((match) => match.key), kit: view.kitKey }}
@@ -391,7 +402,7 @@ function PostPanel({ view }: { view: JobView }) {
           </p>
           <ul className="list-disc pl-5 text-sm [overflow-wrap:anywhere]">
             {aimedAtAi.map((line, i) => (
-              <li key={i}>&ldquo;{line}&rdquo;</li>
+              <li key={i}>&ldquo;{withoutContacts(line, typing(view))}&rdquo;</li>
             ))}
           </ul>
         </Panel>
@@ -592,6 +603,7 @@ function KitPanel({
                         <span className="text-muted-foreground">You checked this.</span>
                         <ActionButton
                           url={reviewUrl}
+                          gateOf={view.id}
                           label="Undo"
                           variant="outline"
                           body={decision({ kind: "uncheck", blockId: verdict.blockId })}
@@ -600,6 +612,7 @@ function KitPanel({
                     ) : (
                       <ActionButton
                         url={reviewUrl}
+                        gateOf={view.id}
                         label="I checked this"
                         variant="outline"
                         body={decision({ kind: "check", blockId: verdict.blockId })}
@@ -626,6 +639,7 @@ function KitPanel({
                           </span>
                           <ActionButton
                             url={reviewUrl}
+                            gateOf={view.id}
                             label="Undo"
                             variant="outline"
                             body={decision({ kind: "uncheck_flag", flag: key })}
@@ -634,6 +648,7 @@ function KitPanel({
                       ) : (
                         <ActionButton
                           url={reviewUrl}
+                          gateOf={view.id}
                           label={inGmail ? "I will fix it in Gmail" : "I checked this"}
                           variant="outline"
                           body={decision({ kind: "check_flag", flag: key })}
@@ -653,7 +668,7 @@ function KitPanel({
           {instructions.length > 0 && (
             <ul className="list-disc pl-5 text-sm [overflow-wrap:anywhere]">
               {instructions.map((line, i) => (
-                <li key={`i${i}`}>{line.text}</li>
+                <li key={`i${i}`}>{withoutContacts(line.text, typing(view))}</li>
               ))}
             </ul>
           )}
@@ -685,7 +700,7 @@ function KitPanel({
               return (
                 <tr key={requirement.id} className="border-b border-border align-top">
                   <td className="py-1 pr-3 [overflow-wrap:anywhere]">
-                    {requirement.text}
+                    {withoutContacts(requirement.text, typing(view))}
                     {requirement.priority === "must" ? "" : " (nice to have)"}
                   </td>
                   <td className="py-1 pr-3 font-medium">{row?.verdict ?? "not weighed"}</td>
@@ -728,6 +743,7 @@ function KitPanel({
           jobId={view.id}
           kit={kitKey}
           open={open}
+          to={view.handoff?.to ?? null}
           email={byEmail}
           gmailHref={
             open && byEmail && to !== ""
@@ -754,12 +770,14 @@ function KitPanel({
                 ? `Marked sent on ${formatTime(view.application.sentAt, timeZone)}.`
                 : "Marked sent."}
             </p>
-            {view.application?.status === "sent" && (
+            {view.application?.status === "sent" && view.application.sentAt && (
               <div>
                 <ActionButton
                   url={`/api/jobs/${view.id}/take-back`}
                   label="Take back Mark sent"
                   variant="outline"
+                  body={{ sentAt: view.application.sentAt.toISOString() }}
+                  gateOf={view.id}
                   confirmText="Take back Mark sent? Do this only if you did not send it: the kit opens again."
                 />
               </div>
@@ -767,7 +785,7 @@ function KitPanel({
           </div>
         ) : byEmail ? (
           open ? (
-            <MarkSent jobId={view.id} />
+            <MarkSent jobId={view.id} kit={kitKey} to={to} />
           ) : (
             <p className="text-sm text-muted-foreground">
               Mark sent appears once nothing holds the email back.
@@ -794,7 +812,10 @@ function EligibilityReasons({ view }: { view: JobView }) {
         <li key={i}>
           {reason.message}
           {reason.quote && (
-            <span className="text-muted-foreground"> — &ldquo;{reason.quote}&rdquo;</span>
+            <span className="text-muted-foreground">
+              {" "}
+              — &ldquo;{withoutContacts(reason.quote, typing(view))}&rdquo;
+            </span>
           )}
         </li>
       ))}

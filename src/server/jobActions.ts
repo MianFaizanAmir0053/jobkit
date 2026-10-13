@@ -218,7 +218,13 @@ export async function applyAgainRoute(
   return ok(200, { gate: outcome.gate });
 }
 
-/** POST /api/jobs/<id>/take-back: takes back a mistaken Mark sent, opening the kit again. */
+/** The Mark sent the page showed, by its time. */
+const takeBackBody = z.object({ sentAt: z.iso.datetime() });
+
+/**
+ * POST /api/jobs/<id>/take-back: takes back a mistaken Mark sent, the one
+ * the page showed, opening the kit again.
+ */
 export async function takeBack(
   request: NextRequest,
   deps: Deps,
@@ -227,16 +233,26 @@ export async function takeBack(
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
   if (!isUuid(jobId)) return refusal(404, "not-found");
-  const taken = await takeBackSent(deps, jobId, actor.session.id);
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return refusal(413, "too-large");
+  let json: unknown = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    // Not JSON: refused below.
+  }
+  const parsed = takeBackBody.safeParse(json);
+  if (!parsed.success) return refusal(400, "invalid");
+  const taken = await takeBackSent(deps, jobId, actor.session.id, new Date(parsed.data.sentAt));
   if (!taken.ok) return refusal(taken.reason === "not-found" ? 404 : 409, taken.reason);
   return ok();
 }
 
 /**
- * GET /api/jobs/<id>/gate: the kit as it stands and whether its gate is
- * open, so a page drawn earlier, in another tab or on the other device,
- * opens its outbound controls only while the server agrees (review spec,
- * "The outbound gate").
+ * GET /api/jobs/<id>/gate: the kit as it stands, whether its gate is open
+ * and the address or number it goes to, so a page drawn earlier, in another
+ * tab or on the other device, opens its outbound controls only while the
+ * server agrees on all three (review spec, "The outbound gate").
  */
 export async function gate(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
   const actor = await sessionForRead(request, deps);
@@ -247,14 +263,21 @@ export async function gate(request: NextRequest, deps: Deps, jobId: string): Pro
   return ok(200, {
     kit: view.kitKey,
     open: view.review !== null && view.review.gate.length === 0,
+    to: view.handoff?.to ?? null,
   });
 }
 
-const sentBody = z.object({ changedInGmail: z.boolean() });
+/** The answer to "Did you change anything in Gmail?", and the kit and address the page showed. */
+const sentBody = z.object({
+  changedInGmail: z.boolean(),
+  kit: kitShown,
+  to: z.string().max(400),
+});
 
 /**
  * POST /api/jobs/<id>/sent: Mark sent, after the owner sent the email from
- * Gmail, with the answer to "Did you change anything in Gmail?".
+ * Gmail, with the answer to "Did you change anything in Gmail?"; refused
+ * when the page showed another kit or address than the kit now has.
  */
 export async function sent(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
   const actor = await sessionForChange(request, deps);
@@ -270,7 +293,8 @@ export async function sent(request: NextRequest, deps: Deps, jobId: string): Pro
   }
   const parsed = sentBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
-  const marked = await markSent(deps, jobId, actor.session.id, parsed.data);
+  const { changedInGmail, kit, to } = parsed.data;
+  const marked = await markSent(deps, jobId, actor.session.id, { changedInGmail }, { kit, to });
   if (!marked.ok) return refusal(marked.reason === "not-found" ? 404 : 409, marked.reason);
   return ok(200, { ok: true, changed: marked.changed });
 }

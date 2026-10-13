@@ -1,9 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  confirms,
   GATE_CHECK_MS,
+  type GateAnswer,
+  holdOutbound,
   JOB_POLL,
   LIST_TICK_MS,
+  onOutboundHold,
+  outboundHeld,
   type PageHooks,
   pollJob,
   refreshList,
@@ -15,11 +20,16 @@ import {
 function fakePage() {
   let hidden = false;
   const listeners = new Set<() => void>();
+  const hiding = new Set<() => void>();
   const page: PageHooks = {
     hidden: () => hidden,
     onShown(listener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
+    },
+    onHidden(listener) {
+      hiding.add(listener);
+      return () => hiding.delete(listener);
     },
     now: () => Date.now(),
   };
@@ -28,6 +38,7 @@ function fakePage() {
     listeners,
     hide: () => {
       hidden = true;
+      for (const listener of hiding) listener();
     },
     show: () => {
       hidden = false;
@@ -181,7 +192,7 @@ describe("refreshList", () => {
 describe("watchGate", () => {
   it("asks the server at once, every 15 seconds while shown, and at once when shown again", async () => {
     const { page, hide, show } = fakePage();
-    const read = vi.fn(async () => ({ kit: "K", open: true }));
+    const read = vi.fn(async () => ({ kit: "K", open: true, to: "jobs@example.com" }));
     const answers: unknown[] = [];
 
     const stop = watchGate(read, (answer) => answers.push(answer), page);
@@ -197,19 +208,17 @@ describe("watchGate", () => {
 
     expect(read).toHaveBeenCalledTimes(3);
     expect(answers).toEqual([
-      { kit: "K", open: true },
-      { kit: "K", open: true },
-      { kit: "K", open: true },
+      { kit: "K", open: true, to: "jobs@example.com" },
+      { kit: "K", open: true, to: "jobs@example.com" },
+      { kit: "K", open: true, to: "jobs@example.com" },
     ]);
     stop();
   });
 
   it("asks once at a time, and says nothing once stopped", async () => {
     const { page, show } = fakePage();
-    const pending: ((answer: { kit: string; open: boolean }) => void)[] = [];
-    const read = vi.fn(
-      () => new Promise<{ kit: string; open: boolean }>((resolve) => pending.push(resolve)),
-    );
+    const pending: ((answer: GateAnswer) => void)[] = [];
+    const read = vi.fn(() => new Promise<GateAnswer>((resolve) => pending.push(resolve)));
     const settle = vi.fn();
 
     const stop = watchGate(read, settle, page);
@@ -217,9 +226,110 @@ describe("watchGate", () => {
     show();
     expect(read).toHaveBeenCalledTimes(1);
     stop();
-    pending[0]!({ kit: "K", open: true });
+    pending[0]!({ kit: "K", open: true, to: "jobs@example.com" });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(settle).not.toHaveBeenCalled();
+  });
+
+  it("forgets its last answer as soon as the page is hidden, so a page shown again waits for a new one", async () => {
+    const { page, hide, show } = fakePage();
+    const read = vi.fn(async () => ({ kit: "K", open: true, to: "jobs@example.com" }));
+    const forget = vi.fn();
+
+    const stop = watchGate(read, () => undefined, page, { forget });
+    await vi.advanceTimersByTimeAsync(0);
+    hide();
+    expect(forget).toHaveBeenCalledTimes(1);
+    show();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(read).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("drops an answer asked for before the page was hidden", async () => {
+    const { page, hide, show } = fakePage();
+    const pending: ((answer: GateAnswer) => void)[] = [];
+    const read = vi.fn(() => new Promise<GateAnswer>((resolve) => pending.push(resolve)));
+    const settle = vi.fn();
+
+    const stop = watchGate(read, settle, page, { forget: () => undefined });
+    await vi.advanceTimersByTimeAsync(0);
+    hide();
+    pending[0]!({ kit: "K", open: true, to: "jobs@example.com" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settle).not.toHaveBeenCalled();
+    show();
+    await vi.advanceTimersByTimeAsync(0);
+    pending[1]!({ kit: "K", open: false, to: "jobs@example.com" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(settle.mock.calls).toEqual([[{ kit: "K", open: false, to: "jobs@example.com" }]]);
+    stop();
+  });
+
+  it("forgets and asks at once when told the gate changed, dropping an answer asked for before", async () => {
+    const { page, hide } = fakePage();
+    const nudges = new Set<() => void>();
+    const nudge = () => nudges.forEach((listener) => listener());
+    const pending: ((answer: GateAnswer) => void)[] = [];
+    const read = vi.fn(() => new Promise<GateAnswer>((resolve) => pending.push(resolve)));
+    const settle = vi.fn();
+    const forget = vi.fn();
+    const nudged = (listener: () => void) => {
+      nudges.add(listener);
+      return () => nudges.delete(listener);
+    };
+
+    const stop = watchGate(read, settle, page, { forget, nudged });
+    await vi.advanceTimersByTimeAsync(0);
+    nudge();
+    expect(forget).toHaveBeenCalledTimes(1);
+    // The answer to the ask made before the change says nothing of the gate now: it is asked again.
+    pending[0]!({ kit: "K", open: true, to: "jobs@example.com" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settle).not.toHaveBeenCalled();
+    expect(read).toHaveBeenCalledTimes(2);
+    pending[1]!({ kit: "K", open: true, to: "careers@example.com" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(settle.mock.calls).toEqual([[{ kit: "K", open: true, to: "careers@example.com" }]]);
+    hide();
+    nudge();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(read).toHaveBeenCalledTimes(2);
+
+    stop();
+    expect(nudges.size).toBe(0);
+  });
+});
+
+describe("confirms", () => {
+  it("takes the server's answer as the page's only for the same kit, gate and address", () => {
+    const shown = { kit: "K", open: true, to: "jobs@example.com" };
+
+    expect(confirms(shown, shown)).toBe(true);
+    expect(confirms({ ...shown, to: "careers@example.com" }, shown)).toBe(false);
+    expect(confirms({ ...shown, kit: "L" }, shown)).toBe(false);
+    expect(confirms({ ...shown, open: false }, shown)).toBe(false);
+    expect(confirms(null, shown)).toBe(false);
+  });
+});
+
+describe("holdOutbound", () => {
+  it("holds the outbound controls while any decision is in flight, each release counting once", () => {
+    const changes = vi.fn();
+    const stop = onOutboundHold(changes);
+
+    const first = holdOutbound();
+    const second = holdOutbound();
+    first();
+    first();
+    expect(outboundHeld()).toBe(true);
+    second();
+
+    expect(outboundHeld()).toBe(false);
+    expect(changes).toHaveBeenCalledTimes(4);
+    stop();
   });
 });

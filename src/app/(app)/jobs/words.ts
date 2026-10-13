@@ -1,6 +1,23 @@
 import type { DuplicateMatch } from "@/core/ledger/duplicates";
 import type { JobState } from "@/core/platform/jobStates";
 
+/** Anything shaped like an email address, its last character a letter or digit. */
+const ADDRESS = /[\p{L}\p{N}._%+-]+@[\p{L}\p{N}.-]*[\p{L}\p{N}]/gu;
+/** Eight or more characters of digits and the marks numbers are written with, starting and ending with a digit. */
+const NUMBER = /\+?\d[\d\s().-]{6,}\d/g;
+
+/**
+ * The post's words with every address, or every number, set aside while
+ * the owner must type the contact themselves (review spec, "Contact"):
+ * jobkit's reading of it is unconfirmed, so it is never shown to be copied.
+ * `kind` is the contact the owner must type, or null when they need not.
+ */
+export function withoutContacts(text: string, kind: "email" | "whatsapp" | null): string {
+  if (kind === "email") return text.replace(ADDRESS, "(an address: read it in the post)");
+  if (kind === "whatsapp") return text.replace(NUMBER, "(a number: read it in the post)");
+  return text;
+}
+
 /** A job's state in the owner's words, on the jobs list and the job page. */
 export const STATE_WORDS: Readonly<Record<JobState, string>> = {
   manual_run: "Manual run",

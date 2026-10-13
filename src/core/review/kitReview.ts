@@ -2,14 +2,17 @@ import { isStrictAddress } from "@/core/extraction/contacts";
 import { chosenRole, currentExtraction } from "@/core/extraction/owner";
 import { applyAgain } from "@/core/ledger/duplicates";
 import { setAddress } from "@/core/ledger/statuses";
+import { stageOutput } from "@/core/platform/runner";
 import type { Clock, Db, Dns } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
 import { type AddressCheck, checkAddress } from "./addressChecks";
+import type { AddressChecksOutput } from "./addressChecksStage";
 import { applicationIdOf, contactForLedger, kitReadyForJob } from "./applications";
 import type { GateReason } from "./canHandOff";
 import {
   decide,
+  emailKey,
   flagKey,
   keptLookup,
   type KitParts,
@@ -123,10 +126,26 @@ async function keep(
 }
 
 /**
+ * What the address_checks stage found for the post's own address, which
+ * stands for it when the owner types it again; null when the stage checked
+ * another address, or when what it found came from an older strict check
+ * the address now passes.
+ */
+async function postedChecks(db: Db, jobId: string, typed: string): Promise<AddressCheck[] | null> {
+  const output = (await stageOutput(db, jobId, "address_checks"))?.output as
+    AddressChecksOutput | undefined;
+  if (!output?.checked || emailKey(output.address) !== emailKey(typed)) return null;
+  return output.checks.some((check) => check.kind === "syntax") ? null : output.checks;
+}
+
+/**
  * The checks of an email address the owner typed, made before the review
- * row is locked, since a lookup can take three seconds: those first found
- * for it, when it was typed before; none for a number, or for an address
- * that fails the strict check.
+ * row is locked, since a lookup can take three seconds. An address is
+ * looked up once: the post's own, typed again in any case, keeps what the
+ * address checks found for it, and one typed before keeps the checks first
+ * found for it, so a later lookup that fails, as offline, never washes out
+ * one that found the address takes no mail. None for a number, or for an
+ * address that fails the strict check.
  */
 async function typedChecks(
   deps: { db: Db; clock: Clock; dns: Dns },
@@ -139,6 +158,7 @@ async function typedChecks(
   if (role?.route.kind !== "email" || !extraction || !isStrictAddress(typed)) return null;
   const decisions = (await jobView(deps, jobId))?.review?.decisions ?? NO_DECISIONS;
   return (
+    (await postedChecks(deps.db, jobId, typed)) ??
     keptLookup(decisions, typed) ??
     (await checkAddress(deps.dns, typed, extraction.record.company.name))
   );

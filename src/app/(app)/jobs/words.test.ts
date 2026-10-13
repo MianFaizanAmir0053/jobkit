@@ -2,9 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import type { DuplicateMatch } from "@/core/ledger/duplicates";
 
-import { duplicateLine, placeOfFlag } from "./words";
+import { duplicateLine, placeOfFlag, withoutContacts } from "./words";
 
-/* Where a flag on what extract read points, and what a duplicate match found, in the owner's words. */
+/*
+ * Where a flag on what extract read points, what a duplicate match found,
+ * in the owner's words, and the post's words with jobkit's reading of a
+ * contact set aside while the owner must type it.
+ */
 
 describe("placeOfFlag", () => {
   it("names the role, the entry and the contact a path points at", () => {
@@ -63,6 +67,32 @@ describe("duplicateLine", () => {
 
     expect(duplicateLine(imported, "America/New_York").when).toBe(
       "an earlier application, 4 May 2026",
+    );
+  });
+});
+
+describe("withoutContacts", () => {
+  it("sets aside every address in the post's words while the owner must type one", () => {
+    expect(withoutContacts("Send your CV to jobs@acrne.com or <HR@acme.com>.", "email")).toBe(
+      "Send your CV to (an address: read it in the post) or <(an address: read it in the post)>.",
+    );
+    expect(withoutContacts("Apply now: spy%40evil.example.net%2Chr@example.com", "email")).toBe(
+      "Apply now: (an address: read it in the post)",
+    );
+  });
+
+  it("sets aside every number while the owner must type the WhatsApp number", () => {
+    expect(withoutContacts("WhatsApp 0300 0000000 or +92 (321) 765-4321 today", "whatsapp")).toBe(
+      "WhatsApp (a number: read it in the post) or (a number: read it in the post) today",
+    );
+    expect(withoutContacts("Salary PKR 150,000; 3+ years", "whatsapp")).toBe(
+      "Salary PKR 150,000; 3+ years",
+    );
+  });
+
+  it("leaves the words alone when the owner need not type the contact", () => {
+    expect(withoutContacts("Apply: jobs@acme.com, 0300 0000000", null)).toBe(
+      "Apply: jobs@acme.com, 0300 0000000",
     );
   });
 });

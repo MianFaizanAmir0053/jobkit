@@ -353,15 +353,23 @@ describe("the job page's routes", () => {
     const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
     const picking = await settled([answer(fixture("S07-two-roles"))]);
 
-    const no = JSON.stringify({ changedInGmail: false });
-    expect((await sent(post(`/api/jobs/${ready}/sent`, "{}", cookie), deps(), ready)).status).toBe(
-      400,
-    );
+    const kit = await kitOf(ready);
+    const no = JSON.stringify({ changedInGmail: false, kit, to: "jobs@example.com" });
+    for (const body of ["{}", JSON.stringify({ changedInGmail: false })]) {
+      expect(
+        (await sent(post(`/api/jobs/${ready}/sent`, body, cookie), deps(), ready)).status,
+      ).toBe(400);
+    }
     // Held: no second read confirmed the address.
     expect((await sent(post(`/api/jobs/${ready}/sent`, no, cookie), deps(), ready)).status).toBe(
       409,
     );
     await clearedOnPage(ready, cookie);
+    // A page showing another address than the one the kit now goes to.
+    const elsewhere = JSON.stringify({ changedInGmail: false, kit, to: "other@example.com" });
+    expect(
+      (await sent(post(`/api/jobs/${ready}/sent`, elsewhere, cookie), deps(), ready)).status,
+    ).toBe(409);
     const response = await sent(post(`/api/jobs/${ready}/sent`, no, cookie), deps(), ready);
 
     expect(response.status).toBe(200);
@@ -369,9 +377,19 @@ describe("the job page's routes", () => {
     expect(
       (await sent(post(`/api/jobs/${picking}/sent`, no, cookie), deps(), picking)).status,
     ).toBe(409);
-    // A mistaken tap is taken back, and the kit opens again.
+    // A mistaken tap is taken back, by the Mark sent the page showed, and the kit opens again.
+    const shown = (await jobView({ db, clock }, ready))!.application!.sentAt!.toISOString();
     expect(
       (await takeBack(post(`/api/jobs/${ready}/take-back`, "", cookie), deps(), ready)).status,
+    ).toBe(400);
+    expect(
+      (
+        await takeBack(
+          post(`/api/jobs/${ready}/take-back`, JSON.stringify({ sentAt: shown }), cookie),
+          deps(),
+          ready,
+        )
+      ).status,
     ).toBe(200);
     expect((await jobView({ db, clock }, ready))!.application?.status).toBe("kit_ready");
   });
@@ -382,11 +400,16 @@ describe("the job page's routes", () => {
     const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
 
     const held = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
-    expect(await held.json()).toEqual({ kit: await kitOf(ready), open: false });
+    expect(await held.json()).toEqual({ kit: await kitOf(ready), open: false, to: "" });
     await clearedOnPage(ready, cookie);
 
+    // With the address the kit goes to, so a page showing another learns of it.
     const open = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
-    expect(await open.json()).toEqual({ kit: await kitOf(ready), open: true });
+    expect(await open.json()).toEqual({
+      kit: await kitOf(ready),
+      open: true,
+      to: "jobs@example.com",
+    });
     expect((await gate(get(`/api/jobs/${ready}/gate`), deps(), ready)).status).toBe(401);
   });
 

@@ -27,7 +27,7 @@ import { createTestDb } from "@/server/db/testDb";
 import { addressChecksStage } from "./addressChecksStage";
 import type { GateReason } from "./canHandOff";
 import { flagKey, NO_DECISIONS } from "./decisions";
-import { jobView } from "./jobView";
+import { jobView, storedDecisions } from "./jobView";
 import { applyAgainForJob, recordReview } from "./kitReview";
 import { markSent, takeBackSent } from "./markSent";
 
@@ -263,8 +263,53 @@ describe("recordReview", () => {
       kind: "retype",
       value: "jobs@nomail-northwind.com",
     });
+    // An address's case changes nothing about where it goes.
+    const shouted = await recordReview(deps(timingOut), id, {
+      kind: "retype",
+      value: "JOBS@NoMail-Northwind.com",
+    });
 
     expect(again.ok && kinds(again.gate)).toEqual(["address_check", "judge"]);
+    expect(shouted.ok && kinds(shouted.gate)).toEqual(["address_check", "judge"]);
+  });
+
+  it("keeps what the address checks found for the post's own address, when the owner types it again", async () => {
+    // The post's domain takes no mail, which holds its address until the owner types one.
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      dns: mailOnly([]),
+    });
+    const timingOut: Dns = { lookup: async () => ({ kind: "timeout" }) };
+
+    const typed = await recordReview(deps(timingOut), id, {
+      kind: "retype",
+      value: "Jobs@Example.com",
+    });
+
+    expect(typed.ok && kinds(typed.gate)).toEqual(["address_check", "judge"]);
+  });
+
+  it("keeps the address the owner typed once it passes, even where the kit would no longer ask for it", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    const { kitKey, role } = (await jobView({ db, clock }, id))!;
+    // Typed while an earlier version of jobkit doubted the post's address.
+    await db.query(
+      `insert into {{schema}}.kit_reviews (job_id, role_id, decisions, gate, updated_at)
+       values ($1, $2, $3::jsonb, '[]'::jsonb, $4)`,
+      [
+        id,
+        role!.id,
+        storedDecisions(kitKey!, {
+          ...NO_DECISIONS,
+          retyped: { value: "careers@example.com", checks: [] },
+        }),
+        clock.now(),
+      ],
+    );
+
+    const view = (await jobView({ db, clock }, id))!;
+
+    expect(view.handoff).toEqual({ to: "careers@example.com", typed: true });
+    expect(view.kitParts!.contact).toEqual({ kind: "email", needsRetype: true });
   });
 
   it("refuses a decision made on another kit than the one that stands", async () => {
@@ -299,6 +344,72 @@ describe("recordReview", () => {
 
     expect(kinds((await jobView({ db, clock }, id))!.review!.gate)).toEqual([]);
     expect(await takeBackSent({ db, clock }, id, null)).toEqual({ ok: false, reason: "not-sent" });
+  });
+
+  it("refuses a Mark sent from a page drawn on another kit, or showing another address", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply on our site.");
+    await recordReview(deps(), id, { kind: "check", blockId: "S1" });
+    await recordReview(deps(), id, { kind: "retype", value: "jobs@example.com" });
+    const { kitKey } = (await jobView({ db, clock }, id))!;
+    // On the phone, the owner types the address again after this page was drawn.
+    await recordReview(deps(), id, { kind: "retype", value: "careers@example.com" });
+    const no = { changedInGmail: false };
+
+    expect(
+      await markSent({ db, clock }, id, null, no, { kit: kitKey!, to: "jobs@example.com" }),
+    ).toEqual({ ok: false, reason: "changed" });
+    expect(
+      await markSent({ db, clock }, id, null, no, {
+        kit: "another kit",
+        to: "careers@example.com",
+      }),
+    ).toEqual({ ok: false, reason: "changed" });
+    expect(
+      await markSent({ db, clock }, id, null, no, { kit: kitKey!, to: "careers@example.com" }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("takes back only the Mark sent the page showed, so a late tap leaves a later one", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    await recordReview(deps(), id, { kind: "check", blockId: "S1" });
+    await markSent({ db, clock }, id, null, { changedInGmail: false });
+    const first = (await jobView({ db, clock }, id))!.application!.sentAt!;
+    expect(await takeBackSent({ db, clock }, id, null, first)).toEqual({ ok: true });
+    clock.advance(60_000);
+    await markSent({ db, clock }, id, null, { changedInGmail: false });
+
+    // A page still showing the first Mark sent is tapped late.
+    expect(await takeBackSent({ db, clock }, id, null, first)).toEqual({
+      ok: false,
+      reason: "not-sent",
+    });
+    expect((await jobView({ db, clock }, id))!.application!.status).toBe("sent");
+  });
+
+  it("records an address the owner typed as an edit, unless it is the one jobkit read", async () => {
+    const outcome = async (typed: string) => {
+      // No earlier application of the same post to hold the kit as a duplicate.
+      await db.exec(
+        `delete from {{schema}}.draft_outcomes; delete from {{schema}}.status_changes;
+         delete from {{schema}}.applications`,
+      );
+      // The post's address cannot be read again from it, so the owner types it.
+      const id = await readyKit("Northwind Analytics is hiring. Apply on our site.");
+      await recordReview(deps(), id, { kind: "check", blockId: "S1" });
+      await recordReview(deps(), id, { kind: "retype", value: typed });
+      await markSent({ db, clock }, id, null, { changedInGmail: false });
+      const { rows } = await db.query<{ changed: string[]; factual_edit: boolean }>(
+        "select changed, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+        [id],
+      );
+      return rows;
+    };
+
+    expect(await outcome("careers@example.com")).toEqual([
+      { changed: ["address"], factual_edit: true },
+    ]);
+    // The record read jobs@example.com: typed again, it changes nothing.
+    expect(await outcome("Jobs@Example.com")).toEqual([{ changed: [], factual_edit: false }]);
   });
 
   it("keeps decisions only for the kit they were made on", async () => {

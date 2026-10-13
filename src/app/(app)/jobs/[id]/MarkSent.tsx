@@ -5,6 +5,8 @@ import { type MouseEvent, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
+import { gateChanged, holdOutbound } from "../polling";
+
 import { messageFor } from "./ActionButton";
 
 /** How long after "Mark sent" a tap on Yes or No is the same double tap, not an answer. */
@@ -15,11 +17,13 @@ const SETTLE_MS = 500;
  * Mark sent and Not yet; Mark sent then asks "Did you change anything in
  * Gmail?", with Back for a mistaken tap, and the answer is recorded with the
  * sent status (ledger spec, "Factual edits"). The page offers it only once
- * nothing holds the email back. Yes and No sit where Mark sent was, so for
- * half a second a tap on them is taken as the rest of a double tap and
- * ignored.
+ * nothing holds the email back, and names the kit and the address it
+ * showed: a tap from a page drawn before the address was typed again
+ * elsewhere is refused, and the page drawn again. Yes and No sit where Mark
+ * sent was, so for half a second a tap on them is taken as the rest of a
+ * double tap and ignored.
  */
-export function MarkSent({ jobId }: { jobId: string }) {
+export function MarkSent({ jobId, kit, to }: { jobId: string; kit: string; to: string }) {
   const router = useRouter();
   const [step, setStep] = useState<"sent?" | "changed?" | "later">("sent?");
   const [busy, setBusy] = useState(false);
@@ -34,17 +38,20 @@ export function MarkSent({ jobId }: { jobId: string }) {
   async function record(changedInGmail: boolean) {
     setBusy(true);
     setError(null);
+    const release = holdOutbound();
     try {
       const response = await fetch(`/api/jobs/${jobId}/sent`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ changedInGmail }),
+        body: JSON.stringify({ changedInGmail, kit, to }),
       });
       if (!response.ok) setError(messageFor(response.status));
       router.refresh();
     } catch {
       setError("The connection dropped. Try again.");
     } finally {
+      release();
+      gateChanged(jobId);
       setBusy(false);
     }
   }
