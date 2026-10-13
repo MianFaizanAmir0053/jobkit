@@ -181,6 +181,10 @@ describe("the browser's code", () => {
     },
   );
 
+  it("can run the outbound gate, which the page runs as the server does (review AC1)", () => {
+    expect(serverReach(join(SRC, "core", "review", "canHandOff.ts"))).toEqual([]);
+  });
+
   it("would catch a file that reaches sharp through the project's own imports", () => {
     // extraction/tiles.ts loads sharp; nothing a client imports may lead there.
     const reach = serverReach(join(SRC, "core", "extraction", "tiles.ts"));
