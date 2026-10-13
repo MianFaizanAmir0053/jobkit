@@ -33,7 +33,7 @@ Major versions are pinned when the project is scaffolded; exact versions live in
 | Tooling | ESLint (Next config), Prettier, `tsx` for scripts |
 | Small helpers approved with this spec | `qrcode` (QR rendering), `yaml` (profile file), `sharp` (crops and tiles), `tldts` (registrable domain from the public suffix list) |
 
-Any other runtime dependency needs the owner's approval first.
+Any other runtime dependency needs the owner's approval first. Approved since: `postal-mime` (exact 3.0.1, a dev dependency), which the evaluation import uses to read sent mail; it never ships in the app (the owner's approval, 2026-10-13).
 
 ### A3. Architecture rule: ports and adapters
 

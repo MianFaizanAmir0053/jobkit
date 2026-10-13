@@ -15,14 +15,14 @@ Production timing and cost come from the ledger's Stats and Spend pages, not fro
 ## Case sources
 
 1. **Owner's archive (private).** Each case is a folder `private/archive/<case id>/` with the post's screenshots and, when one exists, the email the owner sent. Two ways to collect sent emails:
-   - **Google Takeout (preferred; start on day 1, because an export can take hours or days):** the owner exports Gmail's Sent label as an mbox file. `npm run eval:import -- --mbox <file>` keeps messages with `resume.pdf` attached and creates one case folder per message.
+   - **Google Takeout (preferred; start on day 1, because an export can take hours or days):** the owner exports Gmail's Sent label as an mbox file. `npm run eval:import -- --mbox <file>` keeps messages Gmail labels Sent with `resume.pdf` attached (any case of the name; `--attachment` names another) and creates one case folder per message, `private/archive/<sent date>-<hash of its message ID>/email.eml`, so importing again adds only new ones.
    - **By hand:** in Gmail on the web, search `in:sent has:attachment filename:resume.pdf`, use "Download message" for each, and drop the `.eml` files into case folders.
    
    The owner copies the matching screenshots from the phone into each folder. The labelling page lists each sent email beside screenshots taken within three days before it, to make matching quick.
 2. **Live cases.** Any real job can be marked "keep for evaluation" on its job page. `npm run eval:pull` copies it into a case folder and clears the cloud copy's keep flag (intake spec). This is how form and message routes enter the set, since sent mail holds only email applications.
 3. **Synthetic cases (public).** About 12 fictional posts in `evals/synthetic/`, rendered to phone-sized screenshots by a script, deterministically, including one tall scrolling screenshot. They cover every route and kit shape, a post with several roles, a non-English post, a post and a form question addressed to AI, a scam post, a post whose contact has no country code, and inflation traps such as "10+ years leading Kubernetes platforms". CI uses them with recorded model outputs; live runs score them as the model-behaviour criteria the extraction and drafting specs defer here.
 
-**Exclusion:** a case whose sent email matches one of the profile's style examples (same normalised body) is excluded, so the drafter is never scored on an email it was shown as a model (amendment A10).
+**Exclusion:** a case whose sent email matches one of the profile's style examples (its body, with case and spacing normalised, holds the example's text) is excluded, so the drafter is never scored on an email it was shown as a model (amendment A10).
 
 ## Labelling
 

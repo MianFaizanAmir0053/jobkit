@@ -19,7 +19,7 @@ The repository ignores `private/` and every `.env*` file except `.env.example`, 
 
 ## 1. Gmail export for the evaluation
 
-In Google Takeout, select only Mail, with only the "Sent" label, format mbox. When the export is ready, save the file under `private/takeout/` in the jobkit folder.
+In Google Takeout, select only Mail, with only the "Sent" label, format mbox. When the export is ready, save the file under `private/takeout/` in the jobkit folder, then run `npm run eval:import -- --mbox private/takeout/<file>.mbox`. It makes one folder per sent application with `resume.pdf` attached under `private/archive/`, leaves out any whose text holds one of your style examples, and says what it skipped. Then copy each post's screenshots from the phone into its folder. Running it again adds only new applications.
 
 ## 2. Vercel project
 

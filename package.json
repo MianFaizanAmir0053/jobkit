@@ -20,7 +20,8 @@
     "db:bootstrap": "tsx scripts/bootstrap.ts",
     "db:migrate": "tsx scripts/migrate.ts",
     "ledger:import": "tsx scripts/ledger-import.ts",
-    "profile:seed": "tsx scripts/profile-seed.ts"
+    "profile:seed": "tsx scripts/profile-seed.ts",
+    "eval:import": "tsx scripts/eval-import.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",
@@ -54,6 +55,7 @@
     "@vitest/coverage-v8": "^5.0.3",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
+    "postal-mime": "3.0.1",
     "prettier": "^3.9.9",
     "shadcn": "^4.21.3",
     "tailwindcss": "^4",
