@@ -2,8 +2,9 @@
  *   npm run build   runs `next build`, then this check
  *
  * Platform spec B2: test-only routes exist only in the dev server the
- * end-to-end tests start, and the local-only storage routes only in a dev
- * server with a local database, never in a build. next.config.ts leaves them
+ * end-to-end tests start, and the local-only routes and pages (the storage
+ * stand-ins, the labelling page) only in a dev server with a local
+ * database, never in a build. next.config.ts leaves them
  * out of every build; this confirms it from the build's own route manifest,
  * and fails the build (on Vercel too) if one slipped in.
  */
@@ -14,8 +15,9 @@ import { pathToFileURL } from "node:url";
 // Test-only routes live under these paths and nowhere else.
 export const TEST_ONLY_PREFIXES = ["/api/test/", "/test/"];
 
-// Local-only routes, the local storage adapter's stand-ins for Supabase's signed URLs.
-export const LOCAL_ONLY_PREFIXES = ["/api/dev/"];
+// Local-only routes and pages: the local storage adapter's stand-ins for Supabase's signed
+// URLs, and the evaluation's labelling page (evals AC2: a build has no /dev/label).
+export const LOCAL_ONLY_PREFIXES = ["/api/dev/", "/dev/"];
 
 /** A route under a prefix, or at the prefix itself: "/api/dev" is as local-only as "/api/dev/x". */
 export function isUnder(route: string, prefix: string): boolean {

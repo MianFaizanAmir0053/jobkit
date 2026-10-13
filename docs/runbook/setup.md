@@ -19,7 +19,7 @@ The repository ignores `private/` and every `.env*` file except `.env.example`, 
 
 ## 1. Gmail export for the evaluation
 
-In Google Takeout, select only Mail, with only the "Sent" label, format mbox. When the export is ready, save the file under `private/takeout/` in the jobkit folder, then run `npm run eval:import -- --mbox private/takeout/<file>.mbox`. It makes one folder per sent application with `resume.pdf` attached under `private/archive/`, leaves out any whose text holds one of your style examples, and says what it skipped. Then copy each post's screenshots from the phone into its folder. Running it again adds only new applications.
+In Google Takeout, select only Mail, with only the "Sent" label, format mbox. When the export is ready, save the file under `private/takeout/` in the jobkit folder, then run `npm run eval:import -- --mbox private/takeout/<file>.mbox`. It makes one folder per sent application with `resume.pdf` attached under `private/archive/`, leaves out any whose text holds one of your style examples, and says what it skipped. Running it again adds only new applications. Then copy the phone's screenshots into `private/archive/_screenshots/` and, with the dev server running (`JOBKIT_LOCAL_EVALS=1` in `.env.local`), open http://localhost:3000/dev/label: each case shows the email you sent and the screenshots taken in the three days before it, with a button to add one to the case. Label the ten test cases first; they show no suggestions until their labels are saved.
 
 ## 2. Vercel project
 

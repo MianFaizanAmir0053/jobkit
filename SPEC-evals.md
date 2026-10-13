@@ -26,7 +26,7 @@ Production timing and cost come from the ledger's Stats and Spend pages, not fro
 
 ## Labelling
 
-- A labelling page, `/dev/label`, exists only when `JOBKIT_ENV=development` and `JOBKIT_LOCAL_EVALS=1`. It reads and writes the case folders through the file system. In a production build the route returns 404.
+- A labelling page, `/dev/label`, exists only when `JOBKIT_ENV=development` and `JOBKIT_LOCAL_EVALS=1`, and only for the laptop's own session. It reads and writes the case folders through the file system. In a production build the route returns 404: its files are local-only, so no build has them, and the build check fails any build with a route under `/dev/`. Screenshots not yet matched wait in `private/archive/_screenshots/`; a phone's file name gives the time one was taken, else the file's time. Each case's split is kept in `private/archive/split.json`.
 - For each case the owner records company, role, route, the exact address or number, the eligibility outcome, the must-have requirements, and whether the stored crop shows the address or number. They save it as `labels.json`.
 - **Blind test split (amendment A10):** the ten `test` cases are labelled first, from scratch, with no pre-labels shown. Their pre-labels are produced afterwards and kept hidden, so the headline numbers rest on labels no model shaped.
 - **Dev cases** are labelled with pre-labels shown (`npm run eval:prelabel`, after a cost estimate and `--yes`), to save time. The write-up reports how often the owner corrected pre-labels on dev, and how often hidden pre-labels disagreed with blind labels on test, and says that the two sets are different cases.

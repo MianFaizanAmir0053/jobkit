@@ -37,6 +37,16 @@ describe("checkBuildRoutes", () => {
     ).toEqual({ ok: false, routes: ["/api/dev/storage/upload/[token]"] });
   });
 
+  it("fails every build that contains the labelling page, which only the laptop's dev server may have (evals AC2)", () => {
+    expect(
+      checkBuildRoutes({
+        ...production,
+        "/(app)/dev/label/page": "/dev/label",
+        "/(app)/dev/label/[caseId]/page": "/dev/label/[caseId]",
+      }),
+    ).toEqual({ ok: false, routes: ["/dev/label", "/dev/label/[caseId]"] });
+  });
+
   it("refuses a prefix without its closing slash, which would match more than it names", () => {
     expect(() => isUnder("/api/devices", "/api/dev")).toThrow();
   });
@@ -84,7 +94,7 @@ describe("the local-only files", () => {
   it("all sit under a prefix the check looks for", () => {
     const appDir = join(process.cwd(), "src", "app");
     const files = readdirSync(appDir, { recursive: true, encoding: "utf8" }).filter((file) =>
-      /\.localonly\.ts$/.test(file),
+      /\.localonly\.tsx?$/.test(file),
     );
 
     expect(files.length).toBeGreaterThan(0);

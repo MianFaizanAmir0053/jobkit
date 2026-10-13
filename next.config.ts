@@ -16,14 +16,16 @@ const testOnly =
     ? ["testonly.ts", "testonly.tsx"]
     : [];
 
-// Local-only routes (route.localonly.ts, only under /api/dev/) stand in for
-// Supabase Storage when the database is local: in the dev server with
-// JOBKIT_ENV=development or test, never in a build (scripts/checkBuild.ts).
+// Local-only routes and pages (route.localonly.ts and page.localonly.tsx,
+// only under /api/dev/ and /dev/): the local storage adapter's stand-ins for
+// Supabase Storage, and the evaluation's labelling page. They exist in the
+// dev server with JOBKIT_ENV=development or test, never in a build
+// (scripts/checkBuild.ts); the labelling page further needs JOBKIT_LOCAL_EVALS=1.
 const localOnly =
   (process.env.JOBKIT_ENV === "development" || process.env.JOBKIT_ENV === "test") &&
   process.env.NODE_ENV === "development" &&
   !onVercelDeployment(process.env)
-    ? ["localonly.ts"]
+    ? ["localonly.ts", "localonly.tsx"]
     : [];
 
 const nextConfig: NextConfig = {
