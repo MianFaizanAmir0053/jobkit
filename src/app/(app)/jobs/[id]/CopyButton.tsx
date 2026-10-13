@@ -30,7 +30,7 @@ export function CopyButton({
   }
 
   return (
-    <Button variant="outline" size="sm" disabled={disabled} onClick={() => void copy()}>
+    <Button variant="outline" className="min-h-11" disabled={disabled} onClick={() => void copy()}>
       {state === "copied" ? "Copied" : state === "failed" ? "Select and copy it instead" : label}
     </Button>
   );

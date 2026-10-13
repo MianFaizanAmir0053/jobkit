@@ -19,13 +19,17 @@ import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import type { ModelCallDeps } from "@/core/platform/models";
 import { claimJob, type Pipeline, runJob } from "@/core/platform/runner";
+import type { Dns } from "@/core/ports";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 import { createTestDb } from "@/server/db/testDb";
 
 import { addressChecksStage } from "./addressChecksStage";
+import type { GateReason } from "./canHandOff";
+import { flagKey, NO_DECISIONS } from "./decisions";
 import { jobView } from "./jobView";
 import { recordReview } from "./kitReview";
+import { markSent } from "./markSent";
 
 /* The owner's decisions on a kit, kept with the gate they leave: review AC1 and AC4. */
 
@@ -67,19 +71,46 @@ const DRAFT: DraftAnswer = {
   ],
 };
 
-/** The judge, as a stage that gives these verdicts on the kit. */
-const judging = (verdicts: BlockVerdict[]) => ({
+/** The draft, its one sentence citing a fact the profile does not hold. */
+const CITING_NOTHING: DraftAnswer = {
+  ...DRAFT,
+  blocks: [{ ...DRAFT.blocks[0]!, fact_ids: ["F-not-in-the-profile"] }],
+};
+
+/** A DNS where these domains take mail, and no other does. */
+const mailOnly = (domains: readonly string[]): Dns => ({
+  async lookup(name, type) {
+    return type === "MX" && domains.includes(name)
+      ? { kind: "records", values: [`mx.${name}`] }
+      : { kind: "none" };
+  },
+});
+
+/** The judge, as a stage that gives these verdicts on the kit; or the output of a kit from before it was built. */
+const judging = (verdicts: BlockVerdict[] | "before the judge") => ({
   callsModel: false,
   input: () => ({}),
   run: async () => ({
     ok: true as const,
-    output: { checked: true, verdicts, markers: [] },
+    output:
+      verdicts === "before the judge"
+        ? { checked: false }
+        : { checked: true, verdicts, markers: [] },
   }),
   next: () => ({ state: "kit_ready" as const, pending: null }),
 });
 
+const deps = (dns: Dns = offlineDns()) => ({ db, clock, dns });
+
 /** A job run to its kit, its post pasted with `text`, the judge calling S1 overstated. */
-async function readyKit(text: string): Promise<string> {
+async function readyKit(
+  text: string,
+  opts: {
+    draft?: DraftAnswer;
+    dns?: Dns;
+    verdicts?: BlockVerdict[] | "before the judge";
+  } = {},
+): Promise<string> {
   const started = await startJob(
     { db, clock, storage },
     { images: [], pastedText: text, clientElapsedMs: 0 },
@@ -88,7 +119,7 @@ async function readyKit(text: string): Promise<string> {
   const record = JSON.parse(
     readFileSync(join(SYNTHETIC, "records", "S01-email-simple.json"), "utf8"),
   ) as JobRecord;
-  llm = fakeLlm([answer(record), answer(DRAFT)]);
+  llm = fakeLlm([answer(record), answer(opts.draft ?? DRAFT)]);
   const pipeline: Pipeline = {
     extract: extractStage({ db, storage, random, models: models() }),
     eligibility: eligibilityStage({ db, clock }),
@@ -97,10 +128,12 @@ async function readyKit(text: string): Promise<string> {
       alongside: () => ["address_read", "address_checks"],
     },
     address_read: addressReadStage({ db, storage, random, models: models() }),
-    address_checks: addressChecksStage({ db, dns: offlineDns() }),
-    judge: judging([
-      { blockId: "S1", verdict: "overstated", companyClaim: false, note: "Five years is more." },
-    ]),
+    address_checks: addressChecksStage({ db, dns: opts.dns ?? offlineDns() }),
+    judge: judging(
+      opts.verdicts ?? [
+        { blockId: "S1", verdict: "overstated", companyClaim: false, note: "Five years is more." },
+      ],
+    ),
   };
   const deps = { db, clock, pipeline };
   const lease = await claimJob(deps, started.jobId);
@@ -119,7 +152,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.exec(
-    `delete from {{schema}}.kit_reviews; delete from {{schema}}.model_calls;
+    `delete from {{schema}}.kit_reviews; delete from {{schema}}.status_changes;
+     delete from {{schema}}.draft_outcomes; delete from {{schema}}.applications;
+     delete from {{schema}}.model_calls;
      delete from {{schema}}.job_stage_runs; delete from {{schema}}.job_leases;
      delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
      delete from {{schema}}.jobs; delete from {{schema}}.profile_versions`,
@@ -147,10 +182,10 @@ describe("recordReview", () => {
 
     expect(kinds((await jobView({ db, clock }, id))!.review!.gate)).toEqual(["contact", "judge"]);
 
-    const checked = await recordReview({ db, clock }, id, { kind: "check", blockId: "S1" });
+    const checked = await recordReview(deps(), id, { kind: "check", blockId: "S1" });
     expect(checked.ok && kinds(checked.gate)).toEqual(["contact"]);
 
-    const typed = await recordReview({ db, clock }, id, {
+    const typed = await recordReview(deps(), id, {
       kind: "retype",
       value: "jobs@example.com",
     });
@@ -160,12 +195,99 @@ describe("recordReview", () => {
     expect(view.review).toEqual({
       decisions: {
         checked: ["S1"],
-        retyped: "jobs@example.com",
+        flagsChecked: [],
+        retyped: { value: "jobs@example.com", checks: expect.any(Array) },
         attached: [],
         continueAnyway: false,
       },
       gate: typed.ok ? typed.gate : [],
     });
+    expect(view.handoff).toEqual({ to: "jobs@example.com", typed: true });
+  });
+
+  it('clears each of validate\'s flags with "I checked this", and only a flag the kit has', async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      draft: CITING_NOTHING,
+    });
+    const view = (await jobView({ db, clock }, id))!;
+    const flag = view.kitParts!.flags.find((each) => each.kind === "invalid_citation")!;
+    const open = (gate: readonly GateReason[]) =>
+      gate.some((reason) => reason.kind === "flag" && flagKey(reason.flag) === flagKey(flag));
+    expect(open(view.review!.gate)).toBe(true);
+
+    const checked = await recordReview(deps(), id, { kind: "check_flag", flag: flagKey(flag) });
+
+    expect(checked.ok && open(checked.gate)).toBe(false);
+    expect(await recordReview(deps(), id, { kind: "check_flag", flag: "over_limit:body" })).toEqual(
+      { ok: false, reason: "not-in-kit" },
+    );
+  });
+
+  it("checks an address the owner types, which then stands in for the post's, checks and all", async () => {
+    // The post's domain takes no mail: its address holds the kit until the owner types one.
+    const dns = mailOnly(["northwind-careers.com"]);
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", { dns });
+    const before = (await jobView({ db, clock }, id))!;
+    expect(before.kitParts!.contact).toEqual({ kind: "email", needsRetype: true });
+    expect(kinds(before.review!.gate)).toEqual(["contact", "judge"]);
+
+    const dead = await recordReview(deps(dns), id, {
+      kind: "retype",
+      value: "jobs@nomail-northwind.com",
+    });
+    expect(dead.ok && kinds(dead.gate)).toEqual(["address_check", "judge"]);
+
+    const typed = await recordReview(deps(dns), id, {
+      kind: "retype",
+      value: "jobs@northwind-careers.com",
+    });
+    expect(typed.ok && kinds(typed.gate)).toEqual(["judge"]);
+    expect((await jobView({ db, clock }, id))!.handoff).toEqual({
+      to: "jobs@northwind-careers.com",
+      typed: true,
+    });
+  });
+
+  it("keeps decisions only for the kit they were made on", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    await recordReview(deps(), id, { kind: "check", blockId: "S1" });
+    expect(kinds((await jobView({ db, clock }, id))!.review!.gate)).toEqual([]);
+
+    // The kit is drafted again: its S1 is another sentence now.
+    await db.query(
+      `update {{schema}}.job_stage_runs set output_hash = 'drafted again'
+        where job_id = $1 and stage = 'draft'`,
+      [id],
+    );
+
+    const after = (await jobView({ db, clock }, id))!;
+    expect(after.review!.decisions).toEqual(NO_DECISIONS);
+    expect(kinds(after.review!.gate)).toEqual(["judge"]);
+  });
+
+  it("holds everything once the kit is marked sent, and takes no more decisions", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    await recordReview(deps(), id, { kind: "check", blockId: "S1" });
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+
+    expect(kinds((await jobView({ db, clock }, id))!.review!.gate)).toEqual(["sent"]);
+    expect(await recordReview(deps(), id, { kind: "uncheck", blockId: "S1" })).toEqual({
+      ok: false,
+      reason: "sent",
+    });
+  });
+
+  it("holds every sentence of a kit the separate check never weighed", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      verdicts: "before the judge",
+    });
+
+    expect((await jobView({ db, clock }, id))!.review!.gate).toEqual([
+      expect.objectContaining({ kind: "judge", blockId: "S1", verdict: "unsupported" }),
+    ]);
   });
 
   it("refuses a decision the kit has no place for", async () => {
@@ -178,11 +300,12 @@ describe("recordReview", () => {
 
     for (const action of [
       { kind: "check", blockId: "S9" },
-      { kind: "attach", name: "Portfolio", ticked: true },
+      { kind: "attach", id: "A1", ticked: true },
       { kind: "continue_anyway" },
       { kind: "retype", value: "other@example.com" },
+      { kind: "check_flag", flag: "over_limit:body" },
     ] as const) {
-      expect(await recordReview({ db, clock }, id, action), action.kind).toEqual({
+      expect(await recordReview(deps(), id, action), action.kind).toEqual({
         ok: false,
         reason: "not-in-kit",
       });
@@ -196,12 +319,12 @@ describe("recordReview", () => {
     );
     if (!started.ok) throw new Error(started.message);
 
-    expect(await recordReview({ db, clock }, started.jobId, { kind: "continue_anyway" })).toEqual({
+    expect(await recordReview(deps(), started.jobId, { kind: "continue_anyway" })).toEqual({
       ok: false,
       reason: "not-ready",
     });
     expect(
-      await recordReview({ db, clock }, "00000000-0000-4000-8000-000000000000", {
+      await recordReview(deps(), "00000000-0000-4000-8000-000000000000", {
         kind: "continue_anyway",
       }),
     ).toEqual({ ok: false, reason: "not-found" });
@@ -211,13 +334,13 @@ describe("recordReview", () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply on our site.");
 
     await Promise.all([
-      recordReview({ db, clock }, id, { kind: "check", blockId: "S1" }),
-      recordReview({ db, clock }, id, { kind: "retype", value: "jobs@example.com" }),
+      recordReview(deps(), id, { kind: "check", blockId: "S1" }),
+      recordReview(deps(), id, { kind: "retype", value: "jobs@example.com" }),
     ]);
 
     expect((await jobView({ db, clock }, id))!.review!.decisions).toMatchObject({
       checked: ["S1"],
-      retyped: "jobs@example.com",
+      retyped: { value: "jobs@example.com" },
     });
   });
 });

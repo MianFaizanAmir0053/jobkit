@@ -6,6 +6,7 @@ import { NextRequest } from "next/server";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
+import { offlineDns } from "@/adapters/dns";
 import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
@@ -16,15 +17,28 @@ import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
+import { changeStatus, openApplication } from "@/core/ledger/statuses";
 import { loadJob } from "@/core/platform/jobs";
 import type { ModelCallDeps } from "@/core/platform/models";
 import { issueSession } from "@/core/platform/sessions";
+import type { Db, QueryResult, Row } from "@/core/ports";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
+import { openForJob } from "@/core/review/applications";
+import { jobView } from "@/core/review/jobView";
 import type { AppConfig } from "@/server/config";
-import { createTestDb } from "@/server/db/testDb";
+import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 
-import { draftAnyway, readAgain, retry, review, role, sent, skip } from "./jobActions";
+import {
+  applyAgainRoute,
+  draftAnyway,
+  readAgain,
+  retry,
+  review,
+  role,
+  sent,
+  skip,
+} from "./jobActions";
 import { startPipeline } from "./jobs";
 
 /* The job page's routes: Retry, Skip, the role pick, Read it again, Mark sent (B2, B9). */
@@ -55,6 +69,7 @@ const models = (): ModelCallDeps => ({
 const deps = () => ({
   db,
   clock,
+  dns: offlineDns(),
   config,
   pipeline: {
     extract: extractStage({ db, storage, random, models: models() }),
@@ -136,6 +151,40 @@ async function settled(steps: readonly FakeStep[]): Promise<string> {
 }
 
 const stateOf = async (id: string) => (await loadJob(db, id))?.state;
+
+/** The database, failing every write into this table, as on a dropped connection. */
+const failingOn = (inner: Db, table: string): Db => ({
+  schema: inner.schema,
+  query: <T extends Row = Row>(sql: string, params?: readonly unknown[]) =>
+    sql.includes(`into {{schema}}.${table}`)
+      ? Promise.reject<QueryResult<T>>(new Error("connection lost"))
+      : inner.query<T>(sql, params),
+  exec: (sql) => inner.exec(sql),
+  tx: (fn) => inner.tx((tx) => fn(failingOn(tx, table))),
+});
+
+/** An application sent before, to this company and role. */
+async function sentEarlier(company: string, title: string): Promise<void> {
+  const earlier = "44444444-4444-4444-8444-444444444444";
+  await insertTestJobs(db, [earlier]);
+  const id = await openApplication(
+    { db, clock },
+    {
+      jobId: earlier,
+      roleId: "P1",
+      company,
+      role: title,
+      address: null,
+      route: "email",
+      requirements: [],
+      arm: null,
+      jobKind: "real",
+    },
+    null,
+  );
+  await changeStatus({ db, clock }, id, "kit_ready", null);
+  await changeStatus({ db, clock }, id, "sent", null);
+}
 
 beforeAll(async () => {
   db = await createTestDb();
@@ -317,10 +366,57 @@ describe("the job page's routes", () => {
     );
   });
 
+  it("skip closes the job and skips its application in one step, so a failed skip can be tried again", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const id = await settled([answer(fixture("S02-us-only"))]);
+    await openForJob({ db, clock }, id, null);
+    const failing = { ...deps(), db: failingOn(db, "status_changes") };
+
+    await expect(skip(post(`/api/jobs/${id}/skip`, "", cookie), failing, id)).rejects.toThrow(
+      "connection lost",
+    );
+    expect(await stateOf(id)).toBe("needs_eligibility_decision");
+
+    expect((await skip(post(`/api/jobs/${id}/skip`, "", cookie), deps(), id)).status).toBe(200);
+    expect(await stateOf(id)).toBe("closed");
+    const { rows } = await db.query<{ status: string }>(
+      "select status from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows.map((row) => row.status)).toEqual(["skipped"]);
+  });
+
+  it("apply again on the matches the banner showed, and on no others", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const record = fixture("S01-email-simple");
+    await sentEarlier(record.company.name, record.roles[0]!.title);
+    const ready = await settled([answer(record), answer(DRAFT)]);
+    const keys = (await jobView({ db, clock }, ready))!.duplicates.map((match) => match.key);
+    expect(keys).toHaveLength(1);
+    const applyAgain = (body: string) =>
+      applyAgainRoute(post(`/api/jobs/${ready}/apply-again`, body, cookie), deps(), ready);
+
+    expect((await applyAgain(JSON.stringify({ keys: ["application:x:post"] }))).status).toBe(409);
+    expect((await applyAgain("{}")).status).toBe(400);
+    expect((await applyAgain(JSON.stringify({ keys }))).status).toBe(200);
+    expect((await jobView({ db, clock }, ready))!.duplicates[0]!.covered).toBe(true);
+  });
+
   it("refuse another origin, a missing session and an unknown job", async () => {
     const cookie = await signedIn();
     const id = await settled([answer(fixture("S08-urdu"))]);
-    const actions = [retry, skip, role, readAgain, draftAnyway, sent] as const;
+    const actions = [
+      retry,
+      skip,
+      role,
+      readAgain,
+      draftAnyway,
+      sent,
+      review,
+      applyAgainRoute,
+    ] as const;
 
     for (const action of actions) {
       expect(

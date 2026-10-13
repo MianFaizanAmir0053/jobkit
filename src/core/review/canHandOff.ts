@@ -1,5 +1,5 @@
-import { type BlockVerdict, isBlocking } from "@/core/drafting/judge";
-import type { KitFlag } from "@/core/drafting/validate";
+import type { KitFlag, KitFlagKind } from "@/core/drafting/validate";
+import { type BlockVerdict, isBlocking } from "@/core/drafting/verdict";
 import { isStrictAddress, normaliseWhatsAppNumber } from "@/core/extraction/contacts";
 
 import type { AddressCheck } from "./addressChecks";
@@ -13,10 +13,13 @@ import type { AddressCheck } from "./addressChecks";
  * come already weighed against the owner's decisions, and "I checked this"
  * clears the judge's verdict on its own sentence alone. A disputed or
  * missing contact clears only with a retyped value that passes the strict
- * check.
+ * check, and the address checks are those of the address that goes out. A
+ * kit marked sent holds everything, so the same email never goes twice.
  */
 
 export interface GateInput {
+  /** Whether the owner marked the kit sent. */
+  sent: boolean;
   /** validate's flags on the kit as it stands, the owner's decisions applied: each one blocks. */
   flags: readonly KitFlag[];
   /** The judge's verdict on each sentence. */
@@ -33,7 +36,7 @@ export interface GateInput {
    * they typed. Null for any other route.
    */
   contact: { kind: "email" | "whatsapp"; needsRetype: boolean; retyped: string | null } | null;
-  /** The checks of the address as it stands. */
+  /** The checks of the address that goes out: the post's, or the one the owner typed. */
   addressChecks: readonly AddressCheck[];
   /** The ledger's duplicate matches, each with whether the owner chose to apply again. */
   duplicates: readonly { reason: string; applyAgain: boolean }[];
@@ -42,6 +45,7 @@ export interface GateInput {
 }
 
 export type GateReason = { message: string } & (
+  | { kind: "sent" }
   | { kind: "scam"; signals: readonly string[] }
   | { kind: "duplicate"; reason: string }
   | { kind: "contact" }
@@ -53,10 +57,44 @@ export type GateReason = { message: string } & (
 );
 
 const JUDGE_WORDS = {
-  overstated: "The separate check found this sentence says more than your facts show.",
-  unsupported: "The separate check found no fact behind this sentence.",
-  company: "This sentence says something about the company the post does not.",
+  overstated: "The separate check found this sentence says more than your facts show",
+  unsupported: "The separate check found no fact behind this sentence",
+  company: "This sentence says something about the company the post does not",
 };
+
+/** The judge's findings on a sentence, both when it also speaks for the company. */
+function judgeMessage(verdict: BlockVerdict): string {
+  const fact =
+    verdict.verdict === "overstated"
+      ? JUDGE_WORDS.overstated
+      : verdict.verdict === "unsupported"
+        ? JUDGE_WORDS.unsupported
+        : null;
+  if (fact && verdict.companyClaim) {
+    return `${fact}, and it says something about the company the post does not.`;
+  }
+  return `${fact ?? JUDGE_WORDS.company}.`;
+}
+
+/**
+ * validate's flags, most serious first: a line written for an AI tool, or a
+ * reference's details, in the email; then what the email claims; then its
+ * form. Flags of one kind keep validate's order.
+ */
+const FLAG_ORDER: readonly KitFlagKind[] = [
+  "ai_instruction_followed",
+  "reference_leak",
+  "invalid_citation",
+  "fit_missing",
+  "fit_unverified",
+  "missing_gap_line",
+  "needs_your_line",
+  "no_claims",
+  "sensitive_topic_drafted",
+  "subject_placeholder",
+  "over_limit",
+  "keyword_missing",
+];
 
 /** Whether a retyped contact may go out: an address that passes the strict check, or a number with its country. */
 function passesStrict(kind: "email" | "whatsapp", value: string): boolean {
@@ -66,6 +104,12 @@ function passesStrict(kind: "email" | "whatsapp", value: string): boolean {
 /** The open reasons, the most serious first; none opens every outbound control. */
 export function canHandOff(input: GateInput): GateReason[] {
   const reasons: GateReason[] = [];
+  if (input.sent) {
+    reasons.push({
+      kind: "sent",
+      message: "You marked this email sent, so nothing goes out from this page again.",
+    });
+  }
   if (input.scam && input.scam.signals.length > 0 && !input.scam.overridden) {
     reasons.push({
       kind: "scam",
@@ -85,18 +129,26 @@ export function canHandOff(input: GateInput): GateReason[] {
   }
   const { contact } = input;
   if (contact?.needsRetype && !passesStrict(contact.kind, contact.retyped?.trim() ?? "")) {
+    const typed = (contact.retyped?.trim() ?? "") !== "";
     reasons.push({
       kind: "contact",
       message:
         contact.kind === "email"
-          ? "Type the address yourself from the post."
-          : "Type the number yourself from the post, with its country code.",
+          ? typed
+            ? "The address you typed is not a whole address. Type it again from the post."
+            : "Type the address yourself from the post."
+          : typed
+            ? "The number you typed is not a whole number with its country code. Type it again from the post."
+            : "Type the number yourself from the post, with its country code.",
     });
   }
   for (const check of input.addressChecks) {
     if (check.blocking) reasons.push({ kind: "address_check", check, message: check.message });
   }
-  for (const flag of input.flags) reasons.push({ kind: "flag", flag, message: flag.message });
+  const rank = (flag: KitFlag) => FLAG_ORDER.indexOf(flag.kind);
+  for (const flag of [...input.flags].sort((a, b) => rank(a) - rank(b))) {
+    reasons.push({ kind: "flag", flag, message: flag.message });
+  }
   const checked = new Set(input.checked);
   for (const verdict of input.verdicts) {
     if (!isBlocking(verdict) || checked.has(verdict.blockId)) continue;
@@ -105,12 +157,7 @@ export function canHandOff(input: GateInput): GateReason[] {
       blockId: verdict.blockId,
       verdict: verdict.verdict,
       companyClaim: verdict.companyClaim,
-      message:
-        verdict.verdict === "overstated"
-          ? JUDGE_WORDS.overstated
-          : verdict.verdict === "unsupported"
-            ? JUDGE_WORDS.unsupported
-            : JUDGE_WORDS.company,
+      message: judgeMessage(verdict),
     });
   }
   for (const blockId of input.unconfirmed) {
@@ -125,7 +172,7 @@ export function canHandOff(input: GateInput): GateReason[] {
       reasons.push({
         kind: "attachment",
         name: attachment.name,
-        message: `The post asks for ${attachment.name}: tick it once it is attached.`,
+        message: `The post asks for ${attachment.name || "a file it does not name"}: tick it to say you will attach it in Gmail.`,
       });
     }
   }

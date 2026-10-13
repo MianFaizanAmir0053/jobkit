@@ -9,6 +9,7 @@ import { canHandOff, type GateInput } from "./canHandOff";
 /* The outbound gate: review AC1, and AC4's clauses on "I checked this" and the retyped contact. */
 
 const CLEAR: GateInput = {
+  sent: false,
   flags: [],
   verdicts: [],
   checked: [],
@@ -90,6 +91,7 @@ describe("canHandOff", () => {
       { scam: { signals: ["asks for a fee"], overridden: false } },
       { scam: { signals: ["asks for a fee"], overridden: true } },
     ],
+    ["a kit marked sent", { sent: true }, { sent: false }],
   ])("blocks on %s alone, and clears when its resolution is recorded", (_, open, resolved) => {
     expect(canHandOff({ ...CLEAR, ...open })).toHaveLength(1);
     expect(canHandOff({ ...CLEAR, ...resolved })).toEqual([]);
@@ -124,6 +126,45 @@ describe("canHandOff", () => {
     ).toEqual([]);
   });
 
+  it("says when a typed contact does not pass, rather than asking for it again", () => {
+    const [typedBad] = canHandOff({
+      ...CLEAR,
+      contact: { kind: "email", needsRetype: true, retyped: "hr@acme" },
+    });
+    const [none] = canHandOff({
+      ...CLEAR,
+      contact: { kind: "email", needsRetype: true, retyped: null },
+    });
+
+    expect(typedBad?.message).toMatch(/you typed/i);
+    expect(none?.message).not.toMatch(/you typed/i);
+  });
+
+  it("puts the most serious flags first: a line written for an AI tool, a reference leaked", () => {
+    const flags: KitFlag[] = [
+      FLAG,
+      { kind: "keyword_missing", at: "body", message: "The post's keyword is missing." },
+      { kind: "ai_instruction_followed", at: "S2", message: "A line aimed at AI was followed." },
+      { kind: "reference_leak", at: "S3", message: "A reference's name is in the email." },
+    ];
+
+    const open = canHandOff({ ...CLEAR, flags });
+
+    expect(open.map((reason) => (reason.kind === "flag" ? reason.flag.kind : reason.kind))).toEqual(
+      ["ai_instruction_followed", "reference_leak", "over_limit", "keyword_missing"],
+    );
+  });
+
+  it("names both findings on a sentence that overstates and claims something of the company", () => {
+    const [reason] = canHandOff({
+      ...CLEAR,
+      verdicts: [verdict("S2", { verdict: "overstated", companyClaim: true })],
+    });
+
+    expect(reason?.message).toMatch(/more than your facts/);
+    expect(reason?.message).toMatch(/company/);
+  });
+
   it("names every open reason, each with words for the page", () => {
     const open = canHandOff({
       ...CLEAR,
@@ -140,9 +181,11 @@ describe("canHandOff", () => {
       ],
       duplicates: [{ reason: "the same company and role", applyAgain: false }],
       scam: { signals: ["asks for a fee"], overridden: false },
+      sent: true,
     });
 
     expect(open.map((reason) => reason.kind)).toEqual([
+      "sent",
       "scam",
       "duplicate",
       "contact",

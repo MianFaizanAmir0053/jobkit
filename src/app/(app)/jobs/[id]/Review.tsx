@@ -56,10 +56,10 @@ export function RetypeField({
           type={kind === "email" ? "email" : "tel"}
           autoComplete="off"
           spellCheck={false}
-          className="w-72 max-w-full rounded-md border border-border bg-transparent px-2 py-1"
+          className="min-h-11 w-72 max-w-full rounded-md border border-border bg-transparent px-2 py-1"
         />
       </label>
-      <Button type="submit" size="sm" disabled={busy}>
+      <Button type="submit" className="min-h-11" disabled={busy}>
         Use it
       </Button>
       {error && (
@@ -71,15 +71,22 @@ export function RetypeField({
   );
 }
 
-/** A required attachment's tick: the owner ticks it once it is attached in Gmail. */
+/**
+ * A required attachment other than the CV: the owner ticks it to say they
+ * will attach it in Gmail, which opens before anything can be attached.
+ */
 export function AttachTick({
   jobId,
+  id,
   name,
   ticked,
+  disabled = false,
 }: {
   jobId: string;
+  id: string;
   name: string;
   ticked: boolean;
+  disabled?: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -87,20 +94,21 @@ export function AttachTick({
 
   async function toggle(next: boolean) {
     setBusy(true);
-    setError(await decide(jobId, { kind: "attach", name, ticked: next }));
+    setError(await decide(jobId, { kind: "attach", id, ticked: next }));
     setBusy(false);
     router.refresh();
   }
 
   return (
-    <label className="flex items-center gap-2 text-sm">
+    <label className="flex min-h-11 items-center gap-2 text-sm">
       <input
         type="checkbox"
+        className="size-5"
         checked={ticked}
-        disabled={busy}
+        disabled={busy || disabled}
         onChange={(event) => void toggle(event.currentTarget.checked)}
       />
-      Attached: {name}
+      I will attach {name || "the file the post asks for"} in Gmail
       {error && (
         <span role="alert" className="text-destructive">
           {error}

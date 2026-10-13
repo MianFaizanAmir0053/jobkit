@@ -28,10 +28,10 @@ export interface DuplicateMatch {
    */
   applied: boolean;
   /**
-   * The match itself: the earlier row and the reason. The banner sends the
-   * keys it showed back with the owner's tap, and a match with any other
-   * key holds the application again, a drafted kit that is later sent
-   * included.
+   * The match itself: the earlier row, the reason, and for an earlier kit
+   * whether it was sent. The banner sends the keys it showed back with the
+   * owner's tap, and a match with any other key holds the application
+   * again, a drafted kit that is later sent included.
    */
   key: string;
 }
@@ -83,7 +83,10 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
     candidate.address !== null && other !== null && sameAddress(candidate.address, other);
   const matches: DuplicateMatch[] = [];
   const add = (match: Omit<DuplicateMatch, "key">, id: string) =>
-    matches.push({ ...match, key: `${match.source}:${id}:${match.reason}` });
+    matches.push({
+      ...match,
+      key: `${match.source}:${id}:${match.reason}${match.applied ? "" : ":unsent"}`,
+    });
 
   // Every application that got as far as a kit: sent, submitted, bounced,
   // or never sent. Open ones are still being read, and test jobs are not

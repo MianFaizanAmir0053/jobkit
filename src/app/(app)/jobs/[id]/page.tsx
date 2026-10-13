@@ -8,7 +8,7 @@ import { emailBody } from "@/core/drafting/kit";
 import type { AgreementProblem } from "@/core/extraction/addressRead";
 import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
-import { NO_DECISIONS } from "@/core/review/decisions";
+import { flagKey, NO_DECISIONS } from "@/core/review/decisions";
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { JobView, Step } from "@/core/review/jobView";
 import { appConfig } from "@/server/config";
@@ -80,9 +80,12 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
 
       <Steps steps={view.steps} />
       <StatePanel view={view} />
+      {/* Banners, most serious first: the scam warning, then earlier applications. */}
+      {record && <ScamPanel view={view} />}
+      {view.state === "kit_ready" && <DuplicatePanel view={view} timeZone={timeZone} />}
       {record && <PostPanel view={view} />}
       {view.state === "kit_ready" && view.draft && (
-        <KitPanel view={view} timeZone={timeZone} account={account} />
+        <KitPanel view={view} account={account} timeZone={timeZone} />
       )}
     </section>
   );
@@ -233,10 +236,69 @@ function RoleSummary({ role }: { role: Role }) {
   );
 }
 
-/** What extract read that the owner should see before anything else: scam signs, flags, lines aimed at AI. */
-function PostPanel({ view }: { view: JobView }) {
+/** The post's scam signs, quoted, with "Continue anyway" while the kit is open to decisions. */
+function ScamPanel({ view }: { view: JobView }) {
   const extraction = view.extraction!;
   const scam = [...extraction.record.scam_signals, ...extraction.backstop];
+  if (scam.length === 0) return null;
+  return (
+    <Panel title="Possible scam signs">
+      <ul className="list-disc pl-5 text-sm">
+        {scam.map((signal, i) => (
+          <li key={i}>&ldquo;{signal.quote}&rdquo;</li>
+        ))}
+      </ul>
+      <p className="text-sm text-muted-foreground">
+        Never send an ID card, a passport copy, bank details or a fee to apply for a job.
+      </p>
+      {view.review &&
+        (view.review.decisions.continueAnyway ? (
+          <p className="text-sm">You chose to continue anyway.</p>
+        ) : (
+          !view.kitParts?.sent && (
+            <ActionButton
+              url={`/api/jobs/${view.id}/review`}
+              label="Continue anyway"
+              variant="destructive"
+              confirmText="This post shows signs of a scam. Continue with it anyway?"
+              body={{ action: { kind: "continue_anyway" } }}
+            />
+          )
+        ))}
+    </Panel>
+  );
+}
+
+/** Earlier applications the ledger matched, with "Apply again", until the kit is sent. */
+function DuplicatePanel({ view, timeZone }: { view: JobView; timeZone: string }) {
+  const repeats = view.duplicates.filter((match) => !match.covered);
+  if (repeats.length === 0 || view.kitParts?.sent) return null;
+  return (
+    <Panel title="You may have applied before">
+      <ul className="list-disc pl-5 text-sm">
+        {repeats.map((match) => {
+          const line = duplicateLine(match, timeZone);
+          return (
+            <li key={match.key}>
+              {line.what}
+              <span className="text-muted-foreground"> ({line.when})</span>
+            </li>
+          );
+        })}
+      </ul>
+      <ActionButton
+        url={`/api/jobs/${view.id}/apply-again`}
+        label="Apply again"
+        variant="outline"
+        body={{ keys: repeats.map((match) => match.key) }}
+      />
+    </Panel>
+  );
+}
+
+/** What extract read that the owner should see before the kit: lines aimed at AI, and its flags. */
+function PostPanel({ view }: { view: JobView }) {
+  const extraction = view.extraction!;
   // From every role, once each: the model may record a line about the whole post under one role.
   const lines = extraction.record.roles.flatMap((role) => [
     ...role.instructions.filter((line) => line.addressed_to_ai).map((line) => line.text),
@@ -246,33 +308,9 @@ function PostPanel({ view }: { view: JobView }) {
   const aimedAtAi = lines.filter(
     (line, i) => lines.findIndex((other) => key(other) === key(line)) === i,
   );
-  if (scam.length === 0 && extraction.flags.length === 0 && aimedAtAi.length === 0) return null;
+  if (extraction.flags.length === 0 && aimedAtAi.length === 0) return null;
   return (
     <div className="flex flex-col gap-3">
-      {scam.length > 0 && (
-        <Panel title="Possible scam signs">
-          <ul className="list-disc pl-5 text-sm">
-            {scam.map((signal, i) => (
-              <li key={i}>&ldquo;{signal.quote}&rdquo;</li>
-            ))}
-          </ul>
-          <p className="text-sm text-muted-foreground">
-            Never send an ID card, a passport copy, bank details or a fee to apply for a job.
-          </p>
-          {view.review &&
-            (view.review.decisions.continueAnyway ? (
-              <p className="text-sm">You chose to continue anyway.</p>
-            ) : (
-              <ActionButton
-                url={`/api/jobs/${view.id}/review`}
-                label="Continue anyway"
-                variant="destructive"
-                confirmText="This post shows signs of a scam. Continue with it anyway?"
-                body={{ action: { kind: "continue_anyway" } }}
-              />
-            ))}
-        </Panel>
-      )}
       {aimedAtAi.length > 0 && (
         <Panel title="Lines aimed at AI tools">
           <p className="text-sm">jobkit did not follow these lines:</p>
@@ -304,12 +342,12 @@ function PostPanel({ view }: { view: JobView }) {
 
 function KitPanel({
   view,
-  timeZone,
   account,
+  timeZone,
 }: {
   view: JobView;
-  timeZone: string;
   account: string;
+  timeZone: string;
 }) {
   const draft = view.draft!;
   const role = view.role!;
@@ -344,43 +382,25 @@ function KitPanel({
   const decisions = view.review?.decisions ?? NO_DECISIONS;
   const gate = view.review?.gate ?? [];
   const open = view.review !== null && gate.length === 0;
+  const sent = view.kitParts?.sent ?? false;
   const needsRetype = view.kitParts?.contact?.needsRetype ?? false;
-  const to = needsRetype ? (decisions.retyped ?? "") : address;
+  // Where the kit goes: the post's contact, or the one typed in its place once it passes.
+  const to = view.handoff?.to ?? "";
+  const typedChecks = needsRetype && to !== "" ? (decisions.retyped?.checks ?? []) : [];
   const checked = new Set(decisions.checked);
+  const flagsChecked = new Set(decisions.flagsChecked);
   const reviewUrl = `/api/jobs/${view.id}/review`;
-
-  const repeats = view.duplicates.filter((match) => !match.covered);
+  const goes = role.route.kind === "whatsapp" ? "the message goes to" : "the email goes to";
+  const cv = role.required_attachments.filter((attachment) => attachment.is_cv);
 
   return (
     <div className="flex flex-col gap-4">
-      {repeats.length > 0 && (
-        <Panel title="You may have applied before">
-          <ul className="list-disc pl-5 text-sm">
-            {repeats.map((match) => {
-              const line = duplicateLine(match, timeZone);
-              return (
-                <li key={match.key}>
-                  {line.what}
-                  <span className="text-muted-foreground"> ({line.when})</span>
-                </li>
-              );
-            })}
-          </ul>
-          <ActionButton
-            url={`/api/jobs/${view.id}/apply-again`}
-            label="Apply again"
-            variant="outline"
-            body={{ keys: repeats.map((match) => match.key) }}
-          />
-        </Panel>
-      )}
-
       {(unread || unchecked.length > 0) && (
         <Panel title="Not checked yet">
           {unread && (
             <p className="text-sm">
-              This job ran before jobkit read the {noun} a second time. Check it against the post
-              before you send.
+              This job ran before jobkit read the {noun} a second time, so type it yourself from the
+              post below.
             </p>
           )}
           {unchecked.length > 0 && (
@@ -408,11 +428,13 @@ function KitPanel({
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
           <dt className="text-muted-foreground">To</dt>
           <dd>
-            {strict ? (
+            {byEmail && !needsRetype ? (
               address
-            ) : address ? (
-              <span className="text-destructive">
-                This address did not pass the strict check. Type it yourself from the post.
+            ) : byEmail && address ? (
+              // The post's address, never shown as where the email goes while it must be typed.
+              <span className="text-muted-foreground">
+                The post gives {address}
+                {strict ? "" : ", which did not pass the strict check"}.
               </span>
             ) : byEmail ? (
               <span className="text-destructive">
@@ -422,31 +444,40 @@ function KitPanel({
             ) : (
               <span>
                 The post asks you to apply {ROUTE_WORDS[role.route.kind]}
-                {role.route.address && `: ${role.route.address}`}. Use the text below there.
+                {role.route.address &&
+                  (needsRetype ? `, and gives ${role.route.address}` : `: ${role.route.address}`)}
+                . Use the text below there.
               </span>
             )}
             {disputed && <p className="mt-1 text-destructive">{disputed}</p>}
-            {needsRetype && view.kitParts?.contact && (
-              <RetypeField
-                jobId={view.id}
-                kind={view.kitParts.contact.kind}
-                value={decisions.retyped}
-              />
-            )}
-            {needsRetype &&
-              decisions.retyped &&
-              !gate.some((reason) => reason.kind === "contact") && (
-                <p className="mt-1 text-muted-foreground">
-                  You typed it: the email goes to {decisions.retyped}.
-                </p>
-              )}
             {blockingShown.map((check) => (
               <p key={check.kind} className="mt-1 text-destructive">
                 {check.message}
               </p>
             ))}
-            {warnings.map((check) => (
-              <p key={check.kind} className="mt-1 text-muted-foreground">
+            {!needsRetype &&
+              warnings.map((check) => (
+                <p key={check.kind} className="mt-1 text-muted-foreground">
+                  {check.message}
+                </p>
+              ))}
+            {needsRetype && view.kitParts?.contact && !sent && (
+              <RetypeField
+                jobId={view.id}
+                kind={view.kitParts.contact.kind}
+                value={decisions.retyped?.value ?? null}
+              />
+            )}
+            {needsRetype && to !== "" && (
+              <p className="mt-1">
+                You typed it: {goes} <span className="font-medium">{to}</span>.
+              </p>
+            )}
+            {typedChecks.map((check) => (
+              <p
+                key={`typed-${check.kind}`}
+                className={`mt-1 ${check.blocking ? "text-destructive" : "text-muted-foreground"}`}
+              >
                 {check.message}
               </p>
             ))}
@@ -460,11 +491,25 @@ function KitPanel({
         <div className="rounded-md bg-muted p-3 text-sm whitespace-pre-wrap">{body}</div>
         {!open && (
           <div className="rounded-md border border-destructive/40 p-3 text-sm">
-            <p className="font-medium">Before you send</p>
+            <p className="font-medium">{sent ? "Sent already" : "Before you send"}</p>
             <ul className="mt-1 list-disc pl-5">
-              {gate.map((reason, i) => (
-                <li key={i}>{reason.message}</li>
-              ))}
+              {gate.map((reason, i) => {
+                // A sentence's finding names the sentence, so two findings never read alike.
+                const about =
+                  reason.kind === "judge"
+                    ? blockText.get(reason.blockId)
+                    : reason.kind === "flag"
+                      ? (blockText.get(reason.flag.at) ?? requirementText.get(reason.flag.at))
+                      : undefined;
+                return (
+                  <li key={i}>
+                    {reason.message}
+                    {about && (
+                      <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>
+                    )}
+                  </li>
+                );
+              })}
               {view.review === null && <li>This kit cannot be checked. Send the post again.</li>}
             </ul>
           </div>
@@ -476,14 +521,15 @@ function KitPanel({
                 href={gmailComposeUrl(to, kit.subject, body, account || null)}
                 target="_blank"
                 rel="noopener noreferrer"
-                className={buttonVariants()}
+                className={`${buttonVariants()} min-h-11`}
               >
                 Open in Gmail
               </a>
             ) : (
               <span
+                role="link"
                 aria-disabled="true"
-                className={`${buttonVariants()} pointer-events-none opacity-50`}
+                className={`${buttonVariants()} pointer-events-none min-h-11 opacity-50`}
               >
                 Open in Gmail
               </span>
@@ -508,34 +554,59 @@ function KitPanel({
                   {" "}
                   — &ldquo;{blockText.get(verdict.blockId)}&rdquo;
                 </span>
-                <div className="mt-1 flex items-center gap-2">
-                  {checked.has(verdict.blockId) ? (
-                    <>
-                      <span className="text-muted-foreground">You checked this.</span>
+                {!sent && (
+                  <div className="mt-1 flex items-center gap-2">
+                    {checked.has(verdict.blockId) ? (
+                      <>
+                        <span className="text-muted-foreground">You checked this.</span>
+                        <ActionButton
+                          url={reviewUrl}
+                          label="Undo"
+                          variant="outline"
+                          body={{ action: { kind: "uncheck", blockId: verdict.blockId } }}
+                        />
+                      </>
+                    ) : (
                       <ActionButton
                         url={reviewUrl}
-                        label="Undo"
+                        label="I checked this"
                         variant="outline"
-                        body={{ action: { kind: "uncheck", blockId: verdict.blockId } }}
+                        body={{ action: { kind: "check", blockId: verdict.blockId } }}
                       />
-                    </>
-                  ) : (
-                    <ActionButton
-                      url={reviewUrl}
-                      label="I checked this"
-                      variant="outline"
-                      body={{ action: { kind: "check", blockId: verdict.blockId } }}
-                    />
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
               </li>
             ))}
-            {draft.flags.map((flag, i) => {
+            {draft.flags.map((flag) => {
+              const key = flagKey(flag);
               const about = blockText.get(flag.at) ?? requirementText.get(flag.at);
               return (
-                <li key={i}>
+                <li key={key}>
                   {flag.message}
                   {about && <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>}
+                  {!sent && (
+                    <div className="mt-1 flex items-center gap-2">
+                      {flagsChecked.has(key) ? (
+                        <>
+                          <span className="text-muted-foreground">You checked this.</span>
+                          <ActionButton
+                            url={reviewUrl}
+                            label="Undo"
+                            variant="outline"
+                            body={{ action: { kind: "uncheck_flag", flag: key } }}
+                          />
+                        </>
+                      ) : (
+                        <ActionButton
+                          url={reviewUrl}
+                          label="I checked this"
+                          variant="outline"
+                          body={{ action: { kind: "check_flag", flag: key } }}
+                        />
+                      )}
+                    </div>
+                  )}
                 </li>
               );
             })}
@@ -552,12 +623,15 @@ function KitPanel({
               ))}
             </ul>
           )}
-          {role.required_attachments.map((attachment, i) => (
+          {cv.length > 0 && <p className="text-sm">Attach your CV in Gmail.</p>}
+          {(view.kitParts?.attachments ?? []).map((attachment) => (
             <AttachTick
-              key={`a${i}`}
+              key={attachment.id}
               jobId={view.id}
+              id={attachment.id}
               name={attachment.name}
-              ticked={decisions.attached.includes(attachment.name)}
+              ticked={decisions.attached.includes(attachment.id)}
+              disabled={sent}
             />
           ))}
         </Panel>

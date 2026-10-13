@@ -234,6 +234,28 @@ describe("duplicatesOf", () => {
     expect(await duplicatesOf(db, id)).toEqual([]);
   });
 
+  it("holds an application again once an earlier kit it was cleared against is sent", async () => {
+    const first = await newShare();
+    await changeStatus(deps(), first, "kit_ready", null);
+    clock.advance(DAY);
+    // Another role at the same address: it matches the first, which was never sent.
+    const second = await newShare({ company: "Globex", role: "Designer", requirements: ["Figma"] });
+    const before = (await duplicateGate(db, second))!;
+    expect(before.matches.map((match) => [match.reason, match.applied])).toEqual([
+      ["address", false],
+    ]);
+    await applyAgain(
+      deps(),
+      second,
+      before.matches.map((match) => match.key),
+    );
+    expect((await duplicateGate(db, second))!.cleared).toBe(true);
+
+    await changeStatus(deps(), first, "sent", null);
+
+    expect((await duplicateGate(db, second))!.cleared).toBe(false);
+  });
+
   it("is not held back by a later kit that was never sent, but is once that kit is sent", async () => {
     const first = await newShare();
     await changeStatus(deps(), first, "kit_ready", null);

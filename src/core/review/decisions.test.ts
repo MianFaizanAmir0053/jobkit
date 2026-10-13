@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 
+import type { AddressCheck } from "./addressChecks";
 import { canHandOff } from "./canHandOff";
 import {
   decide,
+  flagKey,
   gateInputOf,
   type KitParts,
   NO_DECISIONS,
@@ -12,18 +14,31 @@ import {
 
 /* The owner's decisions on a kit, which the outbound gate reads: review AC1 and AC4. */
 
+const FLAG = {
+  kind: "fit_unverified" as const,
+  at: "R2",
+  message: "Only you can confirm you meet this requirement.",
+};
+
 const PARTS: KitParts = {
   blocks: ["S1", "S2", "S3"],
-  flags: [],
+  flags: [FLAG],
   verdicts: [
     { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
     { blockId: "S2", verdict: "overstated", companyClaim: false, note: "Five years is more." },
   ],
-  attachments: ["Portfolio link"],
+  attachments: [{ id: "A2", name: "Portfolio link" }],
   contact: { kind: "email", needsRetype: true },
   addressChecks: [],
   scamSignals: ["asks for a fee"],
   duplicates: [{ reason: "You applied to this company and role before", covered: false }],
+  sent: false,
+};
+
+const MAIL_HOST: AddressCheck = {
+  kind: "mail_host",
+  blocking: true,
+  message: "This address's domain has no mail server. Check the address in the post.",
 };
 
 describe("decide", () => {
@@ -32,23 +47,27 @@ describe("decide", () => {
     for (const action of [
       { kind: "check", blockId: "S2" },
       { kind: "check", blockId: "S2" },
-      { kind: "retype", value: " jobs@example.com " },
-      { kind: "attach", name: "Portfolio link", ticked: true },
+      { kind: "check_flag", flag: "fit_unverified:R2" },
+      { kind: "attach", id: "A2", ticked: true },
       { kind: "continue_anyway" },
     ] as const) {
       decisions = decide(decisions, action);
     }
+    decisions = decide(decisions, { kind: "retype", value: " jobs@example.com " }, []);
 
     expect(decisions).toEqual({
       checked: ["S2"],
-      retyped: "jobs@example.com",
-      attached: ["Portfolio link"],
+      flagsChecked: ["fit_unverified:R2"],
+      retyped: { value: "jobs@example.com", checks: [] },
+      attached: ["A2"],
       continueAnyway: true,
     });
     expect(decide(decisions, { kind: "uncheck", blockId: "S2" }).checked).toEqual([]);
     expect(
-      decide(decisions, { kind: "attach", name: "Portfolio link", ticked: false }).attached,
+      decide(decisions, { kind: "uncheck_flag", flag: "fit_unverified:R2" }).flagsChecked,
     ).toEqual([]);
+    expect(decide(decisions, { kind: "attach", id: "A2", ticked: false }).attached).toEqual([]);
+    expect(decide(decisions, { kind: "retype", value: "  " }).retyped).toBeNull();
   });
 
   it("refuses an action it does not know, or one too long to be a decision", () => {
@@ -57,37 +76,90 @@ describe("decide", () => {
       false,
     );
     expect(reviewActionSchema.safeParse({ kind: "check", blockId: "S1" }).success).toBe(true);
+    // An attachment is ticked by its place in the post's list, whatever its name.
+    expect(reviewActionSchema.safeParse({ kind: "attach", id: "A1", ticked: true }).success).toBe(
+      true,
+    );
+  });
+
+  it("names a flag by its kind and where it points", () => {
+    expect(flagKey(FLAG)).toBe("fit_unverified:R2");
   });
 });
 
 describe("gateInputOf", () => {
   it("holds every control back until each open reason is resolved, then opens them", () => {
     const open = canHandOff(gateInputOf(PARTS, NO_DECISIONS)).map((reason) => reason.kind);
-    expect(open).toEqual(["scam", "duplicate", "contact", "judge", "attachment"]);
+    expect(open).toEqual(["scam", "duplicate", "contact", "flag", "judge", "attachment"]);
 
     const decided = [
       { kind: "continue_anyway" },
-      { kind: "retype", value: "jobs@example.com" },
       { kind: "check", blockId: "S2" },
-      { kind: "attach", name: "Portfolio link", ticked: true },
+      { kind: "check_flag", flag: "fit_unverified:R2" },
+      { kind: "attach", id: "A2", ticked: true },
     ] as const;
-    const decisions = decided.reduce<ReviewDecisions>(decide, NO_DECISIONS);
+    const decisions = decide(
+      decided.reduce<ReviewDecisions>((each, action) => decide(each, action), NO_DECISIONS),
+      { kind: "retype", value: "jobs@example.com" },
+      [],
+    );
     const covered = { ...PARTS, duplicates: [{ ...PARTS.duplicates[0]!, covered: true }] };
 
     expect(canHandOff(gateInputOf(covered, decisions))).toEqual([]);
+    expect(canHandOff(gateInputOf({ ...covered, sent: true }, decisions))).toEqual([
+      expect.objectContaining({ kind: "sent" }),
+    ]);
+  });
+
+  it("weighs the address that goes out: the post's, or the one typed, with its own checks", () => {
+    // The post's address has no mail server, so the owner must type one.
+    const parts: KitParts = {
+      ...PARTS,
+      flags: [],
+      verdicts: [],
+      attachments: [],
+      scamSignals: [],
+      duplicates: [],
+      addressChecks: [MAIL_HOST],
+    };
+    const kinds = (decisions: ReviewDecisions) =>
+      canHandOff(gateInputOf(parts, decisions)).map((reason) => reason.kind);
+
+    // Nothing typed yet: the contact is the reason, not the post's checks.
+    expect(kinds(NO_DECISIONS)).toEqual(["contact"]);
+    // Typed, and its own checks found a mail server: nothing holds it.
+    expect(kinds(decide(NO_DECISIONS, { kind: "retype", value: "hr@acme.com" }, []))).toEqual([]);
+    // Typed, and its own checks found none: that holds it.
+    expect(
+      kinds(decide(NO_DECISIONS, { kind: "retype", value: "hr@acme.co" }, [MAIL_HOST])),
+    ).toEqual(["address_check"]);
+    // Typed, but never checked: it holds as not checked.
+    expect(kinds(decide(NO_DECISIONS, { kind: "retype", value: "hr@acme.com" }))).toEqual([
+      "address_check",
+    ]);
+    // The post's address, undisputed, is held by its own checks.
+    expect(
+      canHandOff(
+        gateInputOf({ ...parts, contact: { kind: "email", needsRetype: false } }, NO_DECISIONS),
+      ).map((reason) => reason.kind),
+    ).toEqual(["address_check"]);
   });
 
   it("forgets decisions the kit no longer has a place for", () => {
     const decisions: ReviewDecisions = {
       checked: ["S9"],
+      flagsChecked: ["over_limit:body"],
       retyped: null,
-      attached: ["A cover letter"],
+      attached: ["A9"],
       continueAnyway: false,
     };
 
     const input = gateInputOf({ ...PARTS, blocks: ["S1"] }, decisions);
 
     expect(input.checked).toEqual([]);
+    expect(input.flags).toEqual([FLAG]);
     expect(input.attachments).toEqual([{ name: "Portfolio link", ticked: false }]);
+    // A verdict on a sentence no longer in the kit holds nothing.
+    expect(input.verdicts.map((verdict) => verdict.blockId)).toEqual(["S1"]);
   });
 });

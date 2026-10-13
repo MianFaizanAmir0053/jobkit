@@ -9,6 +9,7 @@ import {
 } from "@/core/extraction/owner";
 import { loadJob, retryJob, skipJob } from "@/core/platform/jobs";
 import type { RunnerDeps } from "@/core/platform/runner";
+import type { Dns } from "@/core/ports";
 import { openForJob, skippedForJob } from "@/core/review/applications";
 import { reviewActionSchema } from "@/core/review/decisions";
 import { applyAgainForJob, recordReview } from "@/core/review/kitReview";
@@ -28,6 +29,8 @@ import { startPipeline } from "@/server/jobs";
 
 type Deps = RunnerDeps & {
   config: AppConfig;
+  /** The address checks' DNS, for an address the owner types. */
+  dns: Dns;
   /** Next's after() in the app: the pipeline runs once the response has gone. */
   schedule: (task: () => Promise<unknown>) => void;
 };
@@ -60,11 +63,16 @@ export async function skip(request: NextRequest, deps: Deps, jobId: string): Pro
   if (!isUuid(jobId)) return refusal(404, "not-found");
   const job = await loadJob(deps.db, jobId);
   if (!job) return refusal(404, "not-found");
-  const skipped =
-    job.state === "needs_role_pick" ? await skipRolePick(deps, jobId) : await skipJob(deps, jobId);
+  // Its application, if a role was ever chosen, is skipped with it (ledger spec, "Statuses"), in
+  // one transaction: a skip cut short leaves both as they were, so it can be tried again.
+  const skipped = await deps.db.tx(async (tx) => {
+    const at = { ...deps, db: tx };
+    const moved =
+      job.state === "needs_role_pick" ? await skipRolePick(at, jobId) : await skipJob(at, jobId);
+    if (moved.ok) await skippedForJob(at, jobId, actor.session.id);
+    return moved;
+  });
   if (!skipped.ok) return refusal(skipped.reason === "not-found" ? 404 : 409, skipped.reason);
-  // Its application, if a role was ever chosen, is skipped with it (ledger spec, "Statuses").
-  await skippedForJob(deps, jobId, actor.session.id);
   return ok();
 }
 
@@ -90,10 +98,14 @@ export async function role(
   }
   const parsed = roleBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
-  const picked = await pickRole(deps, jobId, parsed.data.roleId);
+  // A role is chosen: its application opens with it (ledger spec, "Statuses"), in one transaction.
+  const picked = await deps.db.tx(async (tx) => {
+    const at = { ...deps, db: tx };
+    const chosen = await pickRole(at, jobId, parsed.data.roleId);
+    if (chosen.ok) await openForJob(at, jobId, actor.session.id);
+    return chosen;
+  });
   if (!picked.ok) return refusal(picked.reason === "not-found" ? 404 : 409, picked.reason);
-  // A role is chosen: its application opens (ledger spec, "Statuses").
-  await openForJob(deps, jobId, actor.session.id);
   await startPipeline(deps, jobId, startedAt);
   return ok(202);
 }
@@ -162,7 +174,8 @@ export async function review(
   return ok(200, { gate: outcome.gate });
 }
 
-const applyAgainBody = z.object({ keys: z.array(z.string().min(1).max(200)).min(1).max(20) });
+/** The keys of the matches the banner showed: every one, however many earlier kits there were. */
+const applyAgainBody = z.object({ keys: z.array(z.string().min(1).max(200)).min(1).max(500) });
 
 /**
  * POST /api/jobs/<id>/apply-again: "Apply again" on the duplicate banner,
@@ -177,7 +190,7 @@ export async function applyAgainRoute(
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
   if (!isUuid(jobId)) return refusal(404, "not-found");
-  const body = await readLimited(request, 8 * 1024);
+  const body = await readLimited(request, 64 * 1024);
   if (body === "too-large") return refusal(413, "too-large");
   let json: unknown = null;
   try {

@@ -52,6 +52,12 @@ describe("duplicateLine", () => {
     );
   });
 
+  it("names a company or role the earlier post left out as not named, never as nothing", () => {
+    expect(duplicateLine(match({ company: "", role: "" }), "Asia/Karachi").what).toBe(
+      "The same company and role: a company it did not name, a role it did not name",
+    );
+  });
+
   it("gives an imported application's day as the owner's list has it, with no time", () => {
     const imported = match({ source: "earlier", at: new Date("2026-05-04T00:00:00Z") });
 

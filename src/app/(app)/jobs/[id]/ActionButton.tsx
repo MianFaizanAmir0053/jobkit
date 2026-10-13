@@ -57,7 +57,7 @@ export function ActionButton({
 
   return (
     <span className="inline-flex flex-col gap-1">
-      <Button variant={variant} disabled={busy} onClick={() => void act()}>
+      <Button variant={variant} className="min-h-11" disabled={busy} onClick={() => void act()}>
         {label}
       </Button>
       {error && (

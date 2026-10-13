@@ -124,7 +124,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.exec(
-    `delete from {{schema}}.status_changes; delete from {{schema}}.applications;
+    `delete from {{schema}}.kit_reviews; delete from {{schema}}.status_changes;
+     delete from {{schema}}.applications;
      delete from {{schema}}.model_calls; delete from {{schema}}.job_stage_runs;
      delete from {{schema}}.job_leases; delete from {{schema}}.job_images;
      delete from {{schema}}.job_state_changes; delete from {{schema}}.jobs;
@@ -495,7 +496,8 @@ describe("markSent", () => {
     await expect(
       markSent({ db: losing(db), clock }, id, null, { changedInGmail: true }),
     ).rejects.toThrow("connection lost");
-    expect(await statuses()).toEqual(["kit_ready"]);
+    // Nothing of the tap was kept: the application that would have opened with it included.
+    expect(await statuses()).toEqual([]);
 
     // So the owner can answer again.
     expect(await markSent({ db, clock }, id, null, { changedInGmail: true })).toEqual({

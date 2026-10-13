@@ -1,21 +1,24 @@
-import { chosenRole, currentExtraction } from "@/core/extraction/owner";
+import { chosenRole } from "@/core/extraction/owner";
 import { changeStatus, setAddress } from "@/core/ledger/statuses";
 import { loadJob } from "@/core/platform/jobs";
 import type { Clock, Db } from "@/core/ports";
 
-import { applicationIdOf, contactForLedger, openForJob } from "./applications";
-import { decisionsOf } from "./jobView";
+import { applicationIdOf, openForJob } from "./applications";
+import { NO_DECISIONS } from "./decisions";
+import { jobView, storedDecisions } from "./jobView";
 
 /**
  * "Mark sent" on a ready email kit (review spec, "Handoffs"; ledger spec,
- * "Statuses" and "Factual edits"): the chosen role's application, opened
- * at the role pick or, for a job from before that, here, keeps the address
- * the email went to, the owner's typed one when they typed it. It is
- * marked kit_ready and sent, each with its audit row, and the kit's
- * outcome is recorded with the owner's answer to "Did you change anything
- * in Gmail?" in the same transaction as sent, so neither is kept without
- * the other. Only a role whose route is email is marked sent; a second tap
- * changes nothing. Before real use there is no timing arm.
+ * "Statuses" and "Factual edits"): in one transaction, under the kit's
+ * review row's lock, so a decision made at the same moment waits and then
+ * finds the kit sent, the chosen role's application, opened at the role
+ * pick or, for a job from before that, here, keeps the address the email
+ * went to, the owner's typed one when the kit needed it. It is marked
+ * kit_ready and sent, each with its audit row, and the kit's outcome is
+ * recorded with the owner's answer to "Did you change anything in Gmail?",
+ * so none of it is kept without the rest. Only a role whose route is email
+ * is marked sent; a second tap changes nothing. Before real use there is no
+ * timing arm.
  */
 
 export type MarkSent =
@@ -31,24 +34,33 @@ export async function markSent(
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
   if (job.state !== "kit_ready") return { ok: false, reason: "not-ready" };
-  const extraction = await currentExtraction(deps.db, jobId);
   const role = await chosenRole(deps.db, jobId);
-  if (!extraction || !role) return { ok: false, reason: "not-ready" };
+  if (!role) return { ok: false, reason: "not-ready" };
   // Sending another way is Mark submitted, which comes with form and message kits.
   if (role.route.kind !== "email") return { ok: false, reason: "not-email" };
-  const applicationId =
-    (await applicationIdOf(deps.db, jobId, role.id)) ?? (await openForJob(deps, jobId, sessionId));
-  if (!applicationId) return { ok: false, reason: "not-ready" };
-  // A retype is kept only when the kit needs one: the email went to the typed address.
-  const typed = contactForLedger(
-    "email",
-    (await decisionsOf(deps.db, jobId, role.id)).retyped ?? "",
-  );
-  if (typed) await setAddress(deps, applicationId, typed);
-  // Already kit_ready, or sent, after an earlier tap: the next move decides.
-  await changeStatus(deps, applicationId, "kit_ready", sessionId);
   return deps.db.tx(async (tx): Promise<MarkSent> => {
-    const sent = await changeStatus({ ...deps, db: tx }, applicationId, "sent", sessionId);
+    const at = { ...deps, db: tx };
+    await tx.query(
+      `insert into {{schema}}.kit_reviews (job_id, role_id, decisions, gate, updated_at)
+       values ($1, $2, $3::jsonb, '[]'::jsonb, $4) on conflict (job_id, role_id) do nothing`,
+      [jobId, role.id, storedDecisions("", NO_DECISIONS), deps.clock.now()],
+    );
+    await tx.query(
+      "select 1 from {{schema}}.kit_reviews where job_id = $1 and role_id = $2 for update",
+      [jobId, role.id],
+    );
+    const view = await jobView(at, jobId);
+    if (view?.state !== "kit_ready") return { ok: false, reason: "not-ready" };
+    const applicationId =
+      (await applicationIdOf(tx, jobId, role.id)) ?? (await openForJob(at, jobId, sessionId));
+    if (!applicationId) return { ok: false, reason: "not-ready" };
+    // The address the email went to: the owner's, when the kit needed them to type one.
+    if (view.handoff?.typed && view.handoff.to !== "") {
+      await setAddress(at, applicationId, view.handoff.to);
+    }
+    // Already kit_ready, or sent, after an earlier tap: the next move decides.
+    await changeStatus(at, applicationId, "kit_ready", sessionId);
+    const sent = await changeStatus(at, applicationId, "sent", sessionId);
     if (!sent.ok) return { ok: false, reason: "refused" };
     if (sent.changed) {
       // No in-app edits yet (the editor comes later), so only Gmail can have changed a fact.

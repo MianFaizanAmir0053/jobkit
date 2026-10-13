@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
+import { offlineDns } from "@/adapters/dns";
 import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
@@ -88,9 +89,13 @@ const pipeline = (): Pipeline =>
     { db, clock },
   );
 
-async function run(id: string, steps: readonly FakeStep[]): Promise<void> {
+async function run(
+  id: string,
+  steps: readonly FakeStep[],
+  stages: Pipeline = pipeline(),
+): Promise<void> {
   llm = fakeLlm(steps);
-  const deps = { db, clock, pipeline: pipeline() };
+  const deps = { db, clock, pipeline: stages };
   const lease = await claimJob(deps, id);
   if (!lease) throw new Error("not claimed");
   await runJob(deps, lease);
@@ -214,10 +219,13 @@ describe("the application", () => {
     expect(await addressOf(id)).toBe("jobs@example.com");
 
     // A typed address that fails the strict check changes nothing in the ledger.
-    await recordReview({ db, clock }, id, { kind: "retype", value: "hr@example" });
+    await recordReview({ db, clock, dns: offlineDns() }, id, {
+      kind: "retype",
+      value: "hr@example",
+    });
     expect(await addressOf(id)).toBe("jobs@example.com");
 
-    const typed = await recordReview({ db, clock }, id, {
+    const typed = await recordReview({ db, clock, dns: offlineDns() }, id, {
       kind: "retype",
       value: "hr@example.org",
     });
@@ -232,7 +240,10 @@ describe("the application", () => {
   it("keeps the address the owner typed when the kit is marked sent", async () => {
     const id = await pasted();
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
-    await recordReview({ db, clock }, id, { kind: "retype", value: "hr@example.org" });
+    await recordReview({ db, clock, dns: offlineDns() }, id, {
+      kind: "retype",
+      value: "hr@example.org",
+    });
 
     expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
       ok: true,
@@ -300,5 +311,57 @@ describe("duplicates in the gate", () => {
 
     expect(applied.ok && applied.gate.map((reason) => reason.kind)).toEqual(["contact"]);
     expect((await jobView({ db, clock }, id))!.duplicates[0]!.covered).toBe(true);
+  });
+
+  it("hold a kit that ran before applications opened with it, which Apply again then opens", async () => {
+    const earlier = "33333333-3333-4333-8333-333333333333";
+    await insertTestJobs(db, [earlier]);
+    const record = fixture("S01-email-simple");
+    const sent = await openApplication(
+      { db, clock },
+      {
+        jobId: earlier,
+        roleId: "P1",
+        company: record.company.name,
+        role: record.roles[0]!.title,
+        address: null,
+        route: "email",
+        requirements: [],
+        arm: null,
+        jobKind: "real",
+      },
+      null,
+    );
+    await changeStatus({ db, clock }, sent, "kit_ready", null);
+    await changeStatus({ db, clock }, sent, "sent", null);
+    const id = await pasted();
+    // The stages alone, as jobs ran before the application's statuses were kept.
+    await run(id, [answer(record), answer(DRAFT)], {
+      extract: extractStage({ db, storage, random, models: models() }),
+      eligibility: eligibilityStage({ db, clock }),
+      draft: draftStage({ db, random, models: models() }),
+      judge: {
+        callsModel: false,
+        input: () => ({}),
+        run: async () => ({
+          ok: true as const,
+          output: { checked: true, verdicts: [], markers: [] },
+        }),
+        next: () => ({ state: "kit_ready" as const, pending: null }),
+      },
+    });
+    expect(await statusesOf(id)).toEqual([]);
+
+    const held = (await jobView({ db, clock }, id))!;
+    expect(held.review!.gate.map((reason) => reason.kind)).toContain("duplicate");
+
+    const applied = await applyAgainForJob(
+      { db, clock },
+      id,
+      held.duplicates.map((match) => match.key),
+    );
+
+    expect(applied.ok && applied.gate.map((reason) => reason.kind)).not.toContain("duplicate");
+    expect(await statusesOf(id)).toEqual(["none>open", "open>kit_ready"]);
   });
 });

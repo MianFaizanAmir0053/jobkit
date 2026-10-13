@@ -16,9 +16,8 @@ The thin path (the owner's choice, 2026-10-12) is built first so the owner can t
 3. The job page shows each step as it runs. A post with several roles asks which one; a post that is not a job post, not in English, or with no role found, stops. A role that looks closed to you (say, US only) waits for Draft anyway or Skip; one that is unclear goes on, its reasons shown with the email. If a reason comes from a wrong fixed answer, correct `private/profile.yaml`, run `npm run profile:seed` again with the dev server stopped, and send the post again as a new job: a job already checked keeps the answers it was checked with.
 4. A finished job shows the email: to, subject and body, with copy buttons and **Open in Gmail**, which opens Gmail's compose window with the draft filled in. Attach your CV there and send it yourself; then press **Mark sent**.
 
+5. Before Open in Gmail and the copy buttons work, the page lists what holds them under "Before you send": type a disputed address yourself, press "I checked this" on each flagged sentence and flag, tick any file besides the CV you will attach, and press "Apply again" if you mean to apply to a job you applied to before. Once you mark the email sent, nothing goes out from that page again.
+
 ## Not in the thin path yet
 
-Each of these is built right after the thin path works, and the job page says where one is missing:
-
-- a field to retype a disputed address in jobkit (for now, type it in Gmail; Open in Gmail stays hidden until then), and the gate that holds every copy and handoff while a check stands;
 - the phone: test on the laptop first; the phone follows through a tunnel to the dev server.

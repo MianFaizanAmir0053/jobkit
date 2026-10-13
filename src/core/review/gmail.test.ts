@@ -33,10 +33,29 @@ describe("gmailComposeUrl", () => {
     expect(url.hash).toBe("");
   });
 
+  it("keeps one recipient and no extra header for a subject or body holding %0ABcc: or %2C (review AC7)", () => {
+    const url = new URL(
+      gmailComposeUrl(
+        "jobs@example.com",
+        "Hi%0ABcc: x@evil.com",
+        "Hi%2C x@evil.com\nBcc: y@evil.com",
+      ),
+    );
+
+    expect(url.searchParams.getAll("to")).toEqual(["jobs@example.com"]);
+    expect(url.searchParams.get("bcc")).toBeNull();
+    expect(url.searchParams.get("cc")).toBeNull();
+    expect(url.searchParams.get("su")).toBe("Hi%0ABcc: x@evil.com");
+    expect(url.searchParams.get("body")).toBe("Hi%2C x@evil.com\nBcc: y@evil.com");
+  });
+
   it("refuses an address that fails the strict check", () => {
     expect(() => gmailComposeUrl("jobs@example.com&bcc=x@evil.com", "s", "b")).toThrow();
     expect(() => gmailComposeUrl("jobs@example.com?cc=x@evil.com", "s", "b")).toThrow();
+    expect(() => gmailComposeUrl("jobs@example.com%2Cx@evil.com", "s", "b")).toThrow();
+    expect(() => gmailComposeUrl("jobs@example.com%0ABcc:x@evil.com", "s", "b")).toThrow();
   });
+
   it("opens compose in the owner's Google account when given one", () => {
     const url = new URL(gmailComposeUrl("jobs@example.com", "s", "b", "owner@example.com"));
 

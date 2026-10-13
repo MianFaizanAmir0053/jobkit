@@ -45,7 +45,7 @@ export function duplicateLine(
   match: DuplicateMatch,
   timeZone: string,
 ): { what: string; when: string } {
-  const what = `${DUPLICATE_WORDS[match.reason]}: ${match.company}, ${match.role}`;
+  const what = `${DUPLICATE_WORDS[match.reason]}: ${match.company || "a company it did not name"}, ${match.role || "a role it did not name"}`;
   switch (match.source) {
     case "application": {
       const how = match.applied ? "applied with jobkit" : "drafted with jobkit and never sent";

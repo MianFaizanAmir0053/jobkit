@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { type Agreement, agreement, type ContactKind } from "@/core/extraction/addressRead";
@@ -12,15 +14,19 @@ import {
 } from "@/core/extraction/extract";
 import { chosenRole, draftedAnyway } from "@/core/extraction/owner";
 import type { Role } from "@/core/extraction/record";
-import { type DuplicateMatch, duplicateGate } from "@/core/ledger/duplicates";
+import { type DuplicateMatch, duplicateGate, findDuplicates } from "@/core/ledger/duplicates";
+import { postFingerprint } from "@/core/ledger/normalise";
 import type { ApplicationStatus } from "@/core/ledger/statuses";
 import { expireUploads, type Job, jobStatus } from "@/core/platform/jobs";
 import { kindOf, type JobState, type StageName, type StateKind } from "@/core/platform/jobStates";
 import { stageOutput } from "@/core/platform/runner";
 import type { Clock, Db } from "@/core/ports";
+import { canonicalJson } from "@/lib/canonicalJson";
+import { sha256Hex } from "@/lib/encoding";
 
 import type { AddressCheck } from "./addressChecks";
 import type { AddressChecksOutput } from "./addressChecksStage";
+import { contactForLedger } from "./applications";
 import { canHandOff, type GateReason } from "./canHandOff";
 import {
   decisionsSchema,
@@ -71,8 +77,23 @@ export interface JobView {
   duplicates: (DuplicateMatch & { covered: boolean })[];
   /** What the outbound gate reads from the kit; null before there is one. */
   kitParts: KitParts | null;
-  /** The owner's decisions on the kit, and the gate's open reasons with them; null before there is a kit. */
+  /**
+   * The kit as decisions are made on it: the chosen role and the outputs of
+   * the stages that made the kit. Decisions made on another kit count for
+   * nothing.
+   */
+  kitKey: string | null;
+  /**
+   * The owner's decisions on the kit, and the gate's open reasons with them;
+   * null until the kit is ready.
+   */
   review: { decisions: ReviewDecisions; gate: GateReason[] } | null;
+  /**
+   * Where an email or WhatsApp kit goes: the post's contact, or the one the
+   * owner typed when the kit needs one (empty until it passes); null for
+   * another route, or before there is a kit.
+   */
+  handoff: { to: string; typed: boolean } | null;
 }
 
 const NOT_CHECKED: AddressCheck = {
@@ -80,6 +101,18 @@ const NOT_CHECKED: AddressCheck = {
   blocking: true,
   message: "This address has not been checked as it stands. Check it against the post.",
 };
+
+/** A kit the separate check never weighed: each sentence counts as unsupported (drafting spec). */
+const NEVER_WEIGHED = "The separate check never weighed this sentence.";
+
+/** The stages whose outputs make a kit, so a decision made on one counts for it alone. */
+const KIT_STAGES: readonly StageName[] = [
+  "extract",
+  "address_read",
+  "address_checks",
+  "draft",
+  "judge",
+];
 
 /** The thin path's stages, in order. */
 const STEPS: readonly { stage: StageName; label: string }[] = [
@@ -107,6 +140,11 @@ interface PassedThrough {
 export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promise<JobView | null> {
   const job = await jobStatus(deps, id);
   if (!job) return null;
+  const outputs = new Map<StageName, string>();
+  for (const stage of KIT_STAGES) {
+    const kept = await stageOutput(deps.db, id, stage);
+    if (kept) outputs.set(stage, kept.outputHash);
+  }
   const extract = await stageOutput(deps.db, id, "extract");
   const extraction = extract ? readExtractOutput(extract.output) : null;
   const stopReason = extraction ? stopReasonOf(extraction) : null;
@@ -139,21 +177,42 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       : null;
   const addressChecks =
     contact?.kind === "email" ? addressChecksOf(contact.contact, checks, read) : null;
+  const ready = job.state === "kit_ready";
+  const application = role ? await applicationOf(deps.db, id, role.id) : null;
+  // A kit that ran before its application opened with it is weighed against every earlier one too.
+  const duplicates = application
+    ? await kitDuplicatesOf(deps.db, application.id)
+    : ready && role && extraction
+      ? await unopenedDuplicates(deps.db, role, extraction)
+      : [];
   const kitParts =
     draft && role && extraction
       ? kitPartsOf({
           draft,
-          verdicts: judge?.checked ? judge.verdicts : [],
+          verdicts: judge?.checked
+            ? judge.verdicts
+            : draft.kit.blocks.map((block) => ({
+                blockId: block.id,
+                verdict: "unsupported" as const,
+                companyClaim: false,
+                note: NEVER_WEIGHED,
+              })),
           role,
           extraction,
           settled,
           addressChecks,
+          duplicates,
+          sent:
+            application?.status === "sent" ||
+            application?.status === "submitted" ||
+            application?.status === "bounced",
         })
       : null;
-  const decisions = kitParts && role ? await decisionsOf(deps.db, id, role.id) : null;
-  const application = role ? await applicationOf(deps.db, id, role.id) : null;
-  const duplicates = application ? await duplicatesOf(deps.db, application.id) : [];
-  if (kitParts) kitParts.duplicates = duplicateParts(duplicates);
+  const kitKey =
+    kitParts && role
+      ? sha256Hex(canonicalJson({ role: role.id, outputs: Object.fromEntries(outputs) }))
+      : null;
+  const decisions = kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey) : null;
   return {
     id,
     state: job.state,
@@ -177,19 +236,49 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     application: application && { status: application.status, sentAt: application.sentAt },
     duplicates,
     kitParts,
+    kitKey,
     review:
-      kitParts && decisions
+      ready && kitParts && decisions
         ? { decisions, gate: canHandOff(gateInputOf(kitParts, decisions)) }
         : null,
+    handoff: role && kitParts ? handoffOf(role, kitParts, decisions ?? NO_DECISIONS) : null,
   };
+}
+
+/**
+ * Where the kit goes: the post's contact, unless the kit needs the owner to
+ * type one; then what they typed, once it passes the strict check.
+ */
+function handoffOf(role: Role, parts: KitParts, decisions: ReviewDecisions): JobView["handoff"] {
+  if (!parts.contact) return null;
+  if (!parts.contact.needsRetype) return { to: role.route.address.trim(), typed: false };
+  const typed = decisions.retyped?.value ?? "";
+  const passes =
+    parts.contact.kind === "email" ? isStrictAddress(typed) : normaliseWhatsAppNumber(typed).ok;
+  return { to: passes ? typed : "", typed: true };
+}
+
+/** The matches of a kit with no application yet, from what extract read; none is covered. */
+async function unopenedDuplicates(
+  db: Db,
+  role: Role,
+  extraction: ExtractOutput,
+): Promise<JobView["duplicates"]> {
+  const matches = await findDuplicates(db, {
+    company: extraction.record.company.name,
+    role: role.title,
+    address: contactForLedger(role.route.kind, role.route.address),
+    fingerprint: postFingerprint(role.requirements.map((requirement) => requirement.text)),
+  });
+  return matches.map((match) => ({ ...match, covered: false }));
 }
 
 /**
  * What the gate reads from a kit. An email or WhatsApp contact must be
  * typed by the owner when the post gave none, when it fails the strict
- * check, or when its second read did not agree or never ran. Duplicate
- * matches come with the application, opened at the role pick, and are
- * added by jobView.
+ * check, when its second read did not agree or never ran, or when one of
+ * its address's checks holds it: the address the owner types is checked
+ * on its own. The CV needs no tick: the page says to attach it in Gmail.
  */
 function kitPartsOf(parts: {
   draft: DraftOutput;
@@ -198,35 +287,63 @@ function kitPartsOf(parts: {
   extraction: ExtractOutput;
   settled: JobView["contact"];
   addressChecks: AddressCheck[] | null;
+  duplicates: JobView["duplicates"];
+  sent: boolean;
 }): KitParts {
   const { kind, address } = parts.role.route;
   const typed = address.trim();
   const passes = kind === "email" ? isStrictAddress(typed) : normaliseWhatsAppNumber(typed).ok;
+  const held = (parts.addressChecks ?? []).some((check) => check.blocking);
   return {
     blocks: parts.draft.kit.blocks.map((block) => block.id),
     flags: parts.draft.flags,
     verdicts: parts.verdicts,
-    attachments: parts.role.required_attachments.map((attachment) => attachment.name),
+    attachments: parts.role.required_attachments.flatMap((attachment, i) =>
+      attachment.is_cv ? [] : [{ id: `A${i + 1}`, name: attachment.name }],
+    ),
     contact:
       kind === "email" || kind === "whatsapp"
-        ? { kind, needsRetype: typed === "" || !passes || parts.settled?.agreement.ok !== true }
+        ? {
+            kind,
+            needsRetype: typed === "" || !passes || parts.settled?.agreement.ok !== true || held,
+          }
         : null,
     addressChecks: parts.addressChecks ?? [],
     scamSignals: [...parts.extraction.record.scam_signals, ...parts.extraction.backstop].map(
       (signal) => signal.quote || signal.kind,
     ),
-    duplicates: [],
+    duplicates: duplicateParts(parts.duplicates),
+    sent: parts.sent,
   };
 }
 
-/** The owner's decisions on a job's kit for a role, kept in kit_reviews; none before the first. */
-export async function decisionsOf(db: Db, jobId: string, roleId: string): Promise<ReviewDecisions> {
+/** The decisions as kit_reviews keeps them: with the kit they were made on. */
+const storedDecisionsSchema = decisionsSchema.extend({ kit: z.string() });
+
+/**
+ * The owner's decisions on a job's kit for a role, kept in kit_reviews:
+ * none before the first, and none when they were made on another kit, or
+ * cannot be read, so every reason they cleared holds again.
+ */
+export async function decisionsOf(
+  db: Db,
+  jobId: string,
+  roleId: string,
+  kitKey: string,
+): Promise<ReviewDecisions> {
   const { rows } = await db.query<{ decisions: unknown }>(
     "select decisions from {{schema}}.kit_reviews where job_id = $1 and role_id = $2",
     [jobId, roleId],
   );
-  const parsed = decisionsSchema.safeParse(rows[0]?.decisions);
-  return parsed.success ? parsed.data : NO_DECISIONS;
+  const parsed = storedDecisionsSchema.safeParse(rows[0]?.decisions);
+  if (!parsed.success || parsed.data.kit !== kitKey) return NO_DECISIONS;
+  const { checked, flagsChecked, retyped, attached, continueAnyway } = parsed.data;
+  return { checked, flagsChecked, retyped, attached, continueAnyway };
+}
+
+/** The decisions as kit_reviews keeps them. */
+export function storedDecisions(kitKey: string, decisions: ReviewDecisions): string {
+  return JSON.stringify({ kit: kitKey, ...decisions });
 }
 
 /**
@@ -300,7 +417,10 @@ async function applicationOf(
 }
 
 /** The application's duplicate matches, each with whether "Apply again" covered it. */
-export async function duplicatesOf(db: Db, applicationId: string): Promise<JobView["duplicates"]> {
+export async function kitDuplicatesOf(
+  db: Db,
+  applicationId: string,
+): Promise<JobView["duplicates"]> {
   const gate = await duplicateGate(db, applicationId);
   if (!gate) return [];
   const covered = new Set(gate.covers);
@@ -317,7 +437,7 @@ export function duplicateParts(matches: JobView["duplicates"]): KitParts["duplic
  * application. The banner above gives its day, in the owner's time zone.
  */
 function duplicateWords(match: DuplicateMatch): string {
-  const earlier = `${match.company}, ${match.role}`;
+  const earlier = `${match.company || "a company it did not name"}, ${match.role || "a role it did not name"}`;
   switch (match.reason) {
     case "company-role":
       return `the same company and role as ${earlier}`;

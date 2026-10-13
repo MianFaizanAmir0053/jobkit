@@ -7,6 +7,9 @@ import type { Fact } from "@/core/profile/schema";
 
 import { oneLine } from "./build";
 import type { EmailKit, KitBlock } from "./kit";
+import { type BlockVerdict, isBlocking, JUDGE_VERDICTS, type JudgeVerdict } from "./verdict";
+
+export { type BlockVerdict, isBlocking, JUDGE_VERDICTS, type JudgeVerdict };
 
 /**
  * The judge (drafting spec, "Stage judge"): a second call, independent of
@@ -16,9 +19,6 @@ import type { EmailKit, KitBlock } from "./kit";
  * blocks and the fields sit between per-call markers, since they repeat the
  * post's words, and the drafter's classes are not sent.
  */
-
-export const JUDGE_VERDICTS = ["supported", "overstated", "unsupported", "not_a_claim"] as const;
-export type JudgeVerdict = (typeof JUDGE_VERDICTS)[number];
 
 export const judgeAnswerSchema = z.strictObject({
   verdicts: z
@@ -42,13 +42,6 @@ export const judgeAnswerSchema = z.strictObject({
 });
 
 export type JudgeAnswer = z.output<typeof judgeAnswerSchema>;
-
-export interface BlockVerdict {
-  blockId: string;
-  verdict: JudgeVerdict;
-  companyClaim: boolean;
-  note: string;
-}
 
 export const NO_VERDICT = "The separate check gave no verdict for this sentence.";
 const CLAIM_UNJUDGED = "The separate check did not weigh this sentence as a claim.";
@@ -80,13 +73,6 @@ export function mergeVerdicts(kit: EmailKit, answer: JudgeAnswer): BlockVerdict[
       note: given.note,
     };
   });
-}
-
-/** Whether a verdict holds the kit back: overstated, unsupported, or a claim about the company. */
-export function isBlocking(verdict: BlockVerdict): boolean {
-  return (
-    verdict.verdict === "overstated" || verdict.verdict === "unsupported" || verdict.companyClaim
-  );
 }
 
 export const JUDGE_RULES = `You check an application email that someone else drafted for a job seeker, sentence by sentence, against the job seeker's approved facts. You are independent of the drafter: do not trust its choices.
