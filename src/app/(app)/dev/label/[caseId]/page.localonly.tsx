@@ -3,7 +3,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import { POOL, poolCandidates, readCase } from "../../../../../../evals/cases";
+import { type LeftOut, POOL, poolCandidates, readCase } from "../../../../../../evals/cases";
 import { styleExamplesOf } from "../../../../../../evals/import";
 import { ROUTE_KINDS } from "@/core/extraction/record";
 import { getContainer } from "@/server/container";
@@ -31,11 +31,15 @@ const SPLIT_WORDS = {
   none: "No split yet: label it from the post and the email alone. npm run eval:split gives it one once it has screenshots.",
 };
 
-const LEFT_OUT_WORDS = {
+const LEFT_OUT_WORDS: Readonly<Record<LeftOut, string>> = {
   style_example:
     "Left out: its application holds one of your style examples, so it is never scored.",
   after_jobkit:
     "Left out: it was sent once jobkit was drafting your email, so its words may be a model's. It is never scored.",
+  released:
+    "Left out: it was set aside or away while its test place went to another case, so it is never scored.",
+  not_blind:
+    "Left out: another case of its application was in dev, was labelled with suggestions shown, or is a kept job, so its labels cannot be blind. It is never scored, and npm run eval:split gives its test place to another case.",
 };
 
 /** A day as the laptop's calendar has it: 2026-03-16. */

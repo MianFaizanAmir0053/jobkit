@@ -6,14 +6,16 @@ import { createHash } from "node:crypto";
  * IDs' hashes, so the order depends on the IDs alone, and each goes to
  * `test` while the cases holding a place there number fewer than ten,
  * otherwise to `dev`. A case holds its place while it is in the archive and
- * not left out, ready or not, so only one deleted or left out frees it. The
- * cases of one application, a resend or a reply in its thread, share one
- * split, taken from any of them still in the archive, and go to `test` only
- * when all of them fit; a new case of an application already in a full test
- * set waits without a split rather than overfill it. A case whose labels
- * cannot be blind, a kept live job's or one labelled with pre-labels shown,
- * never goes to `test`. An assigned case never moves, so the blind test set
- * stays fixed as the archive grows.
+ * not left out, ready or not, so only one gone or left out frees it; once a
+ * new case takes that place, the case that freed it is released and never
+ * holds a place again, so test never holds more than ten. The cases of one
+ * application, a resend or a reply in its thread, share one split, taken
+ * from any of them still in the archive, and go to `test` only when all of
+ * them fit; a new case of an application already in a full test set waits
+ * without a split rather than overfill it. A case whose labels cannot be
+ * blind, a kept live job's or one labelled with pre-labels shown, never
+ * goes to `test`. An assigned case never moves, so the blind test set stays
+ * fixed as the archive grows.
  */
 
 export const TEST_SIZE = 10;
@@ -29,6 +31,8 @@ export interface SplitInput {
   present: readonly string[];
   /** The splits given before, kept whatever happened to their cases. */
   assigned: Readonly<Record<string, Split>>;
+  /** Test cases released before: their places went to later cases. */
+  released?: readonly string[];
   /** The application a case is of; the cases of one share a split. */
   groupOf?: (id: string) => string;
   /** Whether a case's labels can be blind; one that cannot is never in test. */
@@ -39,14 +43,23 @@ export interface SplitOutcome {
   splits: Record<string, Split>;
   /** Ready cases left without a split: their application is in a full test set. */
   held: string[];
+  /** Test cases gone or left out whose places this draw gave to new cases, first by ID. */
+  released: string[];
 }
 
 export function assignSplits(input: SplitInput): SplitOutcome {
   const groupOf = input.groupOf ?? ((id: string) => id);
   const blind = input.blind ?? (() => true);
   const splits: Record<string, Split> = { ...input.assigned };
-  const present = [...new Set(input.present)].sort();
+  const releasedBefore = new Set(input.released ?? []);
+  const present = [...new Set(input.present)].filter((id) => !releasedBefore.has(id)).sort();
+  const isPresent = new Set(present);
   let test = present.filter((id) => splits[id] === "test").length;
+  // Test cases gone or left out: each keeps a claim on a place until a new case takes it.
+  const away = Object.keys(input.assigned)
+    .filter((id) => input.assigned[id] === "test" && !releasedBefore.has(id) && !isPresent.has(id))
+    .sort();
+  const released: string[] = [];
   const groupSplit = new Map<string, Split>();
   for (const id of present) {
     const split = splits[id];
@@ -75,8 +88,14 @@ export function assignSplits(input: SplitInput): SplitOutcome {
       continue;
     }
     for (const member of members) splits[member] = split;
-    if (split === "test") test += members.length;
+    if (split === "test") {
+      test += members.length;
+      // Places taken beyond those never filled come from cases away, which are released.
+      while (test + away.length - released.length > TEST_SIZE) {
+        released.push(away[released.length]!);
+      }
+    }
     groupSplit.set(group, split);
   }
-  return { splits, held };
+  return { splits, held, released };
 }

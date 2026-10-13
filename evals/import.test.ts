@@ -21,6 +21,7 @@ import {
   mboxMessages,
   styleExamplesOf,
 } from "./import";
+import { appendSplitEvents } from "./splitFile";
 
 /* The archive import: evals AC1. Every message here is made up. */
 
@@ -284,6 +285,24 @@ describe("importMbox", () => {
       "X-Gmail-Labels: Sent,Opened",
     );
     expect(readdirSync(join(archive, folders[1]!))).toEqual(["email.eml"]);
+  });
+
+  it("never brings back a case the split file knows that the archive no longer holds", async () => {
+    const file = join(dir, "Sent.mbox");
+    writeFileSync(
+      file,
+      ["From 1 Mon Mar 16 05:00:00 +0000 2026", message(), ""].join(CRLF),
+      "latin1",
+    );
+    const archive = join(dir, "archive");
+    const { id } = (await importMbox(file, archive, options)).cases[0]!;
+    appendSplitEvents(archive, [{ at: "2026-10-14T10:00:00.000Z", id, split: "test" }]);
+    rmSync(join(archive, id), { recursive: true });
+
+    const again = await importMbox(file, archive, options);
+
+    expect(again).toMatchObject({ cases: [], removed: 1, repaired: 0 });
+    expect(existsSync(join(archive, id))).toBe(false);
   });
 
   it("imports a folder of downloaded .eml files by the same rules, naming any it cannot read", async () => {

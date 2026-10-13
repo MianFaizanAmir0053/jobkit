@@ -104,6 +104,52 @@ describe("assignSplits", () => {
     expect(Object.hasOwn(outcome.splits, resend)).toBe(false);
   });
 
+  it("releases a test case away from the archive once a new case takes its place, and no more", () => {
+    const ten = Object.fromEntries(ids(10).map((id) => [id, "test" as const]));
+    const [away, alsoAway] = ids(10) as [string, string];
+    const fresh = ids(1, "2026-04-01");
+
+    const outcome = assignSplits({
+      ready: [...ids(10).slice(2), ...fresh],
+      present: [...ids(10).slice(2), ...fresh],
+      assigned: ten,
+    });
+
+    // One place was taken: the first case away by ID is released, the other keeps its claim.
+    expect(outcome.splits[fresh[0]!]).toBe("test");
+    expect(outcome.released).toEqual([away]);
+    expect(outcome.released).not.toContain(alsoAway);
+  });
+
+  it("releases no one while test has places that were never filled", () => {
+    const five = Object.fromEntries(ids(5).map((id) => [id, "test" as const]));
+    const fresh = ids(2, "2026-04-01");
+
+    const outcome = assignSplits({
+      ready: [...ids(5).slice(1), ...fresh],
+      present: [...ids(5).slice(1), ...fresh],
+      assigned: five,
+    });
+
+    expect(fresh.map((id) => outcome.splits[id])).toEqual(["test", "test"]);
+    expect(outcome.released).toEqual([]);
+  });
+
+  it("counts no place for a case released before", () => {
+    const ten = Object.fromEntries(ids(10).map((id) => [id, "test" as const]));
+    const fresh = ids(1, "2026-04-01");
+
+    const outcome = assignSplits({
+      ready: [...ids(10).slice(1), ...fresh],
+      present: [...ids(10).slice(1), ...fresh],
+      assigned: ten,
+      released: [ids(10)[0]!],
+    });
+
+    expect(outcome.splits[fresh[0]!]).toBe("test");
+    expect(outcome.released).toEqual([]);
+  });
+
   it("never puts in test a case whose labels cannot be blind", () => {
     const [live, mail] = ["live-2026-10-06-00000001", "2026-03-01-00000001"];
 

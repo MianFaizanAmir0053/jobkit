@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -24,7 +23,15 @@ import {
   keptJobkitFrom,
   normalised,
 } from "./import";
-import { assignSplits, type Split, TEST_SIZE } from "./split";
+import { assignSplits, type Split, type SplitOutcome, TEST_SIZE } from "./split";
+import {
+  appendSplitEvents,
+  readSplitRecord,
+  SPLIT_COPY,
+  SPLIT_FILE,
+  type SplitEvent,
+  type SplitRecord,
+} from "./splitFile";
 
 /**
  * The case archive (evals spec, "Case sources", "Labelling" and "Splits"):
@@ -34,14 +41,16 @@ import { assignSplits, type Split, TEST_SIZE } from "./split";
  * labelled, `labels.json`. Screenshots not yet matched to a case wait in
  * `_screenshots/`; cases the owner set aside as not applications wait in
  * `_dismissed/`. A case gets its split from `npm run eval:split`, never from
- * viewing the page, and keeps it in `split.json`, with the last version in
- * `split.json.bak`. Pre-labels (`prelabels.json`) are shown for a dev case
- * alone: a test case's stay hidden even after its labels are saved, so the
- * blind labels are never shaped by a model (amendment A10). A kept live
- * job's owner has seen jobkit's reading of it, so it is never in test. A
- * sent email is left out when its application holds one of the profile's
- * style examples, however late the example was chosen, or when it was sent
- * from the day jobkit began drafting (A10).
+ * viewing the page, and keeps it in the split file's log (splitFile.ts).
+ * Pre-labels (`prelabels.json`) are shown for a dev case alone: a test
+ * case's stay hidden even after its labels are saved, so the blind labels
+ * are never shaped by a model (amendment A10). An application is blind
+ * only while none of its cases, those set aside included, is a kept live
+ * job, whose owner has seen jobkit's reading of it, was labelled with
+ * pre-labels shown, or is in dev; a test case of an application that is
+ * not blind is never scored. A sent email is left out when its application
+ * holds one of the profile's style examples, however late the example was
+ * chosen, or when it was sent from the day jobkit began drafting (A10).
  */
 
 /** A case folder's name: a sent email's ("2026-03-16-8282e9a1") or a kept job's ("live-…"). */
@@ -53,10 +62,8 @@ export class NoCase extends Error {}
 /** The folder of screenshots not yet matched to a case. */
 export const POOL = "_screenshots";
 
-const SPLIT_FILE = "split.json";
-const SPLIT_BACKUP = "split.json.bak";
 /** The archive's own files at its top; its own folders start with "_" (the pool, the set-aside, eval:pull's). */
-const OWN_FILES = new Set([SPLIT_FILE, SPLIT_BACKUP, IMPORT_FILE]);
+const OWN_FILES = new Set([SPLIT_FILE, SPLIT_COPY, IMPORT_FILE]);
 const CROP_FILE = "crop.png";
 const PASTED_FILE = "pasted.txt";
 const IMAGE_TYPES: Readonly<Record<string, string>> = {
@@ -109,8 +116,13 @@ export interface CaseOptions {
   styleExamples: readonly string[];
 }
 
-/** Why a case is never scored: its application holds a style example, or jobkit may have drafted it. */
-export type LeftOut = "style_example" | "after_jobkit";
+/**
+ * Why a case is never scored: its application holds a style example; jobkit
+ * may have drafted it; its test place went to a later case once it was
+ * away or left out ("released"); or it holds a test place while its
+ * application cannot be blind ("not_blind").
+ */
+export type LeftOut = "style_example" | "after_jobkit" | "released" | "not_blind";
 
 export interface CaseSummary {
   id: string;
@@ -127,6 +139,11 @@ export interface CaseSummary {
   leftOut: LeftOut | null;
   /** Other cases that seem the same application: a resend, or a reply in its thread. */
   sameAs: string[];
+  /**
+   * Ready, but held without a split: its application is in a full test set,
+   * so it waits until the extra cases are set aside.
+   */
+  held: boolean;
   /** What in its folder cannot be read; such a case is not ready to label. */
   problem: string | null;
 }
@@ -161,6 +178,8 @@ export interface SplitReport {
   leftOut: number;
   /** Ready cases left without a split: their application is in a full test set. */
   held: string[];
+  /** Test cases away or left out whose places this run gave to new cases: never scored again. */
+  released: string[];
 }
 
 function isImage(file: string): boolean {
@@ -172,14 +191,12 @@ function isPlainName(file: string): boolean {
   return /^[^\\/]+$/.test(file) && file !== "." && file !== "..";
 }
 
-function caseIds(archive: string): string[] {
-  if (!existsSync(archive)) return [];
-  return readdirSync(archive, { withFileTypes: true })
+function caseIds(folder: string): string[] {
+  if (!existsSync(folder)) return [];
+  return readdirSync(folder, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && CASE_ID.test(entry.name))
     .map((entry) => entry.name);
 }
-
-const splitSchema = z.record(z.string(), z.enum(["test", "dev"]));
 
 /** Writes a file whole: a crash leaves the old one, never half of the new. */
 function writeWhole(file: string, text: string): void {
@@ -209,6 +226,7 @@ const savedLabelsSchema = z.object(labelsSchema.shape);
 
 /** What saving adds to a case's labels: when, under which split, and what the owner was shown. */
 const labelledUnderSchema = z.object({
+  labelledAt: z.string().optional(),
   split: z.enum(["test", "dev"]).nullable().optional(),
   prelabelsShown: z.boolean().optional(),
   cropSha256: z.string().nullable().optional(),
@@ -360,10 +378,11 @@ function isReady(read: FolderRead): boolean {
 /**
  * Whether a case's labels can be blind: never a kept live job's, whose
  * owner has seen jobkit's reading of it, nor one labelled with pre-labels
- * shown.
+ * shown, nor one whose labels do not record what was shown.
  */
 function canBeBlind(read: FolderRead): boolean {
-  return read.source === "mail" && read.labelledUnder?.prelabelsShown !== true;
+  if (read.source !== "mail") return false;
+  return read.labels === null || read.labelledUnder?.prelabelsShown === false;
 }
 
 /**
@@ -403,67 +422,121 @@ function applicationsOf(reads: readonly FolderRead[]): Map<string, string> {
   return new Map(reads.map((read) => [read.id, root(read.id)]));
 }
 
+/** The archive as read: its cases, those set aside, their applications and the splits given. */
+interface ArchiveState {
+  /** The cases at the archive's top, each with why it is left out, if it is. */
+  reads: FolderRead[];
+  /** Each case's application, for the cases set aside too, named by its first case ID. */
+  applications: Map<string, string>;
+  /** The splits given and the places released; empty before the first split. */
+  record: SplitRecord;
+  /** The applications that cannot be blind: one of their cases is a live job's, was labelled with pre-labels shown, or is in dev. */
+  notBlind: ReadonlySet<string>;
+}
+
 /**
- * Every case's folder read, and the applications they make. An application
- * one of whose emails holds a style example is left out whole: a resend or
- * a reply is the post the drafter was shown.
+ * Every case's folder read, those set aside included, since they are still
+ * cases of their applications, and the applications they make; and the
+ * split file, checked against what the labels recorded. An application one
+ * of whose emails holds a style example is left out whole: a resend or a
+ * reply is the post the drafter was shown. A test case released, or of an
+ * application that cannot be blind, is left out too. Stops while mail
+ * cases are in the archive but the day jobkit began drafting is not, when
+ * the split file is missing yet cases were labelled under a split, when a
+ * case's labels name a split the file does not give it, and when more than
+ * ten cases hold test places.
  */
-async function scan(
-  archive: string,
-  options: CaseOptions,
-): Promise<{ reads: FolderRead[]; applications: Map<string, string> }> {
+async function stateOf(archive: string, options: CaseOptions): Promise<ArchiveState> {
   const jobkitFrom = keptJobkitFrom(archive);
   const reads: FolderRead[] = [];
   for (const id of caseIds(archive)) {
     reads.push(await readFolder(archive, id, options, jobkitFrom));
   }
-  const applications = applicationsOf(reads);
+  const aside: FolderRead[] = [];
+  for (const id of caseIds(join(archive, DISMISSED))) {
+    if (!reads.some((read) => read.id === id)) {
+      aside.push(await readFolder(join(archive, DISMISSED), id, options, jobkitFrom));
+    }
+  }
+  if (jobkitFrom === null && [...reads, ...aside].some((read) => read.source === "mail")) {
+    throw new Error(
+      `The archive holds sent mail but not ${IMPORT_FILE}, which keeps the day jobkit began drafting: restore it, or run npm run eval:import again with --jobkit-from <YYYY-MM-DD>.`,
+    );
+  }
+  const all = [...reads, ...aside];
+  const applications = applicationsOf(all);
   const shown = new Set(
-    reads
-      .filter((read) => read.leftOut === "style_example")
-      .map((read) => applications.get(read.id)),
+    all.filter((read) => read.leftOut === "style_example").map((read) => applications.get(read.id)),
   );
   for (const read of reads) {
     if (shown.has(applications.get(read.id))) read.leftOut = "style_example";
   }
-  return { reads, applications };
+
+  const saved = readSplitRecord(archive);
+  if (!saved && all.some((read) => read.labelledUnder?.split)) {
+    throw new Error(
+      `${join(archive, SPLIT_FILE)} is missing, yet cases were labelled under a split: restore it before giving or reading splits.`,
+    );
+  }
+  const record = saved ?? { assigned: {}, released: [], log: [] };
+  for (const read of all) {
+    const under = read.labelledUnder?.split;
+    if (under && record.assigned[read.id] !== under) {
+      throw new Error(
+        `${read.id}'s labels.json was saved under ${under}, but ${SPLIT_FILE} gives it ${record.assigned[read.id] ?? "no split"}: restore the split file the labels were saved under.`,
+      );
+    }
+  }
+
+  // An application is blind while none of its cases could show the owner jobkit's reading of it.
+  const notBlind = new Set(
+    all
+      .filter((read) => !canBeBlind(read) || record.assigned[read.id] === "dev")
+      .map((read) => applications.get(read.id) ?? read.id),
+  );
+  const released = new Set(record.released);
+  for (const read of reads) {
+    if (read.leftOut !== null || record.assigned[read.id] !== "test") continue;
+    if (released.has(read.id)) read.leftOut = "released";
+    else if (notBlind.has(applications.get(read.id) ?? read.id)) read.leftOut = "not_blind";
+  }
+  const testCases = reads.filter(
+    (read) => read.leftOut === null && record.assigned[read.id] === "test",
+  ).length;
+  if (testCases > TEST_SIZE) {
+    throw new Error(
+      `${testCases} cases hold test places, more than ${TEST_SIZE}: ${SPLIT_FILE} was changed by hand, or a case set aside was moved back. Restore the split file, or set the extra cases aside again.`,
+    );
+  }
+  return { reads, applications, record, notBlind };
+}
+
+/** Whether a case's application can be blind: none of its cases, those set aside included, could show jobkit's reading. */
+function blindOf(state: ArchiveState): (id: string) => boolean {
+  return (id) => !state.notBlind.has(state.applications.get(id) ?? id);
 }
 
 /**
- * The splits given so far. A file that cannot be read stops everything, as
- * does a missing one while its last copy waits, or while cases were
- * labelled under a split: assigning the cases again could put a case
- * labelled with suggestions in the test set.
+ * The draw eval:split would make now: the cases ready to label get splits,
+ * and those of an application in a full test set are held. Viewing the
+ * page computes it only to name the held cases; only fixSplit keeps it.
  */
-function savedSplits(archive: string, reads: readonly FolderRead[]): Record<string, Split> {
-  const file = join(archive, SPLIT_FILE);
-  if (!existsSync(file)) {
-    if (existsSync(join(archive, SPLIT_BACKUP))) {
-      throw new Error(
-        `${file} is missing, but ${SPLIT_BACKUP} holds the last splits: copy it back to ${SPLIT_FILE} first.`,
-      );
-    }
-    if (reads.some((read) => read.labelledUnder?.split)) {
-      throw new Error(
-        `${file} is missing, yet cases were labelled under a split: restore it before giving or reading splits.`,
-      );
-    }
-    return {};
-  }
-  try {
-    return splitSchema.parse(JSON.parse(readFileSync(file, "utf8")));
-  } catch {
-    throw new Error(
-      `${file} cannot be read. Copy ${SPLIT_BACKUP} over it before labelling or running anything: each case must keep the split it was given.`,
-    );
-  }
+function planOf(state: ArchiveState): SplitOutcome {
+  const present = state.reads.filter((read) => read.leftOut === null);
+  const blind = blindOf(state);
+  return assignSplits({
+    ready: present.filter(isReady).map((read) => read.id),
+    present: present.map((read) => read.id),
+    assigned: state.record.assigned,
+    released: state.record.released,
+    groupOf: (id) => state.applications.get(id) ?? id,
+    blind,
+  });
 }
 
-function detailOf(
-  read: FolderRead,
-  split: Split | null,
-  applications: ReadonlyMap<string, string>,
-): CaseDetail {
+function detailOf(read: FolderRead, state: ArchiveState, held: ReadonlySet<string>): CaseDetail {
+  const { applications } = state;
+  const split = state.record.assigned[read.id] ?? null;
   const application = applications.get(read.id);
   return {
     id: read.id,
@@ -474,10 +547,12 @@ function detailOf(
     screenshots: read.screenshotFiles.length,
     labelled: read.labels !== null,
     leftOut: read.leftOut,
-    sameAs: [...applications]
-      .filter(([id, of]) => of === application && id !== read.id)
-      .map(([id]) => id)
+    // Only cases still in the archive: one set aside needs nothing more from the owner.
+    sameAs: state.reads
+      .filter((other) => applications.get(other.id) === application && other.id !== read.id)
+      .map((other) => other.id)
       .sort(),
+    held: held.has(read.id),
     problem: read.problem,
     email: read.email,
     screenshotFiles: read.screenshotFiles,
@@ -504,10 +579,10 @@ const ORDER: Readonly<Record<string, number>> = { test: 0, none: 1, dev: 2 };
 
 /** Every case, the test cases first, then those with no split yet, then dev, each by date. */
 export async function listCases(archive: string, options: CaseOptions): Promise<Archive> {
-  const { reads, applications } = await scan(archive, options);
-  const splits = savedSplits(archive, reads);
-  const cases = reads.map((read): CaseSummary => {
-    const detail = detailOf(read, splits[read.id] ?? null, applications);
+  const state = await stateOf(archive, options);
+  const held = new Set(planOf(state).held);
+  const cases = state.reads.map((read): CaseSummary => {
+    const detail = detailOf(read, state, held);
     return {
       id: detail.id,
       split: detail.split,
@@ -518,6 +593,7 @@ export async function listCases(archive: string, options: CaseOptions): Promise<
       labelled: detail.labelled,
       leftOut: detail.leftOut,
       sameAs: detail.sameAs,
+      held: detail.held,
       problem: detail.problem,
     };
   });
@@ -537,10 +613,9 @@ export async function readCase(
   options: CaseOptions,
 ): Promise<CaseDetail | null> {
   if (!CASE_ID.test(id) || !existsSync(join(archive, id))) return null;
-  const { reads, applications } = await scan(archive, options);
-  const splits = savedSplits(archive, reads);
-  const read = reads.find((each) => each.id === id);
-  return read ? detailOf(read, splits[id] ?? null, applications) : null;
+  const state = await stateOf(archive, options);
+  const read = state.reads.find((each) => each.id === id);
+  return read ? detailOf(read, state, new Set(planOf(state).held)) : null;
 }
 
 /**
@@ -549,51 +624,50 @@ export async function readCase(
  * their screenshots, and again for cases that arrive later. While test has
  * a free place and cases still wait, it refuses unless told to go on
  * (`partial`), so the test set is a draw from all the cases, never the
- * first ones matched. The last split file is kept as split.json.bak.
+ * first ones matched; a case that could never take a test place, a kept
+ * live job's or one of an application that cannot be blind, holds nothing
+ * up. Each split given and each place released is added to the split
+ * file's log.
  */
 export async function fixSplit(
   archive: string,
   options: CaseOptions,
-  opts: { partial?: boolean } = {},
+  opts: { partial?: boolean; now?: Date } = {},
 ): Promise<SplitReport> {
-  const { reads, applications } = await scan(archive, options);
-  const saved = savedSplits(archive, reads);
+  const state = await stateOf(archive, options);
+  const { reads, record } = state;
   const present = reads.filter((read) => read.leftOut === null);
-  const ready = present.filter(isReady);
-  const waiting = present.filter((read) => !isReady(read) && !Object.hasOwn(saved, read.id));
-  const testPlaces = TEST_SIZE - present.filter((read) => saved[read.id] === "test").length;
-  // Only a case that could take a test place holds the draw up: a kept live job never can.
-  const contenders = waiting.filter(canBeBlind);
+  const waiting = present.filter(
+    (read) => !isReady(read) && !Object.hasOwn(record.assigned, read.id),
+  );
+  const testPlaces =
+    TEST_SIZE - present.filter((read) => record.assigned[read.id] === "test").length;
+  const blind = blindOf(state);
+  const contenders = waiting.filter((read) => blind(read.id));
   if (testPlaces > 0 && contenders.length > 0 && !opts.partial) {
     const many = contenders.length === 1 ? "1 case is" : `${contenders.length} cases are`;
     throw new Error(
       `${many} still waiting for screenshots, or has a file that cannot be read, while test has ${testPlaces} free places: add the screenshots, set aside what is not an application, or run npm run eval:split -- --partial to fill test without them.`,
     );
   }
-  const byId = new Map(reads.map((read) => [read.id, read]));
-  const { splits, held } = assignSplits({
-    ready: ready.map((read) => read.id),
-    present: present.map((read) => read.id),
-    assigned: saved,
-    groupOf: (id) => applications.get(id) ?? id,
-    blind: (id) => canBeBlind(byId.get(id)!),
-  });
-  const added = Object.keys(splits).filter((id) => !Object.hasOwn(saved, id));
-  if (added.length > 0) {
-    const file = join(archive, SPLIT_FILE);
-    if (existsSync(file)) copyFileSync(file, join(archive, SPLIT_BACKUP));
-    const ordered = Object.fromEntries(
-      Object.entries(splits).sort(([a], [b]) => a.localeCompare(b)),
-    );
-    writeWhole(file, `${JSON.stringify(ordered, null, 2)}\n`);
-  }
+  const { splits, held, released } = planOf(state);
+  const added = Object.keys(splits)
+    .filter((id) => !Object.hasOwn(record.assigned, id))
+    .sort();
+  const at = (opts.now ?? new Date()).toISOString();
+  const events: SplitEvent[] = [
+    ...added.map((id) => ({ at, id, split: splits[id]! })),
+    ...released.map((id) => ({ at, id, release: true as const })),
+  ];
+  if (events.length > 0) appendSplitEvents(archive, events);
   return {
     added: added.length,
-    test: added.filter((id) => splits[id] === "test").sort(),
+    test: added.filter((id) => splits[id] === "test"),
     dev: added.filter((id) => splits[id] === "dev").length,
     waiting: waiting.length,
     leftOut: reads.filter((read) => read.leftOut !== null).length,
     held,
+    released,
   };
 }
 
@@ -606,10 +680,7 @@ export async function fixSplit(
 export function saveLabels(archive: string, id: string, labels: Labels, at: Date): void {
   if (!CASE_ID.test(id) || !existsSync(join(archive, id))) throw new NoCase(`No case ${id}`);
   const checked = labelsSchema.parse(labels);
-  const file = join(archive, SPLIT_FILE);
-  const split = existsSync(file)
-    ? (splitSchema.parse(JSON.parse(readFileSync(file, "utf8")))[id] ?? null)
-    : null;
+  const split = readSplitRecord(archive)?.assigned[id] ?? null;
   let prelabels = null;
   try {
     prelabels = readJson(join(archive, id, "prelabels.json"), savedLabelsSchema);
@@ -637,7 +708,10 @@ export function saveLabels(archive: string, id: string, labels: Labels, at: Date
 /**
  * Sets aside a case that is not an application, moving its folder to
  * `_dismissed/`: out of the list and of its split's count, and never
- * brought back by an import. Moving the folder back undoes it.
+ * brought back by an import. It stays a case of its application, so an
+ * application one of whose cases was in dev never enters test. Setting
+ * aside is for good: a test case's place goes to a later case, and the
+ * case is never scored again, even if its folder is moved back.
  */
 export function dismissCase(archive: string, id: string): void {
   if (!CASE_ID.test(id) || !existsSync(join(archive, id))) throw new NoCase(`No case ${id}`);

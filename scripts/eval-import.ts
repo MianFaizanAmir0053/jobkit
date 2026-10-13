@@ -100,6 +100,9 @@ async function main(): Promise<void> {
   if (report.repaired > 0)
     console.log(`Written again, after an import cut short: ${report.repaired}`);
   if (report.dismissed > 0) console.log(`Set aside as not applications: ${report.dismissed}`);
+  if (report.removed > 0) {
+    console.log(`Removed from the archive after they were given a split: ${report.removed}`);
+  }
   console.log(
     `Skipped: ${report.skipped.not_sent} not marked Sent or not from you, ${report.skipped.no_resume} without the CV, ${report.skipped.style_example} matching a style example, ${report.skipped.after_jobkit} sent from ${jobkitFrom.toLocaleString()} on, when jobkit may have drafted them`,
   );

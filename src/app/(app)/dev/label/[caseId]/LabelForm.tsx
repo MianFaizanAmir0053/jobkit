@@ -167,13 +167,20 @@ export function LabelForm({
   );
 }
 
-/** "Not an application": sets the case aside, where no import brings it back, and goes back to the list. */
+/**
+ * "Not an application": sets the case aside for good, where no import
+ * brings it back, after the owner confirms, and goes back to the list.
+ */
 export function DismissButton({ caseId }: { caseId: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   async function dismiss() {
+    const sure = window.confirm(
+      "Set this case aside for good? It is never scored, and a test place it holds goes to another case.",
+    );
+    if (!sure) return;
     setBusy(true);
     setError(null);
     try {

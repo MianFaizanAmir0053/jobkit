@@ -16,6 +16,8 @@ import PostalMime, { type Email } from "postal-mime";
 import { parse } from "yaml";
 import { z } from "zod";
 
+import { knownCaseIds } from "./splitFile";
+
 /**
  * The archive import (evals spec, "Case sources"): a Gmail Takeout mbox of
  * sent mail, or a folder of messages downloaded by hand, becomes one case
@@ -28,7 +30,8 @@ import { z } from "zod";
  * the drafter is never scored on an email it was shown as a model
  * (amendment A10); the labelling page checks the examples again. A message
  * that cannot be read is reported and passed over. A case already in the
- * archive is not written again.
+ * archive is not written again, and one the split file names that is no
+ * longer in the archive was removed, and is not brought back.
  */
 
 export type SkipReason = "not_sent" | "no_resume" | "style_example" | "after_jobkit";
@@ -57,6 +60,8 @@ export interface ImportReport {
   alreadyImported: number;
   /** Cases the owner set aside as not applications, which the import does not bring back. */
   dismissed: number;
+  /** Cases removed from the archive after they were given a split, which the import does not bring back. */
+  removed: number;
   /** Cases whose email.eml was missing or cut short, written again. */
   repaired: number;
 }
@@ -167,6 +172,7 @@ function emptyReport(): ImportReport {
     malformed: [],
     alreadyImported: 0,
     dismissed: 0,
+    removed: 0,
     repaired: 0,
   };
 }
@@ -176,13 +182,16 @@ export const DISMISSED = "_dismissed";
 
 /**
  * Counts one message's outcome, writing a kept one as a new case unless it
- * is one already or was set aside; a case whose email.eml is missing or
- * differs, as one cut short by an interrupted import, is written again. The
- * file is written whole, so an interruption never leaves half of it.
+ * is one already, was set aside, or was removed after it was given a split
+ * (`known`, the cases the split file names); a case whose email.eml is
+ * missing or differs, as one cut short by an interrupted import, is written
+ * again. The file is written whole, so an interruption never leaves half
+ * of it.
  */
 function take(
   report: ImportReport,
   archive: string,
+  known: ReadonlySet<string>,
   raw: Uint8Array,
   outcome: ImportOutcome,
   where: { index: number; file?: string },
@@ -199,6 +208,10 @@ function take(
     const folder = join(archive, outcome.id);
     const file = join(folder, "email.eml");
     const existed = existsSync(folder);
+    if (!existed && known.has(outcome.id)) {
+      report.removed++;
+      return;
+    }
     if (existed && existsSync(file) && Buffer.compare(readFileSync(file), raw) === 0) {
       report.alreadyImported++;
       return;
@@ -218,6 +231,7 @@ export async function importMbox(
   options: ImportOptions,
 ): Promise<ImportReport> {
   const report = emptyReport();
+  const known = knownCaseIds(archive);
   // Latin-1 keeps every byte as one character, so a message's bytes come back exactly.
   const lines = createInterface({
     input: createReadStream(file, { encoding: "latin1" }),
@@ -227,7 +241,7 @@ export async function importMbox(
   for await (const text of mboxMessages(lines)) {
     index++;
     const raw = new Uint8Array(Buffer.from(text, "latin1"));
-    take(report, archive, raw, await judgeMessage(raw, options), { index });
+    take(report, archive, known, raw, await judgeMessage(raw, options), { index });
   }
   return report;
 }
@@ -239,6 +253,7 @@ export async function importEmlFolder(
   options: ImportOptions,
 ): Promise<ImportReport> {
   const report = emptyReport();
+  const known = knownCaseIds(archive);
   const files = readdirSync(folder)
     .filter(
       (file) => extname(file).toLowerCase() === ".eml" && statSync(join(folder, file)).isFile(),
@@ -246,7 +261,10 @@ export async function importEmlFolder(
     .sort();
   for (const [i, file] of files.entries()) {
     const raw = new Uint8Array(readFileSync(join(folder, file)));
-    take(report, archive, raw, await judgeMessage(raw, options, false), { index: i + 1, file });
+    take(report, archive, known, raw, await judgeMessage(raw, options, false), {
+      index: i + 1,
+      file,
+    });
   }
   return report;
 }

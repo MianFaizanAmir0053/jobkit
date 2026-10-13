@@ -45,6 +45,11 @@ async function main(): Promise<void> {
   console.log(
     `Left out (a style example's application, or sent once jobkit drafted): ${report.leftOut}`,
   );
+  for (const id of report.released) {
+    console.log(
+      `Released: ${id}, set aside or left out while its test place went to a new case. It is never scored.`,
+    );
+  }
   for (const id of report.held) {
     console.log(
       `Held without a split: ${id}, the same application as a case in a full test set. Set one of them aside.`,

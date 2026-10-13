@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   utimesSync,
   writeFileSync,
@@ -26,6 +27,7 @@ import {
   readCase,
   saveLabels,
 } from "./cases";
+import { appendSplitEvents, type SplitEvent } from "./splitFile";
 
 /* The case archive the labelling page reads and writes: evals spec, "Labelling" and "Splits", AC3. */
 
@@ -97,8 +99,22 @@ function mailCases(count: number, day = "2026-03-01"): string[] {
   });
 }
 
-const splitFile = () =>
-  JSON.parse(readFileSync(join(archive, "split.json"), "utf8")) as Record<string, string>;
+/** The splits the split file gives now, by case. */
+const splitFile = (): Record<string, string> => {
+  const { log } = JSON.parse(readFileSync(join(archive, "split.json"), "utf8")) as {
+    log: SplitEvent[];
+  };
+  return Object.fromEntries(
+    log.flatMap((event) => ("split" in event ? [[event.id, event.split]] : [])),
+  );
+};
+
+/** Splits given as eval:split gives them, written through the split file's own writer. */
+const writeSplits = (splits: Record<string, "test" | "dev">) =>
+  appendSplitEvents(
+    archive,
+    Object.entries(splits).map(([id, split]) => ({ at: "2026-10-01T00:00:00.000Z", id, split })),
+  );
 
 const LABELS: Labels = {
   company: "Northwind Analytics",
@@ -112,6 +128,11 @@ const LABELS: Labels = {
 
 beforeEach(() => {
   archive = mkdtempSync(join(tmpdir(), "jobkit-cases-"));
+  // The first import keeps the day jobkit began drafting: here, one after every email.
+  writeFileSync(
+    join(archive, "import.json"),
+    JSON.stringify({ jobkitFrom: "2099-01-01T00:00:00.000Z" }),
+  );
 });
 
 afterEach(() => {
@@ -221,6 +242,81 @@ describe("listCases", () => {
     await expect(listCases(archive, NO_EXAMPLES)).rejects.toThrow(/split\.json/);
   });
 
+  it("stops while mail cases are in the archive but the day jobkit began drafting is not", async () => {
+    rmSync(join(archive, "import.json"));
+    liveCase("live-2026-10-06-1a2b3c4d");
+    expect((await listCases(archive, NO_EXAMPLES)).cases).toHaveLength(1);
+
+    mailCase("2026-03-16-00000001");
+
+    await expect(listCases(archive, NO_EXAMPLES)).rejects.toThrow(/import\.json/);
+    await expect(fixSplit(archive, NO_EXAMPLES)).rejects.toThrow(/import\.json/);
+  });
+
+  it("stops when more than ten cases hold test places", async () => {
+    const eleven = mailCases(11);
+    writeSplits(Object.fromEntries(eleven.map((id) => [id, "test" as const])));
+
+    await expect(listCases(archive, NO_EXAMPLES)).rejects.toThrow(/11 cases hold test places/);
+    await expect(fixSplit(archive, NO_EXAMPLES)).rejects.toThrow(/11 cases hold test places/);
+  });
+
+  it("stops when a case's labels name a split the split file lacks or contradicts", async () => {
+    mailCase("2026-03-16-00000001");
+    mailCase("2026-03-16-00000002", { subject: "Two", id: "<b@example.com>" });
+    writeSplits({ "2026-03-16-00000001": "dev" });
+    saveLabels(archive, "2026-03-16-00000001", LABELS, new Date("2026-10-13T12:00:00Z"));
+
+    rmSync(join(archive, "split.json"));
+    rmSync(join(archive, "split.json.bak"));
+    writeSplits({ "2026-03-16-00000001": "test" });
+    await expect(listCases(archive, NO_EXAMPLES)).rejects.toThrow(/labels\.json.*dev/);
+
+    rmSync(join(archive, "split.json"));
+    rmSync(join(archive, "split.json.bak"));
+    writeSplits({ "2026-03-16-00000002": "test" });
+    await expect(readCase(archive, "2026-03-16-00000002", NO_EXAMPLES)).rejects.toThrow(
+      /labels\.json.*dev/,
+    );
+  });
+
+  it("does not score a test case whose application turns out to hold a case in dev", async () => {
+    mailCase("2026-03-16-00000001", { subject: "One", id: "<a@example.com>" });
+    mailCase("2026-03-16-00000002", { subject: "Two", id: "<b@example.com>", body: "Other." });
+    writeSplits({ "2026-03-16-00000001": "test", "2026-03-16-00000002": "dev" });
+    // A later email links them: it answers the first and repeats the second's words.
+    mailCase("2026-03-18-00000003", {
+      subject: "Two",
+      id: "<c@example.com>",
+      inReplyTo: "<a@example.com>",
+      body: "Other.",
+    });
+
+    const { cases } = await listCases(archive, NO_EXAMPLES);
+
+    expect(cases.find((entry) => entry.id === "2026-03-16-00000001")?.leftOut).toBe("not_blind");
+    expect(cases.find((entry) => entry.id === "2026-03-16-00000002")?.leftOut).toBeNull();
+  });
+
+  it("names the cases held without a split because their application is in a full test set", async () => {
+    const ten = mailCases(10);
+    await fixSplit(archive, NO_EXAMPLES);
+    // A resend of the first test case: the same subject and words.
+    mailCase("2026-03-02-0000000a", {
+      subject: "Application 2026-03-01 1",
+      id: "<resend@example.com>",
+    });
+
+    const { cases } = await listCases(archive, NO_EXAMPLES);
+
+    expect(cases.find((entry) => entry.id === "2026-03-02-0000000a")).toMatchObject({
+      split: null,
+      held: true,
+      sameAs: [ten[0]],
+    });
+    expect(cases.find((entry) => entry.id === ten[1])?.held).toBe(false);
+  });
+
   it("ignores pre-labels it cannot read, but not labels", async () => {
     mailCase("2026-03-16-00000001");
     writeFileSync(join(archive, "2026-03-16-00000001", "prelabels.json"), '{ "company": 7 }');
@@ -257,6 +353,7 @@ describe("fixSplit", () => {
       waiting: 0,
       leftOut: 1,
       held: [],
+      released: [],
     });
     expect(splitFile()).toEqual({
       "2026-03-16-00000001": "test",
@@ -303,6 +400,64 @@ describe("fixSplit", () => {
     for (const id of first.slice(1)) expect(splitFile()[id]).toBe("test");
   });
 
+  it("releases a test case set aside once a later case takes its place, and never scores it again", async () => {
+    const first = mailCases(10);
+    await fixSplit(archive, NO_EXAMPLES);
+    dismissCase(archive, first[0]!);
+    mailCases(1, "2026-03-20");
+
+    const fixed = await fixSplit(archive, NO_EXAMPLES);
+
+    expect(fixed.test).toEqual(["2026-03-20-00000001"]);
+    expect(fixed.released).toEqual([first[0]]);
+    // Moved back by hand, it is left out, and test still holds ten.
+    renameSync(join(archive, "_dismissed", first[0]!), join(archive, first[0]!));
+    const { cases } = await listCases(archive, NO_EXAMPLES);
+    expect(cases.find((entry) => entry.id === first[0])?.leftOut).toBe("released");
+    expect(cases.filter((entry) => entry.split === "test" && !entry.leftOut)).toHaveLength(10);
+  });
+
+  it("keeps out of test an application one of whose cases was in dev, though it was set aside", async () => {
+    const ten = mailCases(10);
+    await fixSplit(archive, NO_EXAMPLES);
+    const [shown, resend] = ["2026-03-16-0000000a", "2026-03-17-0000000b"];
+    mailCase(shown, { subject: "Designer at Globex", id: "<a@example.com>", body: "My CV." });
+    mailCase(resend, { subject: "Designer at Globex", id: "<b@example.com>", body: "My CV." }, 0);
+    await fixSplit(archive, NO_EXAMPLES);
+    expect(splitFile()[shown]).toBe("dev");
+    // Labelled with its pre-labels shown, then set aside as the extra; a test place frees.
+    writeFileSync(join(archive, shown, "prelabels.json"), JSON.stringify(LABELS));
+    saveLabels(archive, shown, LABELS, new Date("2026-10-13T12:00:00Z"));
+    dismissCase(archive, shown);
+    dismissCase(archive, ten[0]!);
+    writeFileSync(join(archive, resend, "post-1.png"), "image");
+
+    await fixSplit(archive, NO_EXAMPLES);
+
+    expect(splitFile()[resend]).toBe("dev");
+  });
+
+  it("does not wait for a case whose application is already in dev", async () => {
+    mailCase("2026-03-16-0000000d", { subject: "Designer", id: "<d@example.com>", body: "CV." });
+    writeSplits({ "2026-03-16-0000000d": "dev" });
+    mailCase("2026-03-17-0000000e", { subject: "Designer", id: "<e@example.com>", body: "CV." }, 0);
+    mailCase("2026-03-18-0000000f", { subject: "Other", id: "<f@example.com>", body: "Other." });
+
+    expect(await fixSplit(archive, NO_EXAMPLES)).toMatchObject({
+      test: ["2026-03-18-0000000f"],
+      waiting: 1,
+    });
+  });
+
+  it("takes labels saved without a record of what was shown as labels that cannot be blind", async () => {
+    mailCase("2026-03-16-00000001");
+    writeFileSync(join(archive, "2026-03-16-00000001", "labels.json"), JSON.stringify(LABELS));
+
+    await fixSplit(archive, NO_EXAMPLES);
+
+    expect(splitFile()).toEqual({ "2026-03-16-00000001": "dev" });
+  });
+
   it("keeps a test case's place while its screenshots are away", async () => {
     const first = mailCases(10);
     await fixSplit(archive, NO_EXAMPLES);
@@ -316,10 +471,7 @@ describe("fixSplit", () => {
 
   it("gives a resend, or a reply in its thread, the split of the email it repeats, and names them", async () => {
     const nine = mailCases(9);
-    writeFileSync(
-      join(archive, "split.json"),
-      JSON.stringify(Object.fromEntries(nine.map((id) => [id, "test"]))),
-    );
+    writeSplits(Object.fromEntries(nine.map((id) => [id, "test" as const])));
     mailCase("2026-03-16-00000001", {
       subject: "Application - Engineer",
       id: "<first@example.com>",
@@ -351,15 +503,15 @@ describe("fixSplit", () => {
     expect(sameAs("2026-03-19-00000004")).toEqual([]);
   });
 
-  it("keeps the last split file as a copy, and refuses to begin again while one is missing", async () => {
+  it("keeps a copy of the split file as it stands, and refuses to begin again while the file is missing", async () => {
     mailCase("2026-03-16-00000001");
     await fixSplit(archive, NO_EXAMPLES);
     mailCase("2026-03-16-00000002", { subject: "Two", id: "<b@example.com>" });
     await fixSplit(archive, NO_EXAMPLES);
 
-    expect(JSON.parse(readFileSync(join(archive, "split.json.bak"), "utf8"))).toEqual({
-      "2026-03-16-00000001": "test",
-    });
+    expect(readFileSync(join(archive, "split.json.bak"), "utf8")).toBe(
+      readFileSync(join(archive, "split.json"), "utf8"),
+    );
 
     rmSync(join(archive, "split.json"));
     await expect(fixSplit(archive, NO_EXAMPLES)).rejects.toThrow(/split\.json\.bak/);
@@ -367,9 +519,10 @@ describe("fixSplit", () => {
 
   it("refuses to begin again when cases were labelled under a split that is gone", async () => {
     mailCase("2026-03-16-00000001");
-    writeFileSync(join(archive, "split.json"), JSON.stringify({ "2026-03-16-00000001": "dev" }));
+    writeSplits({ "2026-03-16-00000001": "dev" });
     saveLabels(archive, "2026-03-16-00000001", LABELS, new Date("2026-10-13T12:00:00Z"));
     rmSync(join(archive, "split.json"));
+    rmSync(join(archive, "split.json.bak"));
 
     await expect(fixSplit(archive, NO_EXAMPLES)).rejects.toThrow(/labelled under a split/);
   });
@@ -429,7 +582,7 @@ describe("readCase and saveLabels", () => {
   it("shows a dev case's pre-labels at once, and none for a case not yet in a split", async () => {
     mailCase("2026-03-16-8282e9a1");
     mailCase("2026-03-16-00000002", { subject: "Another", id: "<b@example.com>" });
-    writeFileSync(join(archive, "split.json"), JSON.stringify({ "2026-03-16-8282e9a1": "dev" }));
+    writeSplits({ "2026-03-16-8282e9a1": "dev" });
     for (const id of ["2026-03-16-8282e9a1", "2026-03-16-00000002"]) {
       writeFileSync(join(archive, id, "prelabels.json"), JSON.stringify(LABELS));
     }

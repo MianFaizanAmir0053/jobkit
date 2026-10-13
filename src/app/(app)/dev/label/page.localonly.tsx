@@ -25,7 +25,8 @@ export default async function LabellingPage() {
   const { cases, stray } = await listCases(ARCHIVE, { styleExamples: examples });
   const test = cases.filter((entry) => entry.split === "test" && entry.leftOut === null);
   const testLeft = test.filter((entry) => !entry.labelled).length;
-  const unsplit = cases.filter((entry) => entry.split === null && !entry.leftOut);
+  const unsplit = cases.filter((entry) => entry.split === null && !entry.leftOut && !entry.held);
+  const held = cases.filter((entry) => entry.held);
 
   return (
     <section aria-labelledby="labelling-heading" className="flex flex-col gap-4">
@@ -34,8 +35,9 @@ export default async function LabellingPage() {
       </h1>
       {test.length > 0 ? (
         <p className="text-sm text-muted-foreground">
-          Label the test cases first, from the post and the email alone: they show no suggestions
-          until their labels are saved. {testLeft} of {test.length} test cases left.
+          Label the test cases first, from the post and the email alone: they never show
+          suggestions, before or after their labels are saved. {testLeft} of {test.length} test
+          cases left.
         </p>
       ) : (
         <p className="text-sm text-muted-foreground">
@@ -47,6 +49,13 @@ export default async function LabellingPage() {
         <p className="text-sm text-muted-foreground">
           {unsplit.length} cases have no split yet. Once they have their screenshots, run{" "}
           <code>npm run eval:split</code> again.
+        </p>
+      )}
+      {held.length > 0 && (
+        <p className="text-sm text-destructive">
+          {held.length} cases wait without a split: each is another email of an application in the
+          full test set. Set the extra ones aside with &ldquo;Not an application&rdquo; on their
+          pages; running <code>npm run eval:split</code> again does not help them.
         </p>
       )}
       {problems.length > 0 && (
@@ -81,7 +90,7 @@ export default async function LabellingPage() {
             {cases.map((entry) => (
               <tr key={entry.id} className="border-b border-border align-top">
                 <td className="py-1 pr-3">
-                  {entry.leftOut ? "left out" : (entry.split ?? "none")}
+                  {entry.leftOut ? "left out" : entry.held ? "held" : (entry.split ?? "none")}
                 </td>
                 <td className="py-1 pr-3">
                   {entry.date ? new Date(entry.date).toLocaleDateString("en-CA") : "undated"}

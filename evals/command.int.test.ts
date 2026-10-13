@@ -24,6 +24,7 @@ import { createTestDb } from "@/server/db/testDb";
 
 import type { Labels } from "./cases";
 import { evalCommand, type EvalIo, parseEvalArgs, type RunReport } from "./command";
+import { appendSplitEvents } from "./splitFile";
 
 /* npm run eval: evals AC3's runner clauses and AC5. Fake models only, so nothing here spends. */
 
@@ -82,13 +83,18 @@ function io(overrides: Partial<EvalIo> = {}): EvalIo {
   };
 }
 
-/** A labelled mail case with one screenshot, in the split given. */
+/** A labelled mail case with one screenshot, in the split given, as eval:split and the labelling page leave it. */
 async function labelledCase(id: string, split: "dev" | "test"): Promise<void> {
-  const folder = join(dir, "archive", id);
+  const archive = join(dir, "archive");
+  const folder = join(archive, id);
   mkdirSync(folder, { recursive: true });
   writeFileSync(
+    join(archive, "import.json"),
+    JSON.stringify({ jobkitFrom: "2099-01-01T00:00:00.000Z" }),
+  );
+  writeFileSync(
     join(folder, "email.eml"),
-    "Subject: Application\r\nDate: Mon, 16 Mar 2026 10:00:00 +0500\r\n\r\nHello",
+    `Subject: Application ${id}\r\nDate: Mon, 16 Mar 2026 10:00:00 +0500\r\n\r\nHello`,
   );
   const png = await sharp({
     create: { width: 1080, height: 2400, channels: 3, background: { r: 9, g: 9, b: 9 } },
@@ -96,12 +102,17 @@ async function labelledCase(id: string, split: "dev" | "test"): Promise<void> {
     .png()
     .toBuffer();
   writeFileSync(join(folder, "post-1.png"), png);
-  writeFileSync(join(folder, "labels.json"), JSON.stringify(LABELS));
-  const splitFile = join(dir, "archive", "split.json");
-  const splits = existsSync(splitFile)
-    ? (JSON.parse(readFileSync(splitFile, "utf8")) as object)
-    : {};
-  writeFileSync(splitFile, JSON.stringify({ ...splits, [id]: split }));
+  appendSplitEvents(archive, [{ at: "2026-10-01T00:00:00.000Z", id, split }]);
+  writeFileSync(
+    join(folder, "labels.json"),
+    JSON.stringify({
+      ...LABELS,
+      labelledAt: "2026-10-02T00:00:00.000Z",
+      split,
+      prelabelsShown: false,
+      cropSha256: null,
+    }),
+  );
 }
 
 const record = () =>
