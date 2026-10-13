@@ -103,6 +103,15 @@ describe("fieldMatches", () => {
     eligibility: "eligible",
   };
 
+  it("scores only the fields labelled, as a synthetic post gives only those it expects", () => {
+    expect(
+      fieldMatches(
+        { company: "", role: "", route: "whatsapp", contact: "+1 202 555 0143", eligibility: "" },
+        { route: "whatsapp", contact: "202-555-0143" },
+      ),
+    ).toEqual({ route: true, contact: false });
+  });
+
   it("compares company and role after the ledger's normalisation, and route and eligibility exactly", () => {
     expect(
       fieldMatches(

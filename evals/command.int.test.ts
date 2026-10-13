@@ -12,6 +12,7 @@ import { join } from "node:path";
 
 import sharp from "sharp";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { parse, stringify } from "yaml";
 
 import { fakeClock } from "@/adapters/clock";
 import { answer, fakeLlm, type FakeLlm } from "@/adapters/fakeLlm";
@@ -24,7 +25,9 @@ import { createTestDb } from "@/server/db/testDb";
 
 import type { Labels } from "./cases";
 import { evalCommand, type EvalIo, parseEvalArgs, type RunReport } from "./command";
+import { manifestOf, sourceOf } from "./render";
 import { appendSplitEvents } from "./splitFile";
+import { syntheticPosts } from "./synthetic";
 
 /* npm run eval: evals AC3's runner clauses and AC5. Fake models only, so nothing here spends. */
 
@@ -45,6 +48,7 @@ let dir: string;
 let db: PgliteDb;
 let llm: FakeLlm;
 let opened: number;
+let seeded: string[];
 let lines: string[];
 
 function io(overrides: Partial<EvalIo> = {}): EvalIo {
@@ -53,12 +57,14 @@ function io(overrides: Partial<EvalIo> = {}): EvalIo {
     localEnv: { ANTHROPIC_EVALS_API_KEY: "fixture-evals-key" },
     archive: join(dir, "archive"),
     profileFile: join(SYNTHETIC, "profile.sample.yaml"),
+    syntheticDir: join(dir, "synthetic"),
     evalsDir: join(dir, "evals"),
     commit: "0123456789abcdef0123",
     now: () => new Date("2026-10-13T12:00:00Z"),
     log: (line) => lines.push(line),
-    open: async () => {
+    open: async (profileFile) => {
       opened++;
+      seeded.push(profileFile);
       const storage = createLocalStorage({
         root: join(dir, "storage"),
         origin: "http://localhost:3000",
@@ -116,6 +122,32 @@ async function labelledCase(id: string, split: "dev" | "test"): Promise<void> {
   );
 }
 
+/** One public post, rendered as a blank screenshot its manifest vouches for, in a synthetic folder of the test's own. */
+async function renderedPost(id: string): Promise<void> {
+  const synthetic = join(dir, "synthetic");
+  const post = syntheticPosts(join(SYNTHETIC, "posts.yaml")).find((each) => each.id === id)!;
+  const entries = parse(readFileSync(join(SYNTHETIC, "posts.yaml"), "utf8")) as { id: string }[];
+  mkdirSync(join(synthetic, "screenshots"), { recursive: true });
+  writeFileSync(
+    join(synthetic, "posts.yaml"),
+    stringify(entries.filter((entry) => entry.id === id)),
+  );
+  const png = new Uint8Array(
+    await sharp({
+      create: { width: 1080, height: 2400, channels: 3, background: { r: 250, g: 250, b: 250 } },
+    })
+      .png()
+      .toBuffer(),
+  );
+  writeFileSync(join(synthetic, "screenshots", `${id}.png`), png);
+  writeFileSync(
+    join(synthetic, "screenshots", "manifest.json"),
+    JSON.stringify(
+      manifestOf("155.0.8059.40", { [`${id}.png`]: { bytes: png, source: sourceOf(post) } }),
+    ),
+  );
+}
+
 const record = () =>
   JSON.parse(readFileSync(join(SYNTHETIC, "records", "S01-email-simple.json"), "utf8")) as unknown;
 
@@ -137,6 +169,7 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "jobkit-eval-"));
   llm = fakeLlm([]);
   opened = 0;
+  seeded = [];
   lines = [];
 });
 
@@ -250,5 +283,51 @@ describe("evalCommand", () => {
     await evalCommand(["--stage", "extract"], io());
 
     expect(lines).toContain("Evaluation runs this month have spent $1.25.");
+  });
+
+  it("refuses the synthetic posts while their renders are not vouched for, before opening anything", async () => {
+    await renderedPost("S09-ai-trap-and-keyword");
+    writeFileSync(join(dir, "synthetic", "screenshots", "S09-ai-trap-and-keyword.png"), "changed");
+
+    await expect(
+      evalCommand(["--stage", "extract", "--split", "synthetic", "--yes"], io()),
+    ).rejects.toThrow(/S09-ai-trap-and-keyword.png is not the image the last render made/);
+    expect(opened).toBe(0);
+    expect(() => parseEvalArgs(["--stage", "extract", "--split", "synthetic", "--final"])).toThrow(
+      /--final is for the test split/,
+    );
+  });
+
+  it("runs the synthetic posts on the sample profile, prints each with its checks, and records the renders", async () => {
+    await renderedPost("S09-ai-trap-and-keyword");
+    const read = JSON.parse(
+      readFileSync(join(SYNTHETIC, "records", "S09-ai-trap-and-keyword.json"), "utf8"),
+    ) as { roles: { instructions: { addressed_to_ai: boolean }[] }[] };
+    read.roles[0]!.instructions[1]!.addressed_to_ai = false;
+    llm = fakeLlm([answer(read)]);
+
+    const report = await evalCommand(["--stage", "extract", "--split", "synthetic", "--yes"], io());
+
+    expect(seeded).toEqual([join(dir, "synthetic", "profile.sample.yaml")]);
+    expect(lines[0]).toBe("1 synthetic posts to run, rendered by Chrome 155.0.8059.40.");
+    expect(report).toMatchObject({
+      split: "synthetic",
+      final: false,
+      renders: {
+        browser: "155.0.8059.40",
+        images: { "S09-ai-trap-and-keyword.png": expect.stringMatching(/^[0-9a-f]{64}$/) },
+      },
+      checks: { instructions: { successes: 0, n: 1 } },
+    });
+    expect(report!.cases[0]!.matches).toEqual({ company: true, route: true, contact: true });
+    expect(lines).toContain("  S09-ai-trap-and-keyword  scored  checks not met: instructions");
+    expect(
+      lines.some((line) => line.includes("include_keyword addressed to AI was not read")),
+    ).toBe(true);
+    const runs = join(dir, "evals", "runs");
+    const markdown = readFileSync(join(runs, readdirSync(runs)[0]!, "report.md"), "utf8");
+    expect(markdown).toContain("Screenshots rendered by Chrome 155.0.8059.40");
+    expect(markdown).toContain("| instructions | 0 | 1 |");
+    expect(markdown).toContain("| S09-ai-trap-and-keyword | scored |");
   });
 });

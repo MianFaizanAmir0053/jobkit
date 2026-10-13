@@ -3,10 +3,14 @@
 # domains (example.com, example.org, example.net), and phone numbers use the
 # US fictional range 555-01xx or all-zero Pakistani numbers, so no real
 # person can be reached. Each post is rendered to a phone-sized screenshot by
-# a script; `expect` holds the labels the scorer checks.
+# a script; `expect` holds what the runner checks (evals/synthetic.ts): company,
+# role, route, contact and eligibility are scored as the archive's labels are,
+# eligibility as the sample profile meets the post; the other keys are checks
+# on what the model noticed, each in the post's words where it quotes them; a
+# key the runner does not know is refused rather than skipped.
 
 - id: S01-email-simple
-  tests: email route, accepted subject format, eligible worldwide remote
+  tests: email route, accepted subject format, eligible worldwide remote, production depth
   render: { width: 1080, height: 2400 }
   text: |
     Northwind Analytics is hiring a Senior Full-Stack Engineer (Remote, worldwide).
@@ -22,6 +26,7 @@
     contact: jobs@example.com
     eligibility: eligible
     must: ["4+ years with React", "production Node.js", "PostgreSQL"]
+    depth: { "production Node.js": production }
     instructions: [{ kind: subject_format, addressed_to_ai: false }]
 
 - id: S02-us-only
@@ -41,7 +46,7 @@
     eligibility: likely_ineligible
 
 - id: S03-ats-form
-  tests: form kit, link must be https, fixed answers by code
+  tests: form kit, link must be https, fixed answers by code; remote within the UK alone, where the sample profile may not work
   render: { width: 1080, height: 2400 }
   text: |
     Fabrikam Payments (London, Remote UK) - Full-Stack Developer
@@ -56,11 +61,11 @@
     role: Full-Stack Developer
     route: ats_form
     contact: https://boards.example.net/fabrikam/jobs/4471
-    eligibility: unclear
+    eligibility: likely_ineligible
     fixed_keys: { Q1: work_authorisation, Q2: salary_expectation, Q3: years_per_stack }
 
 - id: S04-easy-apply
-  tests: Easy Apply route; no external link in the post
+  tests: Easy Apply route; no external link in the post; APAC, whose membership the region table leaves open
   render: { width: 1080, height: 2400 }
   text: |
     Litware Labs - React Developer - Remote (APAC)
@@ -71,7 +76,7 @@
     company: Litware Labs
     role: React Developer
     route: easy_apply
-    eligibility: eligible
+    eligibility: unclear
 
 - id: S05-whatsapp-local-number
   tests: WhatsApp route, Pakistani local number normalised
@@ -166,6 +171,7 @@
         "Kafka at scale (1M messages per second)",
         "Go in production",
       ]
+    depth: { "Go in production": production }
     must_gaps_expected: 3
 
 - id: S12-tall-dubai

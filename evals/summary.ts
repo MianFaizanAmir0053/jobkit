@@ -9,8 +9,11 @@ import { compareModels, type Proportion } from "./score";
  * The aggregate summary (evals spec, "Runs, budget and reports"; AC6): for
  * the latest run of each stage, split and model, each field's share right
  * with its count and 95% interval, pooled and by route, the run's cost and
- * time; and for two models run on the same cases, McNemar's exact test,
- * which names a better model only where it shows one. It is built from
+ * time, and for the synthetic posts each check's share met and the Chrome
+ * that rendered them; and for two models run on the same cases, McNemar's
+ * exact test, on the fields both scored and, for synthetic posts, only
+ * those both read from the same screenshot, which names a better model only
+ * where it shows one. It is built from
  * numbers and the fields' names alone, never from a case, and checkSummary
  * looks again before it is written: no case ID, extracted value or note,
  * and nothing shaped like an address or a phone number. No commit or prompt
@@ -25,6 +28,7 @@ function formatP(p: number): string {
 }
 
 const HEADER = ["| Field | Right | Of | Share | 95% interval |", "|---|---|---|---|---|"];
+const CHECK_HEADER = ["| Check | Met | Of | Share | 95% interval |", "|---|---|---|---|---|"];
 
 function shareRow(field: string, share: Proportion): string {
   return `| ${field} | ${share.successes} | ${share.n} | ${percent(share.point)} | ${percent(share.low)} to ${percent(share.high)} |`;
@@ -62,10 +66,31 @@ function runSection(report: RunReport): string[] {
     "",
     `Run on ${report.startedAt.slice(0, 10)}: ${count("scored")} cases scored, ${count("failed")} failed, ${count("budget")} not run for the budget.`,
     `Cost $${report.costUsd.toFixed(2)}; ${seconds === null ? "no case timed" : `${seconds.toFixed(1)} seconds a case (median)`}.`,
+    ...(report.renders ? [`Screenshots rendered by Chrome ${report.renders.browser}.`] : []),
     "",
     ...HEADER,
     ...Object.entries(report.metrics).map(([field, value]) => shareRow(field, value.pooled)),
   ];
+  const checks = Object.entries(report.checks).filter(
+    (entry): entry is [string, Proportion] => entry[1] !== undefined,
+  );
+  if (checks.length > 0) {
+    const later = [
+      ...new Set(
+        scored.flatMap((result) =>
+          result.checks.filter((check) => check.met === null).map((check) => check.key),
+        ),
+      ),
+    ];
+    lines.push(
+      "",
+      "### Checks on what the model noticed",
+      "",
+      ...CHECK_HEADER,
+      ...checks.map(([key, share]) => shareRow(key, share)),
+      ...(later.length > 0 ? ["", `Left to later stages: ${later.join(", ")}.`] : []),
+    );
+  }
   const routes = [
     ...new Set(Object.values(report.metrics).flatMap((value) => Object.keys(value.byRoute))),
   ].sort();
@@ -79,7 +104,12 @@ function runSection(report: RunReport): string[] {
   return lines;
 }
 
-/** Two models' latest runs on one split: per field, on the cases both scored. */
+/**
+ * Two models' latest runs on one split: per field, on the cases both scored
+ * and labelled. A synthetic post read from different screenshots in the two
+ * runs is left out, and said to be, since a difference there could come
+ * from the images.
+ */
 function comparisonSection(first: RunReport, second: RunReport): string[] {
   const scoredIn = (report: RunReport) =>
     new Map(
@@ -89,18 +119,39 @@ function comparisonSection(first: RunReport, second: RunReport): string[] {
     );
   const one = scoredIn(first);
   const other = scoredIn(second);
-  const shared = [...one.keys()].filter((id) => other.has(id));
+  const image = (report: RunReport, id: string) => report.renders?.images[`${id}.png`];
+  const both = [...one.keys()].filter((id) => other.has(id));
+  const shared = both.filter((id) => image(first, id) === image(second, id));
+  const apart = both.length - shared.length;
+  const browsers =
+    first.renders && second.renders && first.renders.browser !== second.renders.browser
+      ? ` (rendered by Chrome ${first.renders.browser} and Chrome ${second.renders.browser})`
+      : "";
   const lines = [
     `## ${first.model} against ${second.model} on ${shared.length} ${first.split} cases`,
     "",
+    ...(apart > 0
+      ? [
+          `${apart} more both scored ${apart === 1 ? "is" : "are"} left out: the runs read different screenshots of ${apart === 1 ? "it" : "them"}${browsers}, so a difference there could come from the images.`,
+          "",
+        ]
+      : []),
+  ];
+  if (shared.length === 0) return [...lines, "No case is left to compare."];
+  lines.push(
     "McNemar's exact test on the cases only one model got right; a model is named only below p = 0.05.",
     "",
     `| Field | Only ${first.model} | Only ${second.model} | p | Better |`,
     "|---|---|---|---|---|",
-  ];
+  );
   for (const field of Object.keys(first.metrics) as (keyof NonNullable<CaseResult["matches"]>)[]) {
+    const judged = shared.filter(
+      (id) => one.get(id)![field] !== undefined && other.get(id)![field] !== undefined,
+    );
+    // A field no shared case labels, as a synthetic post may not, has nothing to compare.
+    if (judged.length === 0) continue;
     const compared = compareModels(
-      shared.map((id) => ({ first: one.get(id)![field], second: other.get(id)![field] })),
+      judged.map((id) => ({ first: one.get(id)![field]!, second: other.get(id)![field]! })),
     );
     const better =
       compared.verdict === "first"
@@ -168,7 +219,13 @@ export function readReports(runs: string): RunReport[] {
     try {
       const report = JSON.parse(readFileSync(file, "utf8")) as Partial<RunReport>;
       if (Array.isArray(report.cases) && report.metrics && typeof report.model === "string") {
-        reports.push(report as RunReport);
+        // A report from before checks and renders were recorded has none of either.
+        reports.push({
+          ...(report as RunReport),
+          checks: report.checks ?? {},
+          renders: report.renders ?? null,
+          cases: report.cases.map((result) => ({ ...result, checks: result.checks ?? [] })),
+        });
       }
     } catch {
       // Not a report this version can read.

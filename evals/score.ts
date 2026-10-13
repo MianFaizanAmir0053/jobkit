@@ -141,23 +141,44 @@ export interface ScoredFields {
   eligibility: string;
 }
 
+export const SCORED_FIELDS = [
+  "company",
+  "role",
+  "route",
+  "contact",
+  "eligibility",
+] as const satisfies readonly (keyof ScoredFields)[];
+
+/** Each labelled field, right or wrong; a field without a label is not scored. */
+export type FieldMatches = Partial<Record<keyof ScoredFields, boolean>>;
+
+const MATCHERS: Readonly<
+  Record<keyof ScoredFields, (extracted: string, labelled: string) => boolean>
+> = {
+  company: (extracted, labelled) => companyKey(extracted) === companyKey(labelled),
+  role: (extracted, labelled) => roleKey(extracted) === roleKey(labelled),
+  route: (extracted, labelled) => extracted === labelled,
+  contact: (extracted, labelled) => sameContact(extracted, labelled),
+  eligibility: (extracted, labelled) => extracted === labelled,
+};
+
 /**
  * Which extracted fields match the labels: company and role after the
  * ledger's normalisation (case, legal forms, places and labels set apart
  * from the title), route and eligibility exactly, and the contact as jobkit
- * would use it.
+ * would use it. Only the fields labelled are scored: an archive case labels
+ * all of them, a synthetic post those it expects.
  */
 export function fieldMatches(
   extracted: ScoredFields,
-  labelled: ScoredFields,
-): Record<keyof ScoredFields, boolean> {
-  return {
-    company: companyKey(extracted.company) === companyKey(labelled.company),
-    role: roleKey(extracted.role) === roleKey(labelled.role),
-    route: extracted.route === labelled.route,
-    contact: sameContact(extracted.contact, labelled.contact),
-    eligibility: extracted.eligibility === labelled.eligibility,
-  };
+  labelled: Partial<ScoredFields>,
+): FieldMatches {
+  const matches: FieldMatches = {};
+  for (const field of SCORED_FIELDS) {
+    const label = labelled[field];
+    if (label !== undefined) matches[field] = MATCHERS[field](extracted[field], label);
+  }
+  return matches;
 }
 
 /**
@@ -166,7 +187,7 @@ export function fieldMatches(
  * read, since jobkit never guesses one. An empty contact matches only an
  * empty label.
  */
-function sameContact(extracted: string, labelled: string): boolean {
+export function sameContact(extracted: string, labelled: string): boolean {
   const [one, other] = [extracted.trim(), labelled.trim()];
   if (one === "" || other === "") return one === other;
   if (one.includes("@") || other.includes("@")) return one.toLowerCase() === other.toLowerCase();

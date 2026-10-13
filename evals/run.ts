@@ -21,30 +21,48 @@ import { claimJob, type Pipeline, runJob, stageOutput } from "@/core/platform/ru
 import type { Clock, Db, Llm, LlmInput, Random, Storage } from "@/core/ports";
 import { MAX_LONG_EDGE, tileCount } from "@/core/shared/tileGeometry";
 
-import type { Labels } from "./cases";
-import { fieldMatches, type Proportion, type ScoredFields, wilson } from "./score";
+import {
+  type FieldMatches,
+  fieldMatches,
+  type Proportion,
+  SCORED_FIELDS,
+  type ScoredFields,
+  wilson,
+} from "./score";
 import type { Split } from "./split";
+import { type Check, checkExpectations, type SyntheticExpect } from "./synthetic";
 
 /**
  * The evaluation runner's extraction runs (evals spec, "Runs, budget and
  * reports"): the app's own stages, `extract` and then `eligibility`, run on
  * each labelled case through the app's runner, in a local database with the
- * evaluation keys, and scored against the owner's labels. A post with
- * several roles goes on with the labelled one, as the owner would pick it.
- * A guard stops the run before any model call that could take it past its
- * budget; the case that met the budget is not scored.
+ * evaluation keys, and scored against the owner's labels, or against a
+ * synthetic post's expectations, with the checks on what the model noticed.
+ * A post with several roles goes on with the labelled one, as the owner
+ * would pick it, else the first. A guard stops the run before any model
+ * call that could take it past its budget; the case that met the budget is
+ * not scored.
  */
 
 export type ImageType = ImageMeta["contentType"];
 
-/** A labelled case as the runner takes it: the post's screenshots or pasted text, and the labels. */
+/** An archive split, or the public synthetic posts. */
+export type CaseSplit = Split | "synthetic";
+
+/** A case as the runner takes it: the post's screenshots or pasted text, and what is expected of it. */
 export interface EvalCase {
   id: string;
-  split: Split;
+  split: CaseSplit;
   images: { bytes: Uint8Array; contentType: ImageType }[];
   pastedText: string;
-  labels: Labels;
+  /** The labelled fields, each scored: all of them for an archive case, those it gives for a synthetic post. */
+  labels: Partial<ScoredFields>;
+  /** A synthetic post's expectations, checked on what the model noticed. */
+  expect?: SyntheticExpect;
 }
+
+/** The route a case without one is pooled under. */
+const UNLABELLED = "unlabelled";
 
 export interface RunDeps {
   /** A local database, migrated, with the profile seeded; nothing else is written. */
@@ -57,15 +75,17 @@ export interface RunDeps {
 
 export interface CaseResult {
   id: string;
-  split: Split;
-  /** The labelled route, by which results are also pooled. */
+  split: CaseSplit;
+  /** The labelled route, by which results are also pooled; "unlabelled" for a post that gives none. */
   route: string;
   /** Scored, or why not: the job failed, or the budget ran out first. */
   outcome: "scored" | "failed" | "budget";
   /** What stopped the post or failed the job, when either did. */
   note: string | null;
   extracted: ScoredFields | null;
-  matches: Record<keyof ScoredFields, boolean> | null;
+  matches: FieldMatches | null;
+  /** A scored synthetic post's checks; none for an archive case. */
+  checks: Check[];
   costUsd: number;
   seconds: number;
 }
@@ -75,6 +95,9 @@ export type FieldMetrics = Record<
   { pooled: Proportion; byRoute: Record<string, Proportion> }
 >;
 
+/** Each check's share met, over the scored posts that expect it and the stage checks. */
+export type CheckMetrics = Partial<Record<keyof SyntheticExpect, Proportion>>;
+
 export interface ExtractionRun {
   model: string;
   budgetUsd: number;
@@ -82,15 +105,8 @@ export interface ExtractionRun {
   costUsd: number;
   cases: CaseResult[];
   metrics: FieldMetrics;
+  checks: CheckMetrics;
 }
-
-const FIELDS: readonly (keyof ScoredFields)[] = [
-  "company",
-  "role",
-  "route",
-  "contact",
-  "eligibility",
-];
 
 const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
@@ -182,12 +198,12 @@ async function jobOf(deps: RunDeps, item: EvalCase): Promise<string> {
   return started.jobId;
 }
 
-/** Runs the job until it waits for the owner or stops; at a role pick, takes the labelled role. */
+/** Runs the job until it waits for the owner or stops; at a role pick, takes the labelled role, else the first. */
 async function runToEnd(
   deps: RunDeps,
   pipeline: Pipeline,
   jobId: string,
-  labels: Labels,
+  labelledRole: string | undefined,
 ): Promise<void> {
   const runner = { db: deps.db, clock: deps.clock, pipeline };
   for (let turn = 0; turn < 2; turn++) {
@@ -196,7 +212,10 @@ async function runToEnd(
     if ((await loadJob(deps.db, jobId))?.state !== "needs_role_pick") return;
     const extraction = readExtractOutput((await stageOutput(deps.db, jobId, "extract"))?.output);
     const roles = extraction?.record.roles ?? [];
-    const labelled = roles.find((role) => roleKey(role.title) === roleKey(labels.role)) ?? roles[0];
+    const labelled =
+      (labelledRole === undefined
+        ? undefined
+        : roles.find((role) => roleKey(role.title) === roleKey(labelledRole))) ?? roles[0];
     if (!labelled) return;
     await pickRole(deps, jobId, labelled.id);
   }
@@ -211,17 +230,17 @@ async function runCase(
   const startedAt = Date.now();
   const result = (
     outcome: CaseResult["outcome"],
-    rest: Pick<CaseResult, "note" | "extracted" | "matches" | "costUsd">,
+    rest: Pick<CaseResult, "note" | "extracted" | "matches" | "checks" | "costUsd">,
   ): CaseResult => ({
     id: item.id,
     split: item.split,
-    route: item.labels.route,
+    route: item.labels.route ?? UNLABELLED,
     outcome,
     ...rest,
     seconds: (Date.now() - startedAt) / 1000,
   });
   const jobId = await jobOf(deps, item);
-  await runToEnd(deps, pipeline, jobId, item.labels);
+  await runToEnd(deps, pipeline, jobId, item.labels.role);
   const costUsd = await costOf(deps.db, jobId);
   const extraction = readExtractOutput((await stageOutput(deps.db, jobId, "extract"))?.output);
   if (!extraction) {
@@ -230,6 +249,7 @@ async function runCase(
       note: failure,
       extracted: null,
       matches: null,
+      checks: [],
       costUsd,
     });
   }
@@ -245,24 +265,34 @@ async function runCase(
   };
   const matches = fieldMatches(extracted, item.labels);
   // With no role read, nothing about one is right, even a contact both leave empty.
-  if (!role) for (const field of FIELDS) if (field !== "company") matches[field] = false;
+  if (!role) {
+    for (const field of SCORED_FIELDS) {
+      if (field !== "company" && matches[field] !== undefined) matches[field] = false;
+    }
+  }
   const stop = stopReasonOf(extraction);
   return result("scored", {
     note: stop ? `The post stopped: ${stop}.` : null,
     extracted,
     matches,
+    checks: item.expect ? checkExpectations(item.expect, { output: extraction, role }) : [],
     costUsd,
   });
 }
 
-/** Each field's share right over the scored cases, pooled and by the labelled route, with intervals. */
+/**
+ * Each field's share right over the scored cases that label it, pooled and
+ * by the labelled route, with intervals.
+ */
 export function metricsOf(results: readonly CaseResult[]): FieldMetrics {
   const scored = results.filter((result) => result.outcome === "scored");
   const routes = [...new Set(scored.map((result) => result.route))].sort();
-  const shareOf = (field: keyof ScoredFields, cases: readonly CaseResult[]) =>
-    wilson(cases.filter((result) => result.matches?.[field]).length, cases.length);
+  const shareOf = (field: keyof ScoredFields, cases: readonly CaseResult[]) => {
+    const judged = cases.filter((result) => result.matches?.[field] !== undefined);
+    return wilson(judged.filter((result) => result.matches![field]).length, judged.length);
+  };
   return Object.fromEntries(
-    FIELDS.map((field) => [
+    SCORED_FIELDS.map((field) => [
       field,
       {
         pooled: shareOf(field, scored),
@@ -278,6 +308,20 @@ export function metricsOf(results: readonly CaseResult[]): FieldMetrics {
       },
     ]),
   ) as FieldMetrics;
+}
+
+/** Each check's share met over the scored posts that expect it; a check left to a later stage counts in none. */
+export function checkMetricsOf(results: readonly CaseResult[]): CheckMetrics {
+  const outcomes = new Map<keyof SyntheticExpect, boolean[]>();
+  for (const result of results.filter((each) => each.outcome === "scored")) {
+    for (const check of result.checks) {
+      if (check.met === null) continue;
+      outcomes.set(check.key, [...(outcomes.get(check.key) ?? []), check.met]);
+    }
+  }
+  return Object.fromEntries(
+    [...outcomes].map(([key, met]) => [key, wilson(met.filter(Boolean).length, met.length)]),
+  );
 }
 
 /** Runs extraction on every case in turn, until the budget would be passed. */
@@ -303,11 +347,12 @@ export async function runExtraction(
       results.push({
         id: item.id,
         split: item.split,
-        route: item.labels.route,
+        route: item.labels.route ?? UNLABELLED,
         outcome: "budget",
         note: "Not run: the budget was reached.",
         extracted: null,
         matches: null,
+        checks: [],
         costUsd: 0,
         seconds: 0,
       });
@@ -322,5 +367,6 @@ export async function runExtraction(
     costUsd: results.reduce((sum, result) => sum + result.costUsd, 0),
     cases: results,
     metrics: metricsOf(results),
+    checks: checkMetricsOf(results),
   };
 }

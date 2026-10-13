@@ -6,7 +6,8 @@ import { describe, expect, it } from "vitest";
 
 import type { RunReport } from "./command";
 import type { CaseResult } from "./run";
-import { metricsOf } from "./run";
+import { checkMetricsOf, metricsOf } from "./run";
+import type { Renders } from "./synthetic";
 import { checkSummary, readReports, summaryOf } from "./summary";
 
 /* The aggregate summary: evals AC6. Every name, address and number here is planted, to be kept out. */
@@ -37,6 +38,7 @@ function result(id: string, right: boolean, overrides: Partial<CaseResult> = {})
       eligibility: "eligible",
     },
     matches: { company: right, role: right, route: true, contact: right, eligibility: true },
+    checks: [],
     costUsd: 0.05,
     seconds: 20,
     ...overrides,
@@ -47,10 +49,11 @@ function report(
   model: string,
   cases: CaseResult[],
   startedAt = "2026-10-13T12:00:00.000Z",
+  renders: Renders | null = null,
 ): RunReport {
   return {
     stage: "extract",
-    split: "dev",
+    split: renders ? "synthetic" : "dev",
     final: false,
     startedAt,
     finishedAt: startedAt,
@@ -63,8 +66,19 @@ function report(
     costUsd: cases.reduce((sum, each) => sum + each.costUsd, 0),
     cases,
     metrics: metricsOf(cases),
+    checks: checkMetricsOf(cases),
+    renders,
   };
 }
+
+const RENDERS: Renders = {
+  browser: "155.0.8059.40",
+  images: { "S01-email-simple.png": "a".repeat(64), "S06-number.png": "b".repeat(64) },
+};
+
+/** A synthetic post's result, scored on the fields it gives. */
+const post = (id: string, matches: CaseResult["matches"], checks: CaseResult["checks"] = []) =>
+  result(id, true, { split: "synthetic", note: null, matches, checks });
 
 const ids = (count: number) =>
   Array.from({ length: count }, (_, i) => `2026-03-16-${(i + 1).toString(16).padStart(8, "0")}`);
@@ -116,6 +130,71 @@ describe("summaryOf", () => {
     expect(notShown).toMatch(/\| company \| 1 \| 0 \| 1 \| no difference shown \|/);
     expect(notShown).not.toContain("| company | 9 |");
   });
+
+  it("shows a synthetic run's checks, what it left to later stages, and the Chrome that rendered its screenshots", () => {
+    const cases = [
+      post("S09-ai-trap", { company: true, route: true }, [
+        { key: "instructions", met: false, note: "include_keyword addressed to AI was not read" },
+        { key: "fixed_keys", met: null, note: "Checked when the draft stage is evaluated." },
+      ]),
+      post("S10-scam", { contact: true }, [{ key: "scam_signals", met: true, note: "" }]),
+    ];
+
+    const text = summaryOf(
+      [report("claude-opus-5-5", cases, undefined, RENDERS)],
+      new Date("2026-10-13T15:00:00Z"),
+    );
+
+    expect(text).toContain("## extract, claude-opus-5-5, synthetic");
+    expect(text).toContain("Screenshots rendered by Chrome 155.0.8059.40.");
+    expect(text).toContain("| company | 1 | 1 | 100% |");
+    expect(text).toContain("| role | 0 | 0 | – |");
+    expect(text).toContain("| instructions | 0 | 1 | 0% |");
+    expect(text).toContain("| scam_signals | 1 | 1 | 100% |");
+    expect(text).toContain("Left to later stages: fixed_keys.");
+    expect(text).not.toContain("include_keyword addressed to AI");
+  });
+
+  it("compares two models' synthetic runs on the fields both scored, leaving out posts read from other screenshots", () => {
+    const opus = report(
+      "claude-opus-5-5",
+      [
+        post("S01-email-simple", { company: true, route: true }),
+        post("S06-number", { route: false }),
+      ],
+      undefined,
+      RENDERS,
+    );
+    const sonnet = report(
+      "claude-sonnet-5-5",
+      [
+        post("S01-email-simple", { company: false, route: false }),
+        post("S06-number", { route: true }),
+      ],
+      "2026-10-13T13:00:00.000Z",
+      RENDERS,
+    );
+
+    const shown = summaryOf([opus, sonnet], new Date("2026-10-13T15:00:00Z"));
+    expect(shown).toContain("claude-opus-5-5 against claude-sonnet-5-5 on 2 synthetic cases");
+    expect(shown).toMatch(/\| company \| 1 \| 0 \| 1 \| no difference shown \|/);
+    expect(shown).toMatch(/\| route \| 1 \| 1 \| 1 \| no difference shown \|/);
+    expect(shown).not.toMatch(/\| role \|.*no difference shown/);
+
+    const rerendered = {
+      ...sonnet,
+      renders: {
+        browser: "156.0.7000.12",
+        images: { ...RENDERS.images, "S06-number.png": "c".repeat(64) },
+      },
+    };
+    const apart = summaryOf([opus, rerendered], new Date("2026-10-13T15:00:00Z"));
+    expect(apart).toContain("claude-opus-5-5 against claude-sonnet-5-5 on 1 synthetic cases");
+    expect(apart).toContain(
+      "1 more both scored is left out: the runs read different screenshots of it (rendered by Chrome 155.0.8059.40 and Chrome 156.0.7000.12), so a difference there could come from the images.",
+    );
+    expect(apart).toMatch(/\| route \| 1 \| 0 \| 1 \| no difference shown \|/);
+  });
 });
 
 describe("checkSummary", () => {
@@ -143,8 +222,19 @@ describe("readReports", () => {
       write("b", "{ half a report");
       write("c", JSON.stringify({ startedAt: "2026-10-01T00:00:00.000Z" }));
       mkdirSync(join(runs, "d"));
+      // A report from before checks and renders were recorded.
+      write(
+        "e",
+        JSON.stringify(
+          report("claude-sonnet-5-5", [result("2026-03-16-00000002", true)]),
+          (key: string, value: unknown) =>
+            key === "checks" || key === "renders" ? undefined : value,
+        ),
+      );
 
-      expect(readReports(runs).map((each) => each.model)).toEqual(["claude-opus-5-5"]);
+      const reports = readReports(runs);
+      expect(reports.map((each) => each.model)).toEqual(["claude-opus-5-5", "claude-sonnet-5-5"]);
+      expect(reports[1]).toMatchObject({ checks: {}, renders: null, cases: [{ checks: [] }] });
     } finally {
       rmSync(runs, { recursive: true, force: true });
     }

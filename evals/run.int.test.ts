@@ -17,8 +17,8 @@ import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 import { createTestDb } from "@/server/db/testDb";
 
-import type { Labels } from "./cases";
 import { type EvalCase, estimateCase, type RunDeps, runExtraction } from "./run";
+import type { ScoredFields } from "./score";
 
 /* The runner's extraction runs: evals AC5's budget clause, on the app's own stages with fake models. */
 
@@ -49,7 +49,7 @@ async function png(height: number, shade: number): Promise<Uint8Array> {
   );
 }
 
-async function evalCase(id: string, labels: Partial<Labels>, shade = 10): Promise<EvalCase> {
+async function evalCase(id: string, labels: Partial<ScoredFields>, shade = 10): Promise<EvalCase> {
   return {
     id,
     split: "dev",
@@ -61,9 +61,6 @@ async function evalCase(id: string, labels: Partial<Labels>, shade = 10): Promis
       route: "email",
       contact: "",
       eligibility: "eligible",
-      must: [],
-      cropShowsContact: null,
-      seenInJobkit: false,
       ...labels,
     },
   };
