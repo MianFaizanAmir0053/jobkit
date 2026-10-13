@@ -20,3 +20,6 @@ next-env.d.ts
 npm-debug.log*
 .DS_Store
 .data/
+
+# Synthetic screenshots, made again by npm run eval:render
+evals/synthetic/screenshots/
