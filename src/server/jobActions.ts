@@ -9,6 +9,8 @@ import {
 } from "@/core/extraction/owner";
 import { loadJob, retryJob, skipJob } from "@/core/platform/jobs";
 import type { RunnerDeps } from "@/core/platform/runner";
+import { reviewActionSchema } from "@/core/review/decisions";
+import { recordReview } from "@/core/review/kitReview";
 import { markSent } from "@/core/review/markSent";
 import { isUuid } from "@/lib/uuid";
 import type { AppConfig } from "@/server/config";
@@ -18,7 +20,7 @@ import { startPipeline } from "@/server/jobs";
 /**
  * The owner's answers on the job page (platform spec B9; extraction and
  * review specs): Retry, Skip, the role pick, "This is a job post" or "Read
- * it again", Draft anyway, and Mark sent. Each needs an approved session and the app's
+ * it again", Draft anyway, a decision on the kit, and Mark sent. Each needs an approved session and the app's
  * own origin, moves the job only from the state it was read in, and, where
  * the job runs again, starts the pipeline as the upload confirmation does.
  */
@@ -123,6 +125,36 @@ export async function draftAnyway(
   if (!decided.ok) return refusal(decided.reason === "not-found" ? 404 : 409, decided.reason);
   await startPipeline(deps, jobId, startedAt);
   return ok(202);
+}
+
+const reviewBody = z.object({ action: reviewActionSchema });
+
+/**
+ * POST /api/jobs/<id>/review: one of the owner's decisions on a ready kit,
+ * "I checked this", a typed address or number, an attachment's tick or
+ * "Continue anyway", answered with the gate's open reasons as they now stand.
+ */
+export async function review(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return refusal(413, "too-large");
+  let json: unknown = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    // Not JSON: refused below.
+  }
+  const parsed = reviewBody.safeParse(json);
+  if (!parsed.success) return refusal(400, "invalid");
+  const outcome = await recordReview(deps, jobId, parsed.data.action);
+  if (!outcome.ok) return refusal(outcome.reason === "not-found" ? 404 : 409, outcome.reason);
+  return ok(200, { gate: outcome.gate });
 }
 
 const sentBody = z.object({ changedInGmail: z.boolean() });

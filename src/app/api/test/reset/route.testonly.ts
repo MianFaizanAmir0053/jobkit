@@ -21,6 +21,7 @@ export async function POST() {
     delete from {{schema}}.baseline_runs;
     delete from {{schema}}.profile_versions;
     delete from {{schema}}.draft_outcomes;
+    delete from {{schema}}.kit_reviews;
     delete from {{schema}}.status_changes;
     delete from {{schema}}.applications;
     delete from {{schema}}.model_calls;

@@ -75,6 +75,8 @@ There is no domain-age check (amendment A5).
 - a duplicate match (any reason) without "apply again";
 - a scam signal without the explicit "Continue anyway" override.
 
+The owner's decisions on a kit, the sentences marked "I checked this", the address or number they typed, the attachments ticked and "Continue anyway", are kept as one `kit_reviews` row per job and role, with the gate's open reasons as the server last found them (the owner's choice, 2026-10-14); "apply again" stays on the application, where the ledger keeps it. Each decision is checked against what the kit holds, and two made at once are both kept. When a typed address or number clears the contact, the handoff uses it.
+
 The page runs `validate` and `canHandOff` in the browser on every edit, so the controls enable or disable at once with the reasons listed above them. The server runs the same functions on the same text, debounced, and records the result; a control enables only when both agree. Clicking a control never waits for the server first: the handoff happens inside the click, which Android needs for the share sheet, and the final text and outcome are posted right after.
 
 ## Handoffs

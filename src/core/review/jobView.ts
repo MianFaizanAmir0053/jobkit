@@ -2,7 +2,7 @@ import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { type Agreement, agreement, type ContactKind } from "@/core/extraction/addressRead";
 import { type AddressReadOutput, contactOf } from "@/core/extraction/addressReadStage";
-import { isStrictAddress } from "@/core/extraction/contacts";
+import { isStrictAddress, normaliseWhatsAppNumber } from "@/core/extraction/contacts";
 import type { EligibilityOutput } from "@/core/extraction/eligibility";
 import {
   type ExtractOutput,
@@ -20,6 +20,14 @@ import type { Clock, Db } from "@/core/ports";
 
 import type { AddressCheck } from "./addressChecks";
 import type { AddressChecksOutput } from "./addressChecksStage";
+import { canHandOff, type GateReason } from "./canHandOff";
+import {
+  decisionsSchema,
+  gateInputOf,
+  type KitParts,
+  NO_DECISIONS,
+  type ReviewDecisions,
+} from "./decisions";
 
 /**
  * What the job page and the jobs list show (review spec, as far as the thin
@@ -58,6 +66,10 @@ export interface JobView {
   /** The email address's checks; null before they ran, or for another route. */
   addressChecks: AddressCheck[] | null;
   application: { status: ApplicationStatus; sentAt: Date | null } | null;
+  /** What the outbound gate reads from the kit; null before there is one. */
+  kitParts: KitParts | null;
+  /** The owner's decisions on the kit, and the gate's open reasons with them; null before there is a kit. */
+  review: { decisions: ReviewDecisions; gate: GateReason[] } | null;
 }
 
 const NOT_CHECKED: AddressCheck = {
@@ -110,6 +122,32 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const unchecked = new Set<StageName>();
   if (eligibility && !eligibility.checked) unchecked.add("eligibility");
   if (judge && !judge.checked) unchecked.add("judge");
+  // Settled against the contact as it stands now: a read made for another contact is no second
+  // read of this one, and blocks it as a missing read does.
+  const settled: JobView["contact"] =
+    read?.checked && contact
+      ? {
+          kind: contact.kind,
+          agreement:
+            read.kind === contact.kind && read.contact === contact.contact
+              ? agreement(contact.kind, contact.contact, read.second)
+              : { ok: false, reason: "no_second_read" },
+        }
+      : null;
+  const addressChecks =
+    contact?.kind === "email" ? addressChecksOf(contact.contact, checks, read) : null;
+  const kitParts =
+    draft && role && extraction
+      ? kitPartsOf({
+          draft,
+          verdicts: judge?.checked ? judge.verdicts : [],
+          role,
+          extraction,
+          settled,
+          addressChecks,
+        })
+      : null;
+  const decisions = kitParts && role ? await decisionsOf(deps.db, id, role.id) : null;
   return {
     id,
     state: job.state,
@@ -128,22 +166,61 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     draftedAnyway: await draftedAnyway(deps.db, id),
     draft: draft ?? null,
     judge: judge?.checked ? judge : null,
-    // Settled against the contact as it stands now: a read made for another contact is no second
-    // read of this one, and blocks it as a missing read does.
-    contact:
-      read?.checked && contact
-        ? {
-            kind: contact.kind,
-            agreement:
-              read.kind === contact.kind && read.contact === contact.contact
-                ? agreement(contact.kind, contact.contact, read.second)
-                : { ok: false, reason: "no_second_read" },
-          }
-        : null,
-    addressChecks:
-      contact?.kind === "email" ? addressChecksOf(contact.contact, checks, read) : null,
+    contact: settled,
+    addressChecks,
     application: role ? await applicationOf(deps.db, id, role.id) : null,
+    kitParts,
+    review:
+      kitParts && decisions
+        ? { decisions, gate: canHandOff(gateInputOf(kitParts, decisions)) }
+        : null,
   };
+}
+
+/**
+ * What the gate reads from a kit. An email or WhatsApp contact must be
+ * typed by the owner when the post gave none, when it fails the strict
+ * check, or when its second read did not agree or never ran. Duplicate
+ * matches come with the application, which the thin path opens only at
+ * Mark sent: until it opens at the role pick, as the ledger spec has it,
+ * none holds a kit back.
+ */
+function kitPartsOf(parts: {
+  draft: DraftOutput;
+  verdicts: KitParts["verdicts"];
+  role: Role;
+  extraction: ExtractOutput;
+  settled: JobView["contact"];
+  addressChecks: AddressCheck[] | null;
+}): KitParts {
+  const { kind, address } = parts.role.route;
+  const typed = address.trim();
+  const passes = kind === "email" ? isStrictAddress(typed) : normaliseWhatsAppNumber(typed).ok;
+  return {
+    blocks: parts.draft.kit.blocks.map((block) => block.id),
+    flags: parts.draft.flags,
+    verdicts: parts.verdicts,
+    attachments: parts.role.required_attachments.map((attachment) => attachment.name),
+    contact:
+      kind === "email" || kind === "whatsapp"
+        ? { kind, needsRetype: typed === "" || !passes || parts.settled?.agreement.ok !== true }
+        : null,
+    addressChecks: parts.addressChecks ?? [],
+    scamSignals: [...parts.extraction.record.scam_signals, ...parts.extraction.backstop].map(
+      (signal) => signal.quote || signal.kind,
+    ),
+    duplicates: [],
+  };
+}
+
+/** The owner's decisions on a job's kit for a role, kept in kit_reviews; none before the first. */
+export async function decisionsOf(db: Db, jobId: string, roleId: string): Promise<ReviewDecisions> {
+  const { rows } = await db.query<{ decisions: unknown }>(
+    "select decisions from {{schema}}.kit_reviews where job_id = $1 and role_id = $2",
+    [jobId, roleId],
+  );
+  const parsed = decisionsSchema.safeParse(rows[0]?.decisions);
+  return parsed.success ? parsed.data : NO_DECISIONS;
 }
 
 /**

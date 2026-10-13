@@ -24,7 +24,7 @@ import { validateProfile } from "@/core/profile/validate";
 import type { AppConfig } from "@/server/config";
 import { createTestDb } from "@/server/db/testDb";
 
-import { draftAnyway, readAgain, retry, role, sent, skip } from "./jobActions";
+import { draftAnyway, readAgain, retry, review, role, sent, skip } from "./jobActions";
 import { startPipeline } from "./jobs";
 
 /* The job page's routes: Retry, Skip, the role pick, Read it again, Mark sent (B2, B9). */
@@ -147,8 +147,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.exec(
-    `delete from {{schema}}.status_changes; delete from {{schema}}.applications;
-     delete from {{schema}}.sessions; delete from {{schema}}.model_calls;
+    `delete from {{schema}}.kit_reviews; delete from {{schema}}.status_changes;
+     delete from {{schema}}.applications; delete from {{schema}}.sessions; delete from {{schema}}.model_calls;
      delete from {{schema}}.job_stage_runs; delete from {{schema}}.job_leases;
      delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
      delete from {{schema}}.jobs; delete from {{schema}}.profile_versions`,
@@ -287,6 +287,34 @@ describe("the job page's routes", () => {
     expect(
       (await sent(post(`/api/jobs/${picking}/sent`, no, cookie), deps(), picking)).status,
     ).toBe(409);
+  });
+
+  it("record a decision on a ready kit, and refuse one the kit has no place for", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    const typed = JSON.stringify({ action: { kind: "retype", value: "jobs@example.com" } });
+
+    const response = await review(post(`/api/jobs/${ready}/review`, typed, cookie), deps(), ready);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ gate: expect.any(Array) });
+    const nowhere = JSON.stringify({ action: { kind: "check", blockId: "S9" } });
+    expect(
+      (await review(post(`/api/jobs/${ready}/review`, nowhere, cookie), deps(), ready)).status,
+    ).toBe(409);
+    expect(
+      (
+        await review(
+          post(`/api/jobs/${ready}/review`, '{"action":{"kind":"send"}}', cookie),
+          deps(),
+          ready,
+        )
+      ).status,
+    ).toBe(400);
+    expect((await review(post(`/api/jobs/${ready}/review`, typed), deps(), ready)).status).toBe(
+      401,
+    );
   });
 
   it("refuse another origin, a missing session and an unknown job", async () => {

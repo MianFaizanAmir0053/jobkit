@@ -8,6 +8,7 @@ import { emailBody } from "@/core/drafting/kit";
 import type { AgreementProblem } from "@/core/extraction/addressRead";
 import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
+import { NO_DECISIONS } from "@/core/review/decisions";
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { JobView, Step } from "@/core/review/jobView";
 import { appConfig } from "@/server/config";
@@ -19,6 +20,7 @@ import { ActionButton } from "./ActionButton";
 import { CopyButton } from "./CopyButton";
 import { JobPoller } from "./JobPoller";
 import { MarkSent } from "./MarkSent";
+import { AttachTick, RetypeField } from "./Review";
 
 export const metadata: Metadata = { title: "Job · jobkit" };
 
@@ -257,6 +259,18 @@ function PostPanel({ view }: { view: JobView }) {
           <p className="text-sm text-muted-foreground">
             Never send an ID card, a passport copy, bank details or a fee to apply for a job.
           </p>
+          {view.review &&
+            (view.review.decisions.continueAnyway ? (
+              <p className="text-sm">You chose to continue anyway.</p>
+            ) : (
+              <ActionButton
+                url={`/api/jobs/${view.id}/review`}
+                label="Continue anyway"
+                variant="destructive"
+                confirmText="This post shows signs of a scam. Continue with it anyway?"
+                body={{ action: { kind: "continue_anyway" } }}
+              />
+            ))}
         </Panel>
       )}
       {aimedAtAi.length > 0 && (
@@ -326,7 +340,14 @@ function KitPanel({
     view.contact === null &&
     (role.route.kind === "email" || role.route.kind === "whatsapp") &&
     role.route.address.trim() !== "";
-  const toGmail = strict && disputed === null && blocking.length === 0;
+  // The outbound gate: every outbound control opens only when no reason holds it back.
+  const decisions = view.review?.decisions ?? NO_DECISIONS;
+  const gate = view.review?.gate ?? [];
+  const open = view.review !== null && gate.length === 0;
+  const needsRetype = view.kitParts?.contact?.needsRetype ?? false;
+  const to = needsRetype ? (decisions.retyped ?? "") : address;
+  const checked = new Set(decisions.checked);
+  const reviewUrl = `/api/jobs/${view.id}/review`;
 
   return (
     <div className="flex flex-col gap-4">
@@ -381,6 +402,20 @@ function KitPanel({
               </span>
             )}
             {disputed && <p className="mt-1 text-destructive">{disputed}</p>}
+            {needsRetype && view.kitParts?.contact && (
+              <RetypeField
+                jobId={view.id}
+                kind={view.kitParts.contact.kind}
+                value={decisions.retyped}
+              />
+            )}
+            {needsRetype &&
+              decisions.retyped &&
+              !gate.some((reason) => reason.kind === "contact") && (
+                <p className="mt-1 text-muted-foreground">
+                  You typed it: the email goes to {decisions.retyped}.
+                </p>
+              )}
             {blockingShown.map((check) => (
               <p key={check.kind} className="mt-1 text-destructive">
                 {check.message}
@@ -399,19 +434,38 @@ function KitPanel({
           <dd>{kit.subject}</dd>
         </dl>
         <div className="rounded-md bg-muted p-3 text-sm whitespace-pre-wrap">{body}</div>
+        {!open && (
+          <div className="rounded-md border border-destructive/40 p-3 text-sm">
+            <p className="font-medium">Before you send</p>
+            <ul className="mt-1 list-disc pl-5">
+              {gate.map((reason, i) => (
+                <li key={i}>{reason.message}</li>
+              ))}
+              {view.review === null && <li>This kit cannot be checked. Send the post again.</li>}
+            </ul>
+          </div>
+        )}
         <div className="flex flex-wrap gap-2">
-          {toGmail && (
-            <a
-              href={gmailComposeUrl(address, kit.subject, body, account || null)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className={buttonVariants()}
-            >
-              Open in Gmail
-            </a>
-          )}
-          <CopyButton text={kit.subject} label="Copy subject" />
-          <CopyButton text={body} label="Copy email" />
+          {byEmail &&
+            (open ? (
+              <a
+                href={gmailComposeUrl(to, kit.subject, body, account || null)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className={buttonVariants()}
+              >
+                Open in Gmail
+              </a>
+            ) : (
+              <span
+                aria-disabled="true"
+                className={`${buttonVariants()} pointer-events-none opacity-50`}
+              >
+                Open in Gmail
+              </span>
+            ))}
+          <CopyButton text={kit.subject} label="Copy subject" disabled={!open} />
+          <CopyButton text={body} label="Copy email" disabled={!open} />
         </div>
         <p className="text-sm text-muted-foreground">
           In Gmail, {account ? `check that From shows ${account}, ` : "check the From address, "}
@@ -430,6 +484,26 @@ function KitPanel({
                   {" "}
                   — &ldquo;{blockText.get(verdict.blockId)}&rdquo;
                 </span>
+                <div className="mt-1 flex items-center gap-2">
+                  {checked.has(verdict.blockId) ? (
+                    <>
+                      <span className="text-muted-foreground">You checked this.</span>
+                      <ActionButton
+                        url={reviewUrl}
+                        label="Undo"
+                        variant="outline"
+                        body={{ action: { kind: "uncheck", blockId: verdict.blockId } }}
+                      />
+                    </>
+                  ) : (
+                    <ActionButton
+                      url={reviewUrl}
+                      label="I checked this"
+                      variant="outline"
+                      body={{ action: { kind: "check", blockId: verdict.blockId } }}
+                    />
+                  )}
+                </div>
               </li>
             ))}
             {draft.flags.map((flag, i) => {
@@ -447,14 +521,21 @@ function KitPanel({
 
       {(instructions.length > 0 || role.required_attachments.length > 0) && (
         <Panel title="What the post asks of applicants">
-          <ul className="list-disc pl-5 text-sm">
-            {instructions.map((line, i) => (
-              <li key={`i${i}`}>{line.text}</li>
-            ))}
-            {role.required_attachments.map((attachment, i) => (
-              <li key={`a${i}`}>Attach: {attachment.name}</li>
-            ))}
-          </ul>
+          {instructions.length > 0 && (
+            <ul className="list-disc pl-5 text-sm">
+              {instructions.map((line, i) => (
+                <li key={`i${i}`}>{line.text}</li>
+              ))}
+            </ul>
+          )}
+          {role.required_attachments.map((attachment, i) => (
+            <AttachTick
+              key={`a${i}`}
+              jobId={view.id}
+              name={attachment.name}
+              ticked={decisions.attached.includes(attachment.name)}
+            />
+          ))}
         </Panel>
       )}
 
