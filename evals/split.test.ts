@@ -34,4 +34,35 @@ describe("assignSplits", () => {
       "2026-01-01-00000000": "dev",
     });
   });
+
+  it("counts only the test cases still given, so one deleted or left out frees its place", () => {
+    const first = assignSplits(ids(10), {});
+    const gone = ids(10).slice(0, 3);
+    const stay = ids(10).slice(3);
+    const fresh = ids(5, "2026-04-01");
+
+    const later = assignSplits([...stay, ...fresh], first);
+
+    expect([...stay, ...fresh].filter((id) => later[id] === "test")).toHaveLength(TEST_SIZE);
+    for (const id of gone) expect(later[id]).toBe("test");
+  });
+
+  it("gives the cases of one application one split, in test only when all of them fit", () => {
+    const nine = Object.fromEntries(ids(9).map((id) => [id, "test" as const]));
+    const [first, resend, other] = ids(3, "2026-05-01") as [string, string, string];
+    const groupOf = (id: string) => (id === first || id === resend ? "one application" : id);
+
+    const result = assignSplits([...ids(9), first, resend, other], nine, groupOf);
+
+    expect([result[first], result[resend], result[other]]).toEqual(["dev", "dev", "test"]);
+  });
+
+  it("puts a new case in the split its application already has", () => {
+    const [sent, resend] = ids(2, "2026-06-01") as [string, string];
+
+    expect(assignSplits([sent, resend], { [sent]: "dev" }, () => "one application")).toEqual({
+      [sent]: "dev",
+      [resend]: "dev",
+    });
+  });
 });

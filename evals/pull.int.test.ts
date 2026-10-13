@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,12 +8,13 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
+import type { Storage } from "@/core/ports";
 import type { PgliteDb } from "@/adapters/pglite";
 import { confirmUploads, startJob } from "@/core/intake/jobs";
 import type { ImageMeta } from "@/core/intake/limits";
 import { createTestDb } from "@/server/db/testDb";
 
-import { pullKeptJobs } from "./pull";
+import { pullKeptJobs, releaseKeptJob } from "./pull";
 
 /* Live cases: evals spec "Case sources", intake AC9's eval:pull clause. */
 
@@ -40,7 +41,7 @@ async function png(shade: number): Promise<Uint8Array> {
 }
 
 /** A job with its screenshots uploaded and confirmed, as intake leaves it. */
-async function jobWith(images: readonly Uint8Array[]): Promise<string> {
+async function jobWith(images: readonly Uint8Array[], pastedText = ""): Promise<string> {
   const metas: ImageMeta[] = images.map((bytes) => ({
     contentType: "image/png",
     bytes: bytes.length,
@@ -50,7 +51,7 @@ async function jobWith(images: readonly Uint8Array[]): Promise<string> {
   }));
   const started = await startJob(
     { db, clock, storage },
-    { images: metas, pastedText: "", clientElapsedMs: 0 },
+    { images: metas, pastedText, clientElapsedMs: 0 },
   );
   if (!started.ok) throw new Error(started.message);
   const { rows } = await db.query<{ storage_path: string }>(
@@ -68,6 +69,35 @@ async function keep(jobId: string): Promise<void> {
   await db.query("update {{schema}}.job_images set kept_for_eval = true where job_id = $1", [
     jobId,
   ]);
+}
+
+/** The second read's output, as address_read leaves it, with its crop stored. */
+async function readWithCrop(jobId: string, crop: Uint8Array): Promise<void> {
+  const cropPath = `jobs/${jobId}/crops/${sha256(crop)}.png`;
+  await storage.put(cropPath, crop, "image/png");
+  const lease = randomUUID();
+  await db.query(
+    "insert into {{schema}}.job_leases (id, job_id, claimed_at, expires_at) values ($1, $2, $3, $3)",
+    [lease, jobId, clock.now()],
+  );
+  await db.query(
+    `insert into {{schema}}.job_stage_runs
+       (job_id, lease_id, stage, round, attempt, input_hash, outcome, output, output_hash, started_at, ended_at)
+     values ($1, $2, 'address_read', 0, 1, 'input', 'ok', $3, 'output', $4, $4)`,
+    [
+      jobId,
+      lease,
+      JSON.stringify({
+        checked: true,
+        kind: "email",
+        contact: "jobs@example.com",
+        second: { read: "jobs@example.com" },
+        cropPath,
+        markers: [],
+      }),
+      clock.now(),
+    ],
+  );
 }
 
 async function kept(jobId: string): Promise<boolean[]> {
@@ -88,7 +118,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.exec(
-    `delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
+    `delete from {{schema}}.job_stage_runs; delete from {{schema}}.job_leases;
+     delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
      delete from {{schema}}.jobs`,
   );
   clock = fakeClock();
@@ -125,22 +156,67 @@ describe("pullKeptJobs", () => {
     expect(await pullKeptJobs({ db, storage }, archive)).toEqual({ cases: [], failed: [] });
   });
 
-  it("keeps a job's flag, and says why, when an image cannot be copied", async () => {
-    const jobId = await jobWith([await png(10)]);
+  it("keeps a job's flag, says why, and makes no case, when an image cannot be copied", async () => {
+    const jobId = await jobWith([await png(10), await png(20)]);
     await keep(jobId);
     const { rows } = await db.query<{ storage_path: string }>(
-      "select storage_path from {{schema}}.job_images where job_id = $1",
+      "select storage_path from {{schema}}.job_images where job_id = $1 order by position",
       [jobId],
     );
-    await storage.remove([rows[0]!.storage_path]);
+    await storage.remove([rows[1]!.storage_path]);
+    const archive = join(root, "archive");
 
-    const report = await pullKeptJobs({ db, storage }, join(root, "archive"));
+    const report = await pullKeptJobs({ db, storage }, archive);
 
     expect(report.cases).toEqual([]);
-    expect(report.failed).toEqual([{ jobId, reason: "post image 1 is gone from storage" }]);
-    expect(await kept(jobId)).toEqual([true]);
-    expect(
-      existsSync(join(root, "archive", `live-2026-10-06-${jobId.slice(0, 8)}`, "post-1.png")),
-    ).toBe(false);
+    expect(report.failed).toEqual([{ jobId, reason: "post image 2 is gone from storage" }]);
+    expect(await kept(jobId)).toEqual([true, true]);
+    expect(existsSync(join(archive, `live-2026-10-06-${jobId.slice(0, 8)}`))).toBe(false);
+
+    // Released by hand, the job is left to the purge.
+    expect(await releaseKeptJob(db, jobId)).toBe(2);
+    expect(await kept(jobId)).toEqual([false, false]);
+    expect(await pullKeptJobs({ db, storage }, archive)).toEqual({ cases: [], failed: [] });
+  });
+
+  it("clears only the flags of the images it copied, not one kept while it ran", async () => {
+    const jobId = await jobWith([await png(10), await png(20)]);
+    await db.query(
+      "update {{schema}}.job_images set kept_for_eval = true where job_id = $1 and position = 0",
+      [jobId],
+    );
+    // The owner keeps the second image while the first is being copied.
+    const busy: Storage = {
+      ...storage,
+      get: async (path) => {
+        await keep(jobId);
+        return storage.get(path);
+      },
+    };
+
+    const report = await pullKeptJobs({ db, storage: busy }, join(root, "archive"));
+
+    expect(report.cases).toEqual([{ id: `live-2026-10-06-${jobId.slice(0, 8)}`, images: 1 }]);
+    expect(await kept(jobId)).toEqual([false, true]);
+  });
+
+  it("copies the stored crop of the contact and the pasted text with the images", async () => {
+    const crop = await png(150);
+    const jobId = await jobWith([await png(10)], "Apply at jobs@example.com");
+    await readWithCrop(jobId, crop);
+    await keep(jobId);
+    const archive = join(root, "archive");
+
+    const report = await pullKeptJobs({ db, storage }, archive);
+
+    const folder = join(archive, report.cases[0]!.id);
+    expect(readdirSync(folder).sort()).toEqual([
+      "crop.png",
+      "pasted.txt",
+      "post-1.png",
+      "source.json",
+    ]);
+    expect(sha256(readFileSync(join(folder, "crop.png")))).toBe(sha256(crop));
+    expect(readFileSync(join(folder, "pasted.txt"), "utf8")).toBe("Apply at jobs@example.com");
   });
 });

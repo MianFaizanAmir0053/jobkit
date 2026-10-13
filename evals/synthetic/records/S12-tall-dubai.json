@@ -78,10 +78,10 @@
         "quote": "Apply by email: talent@example.com",
         "box": {
           "tile": 3,
-          "x1": 72,
-          "y1": 1100,
-          "x2": 560,
-          "y2": 1160
+          "x1": 44,
+          "y1": 1010,
+          "x2": 794,
+          "y2": 1070
         }
       },
       "instructions": [],

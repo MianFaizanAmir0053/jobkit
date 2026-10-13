@@ -19,6 +19,9 @@ import { NO_STORE, readLimited, refusal, sessionForChange, sessionForRead } from
 /** The evaluation archive: one folder per case, never committed (private/). */
 export const ARCHIVE = join(process.cwd(), "private", "archive");
 
+/** The profile file, whose style examples leave a sent email out (amendment A10). */
+export const PROFILE = join(process.cwd(), "private", "profile.yaml");
+
 export function labellingAllowed(
   env: Readonly<Record<string, string | undefined>>,
   kind: Container["kind"],

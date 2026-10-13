@@ -1,19 +1,31 @@
 /**
  *   npm run eval:import -- --mbox <file>                       a Takeout mbox of sent mail
- *   npm run eval:import -- --mbox <file> --archive <folder>    into another archive than private/archive
- *   npm run eval:import -- --mbox <file> --profile <file>      style examples from another profile file
- *   npm run eval:import -- --mbox <file> --attachment cv.pdf   another CV file name than resume.pdf
+ *   npm run eval:import -- --eml <folder>                      .eml files saved with Gmail's "Download message"
+ *   npm run eval:import -- ... --archive <folder>              into another archive than private/archive
+ *   npm run eval:import -- ... --profile <file>                style examples from another profile file
+ *   npm run eval:import -- ... --attachment cv.pdf             another CV file name than resume.pdf
+ *   npm run eval:import -- ... --jobkit-from <YYYY-MM-DD>      the day you first applied through jobkit
  *
  * Makes one case folder per sent application (evals spec, "Case sources"),
- * leaving out any whose body holds one of the profile's style examples, and
- * reports what it kept, skipped and could not read. Nothing leaves the
- * laptop: it reads and writes local files only.
+ * leaving out any whose body holds one of the profile's style examples,
+ * and any sent from the day jobkit began drafting, whose words may be a
+ * model's: the first import takes its own time as that day unless told
+ * otherwise, and the archive keeps it. Reports what it kept, skipped and
+ * could not read. Nothing leaves the laptop: it reads and writes local
+ * files only.
  */
 import { join, resolve } from "node:path";
 
-import { importMbox, styleExamplesOf } from "../evals/import";
+import { importEmlFolder, importMbox, jobkitFromOf, styleExamplesOf } from "../evals/import";
 
-const VALUED = new Set(["--mbox", "--archive", "--profile", "--attachment"]);
+const VALUED = new Set([
+  "--mbox",
+  "--eml",
+  "--archive",
+  "--profile",
+  "--attachment",
+  "--jobkit-from",
+]);
 
 function parseArgs(args: readonly string[]): Map<string, string> {
   const values = new Map<string, string>();
@@ -28,30 +40,55 @@ function parseArgs(args: readonly string[]): Map<string, string> {
   return values;
 }
 
+/** A day as the laptop's midnight: "2026-09-30". */
+function dayOf(text: string): Date {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  const day = match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : null;
+  if (!day || Number.isNaN(day.getTime())) throw new Error(`--jobkit-from takes a day: YYYY-MM-DD`);
+  return day;
+}
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   const mbox = args.get("--mbox");
-  if (!mbox) throw new Error("Give the mbox file: npm run eval:import -- --mbox <file>");
+  const eml = args.get("--eml");
+  if (!mbox === !eml) {
+    throw new Error(
+      "Give one source: npm run eval:import -- --mbox <file>, or -- --eml <folder of .eml files>",
+    );
+  }
   const archive = resolve(args.get("--archive") ?? join("private", "archive"));
   const profile = resolve(args.get("--profile") ?? join("private", "profile.yaml"));
   const { examples, problems } = styleExamplesOf(profile);
-  for (const problem of problems) console.warn(`Warning: ${problem}; it cannot be left out.`);
-
-  const report = await importMbox(resolve(mbox), archive, {
+  for (const problem of problems) {
+    console.warn(
+      `Warning: ${problem}; the labelling page and eval:split check the examples again once they can be read.`,
+    );
+  }
+  const given = args.get("--jobkit-from");
+  const jobkitFrom = jobkitFromOf(archive, given ? dayOf(given) : null, new Date());
+  const options = {
     attachment: args.get("--attachment") ?? "resume.pdf",
     styleExamples: examples,
-  });
+    jobkitFrom,
+  };
+
+  const report = mbox
+    ? await importMbox(resolve(mbox), archive, options)
+    : await importEmlFolder(resolve(eml!), archive, options);
 
   console.log(`New cases in ${archive}: ${report.cases.length}`);
   for (const entry of report.cases) console.log(`  ${entry.id}  ${entry.subject}`);
   console.log(`Already imported: ${report.alreadyImported}`);
   console.log(
-    `Skipped: ${report.skipped.not_sent} not marked Sent, ${report.skipped.no_resume} without the CV, ${report.skipped.style_example} matching a style example`,
+    `Skipped: ${report.skipped.not_sent} not marked Sent, ${report.skipped.no_resume} without the CV, ${report.skipped.style_example} matching a style example, ${report.skipped.after_jobkit} sent from ${jobkitFrom.toLocaleString()} on, when jobkit may have drafted them`,
   );
   for (const entry of report.malformed) {
-    console.log(`Could not read message ${entry.index}: ${entry.error}`);
+    console.log(`Could not read message ${entry.file ?? entry.index}: ${entry.error}`);
   }
-  console.log("Next: copy each post's screenshots from the phone into its case folder.");
+  console.log(
+    "Next: copy the phone's screenshots into private/archive/_screenshots/ and match them on /dev/label; then run npm run eval:split.",
+  );
 }
 
 main().catch((error: unknown) => {

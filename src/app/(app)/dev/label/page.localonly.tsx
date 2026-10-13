@@ -3,35 +3,63 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { listCases } from "../../../../../evals/cases";
+import { styleExamplesOf } from "../../../../../evals/import";
 import { getContainer } from "@/server/container";
 import { requireSession } from "@/server/dal";
-import { ARCHIVE, labellingAllowed } from "@/server/labelling";
+import { ARCHIVE, labellingAllowed, PROFILE } from "@/server/labelling";
 
 export const metadata: Metadata = { title: "Labelling · jobkit" };
 
 /**
  * The labelling page (evals spec, "Labelling"): every case in the archive,
  * the ten test cases first, which are labelled from scratch before any
- * suggestion is shown. Only on the laptop's dev server with
- * JOBKIT_LOCAL_EVALS=1; no build has it.
+ * suggestion is shown. Viewing it never gives a case a split: npm run
+ * eval:split does, once the cases are ready. Only on the laptop's dev
+ * server with JOBKIT_LOCAL_EVALS=1; no build has it.
  */
 export default async function LabellingPage() {
   const container = await getContainer();
   if (!labellingAllowed(process.env, container.kind)) notFound();
   await requireSession({ kind: "google" });
-  const cases = await listCases(ARCHIVE);
+  const { examples, problems } = styleExamplesOf(PROFILE);
+  const { cases, stray } = await listCases(ARCHIVE, { styleExamples: examples });
   const test = cases.filter((entry) => entry.split === "test");
   const testLeft = test.filter((entry) => !entry.labelled).length;
+  const unsplit = cases.filter((entry) => entry.split === null && !entry.leftOut);
 
   return (
     <section aria-labelledby="labelling-heading" className="flex flex-col gap-4">
       <h1 id="labelling-heading" className="text-2xl font-semibold tracking-tight">
         Labelling
       </h1>
-      <p className="text-sm text-muted-foreground">
-        Label the test cases first, from the post and the email alone: they show no suggestions
-        until their labels are saved. {testLeft} of {test.length} test cases left.
-      </p>
+      {test.length > 0 ? (
+        <p className="text-sm text-muted-foreground">
+          Label the test cases first, from the post and the email alone: they show no suggestions
+          until their labels are saved. {testLeft} of {test.length} test cases left.
+        </p>
+      ) : (
+        <p className="text-sm text-muted-foreground">
+          No split yet. Add each case&apos;s screenshots and delete the folders that are not
+          applications, then run <code>npm run eval:split</code> to choose the ten test cases.
+        </p>
+      )}
+      {test.length > 0 && unsplit.length > 0 && (
+        <p className="text-sm text-muted-foreground">
+          {unsplit.length} cases have no split yet. Once they have their screenshots, run{" "}
+          <code>npm run eval:split</code> again.
+        </p>
+      )}
+      {problems.length > 0 && (
+        <p className="text-sm text-destructive">
+          No case is left out for the style examples yet: {problems.join("; ")}.
+        </p>
+      )}
+      {stray.length > 0 && (
+        <p className="text-sm text-destructive">
+          Not read as cases: {stray.join(", ")}. Put downloaded .eml files in one folder and run{" "}
+          <code>npm run eval:import -- --eml &lt;folder&gt;</code>, which names the case folders.
+        </p>
+      )}
       {cases.length === 0 ? (
         <p className="text-sm">
           No cases yet. Import your sent mail with <code>npm run eval:import</code>, or pull kept
@@ -51,12 +79,20 @@ export default async function LabellingPage() {
           <tbody>
             {cases.map((entry) => (
               <tr key={entry.id} className="border-b border-border align-top">
-                <td className="py-1 pr-3">{entry.split}</td>
+                <td className="py-1 pr-3">
+                  {entry.leftOut ? "left out" : (entry.split ?? "none")}
+                </td>
                 <td className="py-1 pr-3">{entry.date?.slice(0, 10) ?? "undated"}</td>
                 <td className="py-1 pr-3">
                   <Link href={`/dev/label/${entry.id}`} className="underline">
                     {entry.title}
                   </Link>
+                  {entry.problem && <p className="text-destructive">{entry.problem}</p>}
+                  {entry.sameAs.length > 0 && (
+                    <p className="text-muted-foreground">
+                      The same application as {entry.sameAs.join(", ")}?
+                    </p>
+                  )}
                 </td>
                 <td className="py-1 pr-3">{entry.screenshots}</td>
                 <td className="py-1">{entry.labelled ? "Saved" : "Not yet"}</td>

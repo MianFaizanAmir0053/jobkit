@@ -1,19 +1,29 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { importMbox, judgeMessage, mboxMessages, styleExamplesOf } from "./import";
+import {
+  importEmlFolder,
+  importMbox,
+  jobkitFromOf,
+  judgeMessage,
+  mboxMessages,
+  styleExamplesOf,
+} from "./import";
 
 /* The archive import: evals AC1. Every message here is made up. */
 
 const CRLF = "\r\n";
 
-/** A sent application as Gmail exports it: a text body and, by default, resume.pdf attached. */
+/**
+ * A sent application as Gmail exports it: a text body and, by default,
+ * resume.pdf attached. A message downloaded by hand has no labels (null).
+ */
 function message(
   overrides: {
-    labels?: string;
+    labels?: string | null;
     attachment?: string | null;
     body?: string;
     id?: string;
@@ -50,7 +60,7 @@ function message(
     "Subject: Application - Senior Engineer",
     `Date: ${date}`,
     `Message-ID: ${id}`,
-    `X-Gmail-Labels: ${labels}`,
+    ...(labels === null ? [] : [`X-Gmail-Labels: ${labels}`]),
     "MIME-Version: 1.0",
     'Content-Type: multipart/mixed; boundary="b1"',
     "",
@@ -59,7 +69,7 @@ function message(
 }
 
 const raw = (text: string) => new Uint8Array(Buffer.from(text, "latin1"));
-const options = { attachment: "resume.pdf", styleExamples: [] as string[] };
+const options = { attachment: "resume.pdf", styleExamples: [] as string[], jobkitFrom: null };
 
 async function* linesOf(text: string): AsyncGenerator<string> {
   for (const line of text.split(/\r?\n/)) yield line;
@@ -138,6 +148,27 @@ describe("judgeMessage", () => {
     });
   });
 
+  it("leaves out mail sent from the day jobkit began drafting, whose words may be a model's", async () => {
+    const jobkitFrom = new Date("2026-03-17T00:00:00+05:00");
+    const later = message({ date: "Thu, 19 Mar 2026 09:00:00 +0500" });
+
+    expect(await judgeMessage(raw(later), { ...options, jobkitFrom })).toEqual({
+      kind: "skipped",
+      reason: "after_jobkit",
+    });
+    expect((await judgeMessage(raw(message()), { ...options, jobkitFrom })).kind).toBe("case");
+  });
+
+  it("takes a message downloaded by hand, which has no Gmail labels, when told it was sent", async () => {
+    const downloaded = raw(message({ labels: null }));
+
+    expect(await judgeMessage(downloaded, options)).toEqual({
+      kind: "skipped",
+      reason: "not_sent",
+    });
+    expect((await judgeMessage(downloaded, options, false)).kind).toBe("case");
+  });
+
   it("reports a message with no headers as malformed", async () => {
     expect((await judgeMessage(raw(""), options)).kind).toBe("malformed");
   });
@@ -194,7 +225,12 @@ describe("importMbox", () => {
       "2026-03-16",
       "2026-03-19",
     ]);
-    expect(report.skipped).toEqual({ not_sent: 1, no_resume: 0, style_example: 0 });
+    expect(report.skipped).toEqual({
+      not_sent: 1,
+      no_resume: 0,
+      style_example: 0,
+      after_jobkit: 0,
+    });
     expect(report.malformed.map((entry) => entry.index)).toEqual([3]);
     const folders = readdirSync(archive).sort();
     expect(folders).toEqual(report.cases.map((entry) => entry.id).sort());
@@ -204,5 +240,54 @@ describe("importMbox", () => {
     const again = await importMbox(file, archive, options);
     expect(again.cases).toEqual([]);
     expect(again.alreadyImported).toBe(2);
+  });
+
+  it("imports a folder of downloaded .eml files by the same rules, naming any it cannot read", async () => {
+    const downloaded = join(dir, "downloaded");
+    mkdirSync(downloaded);
+    writeFileSync(
+      join(downloaded, "Application - Senior Engineer.eml"),
+      message({ labels: null }),
+      "latin1",
+    );
+    writeFileSync(join(downloaded, "Empty.eml"), "");
+    writeFileSync(
+      join(downloaded, "No CV.EML"),
+      message({ labels: null, attachment: null, id: "<other@example.com>" }),
+      "latin1",
+    );
+    writeFileSync(join(downloaded, "notes.txt"), "not mail");
+    const archive = join(dir, "archive");
+
+    const report = await importEmlFolder(downloaded, archive, options);
+
+    expect(report.cases).toHaveLength(1);
+    expect(report.skipped).toMatchObject({ no_resume: 1 });
+    expect(report.malformed).toEqual([{ index: 2, file: "Empty.eml", error: "no headers" }]);
+    expect(readdirSync(archive)).toEqual([report.cases[0]!.id]);
+  });
+});
+
+describe("jobkitFromOf", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "jobkit-import-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("is the first import's time unless a day is given, kept in the archive for later imports", () => {
+    const archive = join(dir, "archive");
+
+    const first = jobkitFromOf(archive, null, new Date("2026-10-13T08:00:00Z"));
+
+    expect(first.toISOString()).toBe("2026-10-13T08:00:00.000Z");
+    expect(jobkitFromOf(archive, null, new Date("2026-11-01T08:00:00Z"))).toEqual(first);
+    const given = new Date("2026-09-30T00:00:00+05:00");
+    expect(jobkitFromOf(archive, given, new Date("2026-11-01T08:00:00Z"))).toEqual(given);
+    expect(jobkitFromOf(archive, null, new Date("2026-12-01T08:00:00Z"))).toEqual(given);
   });
 });

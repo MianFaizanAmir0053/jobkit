@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
-import type { Browser } from "@playwright/test";
+import type { Browser, Page } from "@playwright/test";
 import { parse } from "yaml";
 import { z } from "zod";
 
@@ -8,8 +9,11 @@ import { z } from "zod";
  * The synthetic posts as phone screenshots (evals spec, "Case sources"):
  * each post's text laid out as a feed post, rendered by Chrome at 360 CSS
  * pixels wide and three device pixels to each, so a 1080-pixel-wide image
- * of the height the post asks for. Everything is inline and offline, so a
- * post renders to the same bytes on every run on one machine.
+ * of the height the post asks for; a post too long for that height is
+ * refused, never cut off. Everything is inline and offline, so a post
+ * renders to the same bytes on every run with the same Chrome. The
+ * installed Chrome updates itself, so each run's manifest records its
+ * version and each image's hash, and the next run names what changed.
  */
 
 const postSchema = z.object({
@@ -58,8 +62,12 @@ export function postHtml(post: SyntheticPost): string {
 </div></body></html>`;
 }
 
-/** The post as a PNG of exactly its render size. */
-export async function renderPost(browser: Browser, post: SyntheticPost): Promise<Buffer> {
+/** The post laid out on a phone-sized page, for `look` to look at. */
+async function onPage<T>(
+  browser: Browser,
+  post: SyntheticPost,
+  look: (page: Page) => Promise<T>,
+): Promise<T> {
   const scale = post.render.width / PHONE_WIDTH;
   const page = await browser.newPage({
     viewport: { width: PHONE_WIDTH, height: Math.round(post.render.height / scale) },
@@ -67,8 +75,75 @@ export async function renderPost(browser: Browser, post: SyntheticPost): Promise
   });
   try {
     await page.setContent(postHtml(post), { waitUntil: "load" });
-    return await page.screenshot({ type: "png", animations: "disabled", caret: "hide" });
+    return await look(page);
   } finally {
     await page.close();
   }
+}
+
+/** How far down the page the post's card reaches, in CSS pixels. */
+function cardBottom(page: Page): Promise<number> {
+  return page.evaluate(() =>
+    Math.ceil(document.querySelector(".card")!.getBoundingClientRect().bottom),
+  );
+}
+
+/** The post's height as laid out, in CSS pixels. */
+export function postHeight(browser: Browser, post: SyntheticPost): Promise<number> {
+  return onPage(browser, post, cardBottom);
+}
+
+/** The post as a PNG of exactly its render size; a post that would not fit is refused. */
+export async function renderPost(browser: Browser, post: SyntheticPost): Promise<Buffer> {
+  return onPage(browser, post, async (page) => {
+    const height = await cardBottom(page);
+    const room = page.viewportSize()!.height;
+    if (height > room) {
+      throw new Error(
+        `${post.id} is taller than its render size: ${height} CSS pixels in ${room}. Shorten its text or raise its height.`,
+      );
+    }
+    return page.screenshot({ type: "png", animations: "disabled", caret: "hide" });
+  });
+}
+
+/** What a render run made: the browser's version and each image's SHA-256. */
+export interface RenderManifest {
+  browser: string;
+  images: Record<string, string>;
+}
+
+export const manifestSchema = z.object({
+  browser: z.string(),
+  images: z.record(z.string(), z.string()),
+});
+
+export function manifestOf(
+  browser: string,
+  images: Readonly<Record<string, Uint8Array>>,
+): RenderManifest {
+  return {
+    browser,
+    images: Object.fromEntries(
+      Object.entries(images)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([name, bytes]) => [name, createHash("sha256").update(bytes).digest("hex")]),
+    ),
+  };
+}
+
+/** What differs from the last run's renders: images whose bytes changed, and the browser, if it did. */
+export function changedRenders(previous: RenderManifest | null, current: RenderManifest) {
+  const before = previous?.images ?? {};
+  const now = current.images;
+  const names = (images: Record<string, string>) => Object.keys(images).sort();
+  return {
+    browser:
+      previous && previous.browser !== current.browser
+        ? { from: previous.browser, to: current.browser }
+        : null,
+    changed: names(now).filter((name) => Object.hasOwn(before, name) && before[name] !== now[name]),
+    added: names(now).filter((name) => !Object.hasOwn(before, name)),
+    removed: names(before).filter((name) => !Object.hasOwn(now, name)),
+  };
 }

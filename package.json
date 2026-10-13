@@ -23,7 +23,8 @@
     "profile:seed": "tsx scripts/profile-seed.ts",
     "eval:import": "tsx scripts/eval-import.ts",
     "eval:render": "tsx scripts/eval-render.ts",
-    "eval:pull": "tsx scripts/eval-pull.ts"
+    "eval:pull": "tsx scripts/eval-pull.ts",
+    "eval:split": "tsx scripts/eval-split.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",

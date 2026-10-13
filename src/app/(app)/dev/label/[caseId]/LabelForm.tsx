@@ -22,19 +22,22 @@ const FIELD = "w-full rounded-md border border-border bg-transparent px-2 py-1";
 /**
  * One case's labels (evals spec, "Labelling"): company, role, route, the
  * exact address or number, the eligibility outcome, the must-have
- * requirements and whether the crop shows the contact. Saved to the
- * case's labels.json; filled from pre-labels only where the page allows.
+ * requirements and, for a case with a crop, whether it shows the contact.
+ * Saved to the case's labels.json; filled from pre-labels only where the
+ * page allows. Nothing starts chosen: each choice must be made.
  */
 export function LabelForm({
   caseId,
   routes,
   initial,
   suggested,
+  hasCrop,
 }: {
   caseId: string;
   routes: readonly string[];
   initial: LabelValues;
   suggested: boolean;
+  hasCrop: boolean;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -57,7 +60,7 @@ export function LabelForm({
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => line !== ""),
-      cropShowsContact: crop === "yes" ? true : crop === "no" ? false : null,
+      cropShowsContact: hasCrop ? crop === "yes" : null,
     };
     setBusy(true);
     try {
@@ -76,7 +79,7 @@ export function LabelForm({
   }
 
   const crop =
-    initial.cropShowsContact === true ? "yes" : initial.cropShowsContact === false ? "no" : "none";
+    initial.cropShowsContact === true ? "yes" : initial.cropShowsContact === false ? "no" : "";
 
   return (
     <form onSubmit={(event) => void save(event)} className="flex flex-col gap-3 text-sm">
@@ -90,7 +93,10 @@ export function LabelForm({
       </label>
       <label className="flex flex-col gap-1">
         Route
-        <select name="route" defaultValue={initial.route} className={FIELD}>
+        <select name="route" defaultValue={initial.route} required className={FIELD}>
+          <option value="" disabled>
+            Choose the route
+          </option>
           {routes.map((route) => (
             <option key={route} value={route}>
               {route}
@@ -104,7 +110,10 @@ export function LabelForm({
       </label>
       <label className="flex flex-col gap-1">
         Eligibility
-        <select name="eligibility" defaultValue={initial.eligibility} className={FIELD}>
+        <select name="eligibility" defaultValue={initial.eligibility} required className={FIELD}>
+          <option value="" disabled>
+            Choose the outcome
+          </option>
           {ELIGIBILITY.map((value) => (
             <option key={value} value={value}>
               {value}
@@ -116,14 +125,18 @@ export function LabelForm({
         Must-have requirements, one a line, as the post words them
         <textarea name="must" defaultValue={initial.must.join("\n")} rows={5} className={FIELD} />
       </label>
-      <label className="flex flex-col gap-1">
-        Does the stored crop show the address or number?
-        <select name="crop" defaultValue={crop} className={FIELD}>
-          <option value="yes">Yes</option>
-          <option value="no">No</option>
-          <option value="none">No crop to judge</option>
-        </select>
-      </label>
+      {hasCrop && (
+        <label className="flex flex-col gap-1">
+          Does the crop above show the whole address or number?
+          <select name="crop" defaultValue={crop} required className={FIELD}>
+            <option value="" disabled>
+              Choose
+            </option>
+            <option value="yes">Yes</option>
+            <option value="no">No</option>
+          </select>
+        </label>
+      )}
       <div className="flex items-center gap-3">
         <Button type="submit" disabled={busy}>
           Save labels

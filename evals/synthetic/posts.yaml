@@ -107,7 +107,8 @@
   expect:
     company: Tailspin Toys
     roles: 2
-    contacts: { "Backend Engineer": backend@example.com, "Machine Learning Engineer": ml@example.com }
+    contacts:
+      { "Backend Engineer": backend@example.com, "Machine Learning Engineer": ml@example.com }
 
 - id: S08-urdu
   tests: non-English post stops before drafting
@@ -159,7 +160,12 @@
   expect:
     company: Proseware Cloud
     route: email
-    must: ["10+ years leading Kubernetes platform teams", "Kafka at scale (1M messages per second)", "Go in production"]
+    must:
+      [
+        "10+ years leading Kubernetes platform teams",
+        "Kafka at scale (1M messages per second)",
+        "Go in production",
+      ]
     must_gaps_expected: 3
 
 - id: S12-tall-dubai
@@ -168,8 +174,36 @@
   text: |
     Adventure Works (Dubai, onsite) - Senior Next.js Engineer
     Relocation support and visa sponsorship provided.
-    (long description of the team, product, benefits and interview process
-    continues for several screens so the screenshot is tall)
+
+    About the team
+    Adventure Works builds the booking platform behind more than two hundred travel agencies across the Gulf. Our web team is eleven people: six engineers, two designers, a product manager, a QA lead and an engineering manager. We sit together in our Dubai Internet City office, on the same floor, and we ship to production several times a day.
+
+    What you will work on
+    Our customer-facing site is a Next.js application of a few hundred pages, from search results to the checkout. Over the next year we are moving the last of our older pages to the App Router, building a new trip planner, and making the whole site fast on the mid-range Android phones most of our customers use. You will own features from the first sketch to the release, pair with designers on the details, and review your colleagues' code as they review yours.
+
+    How we work
+    We plan in two-week cycles and keep meetings short. Every change goes through review and our test suite before it ships. We write things down: decisions, incidents and how-to guides live in our wiki, and new joiners read them in their first week. Engineers take turns on support, one week in eight, with a second person always on hand.
+
+    A typical week
+    Monday starts with a short planning call, and most of the week is quiet, focused work. On Wednesdays the whole web team has lunch together, and on Thursdays one engineer shows something they learned or built. Every quarter we take two days away from the roadmap to fix what annoys us most, from slow builds to confusing pages.
+
+    About Dubai
+    Most of the team moved here from abroad, and we help newcomers settle in: finding a flat, opening a bank account and getting a driving licence. The office is a short walk from the metro, and many of us cycle in during the cooler months.
+
+    What we offer
+    A relocation package: flights for you and your family, two weeks of serviced accommodation, and help finding a home and a school.
+    Visa sponsorship, health insurance for you and your family, and a flight home every year.
+    Thirty days of paid leave, plus public holidays.
+    A yearly budget for courses, books and conferences.
+    A laptop and desk setup of your choice.
+
+    Interview process
+    1. A thirty-minute call with our engineering manager about your work so far and what you are looking for next.
+    2. A take-home exercise of about three hours, which you can do in your own time within a week.
+    3. A conversation with two of our engineers about your exercise and a system you have built.
+    4. A final chat with our head of product.
+    We aim to finish within three weeks, and we give feedback at every stage, whatever the outcome.
+
     Must have: Next.js, TypeScript, 5+ years.
     Apply by email: talent@example.com
   expect:

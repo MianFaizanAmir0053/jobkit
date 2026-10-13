@@ -1,23 +1,36 @@
 import { createHash } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, extname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 import PostalMime, { type Email } from "postal-mime";
 import { parse } from "yaml";
+import { z } from "zod";
 
 /**
  * The archive import (evals spec, "Case sources"): a Gmail Takeout mbox of
- * sent mail becomes one case folder per application, `<archive>/<case
- * id>/email.eml`, for the owner to add the post's screenshots to. Only
- * messages Gmail labels Sent with the CV attached are kept; a message whose
- * body holds one of the profile's style examples is left out, so the
- * drafter is never scored on an email it was shown as a model (amendment
- * A10). A message that cannot be read is reported and passed over. A case
- * already in the archive is not written again.
+ * sent mail, or a folder of messages downloaded by hand, becomes one case
+ * folder per application, `<archive>/<case id>/email.eml`, for the owner
+ * to add the post's screenshots to. Only sent messages with the CV attached
+ * are kept: in an mbox, those Gmail labels Sent; a downloaded message has
+ * no labels, and the owner chose it from Sent. Mail sent from the day
+ * jobkit began drafting is left out, since its words may be a model's, and
+ * so is a message whose body holds one of the profile's style examples, so
+ * the drafter is never scored on an email it was shown as a model
+ * (amendment A10); the labelling page checks the examples again. A message
+ * that cannot be read is reported and passed over. A case already in the
+ * archive is not written again.
  */
 
-export type SkipReason = "not_sent" | "no_resume" | "style_example";
+export type SkipReason = "not_sent" | "no_resume" | "style_example" | "after_jobkit";
 
 export type ImportOutcome =
   | { kind: "case"; id: string; subject: string }
@@ -29,13 +42,15 @@ export interface ImportOptions {
   attachment: string;
   /** The profile's style examples, as text. */
   styleExamples: readonly string[];
+  /** Mail sent from this time on is left out (jobkitFromOf); null leaves none out. */
+  jobkitFrom: Date | null;
 }
 
 export interface ImportReport {
   cases: { id: string; subject: string }[];
   skipped: Record<SkipReason, number>;
-  /** Each malformed message by its place in the file (1 for the first) and why. */
-  malformed: { index: number; error: string }[];
+  /** Each malformed message by its place (1 for the first), its file for a downloaded one, and why. */
+  malformed: { index: number; file?: string; error: string }[];
   alreadyImported: number;
 }
 
@@ -58,7 +73,7 @@ export async function* mboxMessages(lines: AsyncIterable<string>): AsyncGenerato
 }
 
 /** Text for comparing bodies: one case, one kind of space, no ends. */
-function normalised(text: string): string {
+export function normalised(text: string): string {
   return text.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
@@ -74,6 +89,19 @@ function textOfHtml(html: string): string {
 /** A style example this short could match by chance, so it is not compared. */
 const MIN_EXAMPLE_LENGTH = 40;
 
+/** A message's words: its plain text, else its HTML's. */
+export function bodyText(email: Email): string {
+  return email.text ?? textOfHtml(email.html ?? "");
+}
+
+/** Whether a body holds one of the style examples, with case and spacing normalised (A10). */
+export function holdsStyleExample(body: string, styleExamples: readonly string[]): boolean {
+  const words = normalised(body);
+  return styleExamples
+    .map(normalised)
+    .some((example) => example.length >= MIN_EXAMPLE_LENGTH && words.includes(example));
+}
+
 /** A case's ID: the day it was sent and a hash of its message ID, the same on every import. */
 function caseId(email: Email, raw: Uint8Array): string {
   const sent = new Date(email.date ?? "");
@@ -82,10 +110,14 @@ function caseId(email: Email, raw: Uint8Array): string {
   return `${day}-${createHash("sha256").update(key).digest("hex").slice(0, 8)}`;
 }
 
-/** What the import makes of one message. */
+/**
+ * What the import makes of one message. A Takeout message must carry
+ * Gmail's Sent label; a downloaded one has none, and is taken as sent.
+ */
 export async function judgeMessage(
   raw: Uint8Array,
   options: ImportOptions,
+  fromTakeout = true,
 ): Promise<ImportOutcome> {
   let email: Email;
   try {
@@ -95,19 +127,54 @@ export async function judgeMessage(
   }
   if (email.headers.length === 0) return { kind: "malformed", error: "no headers" };
   const labels = email.headers.find((header) => header.key === "x-gmail-labels")?.value ?? "";
-  if (!labels.split(",").some((label) => label.trim().toLowerCase() === "sent")) {
+  if (fromTakeout && !labels.split(",").some((label) => label.trim().toLowerCase() === "sent")) {
     return { kind: "skipped", reason: "not_sent" };
   }
   const wanted = options.attachment.trim().toLowerCase();
   if (!email.attachments.some((part) => (part.filename ?? "").trim().toLowerCase() === wanted)) {
     return { kind: "skipped", reason: "no_resume" };
   }
-  const body = normalised(email.text ?? textOfHtml(email.html ?? ""));
-  const shown = options.styleExamples
-    .map(normalised)
-    .some((example) => example.length >= MIN_EXAMPLE_LENGTH && body.includes(example));
-  if (shown) return { kind: "skipped", reason: "style_example" };
+  const sent = new Date(email.date ?? "").getTime();
+  if (options.jobkitFrom && sent >= options.jobkitFrom.getTime()) {
+    return { kind: "skipped", reason: "after_jobkit" };
+  }
+  if (holdsStyleExample(bodyText(email), options.styleExamples)) {
+    return { kind: "skipped", reason: "style_example" };
+  }
   return { kind: "case", id: caseId(email, raw), subject: email.subject ?? "" };
+}
+
+function emptyReport(): ImportReport {
+  return {
+    cases: [],
+    skipped: { not_sent: 0, no_resume: 0, style_example: 0, after_jobkit: 0 },
+    malformed: [],
+    alreadyImported: 0,
+  };
+}
+
+/** Counts one message's outcome, writing a kept one as a new case unless it is one already. */
+function take(
+  report: ImportReport,
+  archive: string,
+  raw: Uint8Array,
+  outcome: ImportOutcome,
+  where: { index: number; file?: string },
+): void {
+  if (outcome.kind === "malformed") {
+    report.malformed.push({ ...where, error: outcome.error });
+  } else if (outcome.kind === "skipped") {
+    report.skipped[outcome.reason]++;
+  } else {
+    const folder = join(archive, outcome.id);
+    if (existsSync(folder)) {
+      report.alreadyImported++;
+      return;
+    }
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, "email.eml"), raw);
+    report.cases.push({ id: outcome.id, subject: outcome.subject });
+  }
 }
 
 /** Reads an mbox file message by message, so a Takeout export of any size fits in memory. */
@@ -116,12 +183,7 @@ export async function importMbox(
   archive: string,
   options: ImportOptions,
 ): Promise<ImportReport> {
-  const report: ImportReport = {
-    cases: [],
-    skipped: { not_sent: 0, no_resume: 0, style_example: 0 },
-    malformed: [],
-    alreadyImported: 0,
-  };
+  const report = emptyReport();
   // Latin-1 keeps every byte as one character, so a message's bytes come back exactly.
   const lines = createInterface({
     input: createReadStream(file, { encoding: "latin1" }),
@@ -131,23 +193,52 @@ export async function importMbox(
   for await (const text of mboxMessages(lines)) {
     index++;
     const raw = new Uint8Array(Buffer.from(text, "latin1"));
-    const outcome = await judgeMessage(raw, options);
-    if (outcome.kind === "malformed") {
-      report.malformed.push({ index, error: outcome.error });
-    } else if (outcome.kind === "skipped") {
-      report.skipped[outcome.reason]++;
-    } else {
-      const folder = join(archive, outcome.id);
-      if (existsSync(folder)) {
-        report.alreadyImported++;
-        continue;
-      }
-      mkdirSync(folder, { recursive: true });
-      writeFileSync(join(folder, "email.eml"), raw);
-      report.cases.push({ id: outcome.id, subject: outcome.subject });
-    }
+    take(report, archive, raw, await judgeMessage(raw, options), { index });
   }
   return report;
+}
+
+/** Every .eml file in a folder, as Gmail's "Download message" saves one, by the same rules. */
+export async function importEmlFolder(
+  folder: string,
+  archive: string,
+  options: ImportOptions,
+): Promise<ImportReport> {
+  const report = emptyReport();
+  const files = readdirSync(folder)
+    .filter(
+      (file) => extname(file).toLowerCase() === ".eml" && statSync(join(folder, file)).isFile(),
+    )
+    .sort();
+  for (const [i, file] of files.entries()) {
+    const raw = new Uint8Array(readFileSync(join(folder, file)));
+    take(report, archive, raw, await judgeMessage(raw, options, false), { index: i + 1, file });
+  }
+  return report;
+}
+
+/** The archive's record of when jobkit may have begun drafting the owner's mail. */
+export const IMPORT_FILE = "import.json";
+
+const importRecordSchema = z.object({
+  jobkitFrom: z.string().refine((text) => !Number.isNaN(Date.parse(text))),
+});
+
+/**
+ * From when sent mail may be jobkit's drafting, and so a model's words: the
+ * day given, else the one an earlier import kept, else this first import's
+ * time, since jobkit drafts nothing before the archive is set up. Kept in
+ * the archive for every later import.
+ */
+export function jobkitFromOf(archive: string, given: Date | null, now: Date): Date {
+  const file = join(archive, IMPORT_FILE);
+  const kept = existsSync(file)
+    ? new Date(importRecordSchema.parse(JSON.parse(readFileSync(file, "utf8"))).jobkitFrom)
+    : null;
+  const from = given ?? kept ?? now;
+  mkdirSync(archive, { recursive: true });
+  writeFileSync(file, `${JSON.stringify({ jobkitFrom: from.toISOString() }, null, 2)}\n`);
+  return from;
 }
 
 /**
