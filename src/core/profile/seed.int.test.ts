@@ -218,9 +218,17 @@ describe("getActiveProfile", () => {
     ]);
     expect(profile?.emailTemplates[0]?.sentences[1]).toEqual({
       text: "I have shipped React and Next.js applications in production for five years.",
+      kind: "claim",
       facts: ["F-react-production"],
       paragraph_break: false,
     });
+    expect(profile?.emailTemplates[0]?.skills).toEqual([
+      "react",
+      "nextjs",
+      "nodejs",
+      "rest",
+      "postgresql",
+    ]);
     expect(JSON.stringify(profile)).not.toMatch(
       /F-unapproved-example|K-waiting|Not approved yet|T-waiting/,
     );
@@ -234,6 +242,18 @@ describe("getActiveProfile", () => {
         expect.any(String),
         expect.any(String),
       ],
+    });
+  });
+
+  it("reads a version from before email templates as having none", async () => {
+    const start = SAMPLE.indexOf("email_templates:\n");
+    const end = SAMPLE.indexOf("fixed_answers:\n");
+    const { versionId } = await seeded(valid(SAMPLE.slice(0, start) + SAMPLE.slice(end)));
+
+    expect((await getActiveProfile(db))?.emailTemplates).toEqual([]);
+    expect((await profileCounts(db, versionId))?.emailTemplates).toEqual({
+      approved: 0,
+      waiting: 0,
     });
   });
 

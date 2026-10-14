@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { EMAIL_BODY_WORD_LIMIT } from "@/core/shared/email";
 import { isCountryCode, isPlaceCode, isUnclearRegion, placesOverlap } from "@/core/shared/regions";
 import { isSkillTag } from "@/core/shared/skills";
 
@@ -124,13 +125,19 @@ function usesOnlyTemplateFields(sentence: string): boolean {
 }
 
 /**
- * An email template's words at most, placeholders a word each, so the gap
- * lines code adds still fit within the email's limit of 180
- * (src/core/drafting/build.ts, BODY_WORD_LIMIT).
+ * An email template's words at most, a placeholder a word: 60 below the
+ * email's limit, for the gap lines code adds and the post's names. A draft
+ * built from a template is still held to the email's limit, and the post's
+ * own, when it is built.
  */
-export const TEMPLATE_MAX_WORDS = 150;
+export const TEMPLATE_MAX_WORDS = EMAIL_BODY_WORD_LIMIT - 60;
 
-const wordsIn = (text: string) => text.split(/\s+/).filter(Boolean).length;
+/**
+ * What a template sentence is, as a kit block's class says (drafting spec):
+ * a claim rests on the facts it cites; a post sentence names the post's
+ * company or role and nothing more; a courtesy sentence does neither.
+ */
+export const TEMPLATE_SENTENCE_KINDS = ["claim", "post", "courtesy"] as const;
 
 export const FACT_KINDS = [
   "skill",
@@ -171,46 +178,34 @@ export const gapTemplateSchema = z.strictObject({
 });
 
 /**
- * One sentence of an email template (decisions A21): its words, the facts
- * it rests on, none for one that claims nothing, and whether a new
- * paragraph starts after it.
+ * One sentence of an email template (decisions A21): its words, what kind
+ * of sentence it is, the facts it rests on, and whether a new paragraph
+ * starts after it. What its kind asks of it is checked in validate.ts, with
+ * the facts, so every problem is reported in one pass.
  */
 export const templateSentenceSchema = z.strictObject({
   text: text("the sentence").refine(
     usesOnlyTemplateFields,
     "may use only the placeholders {company} and {role}",
   ),
+  kind: z.enum(TEMPLATE_SENTENCE_KINDS),
   facts: z.array(id("F")).default([]),
   paragraph_break: z.boolean().default(false),
 });
 
 /**
  * An email body for a kind of role (decisions A21), drafted by Claude Code
- * and approved by the owner as facts are. It must claim something, and
- * leave room for the gap lines code adds.
+ * and approved by the owner as facts are. Its skills are the ones its words
+ * show, each from a fact it cites, which is what a role's must-haves are
+ * weighed against; none for a general one.
  */
-export const emailTemplateSchema = z
-  .strictObject({
-    id: id("T"),
-    name: text("the name"),
-    sentences: z.array(templateSentenceSchema).min(1, "a template needs a sentence"),
-    approved: z.boolean(),
-  })
-  .superRefine((template, ctx) => {
-    if (!template.sentences.some((sentence) => sentence.facts.length > 0)) {
-      ctx.addIssue({
-        code: "custom",
-        message: "no sentence cites a fact, so the template claims nothing",
-      });
-    }
-    const words = template.sentences.reduce((sum, sentence) => sum + wordsIn(sentence.text), 0);
-    if (words > TEMPLATE_MAX_WORDS) {
-      ctx.addIssue({
-        code: "custom",
-        message: `the template has ${words} words; at most ${TEMPLATE_MAX_WORDS}, so gap lines fit in the email's 180`,
-      });
-    }
-  });
+export const emailTemplateSchema = z.strictObject({
+  id: id("T"),
+  name: text("the name"),
+  skills: z.array(skill),
+  sentences: z.array(templateSentenceSchema).min(1, "a template needs a sentence"),
+  approved: z.boolean(),
+});
 
 const workAuthorisationSchema = z
   .strictObject({

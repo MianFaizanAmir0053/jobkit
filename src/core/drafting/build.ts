@@ -1,5 +1,6 @@
 import type { JobRecord, Role } from "@/core/extraction/record";
 import type { Fact, GapTemplate, KnownGap } from "@/core/profile/schema";
+import { EMAIL_BODY_WORD_LIMIT } from "@/core/shared/email";
 import { skillName, skillTag } from "@/core/shared/skills";
 
 import type { DraftAnswer, EmailKit, FitRow, GapChoice, KitBlock } from "./kit";
@@ -18,7 +19,7 @@ import type { DraftAnswer, EmailKit, FitRow, GapChoice, KitBlock } from "./kit";
 export const NEEDS_YOUR_LINE = "Needs your line";
 export const DEFAULT_GREETING = "Dear Hiring Team,";
 export const CLOSING = "Kind regards,";
-export const BODY_WORD_LIMIT = 180;
+export const BODY_WORD_LIMIT = EMAIL_BODY_WORD_LIMIT;
 const KEYWORD_MAX_LENGTH = 40;
 
 type Requirement = Role["requirements"][number];

@@ -82,32 +82,44 @@ gaps:
 email_templates:
   - id: T-full-stack
     name: Full-stack engineer
+    skills: [react, nextjs, nodejs, rest, postgresql]
     sentences:
       - text: "I'm writing about the {role} role at {company}."
+        kind: post
         paragraph_break: true
       - text: "I have shipped React and Next.js applications in production for five years."
+        kind: claim
         facts: [F-react-production]
       - text: "I have also designed and run Node.js REST APIs on PostgreSQL in production."
+        kind: claim
         facts: [F-node-apis]
         paragraph_break: true
       - text: "I would welcome a call about how I could help."
+        kind: courtesy
     approved: true
   - id: T-ai-features
     name: AI features
+    skills: [rag, nodejs, rest, postgresql]
     sentences:
       - text: "I'm writing about the {role} role at {company}."
+        kind: post
         paragraph_break: true
       - text: "I shipped a RAG feature over customer documents that is used in production."
+        kind: claim
         facts: [F-rag-feature]
-      - text: "I build the APIs around such features in Node.js on PostgreSQL."
+      - text: "I have designed and run Node.js REST APIs on PostgreSQL in production too."
+        kind: claim
         facts: [F-node-apis]
         paragraph_break: true
       - text: "I would welcome a call about how I could help."
+        kind: courtesy
     approved: true
   - id: T-waiting
     name: Waiting for approval
+    skills: [react]
     sentences:
       - text: "This template is waiting for approval and must never appear in a draft."
+        kind: claim
         facts: [F-react-production]
     approved: false
 fixed_answers:

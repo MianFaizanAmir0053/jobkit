@@ -517,9 +517,12 @@ describe("validateProfile", () => {
 
   it("rejects an email template citing a fact the file does not have, or, approved, one waiting", () => {
     const text = SAMPLE.replace(
-      '        facts: [F-react-production]\n      - text: "I have also',
-      '        facts: [F-no-such-fact]\n      - text: "I have also',
-    ).replace("        facts: [F-rag-feature]", "        facts: [F-unapproved-example]");
+      "        facts: [F-react-production]",
+      "        facts: [F-no-such-fact]",
+    ).replace(
+      "kind: claim\n        facts: [F-react-production]\n    approved: false",
+      "kind: claim\n        facts: [F-unapproved-example]\n    approved: true",
+    );
 
     expect(problemsOf(text)).toEqual([
       {
@@ -529,45 +532,140 @@ describe("validateProfile", () => {
       {
         line: lineOf(text, "facts: [F-unapproved-example]"),
         message:
-          "email_templates[1].sentences[1].facts[0]: is waiting for approval, so an approved template cannot cite it",
+          "email_templates[2].sentences[0].facts[0]: is waiting for approval, so an approved template cannot cite it",
       },
     ]);
   });
 
   it("lets a template waiting for approval cite a fact waiting too", () => {
     const text = SAMPLE.replace(
-      'must never appear in a draft."\n        facts: [F-react-production]',
-      'must never appear in a draft."\n        facts: [F-unapproved-example]',
+      'must never appear in a draft."\n        kind: claim\n        facts: [F-react-production]',
+      'must never appear in a draft."\n        kind: claim\n        facts: [F-unapproved-example]',
     );
 
+    expect(text).toContain("facts: [F-unapproved-example]");
     expect(validateProfile(text, sampleFiles())).toMatchObject({ ok: true });
   });
 
-  it("rejects an email template that cites no fact, or runs past 150 words", () => {
-    const long = Array.from({ length: 150 }, () => "word").join(" ");
+  it("holds each sentence to its kind: a claim cites a fact, a courtesy sentence none", () => {
     const text = SAMPLE.replace(
-      '      - text: "I have shipped React and Next.js applications in production for five years."\n        facts: [F-react-production]\n',
-      '      - text: "I have shipped React and Next.js applications in production for five years."\n',
+      'help."\n        kind: courtesy\n    approved: true\n  - id: T-ai-features',
+      'help."\n        kind: claim\n    approved: true\n  - id: T-ai-features',
+    ).replace(
+      'must never appear in a draft."\n        kind: claim',
+      'must never appear in a draft."\n        kind: courtesy',
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, '- text: "I would welcome a call about how I could help."'),
+        message: "email_templates[0].sentences[3]: a claim cites the facts it rests on",
+      },
+      {
+        line: lineOf(text, "facts: [F-react-production]", "This template is waiting"),
+        message:
+          "email_templates[2].sentences[0].facts: a courtesy sentence claims nothing, so it cites no fact",
+      },
+    ]);
+  });
+
+  it("holds each sentence to its kind: a post sentence names the post, a claim or courtesy sentence does not", () => {
+    const text = SAMPLE.replace(
+      "I'm writing about the {role} role at {company}.",
+      "I'm writing about this role.",
     )
       .replace(
-        '      - text: "I have also designed and run Node.js REST APIs on PostgreSQL in production."\n        facts: [F-node-apis]\n',
-        '      - text: "I have also designed and run Node.js REST APIs on PostgreSQL in production."\n',
+        "I would welcome a call about how I could help.",
+        "I would welcome a call about how I could help at {company}.",
       )
       .replace(
-        "I build the APIs around such features in Node.js on PostgreSQL.",
-        `I build the APIs around such features: ${long}.`,
+        '- text: "I shipped a RAG feature over customer documents that is used in production."',
+        '- text: "I shipped a RAG feature like {company}\'s that is used in production."',
       );
 
     expect(problemsOf(text)).toEqual([
       {
-        line: lineOf(text, "id: T-full-stack"),
-        message: "email_templates[0]: no sentence cites a fact, so the template claims nothing",
+        line: lineOf(text, "I'm writing about this role."),
+        message: "email_templates[0].sentences[0].text: a post sentence names {company} or {role}",
       },
       {
-        line: lineOf(text, "id: T-ai-features"),
-        // 8, 13, 7 and the 150 added, and 10: the placeholders count as a word each.
+        line: lineOf(text, "help at {company}."),
         message:
-          "email_templates[1]: the template has 188 words; at most 150, so gap lines fit in the email's 180",
+          "email_templates[0].sentences[3].text: a courtesy sentence names nothing from the post",
+      },
+      {
+        line: lineOf(text, "like {company}'s"),
+        message:
+          "email_templates[1].sentences[1].text: a claim names nothing from the post; say that in a post sentence",
+      },
+    ]);
+  });
+
+  it("rejects an email template past 120 words, leaving room for gap lines and the post's names", () => {
+    const long = Array.from({ length: 100 }, () => "word").join(" ");
+    const text = SAMPLE.replace(
+      "I have designed and run Node.js REST APIs on PostgreSQL in production too.",
+      `I have designed and run Node.js REST APIs on PostgreSQL in production too: ${long}.`,
+    );
+
+    // 8, 13, 13 with the 100 added, and 10: a placeholder counts as a word.
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "id: T-ai-features"),
+        message:
+          "email_templates[1]: the template has 144 words; at most 120, to leave room for gap lines and the post's names",
+      },
+    ]);
+  });
+
+  it("rejects a template skill that no fact it cites shows", () => {
+    const text = SAMPLE.replace(
+      "skills: [rag, nodejs, rest, postgresql]",
+      "skills: [rag, nodejs, rest, postgresql, docker]",
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "postgresql, docker]"),
+        message: "email_templates[1].skills[4]: no fact this template cites shows this skill",
+      },
+    ]);
+  });
+
+  it("rejects an ID from the file in a template's words", () => {
+    const text = SAMPLE.replace(
+      '- text: "I shipped a RAG feature over customer documents that is used in production."',
+      '- text: "I shipped a RAG feature (F-rag-feature) over customer documents that is used in production."',
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "(F-rag-feature)"),
+        message:
+          "email_templates[1].sentences[1].text: holds an ID from this file; IDs go in facts, never in the words",
+      },
+    ]);
+  });
+
+  it("reports a template's length in the same pass as a wrong value inside it", () => {
+    const long = Array.from({ length: 100 }, () => "word").join(" ");
+    const text = SAMPLE.replace(
+      "I have designed and run Node.js REST APIs on PostgreSQL in production too.",
+      `I have designed and run Node.js REST APIs on PostgreSQL in production too: ${long}.`,
+    ).replace(
+      'kind: post\n        paragraph_break: true\n      - text: "I shipped',
+      'kind: post\n        paragraph_break: sometimes\n      - text: "I shipped',
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "id: T-ai-features"),
+        message:
+          "email_templates[1]: the template has 144 words; at most 120, to leave room for gap lines and the post's names",
+      },
+      {
+        line: lineOf(text, "paragraph_break: sometimes"),
+        message: expect.stringMatching(/^email_templates\[1\]\.sentences\[0\]\.paragraph_break: /),
       },
     ]);
   });

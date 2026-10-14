@@ -45,8 +45,10 @@ const COLUMNS = "id, created_at, document, style_examples, cv_path, cv_label";
 /**
  * Versions are kept for good, for citation lookups, and their documents
  * were checked when they were seeded, so they are read as stored. A change
- * to the profile schema must raise its `schema:` number and read older
- * versions by theirs.
+ * to the profile schema that older documents cannot be read under must
+ * raise its `schema:` number and read older versions by theirs. An
+ * optional addition keeps the number, and older documents read it as
+ * missing: email_templates (decisions A21) reads as none.
  */
 function toProfile(row: Row): Profile {
   const document = row.document;
