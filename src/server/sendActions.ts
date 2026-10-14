@@ -3,7 +3,7 @@ import { z, type ZodType } from "zod";
 
 import { chosenRole } from "@/core/extraction/owner";
 import type { Clock, Db, GmailSender, Storage } from "@/core/ports";
-import { type KitSend, latestSend, UNDO_MS } from "@/core/review/kitSends";
+import { asShown, type KitSend, latestSend, UNDO_MS } from "@/core/review/kitSends";
 import { type DeliverOutcome, deliverSend, scheduleSend, undoSend } from "@/core/review/send";
 import { isUuid } from "@/lib/uuid";
 import { type AppConfig, appConfig } from "@/server/config";
@@ -17,8 +17,9 @@ import { NO_STORE, readLimited, refusal, sessionForChange, sessionForRead } from
  * page's nudge to deliver as its countdown ends, and the send as it stands,
  * for the page to follow. Each needs an approved session, and each change
  * the app's own origin. The press schedules the delivery with after(), so
- * the email goes though the page is closed; the page's nudge covers a
- * server that restarted meanwhile. Either way it goes once.
+ * the email goes though the page is closed, while the server runs; the
+ * page's nudge covers a server that restarted meanwhile. Either way it goes
+ * once, and a try that meets a dropped database connection is tried again.
  */
 
 export type SendDeps = {
@@ -40,8 +41,12 @@ const ok = (status: number, body: object) => NextResponse.json(body, { status, h
 
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** The send as the page shows it, with what is left of its countdown by the server's clock. */
-function shown(send: KitSend, now: Date) {
+/**
+ * The send as the page shows it, one a stopped server left behind as it now
+ * stands, with what is left of its countdown by the server's clock.
+ */
+function shown(stored: KitSend, now: Date) {
+  const send = asShown(stored, now);
   return {
     id: send.id,
     kit: send.kit,
@@ -72,6 +77,23 @@ async function bodyOf<T>(
     : { ok: false, response: refusal(400, "invalid") };
 }
 
+/**
+ * One delivery, tried again after a throw, as a dropped database connection
+ * gives: a claim taken before the throw leaves the send sending, which the
+ * next try leaves alone, so it never goes twice.
+ */
+async function tryDeliver(deps: SendDeps, jobId: string, sendId: string): Promise<DeliverOutcome> {
+  const sleep = deps.sleep ?? wait;
+  for (let tries = 1; ; tries++) {
+    try {
+      return await deliverSend(deps, jobId, sendId);
+    } catch (error) {
+      if (tries >= 3) throw error;
+      await sleep(1_000 * tries);
+    }
+  }
+}
+
 /** Delivers once the countdown is over, waiting out what is left of it, ten seconds at most. */
 async function deliverWhenDue(
   deps: SendDeps,
@@ -79,11 +101,11 @@ async function deliverWhenDue(
   sendId: string,
 ): Promise<DeliverOutcome> {
   const sleep = deps.sleep ?? wait;
-  let outcome = await deliverSend(deps, jobId, sendId);
+  let outcome = await tryDeliver(deps, jobId, sendId);
   for (let tries = 0; tries < 3 && !outcome.ok && outcome.reason === "not-due"; tries++) {
     const left = outcome.send.sendAt.getTime() - deps.clock.now().getTime();
     await sleep(Math.min(Math.max(left, 0), UNDO_MS) + 50);
-    outcome = await deliverSend(deps, jobId, sendId);
+    outcome = await tryDeliver(deps, jobId, sendId);
   }
   return outcome;
 }
@@ -93,8 +115,9 @@ const sendBody = z.object({ kit: z.string().min(1).max(100), to: z.string().max(
 
 /**
  * POST /api/jobs/<id>/send: "Approve & send", answered with the send and
- * its countdown; refused while Gmail is not connected, while a hard stop
- * holds the kit, or when the page showed another kit or address.
+ * its countdown; refused while Gmail is not connected or jobkit can no
+ * longer use it, while a hard stop holds the kit, or when the page showed
+ * another kit or address.
  */
 export async function send(
   request: NextRequest,
@@ -106,7 +129,9 @@ export async function send(
   if (!isUuid(jobId)) return refusal(404, "not-found");
   const body = await bodyOf(request, sendBody);
   if (!body.ok) return body.response;
-  if (!(await gmailConnection(deps.db))) return refusal(409, "gmail-not-connected");
+  const connection = await gmailConnection(deps.db);
+  if (!connection) return refusal(409, "gmail-not-connected");
+  if (connection.refusedAt) return refusal(409, "gmail-refused");
   const scheduled = await scheduleSend(deps, jobId, {
     ...body.data,
     sessionId: actor.session.id,
@@ -175,7 +200,8 @@ export function appSendDeps(container: Container, schedule: SendDeps["schedule"]
   return {
     ...container,
     config,
-    gmail: () => connectedGmail({ db: container.db, kind: container.kind, config }),
+    gmail: () =>
+      connectedGmail({ db: container.db, clock: container.clock, kind: container.kind, config }),
     schedule,
   };
 }

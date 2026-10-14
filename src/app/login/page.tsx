@@ -12,7 +12,8 @@ const MESSAGES: Record<string, string> = {
 
 export default async function LoginPage({ searchParams }: PageProps<"/login">) {
   const { error } = await searchParams;
-  const message = typeof error === "string" ? MESSAGES[error] : undefined;
+  const message =
+    typeof error === "string" && Object.hasOwn(MESSAGES, error) ? MESSAGES[error] : undefined;
 
   return (
     <main className="mx-auto flex min-h-dvh max-w-sm flex-col justify-center px-4 py-12">

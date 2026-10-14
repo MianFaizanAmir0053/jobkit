@@ -100,6 +100,8 @@ export async function readyKit(
     draft?: DraftAnswer;
     dns?: Dns;
     verdicts?: BlockVerdict[] | "before the judge";
+    /** Changes the synthetic record extract answers with. */
+    record?: (record: JobRecord) => JobRecord;
   } = {},
 ): Promise<string> {
   const { db, clock, storage } = bed;
@@ -108,9 +110,10 @@ export async function readyKit(
     { images: [], pastedText: text, clientElapsedMs: 0 },
   );
   if (!started.ok) throw new Error(started.message);
-  const record = JSON.parse(
+  const read = JSON.parse(
     readFileSync(join(SYNTHETIC, "records", "S01-email-simple.json"), "utf8"),
   ) as JobRecord;
+  const record = opts.record ? opts.record(read) : read;
   const llm: FakeLlm = fakeLlm([answer(record), answer(opts.draft ?? KIT_DRAFT)]);
   const models: ModelCallDeps = { db, clock, llmFor: () => llm, guard: async () => ({ ok: true }) };
   const pipeline: Pipeline = {

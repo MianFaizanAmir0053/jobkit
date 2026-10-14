@@ -3,19 +3,32 @@ import type { Db } from "@/core/ports";
 /**
  * The record of each "Approve & send" (decisions A20), kept in kit_sends:
  * the kit and the address it was pressed on, when it is due, and how it
- * went. A send counting down or sending holds the kit, so nothing else
- * sends it meanwhile; one a stopped server left behind does not hold it for
- * ever.
+ * went: sent, failed, cancelled by Undo, or unknown, when Gmail may have
+ * taken it. A send counting down or sending holds the kit, so nothing else
+ * sends it meanwhile. One a stopped server left behind holds it no longer,
+ * and reads as it then stands: one never sent lapsed, and one left sending
+ * may have gone.
  */
 
 /** How long the owner has to press Undo. */
 export const UNDO_MS = 10_000;
 /** A send not delivered this long after it was due lapses: jobkit never sends late. */
 export const LATE_MS = 2 * 60_000;
-/** A send still sending this long after it began was lost by a server that stopped. */
+/**
+ * A send still sending this long after it began was lost by a server that
+ * stopped. Every step of a delivery has its own limit, together well within
+ * this.
+ */
 export const STUCK_MS = 2 * 60_000;
 
-export type SendStatus = "scheduled" | "cancelled" | "sending" | "sent" | "failed";
+/** What the owner reads about a send nothing delivered in time. */
+export const LAPSED =
+  "Not sent: jobkit was not running when it was due, and it never sends late. Press Approve & send again.";
+/** What the owner reads about a send a stopped server left sending. */
+export const LOST =
+  "jobkit lost track of this send while Gmail had it, so it may have gone. Check your Gmail Sent folder: if it went, use Mark sent; if not, press Approve & send again.";
+
+export type SendStatus = "scheduled" | "cancelled" | "sending" | "sent" | "failed" | "unknown";
 
 export interface KitSend {
   id: string;
@@ -25,7 +38,7 @@ export interface KitSend {
   to: string;
   sendAt: Date;
   messageId: string | null;
-  /** Why it was not sent, in the owner's words. */
+  /** Why it was not sent, or may not have been, in the owner's words. */
   error: string | null;
   updatedAt: Date;
 }
@@ -72,13 +85,28 @@ export function isLive(send: Pick<KitSend, "status" | "sendAt" | "updatedAt">, n
 }
 
 /**
- * The send the job page shows for a role: the one counting down, sending or
- * sent, of which there is at most one; else the latest.
+ * A send as the owner should read it now: one a stopped server left behind
+ * reads as lapsed, or, left sending, as unknown, before anything settles
+ * its row.
+ */
+export function asShown(send: KitSend, now: Date): KitSend {
+  if (isLive(send, now)) return send;
+  if (send.status === "scheduled") return { ...send, status: "failed", error: LAPSED };
+  if (send.status === "sending") return { ...send, status: "unknown", error: LOST };
+  return send;
+}
+
+/**
+ * The send the job page shows for a role: the one in flight, of which there
+ * is at most one; else the one Gmail took; else the latest.
  */
 export async function latestSend(db: Db, jobId: string, roleId: string): Promise<KitSend | null> {
   const { rows } = await db.query<SendRow>(
     `select ${SEND_COLUMNS} from {{schema}}.kit_sends where job_id = $1 and role_id = $2
-      order by (status in ('scheduled', 'sending', 'sent')) desc, created_at desc
+      order by case when status in ('scheduled', 'sending') then 0
+                    when status = 'sent' then 1
+                    else 2 end,
+               created_at desc
       limit 1`,
     [jobId, roleId],
   );

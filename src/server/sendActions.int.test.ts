@@ -11,6 +11,8 @@ import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { issueSession } from "@/core/platform/sessions";
+import type { Db, QueryResult, Row } from "@/core/ports";
+import { LATE_MS } from "@/core/review/kitSends";
 import { jobView } from "@/core/review/jobView";
 import { readyKit, resetKitBed } from "@/core/review/testKit";
 import type { AppConfig } from "@/server/config";
@@ -35,8 +37,8 @@ let storage: LocalStorage;
 let gmail: FakeGmail;
 let scheduled: (() => Promise<unknown>)[];
 
-const deps = () => ({
-  db,
+const deps = (database: Db = db) => ({
+  db: database,
   clock,
   storage,
   config,
@@ -78,6 +80,24 @@ function post(path: string, body: object, cookie?: string, origin = ORIGIN): Nex
     headers,
     body: JSON.stringify(body),
   });
+}
+
+/** The database, its first claim of a send failing as on a dropped connection. */
+function droppingFirstClaim(inner: Db): Db {
+  let dropped = false;
+  const wrap = (base: Db): Db => ({
+    schema: base.schema,
+    query: <T extends Row = Row>(sql: string, params?: readonly unknown[]) => {
+      if (!dropped && sql.includes("kit_sends") && sql.includes("for update")) {
+        dropped = true;
+        return Promise.reject<QueryResult<T>>(new Error("connection lost"));
+      }
+      return base.query<T>(sql, params);
+    },
+    exec: (sql) => base.exec(sql),
+    tx: (fn) => base.tx((tx) => fn(wrap(tx))),
+  });
+  return wrap(inner);
 }
 
 /** What the job page shows as the owner presses Send: the kit and the address. */
@@ -156,6 +176,34 @@ describe("POST /api/jobs/<id>/send", () => {
     expect(scheduled).toEqual([]);
   });
 
+  it("refuses while jobkit can no longer use the Gmail connection", async () => {
+    const cookie = await signedIn();
+    await connectGmail();
+    await db.query("update {{schema}}.gmail_connection set refused_at = $1", [clock.now()]);
+    const id = await readyKit({ db, clock, storage }, POST);
+
+    const response = await send(
+      post(`/api/jobs/${id}/send`, await pressedOn(id), cookie),
+      deps(),
+      id,
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "gmail-refused" });
+  });
+
+  it("delivers though its first try met a dropped connection", async () => {
+    const cookie = await signedIn();
+    await connectGmail();
+    const id = await readyKit({ db, clock, storage }, POST);
+    const flaky = deps(droppingFirstClaim(db));
+
+    await send(post(`/api/jobs/${id}/send`, await pressedOn(id), cookie), flaky, id);
+    await drain();
+
+    expect(gmail.sent).toHaveLength(1);
+  });
+
   it("refuses a press from a page drawn on another kit", async () => {
     const cookie = await signedIn();
     await connectGmail();
@@ -196,6 +244,23 @@ describe("POST /api/jobs/<id>/send/undo and /deliver", () => {
     expect((await nudged.json()).send).toMatchObject({ status: "cancelled" });
     await drain();
     expect(gmail.sent).toEqual([]);
+  });
+
+  it("gives a send nothing delivered in time as not sent", async () => {
+    const cookie = await signedIn();
+    await connectGmail();
+    const id = await readyKit({ db, clock, storage }, POST);
+    await send(post(`/api/jobs/${id}/send`, await pressedOn(id), cookie), deps(), id);
+    // The server restarted, and the page was closed.
+    scheduled = [];
+    clock.advance(10_000 + LATE_MS + 1);
+
+    const state = await sendState(get(`/api/jobs/${id}/send`, cookie), deps(), id);
+
+    expect((await state.json()).send).toMatchObject({
+      status: "failed",
+      error: expect.stringMatching(/not sent/i),
+    });
   });
 
   it("delivers on the page's nudge when the server lost its own", async () => {

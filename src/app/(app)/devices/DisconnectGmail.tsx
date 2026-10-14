@@ -5,7 +5,10 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
-/** Disconnects Gmail: jobkit forgets the connection and revokes its token at Google. */
+/**
+ * Disconnects Gmail: jobkit revokes its token at Google and forgets the
+ * connection, then the page says whether Google confirmed it.
+ */
 export function DisconnectGmail({ email }: { email: string }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -17,8 +20,12 @@ export function DisconnectGmail({ email }: { email: string }) {
     setError(null);
     try {
       const response = await fetch("/api/gmail/disconnect", { method: "POST" });
-      if (!response.ok) setError("That did not work. Try again.");
-      router.refresh();
+      if (!response.ok) {
+        setError("That did not work. Try again.");
+        return;
+      }
+      const { revoked } = (await response.json()) as { revoked?: boolean };
+      router.replace(`/devices?gmail=${revoked ? "disconnected" : "unrevoked"}`);
     } catch {
       setError("The connection dropped. Try again.");
     } finally {

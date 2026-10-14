@@ -63,14 +63,12 @@ describe("createGmailSender", () => {
     expect(await sender().send(MESSAGE)).toMatchObject({ ok: false, reason: "unauthorised" });
   });
 
-  it("fails, and says why, when Gmail errs or the token cannot be refreshed", async () => {
-    google((url) =>
-      url === TOKEN_URL ? tokens() : new Response("backend error", { status: 500 }),
-    );
+  it("fails, and says why, when Gmail refuses the message or the token cannot be refreshed", async () => {
+    google((url) => (url === TOKEN_URL ? tokens() : new Response("bad request", { status: 400 })));
     expect(await sender().send(MESSAGE)).toEqual({
       ok: false,
       reason: "failed",
-      message: "Gmail answered 500: backend error",
+      message: "Gmail answered 400: bad request",
     });
 
     // Nothing was sent: the token's own request never reached Google.
@@ -91,6 +89,54 @@ describe("createGmailSender", () => {
       reason: "unknown",
       message: "fetch failed",
     });
+  });
+
+  it("says the email may have gone when Google's servers err, since they may have sent it", async () => {
+    for (const status of [500, 502, 503, 504]) {
+      google((url) => (url === TOKEN_URL ? tokens() : new Response("backend error", { status })));
+      expect(await sender().send(MESSAGE)).toEqual({
+        ok: false,
+        reason: "unknown",
+        message: `Gmail answered ${status}: backend error`,
+      });
+    }
+  });
+
+  it("says Gmail's sending limit was reached, not to connect again, on a rate or quota answer", async () => {
+    const limited = {
+      error: {
+        code: 403,
+        message: "User-rate limit exceeded",
+        errors: [{ reason: "userRateLimitExceeded" }],
+        status: "PERMISSION_DENIED",
+      },
+    };
+    google((url) => (url === TOKEN_URL ? tokens() : Response.json(limited, { status: 403 })));
+    expect(await sender().send(MESSAGE)).toMatchObject({
+      ok: false,
+      reason: "failed",
+      message: expect.stringMatching(/limit/),
+    });
+
+    google((url) =>
+      url === TOKEN_URL ? tokens() : new Response("Too many requests", { status: 429 }),
+    );
+    expect(await sender().send(MESSAGE)).toMatchObject({ ok: false, reason: "failed" });
+  });
+
+  it("gives up on a token refresh that hangs, having sent nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      google((url) => (url === TOKEN_URL ? new Promise<Response>(() => {}) : tokens()));
+      const sending = sender().send(MESSAGE);
+
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(await sending).toMatchObject({ ok: false, reason: "failed" });
+      expect(requests.map((request) => request.url)).toEqual([TOKEN_URL]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refuses a message larger than Gmail takes, without sending it", async () => {

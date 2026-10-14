@@ -11,9 +11,12 @@ import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { emailBody } from "@/core/drafting/kit";
 import type { GmailSender } from "@/core/ports";
+import { cryptoRandom } from "@/adapters/random";
+import { issueSession } from "@/core/platform/sessions";
 import { createTestDb } from "@/server/db/testDb";
 
 import { NO_DECISIONS } from "./decisions";
+import { storedDecisions } from "./jobView";
 import { type JobView, jobView } from "./jobView";
 import { recordReview } from "./kitReview";
 import { markSent, takeBackSent } from "./markSent";
@@ -31,29 +34,39 @@ let connected: boolean;
 
 const POST = "Northwind Analytics is hiring. Apply to jobs@example.com.";
 
-const readyKit = (text: string) => kitFor({ db, clock, storage }, text);
+const readyKit = (text: string, opts?: Parameters<typeof kitFor>[2]) =>
+  kitFor({ db, clock, storage }, text, opts);
 
 const view = async (id: string): Promise<JobView> => (await jobView({ db, clock }, id))!;
 
-const sendDeps = () => ({
+/** The delivery's ports: the fake Gmail, or one that does something more as it sends. */
+const sendDeps = (sender: GmailSender = gmail) => ({
   db,
   clock,
   storage,
-  gmail: async (): Promise<GmailSender | null> => (connected ? gmail : null),
+  gmail: async (): Promise<GmailSender | null> => (connected ? sender : null),
+});
+
+/** A Gmail that runs `meanwhile` while it has the email, then sends it as the fake does. */
+const slowGmail = (meanwhile: () => Promise<void>): GmailSender => ({
+  async send(message) {
+    await meanwhile();
+    return gmail.send(message);
+  },
 });
 
 /** What the page showed as the owner pressed Send: the kit and the address. */
-const pressed = (shown: JobView) => ({
+const pressed = (shown: JobView, sessionId: string | null = null) => ({
   kit: shown.kitKey!,
   to: shown.handoff!.to,
-  sessionId: null,
+  sessionId,
 });
 
 const kinds = (shown: JobView) => shown.review!.gate.map((reason) => reason.kind);
 
 /** Presses Approve & send on the kit as it stands. */
-async function press(id: string) {
-  const scheduled = await scheduleSend({ db, clock }, id, pressed(await view(id)));
+async function press(id: string, sessionId: string | null = null) {
+  const scheduled = await scheduleSend({ db, clock }, id, pressed(await view(id), sessionId));
   if (!scheduled.ok) throw new Error(`not scheduled: ${scheduled.reason}`);
   return scheduled.send;
 }
@@ -176,7 +189,7 @@ describe("scheduleSend", () => {
     expect(gmail.sent).toHaveLength(1);
   });
 
-  it("frees a send jobkit lost track of, so the owner can press again", async () => {
+  it("says a send jobkit lost track of may have gone, then lets the owner press again", async () => {
     const id = await readyKit(POST);
     const lost = await press(id);
     // The server stopped while Gmail was sending it.
@@ -186,7 +199,15 @@ describe("scheduleSend", () => {
     );
     expect(kinds(await view(id))).toEqual(["sending"]);
     clock.advance(STUCK_MS + 1);
-    expect(kinds(await view(id))).toEqual([]);
+
+    // Before any press, the page says it cannot tell, and Mark sent is open for when it went.
+    const stuck = await view(id);
+    expect(kinds(stuck)).toEqual([]);
+    expect(stuck.send).toMatchObject({
+      id: lost.id,
+      status: "unknown",
+      error: expect.stringMatching(/Sent folder/),
+    });
 
     const again = await press(id);
 
@@ -195,7 +216,45 @@ describe("scheduleSend", () => {
       "select status, error from {{schema}}.kit_sends where id = $1",
       [lost.id],
     );
-    expect(rows[0]).toEqual({ status: "failed", error: expect.stringMatching(/Sent folder/) });
+    expect(rows[0]).toEqual({ status: "unknown", error: expect.stringMatching(/Sent folder/) });
+  });
+
+  it("is not offered for a post that asks for a file besides the CV, ticked or not", async () => {
+    const id = await readyKit(POST, {
+      record: (record) => ({
+        ...record,
+        roles: record.roles.map((role) => ({
+          ...role,
+          required_attachments: [
+            { name: "CV", is_cv: true },
+            { name: "Writing sample", is_cv: false },
+          ],
+        })),
+      }),
+    });
+    const dns = { db, clock, dns: offlineDns() };
+    await recordReview(dns, id, { kind: "check", blockId: "S1" });
+    expect(await scheduleSend({ db, clock }, id, pressed(await view(id)))).toEqual({
+      ok: false,
+      reason: "attachment",
+    });
+
+    // The tick promises to attach it in Gmail, which this way never opens.
+    await recordReview(dns, id, { kind: "attach", id: "A2", ticked: true });
+    expect(kinds(await view(id))).toEqual([]);
+    expect(await scheduleSend({ db, clock }, id, pressed(await view(id)))).toEqual({
+      ok: false,
+      reason: "attachment",
+    });
+  });
+
+  it("takes no decision while jobkit sends the email", async () => {
+    const id = await readyKit(POST);
+    await press(id);
+
+    expect(
+      await recordReview({ db, clock, dns: offlineDns() }, id, { kind: "uncheck", blockId: "S1" }),
+    ).toEqual({ ok: false, reason: "sending" });
   });
 });
 
@@ -230,6 +289,16 @@ describe("undoSend", () => {
       ok: false,
       reason: "not-found",
     });
+  });
+
+  it("takes Undo of a send that failed as done: it did not go", async () => {
+    const id = await readyKit(POST);
+    gmail.answerWith({ ok: false, reason: "failed", message: "Gmail answered 400: bad request" });
+    const send = await press(id);
+    clock.advance(UNDO_MS);
+    await deliverSend(sendDeps(), id, send.id);
+
+    expect(await undoSend({ db, clock }, id, send.id)).toEqual({ ok: true });
   });
 });
 
@@ -292,8 +361,12 @@ describe("deliverSend", () => {
   it("sends nothing when the kit changed during the countdown", async () => {
     const id = await readyKit(POST);
     const send = await press(id);
-    // On the phone, the owner takes back "I checked this".
-    await recordReview({ db, clock, dns: offlineDns() }, id, { kind: "uncheck", blockId: "S1" });
+    // The kit is drafted again: its S1 is another sentence now.
+    await db.query(
+      `update {{schema}}.job_stage_runs set output_hash = 'drafted again'
+        where job_id = $1 and stage = 'draft'`,
+      [id],
+    );
     clock.advance(UNDO_MS);
 
     expect(await deliverSend(sendDeps(), id, send.id)).toMatchObject({
@@ -334,7 +407,7 @@ describe("deliverSend", () => {
     clock.advance(UNDO_MS);
 
     expect(await deliverSend(sendDeps(), id, send.id)).toMatchObject({
-      send: { status: "failed", error: expect.stringMatching(/cannot tell.*Sent folder/) },
+      send: { status: "unknown", error: expect.stringMatching(/cannot tell.*Sent folder/) },
     });
     // Mark sent is open, for when it went.
     expect(kinds(await view(id))).toEqual([]);
@@ -357,12 +430,101 @@ describe("deliverSend", () => {
     });
   });
 
+  it("records an email Gmail took though the session that pressed it signed out meanwhile", async () => {
+    const id = await readyKit(POST);
+    const { session } = await issueSession(
+      { db, clock, random: cryptoRandom },
+      { kind: "google", label: "phone" },
+    );
+    const send = await press(id, session.id);
+    clock.advance(UNDO_MS);
+    const signingOut = slowGmail(async () => {
+      await db.query("delete from {{schema}}.sessions where id = $1", [session.id]);
+    });
+
+    expect(await deliverSend(sendDeps(signingOut), id, send.id)).toMatchObject({
+      send: { status: "sent", messageId: "m1", error: null },
+    });
+    expect((await view(id)).application!.status).toBe("sent");
+  });
+
+  it("records an email Gmail took after a press made meanwhile, which then finds it sent", async () => {
+    const id = await readyKit(POST);
+    const first = await press(id);
+    clock.advance(UNDO_MS);
+    let second = "";
+    // Gmail takes longer than jobkit waits for it, and the owner presses again meanwhile.
+    const slow = slowGmail(async () => {
+      clock.advance(STUCK_MS + 1);
+      second = (await press(id)).id;
+    });
+
+    expect(await deliverSend(sendDeps(slow), id, first.id)).toMatchObject({
+      send: { status: "sent", messageId: "m1" },
+    });
+    clock.advance(UNDO_MS);
+    expect(await deliverSend(sendDeps(), id, second)).toMatchObject({
+      send: { status: "failed", error: expect.stringMatching(/already/) },
+    });
+    expect(gmail.sent).toHaveLength(1);
+  });
+
+  it("records in the ledger the address the email went to", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply on our site.");
+    const dns = { db, clock, dns: offlineDns() };
+    await recordReview(dns, id, { kind: "retype", value: "hr@northwind.io" });
+    const send = await press(id);
+    clock.advance(UNDO_MS);
+    const { kitKey, role } = await view(id);
+    // Another address is kept as Gmail sends, by a way the page no longer offers.
+    const retyped = slowGmail(async () => {
+      await db.query(
+        "update {{schema}}.kit_reviews set decisions = $3::jsonb where job_id = $1 and role_id = $2",
+        [
+          id,
+          role!.id,
+          storedDecisions(kitKey!, {
+            ...NO_DECISIONS,
+            checked: ["S1"],
+            retyped: { value: "careers@northwind.io", checks: [] },
+          }),
+        ],
+      );
+    });
+
+    await deliverSend(sendDeps(retyped), id, send.id);
+
+    const { rows } = await db.query<{ address: string }>(
+      "select address from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ address: "hr@northwind.io" }]);
+  });
+
+  it("holds the kit as sent once jobkit sent it, though the ledger did not record it", async () => {
+    const id = await readyKit(POST);
+    const { kitKey, role } = await view(id);
+    await db.query(
+      `insert into {{schema}}.kit_sends
+         (job_id, role_id, kit, to_address, status, send_at, gmail_message_id, created_at, updated_at)
+       values ($1, $2, $3, 'jobs@example.com', 'sent', $4, 'm9', $4, $4)`,
+      [id, role!.id, kitKey, clock.now()],
+    );
+
+    expect(kinds(await view(id))).toEqual(["sent"]);
+  });
+
   it("lets a send whose moment passed lapse, rather than send it late", async () => {
     const id = await readyKit(POST);
     const send = await press(id);
     clock.advance(UNDO_MS + LATE_MS + 1);
-    // Nothing holds the kit while no one is sending it.
-    expect(kinds(await view(id))).toEqual([]);
+    // Nothing holds the kit while no one is sending it, and the page says it did not go.
+    const lapsed = await view(id);
+    expect(kinds(lapsed)).toEqual([]);
+    expect(lapsed.send).toMatchObject({
+      status: "failed",
+      error: expect.stringMatching(/not sent/i),
+    });
 
     expect(await deliverSend(sendDeps(), id, send.id)).toMatchObject({
       send: { status: "failed", error: expect.stringMatching(/not sent/i) },

@@ -75,29 +75,33 @@ export function markSent(
   answer: { changedInGmail: boolean },
   shown: SentFrom = {},
 ): Promise<MarkSent> {
-  return marking(deps, jobId, sessionId, answer, shown);
+  return marking(deps, jobId, sessionId, answer, { by: "owner", shown });
 }
 
 /**
  * An email jobkit sent from the owner's Gmail (decisions A20), marked sent
- * as Mark sent marks one, nothing changed in Gmail. It went, so nothing on
- * a page, nor a reason that now holds the kit, refuses it.
+ * as Mark sent marks one, nothing changed in Gmail, at the address it went
+ * to. It went, so nothing on a page, nor a reason that now holds the kit,
+ * refuses it.
  */
 export function markSentByJobkit(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
+  to: string,
 ): Promise<MarkSent> {
-  return marking(deps, jobId, sessionId, { changedInGmail: false }, null);
+  return marking(deps, jobId, sessionId, { changedInGmail: false }, { by: "jobkit", to });
 }
 
-/** Mark sent; with no page shown, for an email jobkit sent. */
+/** Who marks the kit sent: the owner, from the page they saw, or jobkit, which sent it to `to`. */
+type Marker = { by: "owner"; shown: SentFrom } | { by: "jobkit"; to: string };
+
 async function marking(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
   answer: { changedInGmail: boolean },
-  shown: SentFrom | null,
+  marker: Marker,
 ): Promise<MarkSent> {
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
@@ -111,11 +115,12 @@ async function marking(
     await lockReview(at, jobId, role.id);
     const view = await jobView(at, jobId);
     if (view?.state !== "kit_ready" || !view.review) return { ok: false, reason: "not-ready" };
-    const to = view.handoff?.to ?? "";
-    if (shown !== null) {
+    const shownTo = view.handoff?.to ?? "";
+    if (marker.by === "owner") {
+      const { shown } = marker;
       if (
         (shown.kit !== undefined && shown.kit !== view.kitKey) ||
-        (shown.to !== undefined && shown.to !== to)
+        (shown.to !== undefined && shown.to !== shownTo)
       ) {
         return { ok: false, reason: "changed" };
       }
@@ -123,21 +128,22 @@ async function marking(
       const held = view.review.gate.filter((reason) => reason.kind !== "sent");
       if (held.length > 0) return { ok: false, reason: "held" };
     }
+    // The address the email went to: the one jobkit sent it to, or the one the page showed.
+    const to = marker.by === "jobkit" ? marker.to : shownTo;
+    const typed =
+      marker.by === "jobkit" ? !sameAddress(to, role.route.address) : Boolean(view.handoff?.typed);
     const applicationId =
       (await applicationIdOf(tx, jobId, role.id)) ?? (await openForJob(at, jobId, sessionId));
     if (!applicationId) return { ok: false, reason: "not-ready" };
-    // The address the email went to: the owner's, when the kit needed them to type one.
-    if (view.handoff?.typed && view.handoff.to !== "") {
-      await setAddress(at, applicationId, view.handoff.to);
-    }
+    // The owner's address, when the kit needed them to type one in place of the post's.
+    if (typed && to !== "") await setAddress(at, applicationId, to);
     // Already kit_ready, or sent, after an earlier tap: the next move decides.
     await changeStatus(at, applicationId, "kit_ready", sessionId);
     const sent = await changeStatus(at, applicationId, "sent", sessionId);
     if (!sent.ok) return { ok: false, reason: "refused" };
     if (sent.changed) {
       // Until the editor exists, the one field the owner changes in jobkit is the address.
-      const changed =
-        view.handoff?.typed && !sameAddress(to, role.route.address) ? ["address"] : [];
+      const changed = typed && !sameAddress(to, role.route.address) ? ["address"] : [];
       await tx.query(
         `insert into {{schema}}.draft_outcomes
            (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at)

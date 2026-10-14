@@ -12,7 +12,6 @@ import { flagRank, judgeMessage } from "@/core/review/canHandOff";
 import { flagKey, NO_DECISIONS } from "@/core/review/decisions";
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { JobView, Step } from "@/core/review/jobView";
-import { isLive } from "@/core/review/kitSends";
 import { appConfig } from "@/server/config";
 import {
   gmailForViewer,
@@ -132,7 +131,11 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
         <KitPanel
           view={view}
           account={account}
-          sendsFrom={gmail?.email ?? null}
+          gmail={
+            gmail
+              ? { state: gmail.refusedAt ? "refused" : "connected", email: gmail.email }
+              : { state: "not-connected", email: null }
+          }
           cvFile={cv}
           now={now}
           timeZone={timeZone}
@@ -449,15 +452,15 @@ function PostPanel({ view }: { view: JobView }) {
 function KitPanel({
   view,
   account,
-  sendsFrom,
+  gmail,
   cvFile,
   now,
   timeZone,
 }: {
   view: JobView;
   account: string;
-  /** The Gmail account Approve & send sends from; null while Gmail is not connected. */
-  sendsFrom: string | null;
+  /** The Gmail account Approve & send sends from, and whether jobkit can still use it. */
+  gmail: { state: "connected" | "not-connected" | "refused"; email: string | null };
   /** The CV Approve & send attaches, as the recruiter sees its name. */
   cvFile: string | null;
   now: Date;
@@ -504,17 +507,18 @@ function KitPanel({
   const sent = parts.sent;
   // While jobkit sends the email, nothing on the page changes it.
   const locked = sent || parts.sending;
-  // The send of this kit the page shows: counting down, sending, or how the last one went.
+  // The send of this kit the page shows: counting down, sending, or how the last one went; one
+  // that went, or may have, whatever kit it was pressed on.
   const send =
-    view.send && (view.send.kit === kitKey || view.send.status === "sent") ? view.send : null;
-  const live =
-    send && (send.status === "scheduled" || send.status === "sending") && isLive(send, now)
-      ? {
-          id: send.id,
-          status: send.status,
-          leftMs: Math.max(0, send.sendAt.getTime() - now.getTime()),
-        }
+    view.send &&
+    (view.send.kit === kitKey || view.send.status === "sent" || view.send.status === "unknown")
+      ? view.send
       : null;
+  const shown = send && {
+    id: send.id,
+    status: send.status,
+    leftMs: Math.max(0, send.sendAt.getTime() - now.getTime()),
+  };
   // The countdown says jobkit is sending it; the list says what else holds it.
   const reasons = gate.filter((reason) => reason.kind !== "sending");
   // Approve & send marks every flagged sentence and flag checked; the other reasons need the owner.
@@ -528,7 +532,14 @@ function KitPanel({
     }
     return [];
   });
-  const held = reasons.some((reason) => reason.kind !== "judge" && reason.kind !== "flag");
+  // What Approve & send cannot settle: a file besides the CV, which it cannot attach, and the
+  // reasons only the owner can.
+  const held =
+    parts.attachments.length > 0
+      ? "This post asks for a file besides your CV, which jobkit cannot attach: send it yourself with Open in Gmail, and attach the file there."
+      : reasons.some((reason) => reason.kind !== "judge" && reason.kind !== "flag")
+        ? "Approve & send marks the sentences and flags above as checked, but the other reasons listed need you first."
+        : null;
   const needsRetype = parts.contact?.needsRetype ?? false;
   // Where the kit goes: the post's contact, or the one typed in its place once it passes.
   const to = view.handoff?.to ?? "";
@@ -768,7 +779,18 @@ function KitPanel({
       </Panel>
 
       <Panel title="Send it">
-        <div aria-live="polite">
+        <div aria-live="polite" className="flex flex-col gap-2">
+          {byEmail && !sent && send?.status === "failed" && send.error && (
+            <p className="text-sm text-destructive [overflow-wrap:anywhere]">{send.error}</p>
+          )}
+          {byEmail && !sent && send?.status === "unknown" && send.error && (
+            <p className="rounded-md border border-destructive/40 p-3 text-sm [overflow-wrap:anywhere]">
+              {send.error}
+            </p>
+          )}
+          {byEmail && !sent && send?.status === "cancelled" && (
+            <p className="text-sm text-muted-foreground">You pressed Undo, so nothing was sent.</p>
+          )}
           {reasons.length > 0 && (
             <div className="rounded-md border border-destructive/40 p-3 text-sm">
               <p className="font-medium">{sent ? "Sent already" : "Before you send"}</p>
@@ -796,25 +818,17 @@ function KitPanel({
         </div>
         {byEmail && !sent && (
           <>
-            {send?.status === "failed" && send.error && (
-              <p className="text-sm text-destructive [overflow-wrap:anywhere]">{send.error}</p>
-            )}
-            {send?.status === "cancelled" && (
-              <p className="text-sm text-muted-foreground">
-                You pressed Undo, so nothing was sent.
-              </p>
-            )}
             <ApproveSend
-              key={live ? `${live.id}-${live.status}` : "none"}
+              key={shown ? `${shown.id}-${shown.status}` : "none"}
               jobId={view.id}
               kit={kitKey}
               to={to}
               subject={kit.subject}
-              from={sendsFrom}
+              gmail={gmail}
               cv={cvFile}
               approvals={approvals}
               held={held}
-              live={live}
+              shown={shown}
             />
             <p className="text-sm font-medium">Or send it yourself</p>
           </>

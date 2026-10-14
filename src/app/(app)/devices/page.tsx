@@ -19,6 +19,10 @@ export const metadata: Metadata = { title: "Devices · jobkit" };
 /** What connecting Gmail came back with, in the owner's words. */
 const GMAIL_OUTCOMES: Readonly<Record<string, string>> = {
   connected: "Gmail is connected: Approve & send now sends from it.",
+  disconnected: "Gmail is disconnected: Google no longer lets jobkit send from it.",
+  unrevoked:
+    "jobkit forgot the connection, but Google did not confirm that jobkit's access ended. Remove jobkit's access in your Google Account's security settings, among the apps connected to it.",
+  cancelled: "You cancelled on Google's screen, so Gmail was not connected.",
   denied: "That Google account is not the owner's, so it was not connected.",
   "no-send-permission":
     "Gmail was not connected: tick the permission to send email on Google's screen.",
@@ -39,7 +43,10 @@ export default async function DevicesPage({ searchParams }: PageProps<"/devices"
     gmailForViewer(),
     searchParams,
   ]);
-  const said = typeof outcome === "string" ? GMAIL_OUTCOMES[outcome] : undefined;
+  const said =
+    typeof outcome === "string" && Object.hasOwn(GMAIL_OUTCOMES, outcome)
+      ? GMAIL_OUTCOMES[outcome]
+      : undefined;
 
   return (
     <section aria-labelledby="devices-heading">
@@ -60,12 +67,28 @@ export default async function DevicesPage({ searchParams }: PageProps<"/devices"
         </p>
       )}
       {gmail ? (
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-4">
-          <p className="text-sm">
-            Sending as <span className="font-medium">{gmail.email}</span>, connected{" "}
-            {lastSeen(gmail.connectedAt, now)}.
-          </p>
-          <DisconnectGmail email={gmail.email} />
+        <div className="mt-2 flex flex-col gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <p className="text-sm">
+              Sending as <span className="font-medium">{gmail.email}</span>, connected{" "}
+              {lastSeen(gmail.connectedAt, now)}.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <a
+                href="/api/auth/google/gmail"
+                className={`${buttonVariants({ variant: gmail.refusedAt ? "default" : "outline" })} min-h-11`}
+              >
+                Connect again
+              </a>
+              <DisconnectGmail email={gmail.email} />
+            </div>
+          </div>
+          {gmail.refusedAt && (
+            <p className="text-sm text-destructive">
+              jobkit can no longer send from this account: Google refused its access, or the key
+              that keeps its token changed. Connect again to go on sending.
+            </p>
+          )}
         </div>
       ) : (
         <div className="mt-2 flex flex-col items-start gap-2">

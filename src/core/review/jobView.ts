@@ -36,7 +36,7 @@ import {
   NO_DECISIONS,
   type ReviewDecisions,
 } from "./decisions";
-import { isLive, type KitSend, latestSend } from "./kitSends";
+import { asShown, isLive, type KitSend, latestSend } from "./kitSends";
 
 /**
  * What the job page and the jobs list show (review spec, as far as the thin
@@ -97,8 +97,9 @@ export interface JobView {
    */
   handoff: { to: string; typed: boolean } | null;
   /**
-   * The chosen role's "Approve & send" the page shows: the one counting
-   * down, sending or sent, else the latest; null when there was none.
+   * The chosen role's "Approve & send" the page shows, as it now stands: the
+   * one in flight, else the one Gmail took, else the latest; null when there
+   * was none.
    */
   send: KitSend | null;
 }
@@ -202,7 +203,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     : ready && role && extraction
       ? await unopenedDuplicates(deps.db, role, extraction, handoff)
       : [];
-  const send = role ? await latestSend(deps.db, id, role.id) : null;
+  const latest = role ? await latestSend(deps.db, id, role.id) : null;
+  const now = deps.clock.now();
   const kitParts =
     draft && role && extraction
       ? kitPartsOf({
@@ -216,8 +218,10 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
           sent:
             application?.status === "sent" ||
             application?.status === "submitted" ||
-            application?.status === "bounced",
-          sending: send !== null && isLive(send, deps.clock.now()),
+            application?.status === "bounced" ||
+            // jobkit sent it, though the ledger may not have recorded it: it went.
+            latest?.status === "sent",
+          sending: latest !== null && isLive(latest, now),
         })
       : null;
   return {
@@ -249,7 +253,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
         ? { decisions, gate: canHandOff(gateInputOf(kitParts, decisions)) }
         : null,
     handoff,
-    send,
+    send: latest && asShown(latest, now),
   };
 }
 

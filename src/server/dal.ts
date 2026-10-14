@@ -125,11 +125,14 @@ export const profileForViewer = cache(
 );
 
 /**
- * The CV "Approve & send" attaches, as the recruiter sees it: the one of the
- * profile version the email was written with; null when that version is gone.
+ * The CV "Approve & send" attaches, as the recruiter sees its name: the one
+ * of the profile version the email was written with; null when that version,
+ * or its CV in storage, is gone.
  */
 export const kitCvForViewer = cache(async (versionId: string): Promise<string | null> => {
   await requireSession();
-  const profile = await getProfileVersion((await getContainer()).db, versionId);
-  return profile && cvFileName(profile.owner.name);
+  const { db, storage } = await getContainer();
+  const profile = await getProfileVersion(db, versionId);
+  if (!profile || !(await storage.stat(profile.cv.path))) return null;
+  return cvFileName(profile.owner.name);
 });

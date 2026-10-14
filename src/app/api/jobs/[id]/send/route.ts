@@ -3,8 +3,9 @@ import { after, type NextRequest } from "next/server";
 import { getContainer } from "@/server/container";
 import { appSendDeps, send, sendState } from "@/server/sendActions";
 
-// The delivery waits out the ten-second countdown, then Gmail answers within 30 seconds.
-export const maxDuration = 60;
+// What is left of the ten-second countdown, then the delivery's steps, each with its own limit
+// (the CV 15 seconds, the token 15, the upload 30), with room for tries again.
+export const maxDuration = 120;
 
 export async function POST(request: NextRequest, ctx: RouteContext<"/api/jobs/[id]/send">) {
   const container = await getContainer();

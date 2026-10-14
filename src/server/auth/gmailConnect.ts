@@ -5,8 +5,12 @@ import { identityFromIdToken } from "@/core/platform/googleIdentity";
 import { admitOwner } from "@/core/platform/owner";
 import { checkRequirements, findSession, type SessionDeps } from "@/core/platform/sessions";
 import type { AppConfig } from "@/server/config";
-import { dropGmailConnection, keepGmailConnection } from "@/server/gmail/connection";
-import { heldToken, NO_STORE, refusal, sessionForChange } from "@/server/http";
+import {
+  forgetGmailConnection,
+  gmailRefreshToken,
+  keepGmailConnection,
+} from "@/server/gmail/connection";
+import { heldToken, NO_STORE, sessionForChange } from "@/server/http";
 
 /**
  * Connecting the owner's Gmail for one-click send (decisions A20): the
@@ -82,7 +86,11 @@ export async function startGmailConnect(
     );
   }
   if (!(await signedInWithGoogle(request, deps))) {
-    return NextResponse.redirect(new URL(`/login?next=${RETURN}`, config.appOrigin), 303);
+    // Sign-in comes back here, as pairing's does.
+    return NextResponse.redirect(
+      new URL(`/api/auth/google/start?next=${RETURN}`, config.appOrigin),
+      303,
+    );
   }
   const state = generateState();
   const verifier = generateCodeVerifier();
@@ -102,13 +110,20 @@ export async function startGmailConnect(
   return response;
 }
 
-type Refusal = "failed" | "denied" | "no-send-permission";
+type Refusal = "failed" | "denied" | "cancelled" | "no-send-permission";
 
 export async function finishGmailConnect(
   request: NextRequest,
   deps: GmailConnectDeps,
 ): Promise<NextResponse> {
   const { config, clock, key } = deps;
+  // Cancel on Google's screen comes back with an error in place of a code.
+  const error = request.nextUrl.searchParams.get("error");
+  if (error !== null && isGmailCallback(request)) {
+    return error === "access_denied"
+      ? refuse(config, "cancelled", "the owner cancelled on Google's screen")
+      : refuse(config, "failed", `Google answered ${error.slice(0, 100)}`);
+  }
   const code = request.nextUrl.searchParams.get("code");
   const verifier = request.cookies.get(VERIFIER_COOKIE)?.value;
   if (!code || !verifier || !isGmailCallback(request)) {
@@ -151,26 +166,34 @@ export async function finishGmailConnect(
   return response;
 }
 
-/** POST /api/gmail/disconnect: forgets the connection, and revokes its token at Google if Google answers. */
+/**
+ * POST /api/gmail/disconnect: revokes the token at Google, then forgets the
+ * connection, and answers whether Google revoked it, so the page can say to
+ * remove jobkit's access in the Google account when it did not. Without the
+ * key the token cannot be read, so it is only forgotten. Connecting again
+ * replaces the token without revoking the old one, since revoking can end
+ * the new grant with it.
+ */
 export async function disconnectGmail(
   request: NextRequest,
   deps: GmailConnectDeps,
 ): Promise<NextResponse> {
   const actor = await sessionForChange(request, deps, { kind: "google" });
   if (!actor.ok) return actor.response;
-  if (!deps.key) return refusal(500, "not-configured");
-  const token = await dropGmailConnection(deps.db, deps.key);
+  const token = deps.key ? await gmailRefreshToken(deps.db, deps.key) : null;
+  let revoked = false;
   if (token) {
     try {
       await googleClient(deps.config).revokeToken(token);
+      revoked = true;
     } catch (error) {
-      // The connection is gone either way; the owner can also revoke it in their Google account.
       console.warn(
         `Revoking the Gmail token failed: ${error instanceof Error ? error.message : error}`,
       );
     }
   }
-  return NextResponse.json({ ok: true }, { status: 200, headers: NO_STORE });
+  await forgetGmailConnection(deps.db);
+  return NextResponse.json({ ok: true, revoked }, { status: 200, headers: NO_STORE });
 }
 
 /** The reason goes to the server log; the browser sees only a code. */

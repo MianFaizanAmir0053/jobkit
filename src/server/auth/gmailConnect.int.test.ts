@@ -198,7 +198,8 @@ describe("startGmailConnect", () => {
       deps(),
     );
     expect(signedOut.status).toBe(303);
-    expect(signedOut.headers.get("location")).toBe(`${ORIGIN}/login?next=/devices`);
+    // Sign-in comes back to Devices, as pairing's does.
+    expect(signedOut.headers.get("location")).toBe(`${ORIGIN}/api/auth/google/start?next=/devices`);
 
     const session = await googleSession();
     const keyless = await startGmailConnect(
@@ -245,6 +246,34 @@ describe("finishGmailConnect", () => {
     expect(await gmailConnection(db)).toBeNull();
   });
 
+  it("says the owner cancelled when they pressed Cancel on Google's screen", async () => {
+    const session = await googleSession();
+    const start = await startGmailConnect(
+      new NextRequest(`${ORIGIN}/api/auth/google/gmail`, {
+        headers: { cookie: cookieHeader({ jobkit_session: session }) },
+      }),
+      deps(),
+    );
+    const state = new URL(start.headers.get("location")!).searchParams.get("state");
+    const cancelled = new NextRequest(
+      `${ORIGIN}/api/auth/google/callback?error=access_denied&state=${state}`,
+      {
+        headers: {
+          cookie: cookieHeader({
+            jobkit_session: session,
+            jobkit_gmail_state: start.cookies.get("jobkit_gmail_state")?.value,
+            jobkit_gmail_verifier: start.cookies.get("jobkit_gmail_verifier")?.value,
+          }),
+        },
+      },
+    );
+
+    const response = await finishGmailConnect(cancelled, deps());
+
+    expect(response.headers.get("location")).toBe(`${ORIGIN}/devices?gmail=cancelled`);
+    expect(await gmailConnection(db)).toBeNull();
+  });
+
   it("tells a Gmail callback from a sign-in's by the state it carries", () => {
     const request = (state: string, cookies: Record<string, string>) =>
       new NextRequest(`${ORIGIN}/api/auth/google/callback?code=c&state=${state}`, {
@@ -258,7 +287,7 @@ describe("finishGmailConnect", () => {
 });
 
 describe("disconnectGmail", () => {
-  it("revokes the token at Google and forgets the connection, even when Google does not answer", async () => {
+  it("revokes the token at Google, then forgets the connection, and says when Google did not", async () => {
     await connect();
     const session = await googleSession();
     const request = () =>
@@ -267,13 +296,22 @@ describe("disconnectGmail", () => {
         headers: { origin: ORIGIN, cookie: cookieHeader({ jobkit_session: session }) },
       });
 
-    expect((await disconnectGmail(request(), deps())).status).toBe(200);
+    const revoked = await disconnectGmail(request(), deps());
+    expect(revoked.status).toBe(200);
+    expect(await revoked.json()).toEqual({ ok: true, revoked: true });
     expect(google.revoked).toEqual(["fixture-refresh-token"]);
     expect(await gmailConnection(db)).toBeNull();
 
     await connect();
     google.revokeFails = true;
-    expect((await disconnectGmail(request(), deps())).status).toBe(200);
+    const unanswered = await disconnectGmail(request(), deps());
+    expect(await unanswered.json()).toEqual({ ok: true, revoked: false });
+    expect(await gmailConnection(db)).toBeNull();
+
+    // Without the key the token cannot be opened, so it is only forgotten.
+    await connect();
+    const keyless = await disconnectGmail(request(), { ...deps(), key: null });
+    expect(await keyless.json()).toEqual({ ok: true, revoked: false });
     expect(await gmailConnection(db)).toBeNull();
   });
 

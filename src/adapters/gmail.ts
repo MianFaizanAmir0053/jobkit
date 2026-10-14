@@ -1,21 +1,28 @@
 import { Google, OAuth2RequestError } from "arctic";
 
 import type { GmailSender, GmailSendResult } from "@/core/ports";
+import { within } from "@/lib/within";
 
 /**
  * The Gmail port over the Gmail API (decisions A20): each send refreshes the
  * access token from the owner's refresh token, then uploads the MIME message
  * to users.messages.send, the documented way for a message with an
- * attachment. Google refusing either step means the owner must connect
- * Gmail again. A connection that drops once Gmail has the message leaves it
- * unknown whether it went; anything else is a failure with its reason.
+ * attachment. Each step has its own limit. Google refusing either step
+ * means the owner must connect Gmail again, except a refusal for Gmail's
+ * sending limits, which passes. A connection that drops once Gmail has the
+ * message, or an error on Google's side, leaves it unknown whether it went;
+ * anything else is a failure with its reason, and nothing was sent.
  * https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send
  * https://developers.google.com/workspace/gmail/api/guides/uploads
  */
 
 const UPLOAD_URL =
   "https://gmail.googleapis.com/upload/gmail/v1/users/me/messages/send?uploadType=media";
+const TOKEN_TIMEOUT_MS = 15_000;
 const SEND_TIMEOUT_MS = 30_000;
+/** Gmail's words for a refusal under its sending limits, rather than for jobkit's access. */
+const LIMITED =
+  /rateLimitExceeded|userRateLimitExceeded|dailyLimitExceeded|quotaExceeded|RESOURCE_EXHAUSTED|limit exceeded/i;
 /** messages.send's upload limit, 35 MB, from the Gmail API's discovery document (mediaUpload.maxSize). */
 export const MAX_MESSAGE_BYTES = 36_700_160;
 
@@ -38,7 +45,12 @@ export function createGmailSender(opts: {
       }
       let accessToken: string;
       try {
-        accessToken = (await google.refreshAccessToken(opts.refreshToken)).accessToken();
+        const tokens = await within(
+          google.refreshAccessToken(opts.refreshToken),
+          TOKEN_TIMEOUT_MS,
+          "Refreshing jobkit's access to Gmail",
+        );
+        accessToken = tokens.accessToken();
       } catch (error) {
         if (error instanceof OAuth2RequestError) {
           return {
@@ -61,16 +73,22 @@ export function createGmailSender(opts: {
         // The message may have reached Gmail before the connection dropped, so it may have gone.
         return { ok: false, reason: "unknown", message: messageOf(error) };
       }
-      if (response.status === 401 || response.status === 403) {
-        return { ok: false, reason: "unauthorised", message: `Gmail answered ${response.status}` };
-      }
       if (!response.ok) {
-        const text = (await response.text().catch(() => "")).slice(0, 300);
-        return {
-          ok: false,
-          reason: "failed",
-          message: `Gmail answered ${response.status}: ${text}`,
-        };
+        const text = await response.text().catch(() => "");
+        const said = `Gmail answered ${response.status}: ${text.slice(0, 300)}`;
+        if (response.status === 429 || (response.status === 403 && LIMITED.test(text))) {
+          return {
+            ok: false,
+            reason: "failed",
+            message: `Gmail's sending limit was reached, so try again later (${said})`,
+          };
+        }
+        if (response.status === 401 || response.status === 403) {
+          return { ok: false, reason: "unauthorised", message: said };
+        }
+        // Google's side erred: it may have sent the email first.
+        if (response.status >= 500) return { ok: false, reason: "unknown", message: said };
+        return { ok: false, reason: "failed", message: said };
       }
       const sent = (await response.json().catch(() => ({}))) as {
         id?: unknown;

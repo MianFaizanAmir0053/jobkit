@@ -35,12 +35,16 @@ import { type JobView, jobView, storedDecisions } from "./jobView";
  * passes, it becomes the application's, so the duplicate check runs on it
  * (ledger spec, "Duplicate check"). "Apply again" goes to the ledger, which
  * keeps it on the application, opening one for a kit that ran before
- * applications opened with their jobs.
+ * applications opened with their jobs. While jobkit sends the email
+ * (decisions A20), no decision is taken, so nothing changes what it sends.
  */
 
 export type ReviewOutcome =
   | { ok: true; decisions: ReviewDecisions; gate: GateReason[] }
-  | { ok: false; reason: "not-found" | "not-ready" | "not-in-kit" | "sent" | "changed" };
+  | {
+      ok: false;
+      reason: "not-found" | "not-ready" | "not-in-kit" | "sent" | "changed" | "sending";
+    };
 
 /** Why a decision, or a send, finds no kit to act on as the page showed it. */
 type Refusal = { ok: false; reason: "not-found" | "not-ready" | "sent" | "changed" };
@@ -178,6 +182,8 @@ export async function recordReview(
     const locked = await lockedKit(at, jobId, made);
     if (!("view" in locked)) return locked;
     const { view } = locked;
+    // While jobkit sends the email, nothing changes what it sends (decisions A20).
+    if (view.kitParts.sending) return { ok: false, reason: "sending" };
     if (!fits(action, view.kitParts)) return { ok: false, reason: "not-in-kit" };
     const decisions = decide(view.review?.decisions ?? NO_DECISIONS, action, checks);
     if (action.kind === "retype" && view.kitParts.contact) {
@@ -208,6 +214,7 @@ export async function applyAgainForJob(
     const locked = await lockedKit(at, jobId, made);
     if (!("view" in locked)) return locked;
     const { view } = locked;
+    if (view.kitParts.sending) return { ok: false, reason: "sending" };
     const shown = new Set(view.duplicates.map((match) => match.key));
     if (keys.length === 0 || !keys.every((key) => shown.has(key))) {
       return { ok: false, reason: "not-in-kit" };
