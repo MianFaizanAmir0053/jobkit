@@ -101,19 +101,20 @@ describe("validateProfile", () => {
   });
 
   it("rejects a duplicate ID at its second use, and a malformed one, in one pass", () => {
-    const text = SAMPLE.replace("id: F-node-apis", "id: F-react-production").replace(
+    // Facts no email template cites, so only the IDs are wrong.
+    const text = SAMPLE.replace("id: F-docker-deploys", "id: F-react-production").replace(
       "id: F-python-side",
       "id: F_python",
     );
 
     expect(problemsOf(text)).toEqual([
       {
-        line: lineOf(text, "id: F-react-production", 'statement: "I have built'),
-        message: "facts[1].id: is used more than once",
-      },
-      {
         line: lineOf(text, "id: F_python"),
         message: "facts[2].id: must look like F-lower-case-words",
+      },
+      {
+        line: lineOf(text, "id: F-react-production", 'statement: "I have built'),
+        message: "facts[3].id: is used more than once",
       },
     ]);
   });
@@ -495,6 +496,96 @@ describe("validateProfile", () => {
       {
         line: lineOf(text, "G-not-professional") + 1,
         message: "gaps.templates[0].text: may use only the placeholders {skill} and {related}",
+      },
+    ]);
+  });
+
+  it("takes {company} and {role} alone as an email template's placeholders", () => {
+    const text = SAMPLE.replace(
+      "I'm writing about the {role} role at {company}.",
+      "I'm writing about the {role} role in {team}.",
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "{team}"),
+        message:
+          "email_templates[0].sentences[0].text: may use only the placeholders {company} and {role}",
+      },
+    ]);
+  });
+
+  it("rejects an email template citing a fact the file does not have, or, approved, one waiting", () => {
+    const text = SAMPLE.replace(
+      '        facts: [F-react-production]\n      - text: "I have also',
+      '        facts: [F-no-such-fact]\n      - text: "I have also',
+    ).replace("        facts: [F-rag-feature]", "        facts: [F-unapproved-example]");
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "F-no-such-fact"),
+        message: "email_templates[0].sentences[1].facts[0]: is not a fact in this file",
+      },
+      {
+        line: lineOf(text, "facts: [F-unapproved-example]"),
+        message:
+          "email_templates[1].sentences[1].facts[0]: is waiting for approval, so an approved template cannot cite it",
+      },
+    ]);
+  });
+
+  it("lets a template waiting for approval cite a fact waiting too", () => {
+    const text = SAMPLE.replace(
+      'must never appear in a draft."\n        facts: [F-react-production]',
+      'must never appear in a draft."\n        facts: [F-unapproved-example]',
+    );
+
+    expect(validateProfile(text, sampleFiles())).toMatchObject({ ok: true });
+  });
+
+  it("rejects an email template that cites no fact, or runs past 150 words", () => {
+    const long = Array.from({ length: 150 }, () => "word").join(" ");
+    const text = SAMPLE.replace(
+      '      - text: "I have shipped React and Next.js applications in production for five years."\n        facts: [F-react-production]\n',
+      '      - text: "I have shipped React and Next.js applications in production for five years."\n',
+    )
+      .replace(
+        '      - text: "I have also designed and run Node.js REST APIs on PostgreSQL in production."\n        facts: [F-node-apis]\n',
+        '      - text: "I have also designed and run Node.js REST APIs on PostgreSQL in production."\n',
+      )
+      .replace(
+        "I build the APIs around such features in Node.js on PostgreSQL.",
+        `I build the APIs around such features: ${long}.`,
+      );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "id: T-full-stack"),
+        message: "email_templates[0]: no sentence cites a fact, so the template claims nothing",
+      },
+      {
+        line: lineOf(text, "id: T-ai-features"),
+        // 8, 13, 7 and the 150 added, and 10: the placeholders count as a word each.
+        message:
+          "email_templates[1]: the template has 188 words; at most 150, so gap lines fit in the email's 180",
+      },
+    ]);
+  });
+
+  it("rejects a duplicate or malformed email template ID", () => {
+    const text = SAMPLE.replace("id: T-ai-features", "id: T-full-stack").replace(
+      "id: T-waiting",
+      "id: t_waiting",
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "name: AI features") - 1,
+        message: "email_templates[1].id: is used more than once",
+      },
+      {
+        line: lineOf(text, "id: t_waiting"),
+        message: "email_templates[2].id: must look like T-lower-case-words",
       },
     ]);
   });

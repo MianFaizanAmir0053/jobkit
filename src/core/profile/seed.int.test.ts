@@ -194,11 +194,12 @@ describe("seedProfile", () => {
 });
 
 describe("getActiveProfile", () => {
-  it("returns approved facts and known gaps only, never one waiting for approval", async () => {
+  it("returns approved facts, known gaps and email templates only, never one waiting for approval", async () => {
     const text = SAMPLE.replace(
-      "      approved: true\nfixed_answers:",
-      '      approved: true\n    - id: K-waiting\n      skills: [go]\n      line: "Not approved yet."\n      approved: false\nfixed_answers:',
+      "      approved: true\nemail_templates:",
+      '      approved: true\n    - id: K-waiting\n      skills: [go]\n      line: "Not approved yet."\n      approved: false\nemail_templates:',
     );
+    expect(text).toContain("K-waiting");
     await seedProfile(deps(), valid(text));
 
     const profile = await getActiveProfile(db);
@@ -211,7 +212,18 @@ describe("getActiveProfile", () => {
       "F-rag-feature",
     ]);
     expect(profile?.knownGaps.map((gap) => gap.id)).toEqual(["K-kubernetes"]);
-    expect(JSON.stringify(profile)).not.toMatch(/F-unapproved-example|K-waiting|Not approved yet/);
+    expect(profile?.emailTemplates.map((template) => template.id)).toEqual([
+      "T-full-stack",
+      "T-ai-features",
+    ]);
+    expect(profile?.emailTemplates[0]?.sentences[1]).toEqual({
+      text: "I have shipped React and Next.js applications in production for five years.",
+      facts: ["F-react-production"],
+      paragraph_break: false,
+    });
+    expect(JSON.stringify(profile)).not.toMatch(
+      /F-unapproved-example|K-waiting|Not approved yet|T-waiting/,
+    );
     expect(profile).toMatchObject({
       owner: { name: "Sam Rivera" },
       signature: expect.stringContaining("Sam Rivera"),
@@ -261,6 +273,7 @@ describe("profileCounts", () => {
       hash: expect.stringMatching(/^[0-9a-f]{64}$/),
       facts: { approved: 5, waiting: 1 },
       knownGaps: { approved: 1, waiting: 0 },
+      emailTemplates: { approved: 2, waiting: 1 },
     });
   });
 

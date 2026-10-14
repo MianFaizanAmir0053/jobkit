@@ -34,6 +34,8 @@ test("shows the version's date, the approved and waiting counts, and approved it
   await expect(
     main.getByText("I have built production React and Next.js applications for five years."),
   ).toBeVisible();
+  await expect(main.getByText("2 approved, 1 waiting")).toBeVisible();
+  await expect(main.getByText("Full-stack engineer")).toBeVisible();
   await expect(main.getByText(/waiting for approval and must never appear/)).toHaveCount(0);
   await expect(main.getByText("Version sample")).toBeVisible();
   // Read-only: nothing on the page can change the profile.

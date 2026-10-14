@@ -118,6 +118,20 @@ function usesOnlyKnownPlaceholders(template: string): boolean {
   return !/[{}]/.test(template.replaceAll("{skill}", "").replaceAll("{related}", ""));
 }
 
+/** Only {company} and {role}, each in its braces: what code fills in an email template. */
+function usesOnlyTemplateFields(sentence: string): boolean {
+  return !/[{}]/.test(sentence.replaceAll("{company}", "").replaceAll("{role}", ""));
+}
+
+/**
+ * An email template's words at most, placeholders a word each, so the gap
+ * lines code adds still fit within the email's limit of 180
+ * (src/core/drafting/build.ts, BODY_WORD_LIMIT).
+ */
+export const TEMPLATE_MAX_WORDS = 150;
+
+const wordsIn = (text: string) => text.split(/\s+/).filter(Boolean).length;
+
 export const FACT_KINDS = [
   "skill",
   "experience",
@@ -155,6 +169,48 @@ export const gapTemplateSchema = z.strictObject({
     "may use only the placeholders {skill} and {related}",
   ),
 });
+
+/**
+ * One sentence of an email template (decisions A21): its words, the facts
+ * it rests on, none for one that claims nothing, and whether a new
+ * paragraph starts after it.
+ */
+export const templateSentenceSchema = z.strictObject({
+  text: text("the sentence").refine(
+    usesOnlyTemplateFields,
+    "may use only the placeholders {company} and {role}",
+  ),
+  facts: z.array(id("F")).default([]),
+  paragraph_break: z.boolean().default(false),
+});
+
+/**
+ * An email body for a kind of role (decisions A21), drafted by Claude Code
+ * and approved by the owner as facts are. It must claim something, and
+ * leave room for the gap lines code adds.
+ */
+export const emailTemplateSchema = z
+  .strictObject({
+    id: id("T"),
+    name: text("the name"),
+    sentences: z.array(templateSentenceSchema).min(1, "a template needs a sentence"),
+    approved: z.boolean(),
+  })
+  .superRefine((template, ctx) => {
+    if (!template.sentences.some((sentence) => sentence.facts.length > 0)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "no sentence cites a fact, so the template claims nothing",
+      });
+    }
+    const words = template.sentences.reduce((sum, sentence) => sum + wordsIn(sentence.text), 0);
+    if (words > TEMPLATE_MAX_WORDS) {
+      ctx.addIssue({
+        code: "custom",
+        message: `the template has ${words} words; at most ${TEMPLATE_MAX_WORDS}, so gap lines fit in the email's 180`,
+      });
+    }
+  });
 
 const workAuthorisationSchema = z
   .strictObject({
@@ -271,6 +327,8 @@ export const profileSchema = z.strictObject({
   cv: z.strictObject({ file: filePath("the CV file", ".pdf"), label: text("the CV label") }),
   facts: z.array(factSchema),
   gaps: z.strictObject({ templates: z.array(gapTemplateSchema), known: z.array(knownGapSchema) }),
+  // Optional: a file from before templates has none (decisions A21).
+  email_templates: z.array(emailTemplateSchema).optional(),
   fixed_answers: fixedAnswersSchema,
   style_examples: z
     .array(filePath("a style example path", ".txt"))
@@ -283,4 +341,5 @@ export type ProfileDocument = z.infer<typeof profileSchema>;
 export type Fact = z.infer<typeof factSchema>;
 export type KnownGap = z.infer<typeof knownGapSchema>;
 export type GapTemplate = z.infer<typeof gapTemplateSchema>;
+export type EmailTemplate = z.infer<typeof emailTemplateSchema>;
 export type FixedAnswers = z.infer<typeof fixedAnswersSchema>;

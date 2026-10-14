@@ -1,12 +1,19 @@
 import type { Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
-import type { Fact, FixedAnswers, GapTemplate, KnownGap, ProfileDocument } from "./schema";
+import type {
+  EmailTemplate,
+  Fact,
+  FixedAnswers,
+  GapTemplate,
+  KnownGap,
+  ProfileDocument,
+} from "./schema";
 
 /**
  * The profile as other modules see it (profile spec, "Access API"). Only
- * approved facts and known gap lines leave this module; unapproved ones stay
- * in the stored document.
+ * approved facts, known gap lines and email templates leave this module;
+ * unapproved ones stay in the stored document.
  */
 export interface Profile {
   versionId: string;
@@ -18,6 +25,8 @@ export interface Profile {
   facts: Fact[];
   gapTemplates: GapTemplate[];
   knownGaps: KnownGap[];
+  /** Approved email templates (decisions A21), each citing approved facts only. */
+  emailTemplates: EmailTemplate[];
   fixedAnswers: FixedAnswers;
   styleExamples: string[];
 }
@@ -51,6 +60,8 @@ function toProfile(row: Row): Profile {
     facts: document.facts.filter((fact) => fact.approved),
     gapTemplates: document.gaps.templates,
     knownGaps: document.gaps.known.filter((gap) => gap.approved),
+    // A version from before templates has none.
+    emailTemplates: (document.email_templates ?? []).filter((template) => template.approved),
     fixedAnswers: document.fixed_answers,
     styleExamples: row.style_examples,
   };
@@ -115,6 +126,7 @@ export interface ProfileCounts {
   hash: string;
   facts: { approved: number; waiting: number };
   knownGaps: { approved: number; waiting: number };
+  emailTemplates: { approved: number; waiting: number };
 }
 
 /**
@@ -134,5 +146,6 @@ export async function profileCounts(db: Db, versionId: string): Promise<ProfileC
     hash: row.hash,
     facts: countApproved(row.document.facts),
     knownGaps: countApproved(row.document.gaps.known),
+    emailTemplates: countApproved(row.document.email_templates ?? []),
   };
 }

@@ -79,6 +79,37 @@ gaps:
       skills: [kubernetes]
       line: "I haven't run Kubernetes in production; I deploy containers with Docker on managed platforms."
       approved: true
+email_templates:
+  - id: T-full-stack
+    name: Full-stack engineer
+    sentences:
+      - text: "I'm writing about the {role} role at {company}."
+        paragraph_break: true
+      - text: "I have shipped React and Next.js applications in production for five years."
+        facts: [F-react-production]
+      - text: "I have also designed and run Node.js REST APIs on PostgreSQL in production."
+        facts: [F-node-apis]
+        paragraph_break: true
+      - text: "I would welcome a call about how I could help."
+    approved: true
+  - id: T-ai-features
+    name: AI features
+    sentences:
+      - text: "I'm writing about the {role} role at {company}."
+        paragraph_break: true
+      - text: "I shipped a RAG feature over customer documents that is used in production."
+        facts: [F-rag-feature]
+      - text: "I build the APIs around such features in Node.js on PostgreSQL."
+        facts: [F-node-apis]
+        paragraph_break: true
+      - text: "I would welcome a call about how I could help."
+    approved: true
+  - id: T-waiting
+    name: Waiting for approval
+    sentences:
+      - text: "This template is waiting for approval and must never appear in a draft."
+        facts: [F-react-production]
+    approved: false
 fixed_answers:
   salary_expectation: { USD: "USD 5,000 a month", GBP: "GBP 4,000 a month", EUR: "EUR 4,600 a month", AED: "AED 18,000 a month", PKR: "PKR 900,000 a month" }
   notice_period: "One month"

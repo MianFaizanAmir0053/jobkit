@@ -102,6 +102,7 @@ export function validateProfile(text: string, files: ProfileFiles): ValidatedPro
     }
   }
   checkIds(data, at);
+  checkTemplateFacts(data, at);
   const read = readFiles(data, files, at);
 
   if (!parsed.success || problems.length > 0 || read.cv === null) {
@@ -124,6 +125,7 @@ function checkIds(data: unknown, at: Report): void {
     [["facts"], root?.facts],
     [["gaps", "templates"], gaps?.templates],
     [["gaps", "known"], gaps?.known],
+    [["email_templates"], root?.email_templates],
   ];
   const seen = new Set<string>();
   for (const [base, items] of groups) {
@@ -134,6 +136,33 @@ function checkIds(data: unknown, at: Report): void {
       seen.add(id);
     });
   }
+}
+
+/**
+ * An email template cites facts the file has, and, approved, only approved
+ * ones: drafts use its sentences without a separate check (decisions A21).
+ * A fact ID the schema refuses is reported there alone.
+ */
+function checkTemplateFacts(data: unknown, at: Report): void {
+  const root = asRecord(data);
+  const approvedFacts = new Map<string, boolean>();
+  for (const fact of asList(root?.facts)) {
+    const record = asRecord(fact);
+    if (typeof record?.id === "string") approvedFacts.set(record.id, record.approved === true);
+  }
+  asList(root?.email_templates).forEach((template, t) => {
+    const record = asRecord(template);
+    asList(record?.sentences).forEach((sentence, s) => {
+      asList(asRecord(sentence)?.facts).forEach((fact, f) => {
+        if (typeof fact !== "string" || !/^F-[a-z0-9-]+$/.test(fact)) return;
+        const path = ["email_templates", t, "sentences", s, "facts", f];
+        if (!approvedFacts.has(fact)) at(path, "is not a fact in this file");
+        else if (record?.approved === true && !approvedFacts.get(fact)) {
+          at(path, "is waiting for approval, so an approved template cannot cite it");
+        }
+      });
+    });
+  });
 }
 
 /**

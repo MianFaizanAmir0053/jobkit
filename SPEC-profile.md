@@ -2,13 +2,13 @@
 
 - **Module id:** `profile` (see [CAPABILITIES.md](CAPABILITIES.md))
 - **Depends on:** `platform`
-- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 5, 6, 8, 15, 18, 21 and 22, and amendment A11
+- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 5, 6, 8, 15, 18, 21 and 22, and amendments A11 and A21
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A
 - **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
 
-Hold everything the drafts may say about the owner, and nothing the owner has not approved: facts with IDs and sources, gap templates and known gap lines, fixed answers to legal and practical questions, the signature, the CV and the style examples. Other modules read the profile only through this module, which hands out approved items only.
+Hold everything the drafts may say about the owner, and nothing the owner has not approved: facts with IDs and sources, gap templates and known gap lines, email templates, fixed answers to legal and practical questions, the signature, the CV and the style examples. Other modules read the profile only through this module, which hands out approved items only.
 
 ## The profile file
 
@@ -54,6 +54,15 @@ gaps:
       skills: [kubernetes]
       line: "I haven't run Kubernetes in production; I deploy containers on Fly.io and Vercel."
       approved: true
+email_templates:            # optional (amendment A21): bodies for kinds of role
+  - id: T-full-stack
+    name: Full-stack engineer
+    sentences:
+      - text: "I'm writing about the {role} role at {company}."
+        paragraph_break: true
+      - text: "I have shipped production Next.js applications since 2022, including Carder and Volumize."
+        facts: [F-nextjs-production]
+    approved: true
 fixed_answers:
   salary_expectation:       # text per currency; drafts never invent a figure
     USD: "..."
@@ -83,11 +92,12 @@ style_examples:             # 3 to 5 of the owner's best past emails, as plain t
   - style/2026-08-initech.txt
 ```
 
-- **IDs:** fact IDs match `F-[a-z0-9-]+`, known-gap IDs `K-[a-z0-9-]+`, template IDs `G-[a-z0-9-]+`. IDs are unique and never reused for a different statement; changing a statement's meaning means a new ID.
+- **IDs:** fact IDs match `F-[a-z0-9-]+`, known-gap IDs `K-[a-z0-9-]+`, gap template IDs `G-[a-z0-9-]+`, email template IDs `T-[a-z0-9-]+`. IDs are unique and never reused for a different statement; changing a statement's meaning means a new ID.
 - **Skills** come from the shared skill vocabulary (extraction spec); an unknown tag is a seed error, so fit checks compare like with like.
 - **Depth and years** are what the judge and the fit check use to catch inflation: a `side-project` fact cannot support "production experience", and `years` bounds any claim about duration.
 - **Phrases** are short noun phrases the owner approves with the fact. Code puts them into `{related}`; the model never writes that part of a gap line.
 - **Templates** use only the placeholders `{skill}` and `{related}`.
+- **Email templates** (amendment A21) are email bodies for kinds of role, full-stack, AI, backend, frontend and a general one, drafted by Claude Code and approved by the owner as facts are. Each is a list of sentences: a sentence's `facts` are the facts it rests on, none for one that claims nothing, and `paragraph_break` starts a new paragraph after it. Sentences use only the placeholders `{company}` and `{role}`, which code fills, as it writes the greeting and the gap lines. A template must cite at least one fact, and has at most 150 words, so the gap lines fit within the email's 180. An approved template cites approved facts only, so a draft built from it needs no separate check of its sentences.
 - **Fixed answers** are structured where code decides with them: the working window (for time-zone checks), relocation (for onsite roles), and work authorisation (for eligibility). Every place is a code from the shared region table (extraction spec), which the seed checks, so a post's "UK" or "Germany" meets this file's `GB` or `EU`. A place or currency the file does not cover is unknown: eligibility reports it as unclear, and a form question about it shows "Needs your answer".
 - **Signature:** message kits end with it. The Gmail app adds the owner's own Gmail signature to handoff drafts, so the runbook has the owner set Gmail's mobile signature to this text once.
 
@@ -100,7 +110,7 @@ Writing the first profile is a build task, not a product feature. During the bui
 `npm run profile:seed` reads `private/profile.yaml` and:
 
 1. validates it against the strict schema and reports every error with its line number;
-2. checks that IDs are unique and well formed, every fact has a source and a phrase, every skill is in the skill vocabulary, every place is in the region table, the signature is present, the CV file exists, is a PDF and is at most 5 MB, and there are 3 to 5 style example files with at most 1,500 words in total;
+2. checks that IDs are unique and well formed, every fact has a source and a phrase, every email template cites facts the file has, an approved one only approved facts, and keeps to its placeholders and its 150 words, every skill is in the skill vocabulary, every place is in the region table, the signature is present, the CV file exists, is a PDF and is at most 5 MB, and there are 3 to 5 style example files with at most 1,500 words in total;
 3. computes the SHA-256 of the file plus the CV and style files. If a version with that hash already exists, it makes that version active again (which is how the owner rolls back) and stops;
 4. otherwise uploads the CV to storage at `profile/cv-<sha256>.pdf` when that object does not exist yet;
 5. inserts a `profile_versions` row holding the validated document, its hash, the CV storage path and label, and the time, and marks it active.
@@ -114,6 +124,7 @@ Versions are immutable. Drafts store the profile version they used, so their cit
 - `versionId`, `owner`, `links`, `signature`, `cv` (storage path and label);
 - `facts`: approved facts only;
 - `gapTemplates`, and `knownGaps`: approved lines only;
+- `emailTemplates`: approved templates only, none for a version from before them;
 - `fixedAnswers`;
 - `styleExamples`: the texts.
 
@@ -121,7 +132,7 @@ Versions are immutable. Drafts store the profile version they used, so their cit
 
 ## Profile page
 
-A read-only page shows the active version's date and hash prefix, counts of approved and waiting items, approved facts grouped by kind with their sources, gap templates and known gap lines, fixed answers and the signature. It tells the owner to edit the YAML file and run the seed to change anything.
+A read-only page shows the active version's date and hash prefix, counts of approved and waiting items, approved facts grouped by kind with their sources, gap templates and known gap lines, approved email templates, fixed answers and the signature. It tells the owner to edit the YAML file and run the seed to change anything.
 
 ## Public sample
 
@@ -129,9 +140,9 @@ A read-only page shows the active version's date and hash prefix, counts of appr
 
 ## Acceptance criteria
 
-1. The seed rejects, with line numbers: unknown keys; a duplicate or malformed ID; a fact without a source or phrase; a skill outside the vocabulary; a place outside the region table; a missing signature; a missing or oversized CV, or one that is not a PDF; fewer than 3 or more than 5 style examples, or more than 1,500 words in total.
+1. The seed rejects, with line numbers: unknown keys; a duplicate or malformed ID; a fact without a source or phrase; an email template that cites a fact the file lacks, or, approved, one waiting, that cites none, uses another placeholder or runs past 150 words; a skill outside the vocabulary; a place outside the region table; a missing signature; a missing or oversized CV, or one that is not a PDF; fewer than 3 or more than 5 style examples, or more than 1,500 words in total.
 2. Seeding an unchanged profile creates no new version; seeding an older file makes its existing version active again.
-3. `getActiveProfile` never returns an unapproved fact or gap line (tested with a mixed file).
+3. `getActiveProfile` never returns an unapproved fact, gap line or email template (tested with a mixed file).
 4. An older version stays retrievable by ID after a new one is seeded.
 5. The CV is uploaded once per content hash, and the label is returned with the profile.
 6. The public sample profile passes validation in CI.

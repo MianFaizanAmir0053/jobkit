@@ -69,6 +69,10 @@ export default async function ProfilePage() {
         <dd>
           {counts.knownGaps.approved} approved, {counts.knownGaps.waiting} waiting
         </dd>
+        <dt className="text-muted-foreground">Email templates</dt>
+        <dd>
+          {counts.emailTemplates.approved} approved, {counts.emailTemplates.waiting} waiting
+        </dd>
       </dl>
 
       <h2 className="mt-8 font-medium">Facts</h2>
@@ -107,6 +111,27 @@ export default async function ProfilePage() {
           </li>
         ))}
       </ul>
+
+      <h2 className="mt-8 font-medium">Email templates</h2>
+      {profile.emailTemplates.length === 0 ? (
+        <p className="mt-2 text-sm text-muted-foreground">
+          None approved yet: drafts are written from your facts each time.
+        </p>
+      ) : (
+        <ul className="mt-2 space-y-4">
+          {profile.emailTemplates.map((template) => (
+            <li key={template.id}>
+              <h3 className="text-sm text-muted-foreground">{template.name}</h3>
+              <p className="mt-1 whitespace-pre-wrap">
+                {template.sentences
+                  .map((sentence) => sentence.text + (sentence.paragraph_break ? "\n\n" : " "))
+                  .join("")
+                  .trim()}
+              </p>
+            </li>
+          ))}
+        </ul>
+      )}
 
       <h2 className="mt-8 font-medium">Fixed answers</h2>
       <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
