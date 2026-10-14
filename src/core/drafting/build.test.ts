@@ -259,6 +259,23 @@ describe("greetingFor", () => {
     expect(greetingFor("  ")).toBe(DEFAULT_GREETING);
     expect(greetingFor(`Ayesha${String.fromCharCode(10)}Khan`)).toBe("Dear Ayesha Khan,");
   });
+
+  it("greets the person alone, without the credentials, pronouns and titles a post adds to a name", () => {
+    expect(greetingFor("Tamer Omar, MBA, PMP")).toBe("Dear Tamer Omar,");
+    expect(greetingFor("Jane Doe PhD")).toBe("Dear Jane Doe,");
+    expect(greetingFor("Jane Doe, SHRM-CP")).toBe("Dear Jane Doe,");
+    expect(greetingFor("Sarah Lee (She/Her)")).toBe("Dear Sarah Lee,");
+    expect(greetingFor("Mike Ross | Talent Acquisition")).toBe("Dear Mike Ross,");
+    expect(greetingFor("Ali Khan – Hiring Manager")).toBe("Dear Ali Khan,");
+    expect(greetingFor("Ayesha Khan 🚀")).toBe("Dear Ayesha Khan,");
+  });
+
+  it("keeps a name's own hyphens, and greets the team when only credentials are left", () => {
+    expect(greetingFor("Mary-Jane Watson")).toBe("Dear Mary-Jane Watson,");
+    expect(greetingFor("Dr. Ana Ruiz")).toBe("Dear Dr. Ana Ruiz,");
+    expect(greetingFor(", MBA")).toBe(DEFAULT_GREETING);
+    expect(greetingFor("MBA")).toBe(DEFAULT_GREETING);
+  });
 });
 
 describe("gapLine", () => {

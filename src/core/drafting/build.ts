@@ -177,9 +177,32 @@ export function subjectFor(format: string | null, ownerName: string, roleTitle: 
   return oneLine(filled);
 }
 
+/**
+ * Letters a name carries after it, as people write them, dots aside: a
+ * greeting leaves them out. Matched as written, so a surname such as "Ma"
+ * is never taken for an MA.
+ */
+const CREDENTIALS: ReadonlySet<string> = new Set([
+  ...["MBA", "PMP", "PhD", "PHD", "MSc", "MSC", "MS", "MA", "BSc", "BSC", "BS", "BA", "MEng"],
+  ...["MD", "JD", "LLB", "LLM", "CPA", "CFA", "ACCA", "ACA", "CIMA"],
+  ...["SHRM-CP", "SHRM-SCP", "PHR", "SPHR", "CIPD", "CHRP", "CSM", "CSPO", "PSM"],
+]);
+
+/**
+ * The person the post names, as a greeting addresses them: the name before
+ * any comma, bar, bracket or spaced dash that adds credentials, pronouns or
+ * a job title ("Tamer Omar, MBA, PMP", "Sarah Lee (She/Her)", "Mike Ross |
+ * Talent Acquisition"), without emoji or credentials after it, and the
+ * hiring team when no name is left.
+ */
 export function greetingFor(recruiterName: string): string {
-  const name = oneLine(recruiterName);
-  return name === "" ? DEFAULT_GREETING : `Dear ${name},`;
+  const name = oneLine(recruiterName)
+    .split(/\s*(?:[,|(•·]|\s[-–—]\s)/u)[0]!
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}]/gu, "")
+    .trim();
+  const words = name.split(/\s+/).filter(Boolean);
+  while (words.length > 0 && CREDENTIALS.has(words.at(-1)!.replaceAll(".", ""))) words.pop();
+  return words.length === 0 ? DEFAULT_GREETING : `Dear ${words.join(" ")},`;
 }
 
 /** Whether a kind of requirement can take a template: a degree, a language or "other" cannot. */
