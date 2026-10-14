@@ -42,7 +42,8 @@ export type ReviewOutcome =
   | { ok: true; decisions: ReviewDecisions; gate: GateReason[] }
   | { ok: false; reason: "not-found" | "not-ready" | "not-in-kit" | "sent" | "changed" };
 
-type Refusal = Extract<ReviewOutcome, { ok: false }>;
+/** Why a decision, or a send, finds no kit to act on as the page showed it. */
+type Refusal = { ok: false; reason: "not-found" | "not-ready" | "sent" | "changed" };
 
 /** The kit the page showed, which a decision names, and the session whose tap it is. */
 export interface DecisionMade {
@@ -73,7 +74,7 @@ function fits(action: ReviewAction, parts: KitParts): boolean {
  * then stands: a refusal when there is no ready kit to decide on, when the
  * page showed another kit, or when it was marked sent.
  */
-async function lockedKit(
+export async function lockedKit(
   deps: { db: Db; clock: Clock },
   jobId: string,
   made: DecisionMade,
@@ -103,7 +104,7 @@ async function lockedKit(
 }
 
 /** Keeps the decisions for the kit, then the gate as the kit now stands with them. */
-async function keep(
+export async function keep(
   deps: { db: Db; clock: Clock },
   jobId: string,
   roleId: string,

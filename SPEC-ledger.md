@@ -45,11 +45,12 @@ The banner shows each match with its reason and date. An "apply again" tap cover
 | `open` | `kit_ready` | the job reaches `kit_ready` |
 | `open` | `skipped` | the owner skips before a kit exists (role pick, eligibility decision, kit-type pick) |
 | `kit_ready` | `sent` | the owner taps "Mark sent" after a Gmail handoff |
+| `kit_ready` | `sent` | jobkit sends the email from the owner's Gmail (decisions A20) |
 | `kit_ready` | `submitted` | the owner taps "Mark submitted" (form and message routes) |
 | `kit_ready` | `skipped` | the owner taps Skip |
 | `sent` | `bounced` | the owner taps "Mark bounced" |
 
-Any other transition is refused, and "Mark sent" needs the email route while "Mark submitted" needs a form or message route. The owner can correct a mistaken tap from the job's menu: the last tap is taken back, which writes an audit row like any other change, except a skip made before the kit, which closed the job. A second tap on the same button changes nothing, so a double tap cannot record twice.
+Any other transition is refused, and "Mark sent" needs the email route while "Mark submitted" needs a form or message route. The owner can correct a mistaken tap from the job's menu: the last tap is taken back, which writes an audit row like any other change, except a skip made before the kit, which closed the job, and the `sent` of an email jobkit sent, which went. That email's outcome records no change in Gmail, and its `kit_sends` row keeps Gmail's message and thread IDs. A second tap on the same button changes nothing, so a double tap cannot record twice.
 
 ## The timing comparison (amendment A8)
 

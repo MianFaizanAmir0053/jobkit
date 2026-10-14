@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 import type { KitFlag } from "@/core/drafting/validate";
-import type { BlockVerdict } from "@/core/drafting/verdict";
+import { type BlockVerdict, isBlocking } from "@/core/drafting/verdict";
 import { isStrictAddress } from "@/core/extraction/contacts";
 
 import { ADDRESS_CHECK_KINDS, ADDRESS_CHECKS_VERSION, type AddressCheck } from "./addressChecks";
@@ -192,6 +192,25 @@ export interface KitParts {
   duplicates: readonly { reason: string; covered: boolean }[];
   /** Whether the owner marked the kit sent. */
   sent: boolean;
+  /** Whether jobkit is sending the kit from the owner's Gmail (decisions A20). */
+  sending: boolean;
+}
+
+/**
+ * "Approve & send" (decisions A20): "I checked this" on every sentence the
+ * separate check holds and every one of validate's flags, as the page shows
+ * them above the button. Nothing else: the hard stops hold the kit until the
+ * owner acts on each.
+ */
+export function approveAll(parts: KitParts, decisions: ReviewDecisions): ReviewDecisions {
+  const held = parts.verdicts.filter(isBlocking).map((verdict) => verdict.blockId);
+  return {
+    ...decisions,
+    checked: held.reduce(withOne, decisions.checked),
+    flagsChecked: parts.flags
+      .map((_, place) => flagKey(place))
+      .reduce(withOne, decisions.flagsChecked),
+  };
 }
 
 /** A typed address with no checks kept: it holds the kit, as an address not checked does. */
@@ -223,6 +242,7 @@ export function gateInputOf(parts: KitParts, decisions: ReviewDecisions): GateIn
   const attached = new Set(decisions.attached);
   return {
     sent: parts.sent,
+    sending: parts.sending,
     flags: parts.flags.filter((_, place) => !flagsChecked.has(flagKey(place))),
     verdicts: parts.verdicts.filter((verdict) => blocks.has(verdict.blockId)),
     checked: decisions.checked.filter((id) => blocks.has(id)),

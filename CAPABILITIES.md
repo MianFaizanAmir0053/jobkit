@@ -12,6 +12,6 @@ Approved by the owner on 2026-10-06, and amended the same day when one-tap send 
 | `drafting` | Fit table, email, form and message kits, style rules, citations, independent judge and classification, gap coverage, `draft_answers`, `validate` and block-by-block edit tracking | extraction, profile |
 | `review` | Job page: contact panel and address checks, flags, checklist, editor, outbound gate on every exit, Gmail, `wa.me` and copy handoffs, Mark sent with the Gmail question, Submitted, Skip and Bounced | drafting, ledger |
 | `evals` | Archive import, labelling page with a blind subset, harness, held-out split, intervals, model comparison, inflation set, aggregate reports | extraction, drafting |
-| `send` | **Milestone 2, deferred.** `gmail.send` consent, token encryption, passkey, content-bound approval, attempt recording, undo window, daily cap, MIME message with the CV | review, ledger |
+| `send` | **In the MVP since amendment A20:** `gmail.send` consent, the sealed token, Approve & send with ten seconds to Undo, the send claimed once and recorded, the MIME message with the signature and the CV. **Still milestone 2:** passkey, content-bound approval, daily cap, deliverability test, trust gate | review, ledger |
 
 Build order for the MVP: `platform` → `profile`, `intake`, `ledger` → `extraction` → the extraction half of `evals` (assumption 1 is measured before drafting starts) → `drafting` → the rest of `evals` → `review`. `send` waits for milestone 2.

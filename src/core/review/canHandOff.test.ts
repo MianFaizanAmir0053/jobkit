@@ -11,6 +11,7 @@ import { canHandOff, type GateInput } from "./canHandOff";
 
 const CLEAR: GateInput = {
   sent: false,
+  sending: false,
   flags: [],
   verdicts: [],
   checked: [],
@@ -93,6 +94,7 @@ describe("canHandOff", () => {
       { scam: { signals: ["asks for a fee"], overridden: true } },
     ],
     ["a kit marked sent", { sent: true }, { sent: false }],
+    ["an email jobkit is sending", { sending: true }, { sending: false }],
   ])("blocks on %s alone, and clears when its resolution is recorded", (_, open, resolved) => {
     expect(canHandOff({ ...CLEAR, ...open })).toHaveLength(1);
     expect(canHandOff({ ...CLEAR, ...resolved })).toEqual([]);
@@ -160,6 +162,12 @@ describe("canHandOff", () => {
     expect(
       kinds({ ...CLEAR, sent: true, flags: [FLAG], scam: { signals: ["fee"], overridden: false } }),
     ).toEqual(["sent"]);
+  });
+
+  it("holds every control while jobkit sends the email, so it never goes twice", () => {
+    expect(kinds({ ...CLEAR, sending: true, flags: [FLAG] })).toEqual(["sending"]);
+    // Once it went, the kit is sent.
+    expect(kinds({ ...CLEAR, sending: true, sent: true })).toEqual(["sent"]);
   });
 
   it("says a sentence the separate check never weighed was never weighed, not that it lacks a fact", () => {

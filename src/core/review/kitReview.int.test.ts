@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,75 +6,31 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { offlineDns } from "@/adapters/dns";
-import { answer, fakeLlm, type FakeLlm } from "@/adapters/fakeLlm";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
-import { draftStage } from "@/core/drafting/draftStage";
-import type { BlockVerdict } from "@/core/drafting/judge";
 import type { DraftAnswer } from "@/core/drafting/kit";
-import { addressReadStage } from "@/core/extraction/addressReadStage";
-import { eligibilityStage } from "@/core/extraction/eligibility";
-import { extractStage } from "@/core/extraction/extract";
-import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
-import type { ModelCallDeps } from "@/core/platform/models";
-import { claimJob, type Pipeline, runJob } from "@/core/platform/runner";
 import type { Dns } from "@/core/ports";
-import { seedProfile } from "@/core/profile/seed";
-import { validateProfile } from "@/core/profile/validate";
 import { createTestDb } from "@/server/db/testDb";
 
-import { addressChecksStage } from "./addressChecksStage";
 import type { GateReason } from "./canHandOff";
 import { flagKey, NO_DECISIONS } from "./decisions";
 import { jobView, storedDecisions } from "./jobView";
 import { applyAgainForJob, recordReview } from "./kitReview";
 import { markSent, takeBackSent } from "./markSent";
+import { KIT_DRAFT, readyKit as kitFor, resetKitBed } from "./testKit";
 
 /* The owner's decisions on a kit, kept with the gate they leave: review AC1 and AC4. */
-
-const SYNTHETIC = join(process.cwd(), "evals", "synthetic");
 
 let db: PgliteDb;
 let clock: FakeClock;
 let root: string;
 let storage: LocalStorage;
-let llm: FakeLlm;
-
-const random = { bytes: (length: number) => new Uint8Array(length).fill(7) };
-
-const models = (): ModelCallDeps => ({
-  db,
-  clock,
-  llmFor: () => llm,
-  guard: async () => ({ ok: true }),
-});
-
-const none = { requirement_id: "", known_line_id: "", template_id: "", related_fact_id: "" };
-const DRAFT: DraftAnswer = {
-  fit: [
-    { requirement_id: "R1", verdict: "met", fact_ids: ["F-react-production"], note: "" },
-    { requirement_id: "R2", verdict: "met", fact_ids: ["F-node-apis"], note: "" },
-    { requirement_id: "R3", verdict: "met", fact_ids: ["F-node-apis"], note: "" },
-    { requirement_id: "R4", verdict: "gap", fact_ids: [], note: "" },
-  ],
-  blocks: [
-    {
-      id: "S1",
-      text: "I have built production React applications for five years.",
-      paragraph_break: true,
-      class: "claim",
-      fact_ids: ["F-react-production"],
-      fields: [],
-      gap: none,
-    },
-  ],
-};
 
 /** The draft, its one sentence citing a fact the profile does not hold. */
 const CITING_NOTHING: DraftAnswer = {
-  ...DRAFT,
-  blocks: [{ ...DRAFT.blocks[0]!, fact_ids: ["F-not-in-the-profile"] }],
+  ...KIT_DRAFT,
+  blocks: [{ ...KIT_DRAFT.blocks[0]!, fact_ids: ["F-not-in-the-profile"] }],
 };
 
 /** A DNS where these domains take mail, and no other does. */
@@ -86,61 +42,11 @@ const mailOnly = (domains: readonly string[]): Dns => ({
   },
 });
 
-/** The judge, as a stage that gives these verdicts on the kit; or the output of a kit from before it was built. */
-const judging = (verdicts: BlockVerdict[] | "before the judge") => ({
-  callsModel: false,
-  input: () => ({}),
-  run: async () => ({
-    ok: true as const,
-    output:
-      verdicts === "before the judge"
-        ? { checked: false }
-        : { checked: true, verdicts, markers: [] },
-  }),
-  next: () => ({ state: "kit_ready" as const, pending: null }),
-});
-
 const deps = (dns: Dns = offlineDns()) => ({ db, clock, dns });
 
 /** A job run to its kit, its post pasted with `text`, the judge calling S1 overstated. */
-async function readyKit(
-  text: string,
-  opts: {
-    draft?: DraftAnswer;
-    dns?: Dns;
-    verdicts?: BlockVerdict[] | "before the judge";
-  } = {},
-): Promise<string> {
-  const started = await startJob(
-    { db, clock, storage },
-    { images: [], pastedText: text, clientElapsedMs: 0 },
-  );
-  if (!started.ok) throw new Error(started.message);
-  const record = JSON.parse(
-    readFileSync(join(SYNTHETIC, "records", "S01-email-simple.json"), "utf8"),
-  ) as JobRecord;
-  llm = fakeLlm([answer(record), answer(opts.draft ?? DRAFT)]);
-  const pipeline: Pipeline = {
-    extract: extractStage({ db, storage, random, models: models() }),
-    eligibility: eligibilityStage({ db, clock }),
-    draft: {
-      ...draftStage({ db, random, models: models() }),
-      alongside: () => ["address_read", "address_checks"],
-    },
-    address_read: addressReadStage({ db, storage, random, models: models() }),
-    address_checks: addressChecksStage({ db, dns: opts.dns ?? offlineDns() }),
-    judge: judging(
-      opts.verdicts ?? [
-        { blockId: "S1", verdict: "overstated", companyClaim: false, note: "Five years is more." },
-      ],
-    ),
-  };
-  const deps = { db, clock, pipeline };
-  const lease = await claimJob(deps, started.jobId);
-  if (!lease) throw new Error("not claimed");
-  await runJob(deps, lease);
-  return started.jobId;
-}
+const readyKit = (text: string, opts?: Parameters<typeof kitFor>[2]) =>
+  kitFor({ db, clock, storage }, text, opts);
 
 beforeAll(async () => {
   db = await createTestDb();
@@ -151,22 +57,10 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.exec(
-    `delete from {{schema}}.kit_reviews; delete from {{schema}}.status_changes;
-     delete from {{schema}}.draft_outcomes; delete from {{schema}}.applications;
-     delete from {{schema}}.model_calls;
-     delete from {{schema}}.job_stage_runs; delete from {{schema}}.job_leases;
-     delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
-     delete from {{schema}}.jobs; delete from {{schema}}.profile_versions`,
-  );
   clock = fakeClock();
   root = mkdtempSync(join(tmpdir(), "jobkit-review-"));
   storage = createLocalStorage({ root, origin: "http://localhost:3000" });
-  const checked = validateProfile(readFileSync(join(SYNTHETIC, "profile.sample.yaml"), "utf8"), {
-    read: (path) => new Uint8Array(readFileSync(join(SYNTHETIC, path))),
-  });
-  if (!checked.ok) throw new Error(JSON.stringify(checked.problems));
-  await seedProfile({ db, storage, clock }, checked);
+  await resetKitBed({ db, clock, storage });
 });
 
 afterEach(() => {

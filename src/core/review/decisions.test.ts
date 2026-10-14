@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ADDRESS_CHECKS_VERSION, type AddressCheck } from "./addressChecks";
 import { canHandOff } from "./canHandOff";
 import {
+  approveAll,
   decide,
   flagKey,
   gateInputOf,
@@ -34,6 +35,7 @@ const PARTS: KitParts = {
   scamSignals: ["asks for a fee"],
   duplicates: [{ reason: "You applied to this company and role before", covered: false }],
   sent: false,
+  sending: false,
 };
 
 const MAIL_HOST: AddressCheck = {
@@ -185,5 +187,34 @@ describe("gateInputOf", () => {
     expect(input.attachments).toEqual([{ name: "Portfolio link", ticked: false }]);
     // A verdict on a sentence no longer in the kit holds nothing.
     expect(input.verdicts.map((verdict) => verdict.blockId)).toEqual(["S1"]);
+  });
+});
+
+describe("approveAll", () => {
+  it('marks "I checked this" on every flagged sentence and flag, and no other decision', () => {
+    const approved = approveAll(PARTS, decide(NO_DECISIONS, { kind: "check", blockId: "S2" }));
+
+    expect(approved).toEqual({ ...NO_DECISIONS, checked: ["S2"], flagsChecked: ["F1"] });
+    // The hard stops still hold the kit: the scam warning, the possible repeat, the contact, the
+    // attachment.
+    expect(canHandOff(gateInputOf(PARTS, approved)).map((reason) => reason.kind)).toEqual([
+      "scam",
+      "duplicate",
+      "contact",
+      "attachment",
+    ]);
+  });
+
+  it("checks only the sentences the gate holds: one about the company, not a supported one", () => {
+    const parts: KitParts = {
+      ...PARTS,
+      flags: [],
+      verdicts: [
+        { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
+        { blockId: "S3", verdict: "supported", companyClaim: true, note: "" },
+      ],
+    };
+
+    expect(approveAll(parts, NO_DECISIONS).checked).toEqual(["S3"]);
   });
 });

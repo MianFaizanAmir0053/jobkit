@@ -27,7 +27,9 @@ import { jobView, storedDecisions } from "./jobView";
  * the owner has not looked at since typing the address again elsewhere, is
  * refused, so the ledger never keeps an address the email did not go to.
  * Only a role whose route is email is marked sent; a second tap changes
- * nothing. Before real use there is no timing arm.
+ * nothing. Before real use there is no timing arm. An email jobkit sent
+ * from the owner's Gmail (decisions A20) is marked sent the same way, with
+ * nothing changed in Gmail, and cannot be taken back: it went.
  */
 
 export type MarkSent =
@@ -44,7 +46,7 @@ export interface SentFrom {
 }
 
 /** Locks a job's review row, made first if need be, so decisions and Mark sent take turns. */
-async function lockReview(deps: { db: Db; clock: Clock }, jobId: string, roleId: string) {
+export async function lockReview(deps: { db: Db; clock: Clock }, jobId: string, roleId: string) {
   await deps.db.query(
     `insert into {{schema}}.kit_reviews (job_id, role_id, decisions, gate, updated_at)
      values ($1, $2, $3::jsonb, '[]'::jsonb, $4) on conflict (job_id, role_id) do nothing`,
@@ -57,7 +59,7 @@ async function lockReview(deps: { db: Db; clock: Clock }, jobId: string, roleId:
 }
 
 /** Keeps the gate as the kit now stands in the review row. */
-async function keepGate(deps: { db: Db; clock: Clock }, jobId: string, roleId: string) {
+export async function keepGate(deps: { db: Db; clock: Clock }, jobId: string, roleId: string) {
   const view = await jobView(deps, jobId);
   await deps.db.query(
     `update {{schema}}.kit_reviews set gate = $3::jsonb, updated_at = $4
@@ -66,12 +68,36 @@ async function keepGate(deps: { db: Db; clock: Clock }, jobId: string, roleId: s
   );
 }
 
-export async function markSent(
+export function markSent(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
   answer: { changedInGmail: boolean },
   shown: SentFrom = {},
+): Promise<MarkSent> {
+  return marking(deps, jobId, sessionId, answer, shown);
+}
+
+/**
+ * An email jobkit sent from the owner's Gmail (decisions A20), marked sent
+ * as Mark sent marks one, nothing changed in Gmail. It went, so nothing on
+ * a page, nor a reason that now holds the kit, refuses it.
+ */
+export function markSentByJobkit(
+  deps: { db: Db; clock: Clock },
+  jobId: string,
+  sessionId: string | null,
+): Promise<MarkSent> {
+  return marking(deps, jobId, sessionId, { changedInGmail: false }, null);
+}
+
+/** Mark sent; with no page shown, for an email jobkit sent. */
+async function marking(
+  deps: { db: Db; clock: Clock },
+  jobId: string,
+  sessionId: string | null,
+  answer: { changedInGmail: boolean },
+  shown: SentFrom | null,
 ): Promise<MarkSent> {
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
@@ -86,15 +112,17 @@ export async function markSent(
     const view = await jobView(at, jobId);
     if (view?.state !== "kit_ready" || !view.review) return { ok: false, reason: "not-ready" };
     const to = view.handoff?.to ?? "";
-    if (
-      (shown.kit !== undefined && shown.kit !== view.kitKey) ||
-      (shown.to !== undefined && shown.to !== to)
-    ) {
-      return { ok: false, reason: "changed" };
+    if (shown !== null) {
+      if (
+        (shown.kit !== undefined && shown.kit !== view.kitKey) ||
+        (shown.to !== undefined && shown.to !== to)
+      ) {
+        return { ok: false, reason: "changed" };
+      }
+      // A second tap on a kit already sent changes nothing; any other open reason holds it.
+      const held = view.review.gate.filter((reason) => reason.kind !== "sent");
+      if (held.length > 0) return { ok: false, reason: "held" };
     }
-    // A second tap on a kit already sent changes nothing; any other open reason holds it.
-    const held = view.review.gate.filter((reason) => reason.kind !== "sent");
-    if (held.length > 0) return { ok: false, reason: "held" };
     const applicationId =
       (await applicationIdOf(tx, jobId, role.id)) ?? (await openForJob(at, jobId, sessionId));
     if (!applicationId) return { ok: false, reason: "not-ready" };
@@ -138,14 +166,15 @@ export async function markSent(
  * Takes back a mistaken Mark sent (ledger spec, "Statuses"): the application
  * goes back to kit_ready, its outcome with it, and the kit opens again. The
  * page names the Mark sent it showed, by its time, so a late tap from a
- * page drawn before the owner marked it sent again changes nothing.
+ * page drawn before the owner marked it sent again changes nothing. An
+ * email jobkit sent is not taken back: it went (decisions A20).
  */
 export async function takeBackSent(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
   shownSentAt?: Date,
-): Promise<{ ok: true } | { ok: false; reason: "not-found" | "not-sent" }> {
+): Promise<{ ok: true } | { ok: false; reason: "not-found" | "not-sent" | "sent-by-jobkit" }> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   const role = await chosenRole(deps.db, jobId);
   if (!role) return { ok: false, reason: "not-found" };
@@ -159,6 +188,14 @@ export async function takeBackSent(
     );
     const application = rows[0];
     if (application?.status !== "sent") return { ok: false as const, reason: "not-sent" as const };
+    const byJobkit = await tx.query(
+      `select 1 from {{schema}}.kit_sends
+        where job_id = $1 and role_id = $2 and status = 'sent' limit 1`,
+      [jobId, role.id],
+    );
+    if (byJobkit.rows.length > 0) {
+      return { ok: false as const, reason: "sent-by-jobkit" as const };
+    }
     const undone = await undoStatus(
       at,
       application.id,

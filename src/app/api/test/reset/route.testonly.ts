@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { getContainer } from "@/server/container";
+import { resetTestGmail } from "@/server/gmail/sender";
 import { setScriptedAnswers } from "@/server/scriptedModels";
 import { testRoutesAllowed } from "@/server/testOnly";
 
@@ -21,6 +22,8 @@ export async function POST() {
     delete from {{schema}}.baseline_runs;
     delete from {{schema}}.profile_versions;
     delete from {{schema}}.draft_outcomes;
+    delete from {{schema}}.kit_sends;
+    delete from {{schema}}.gmail_connection;
     delete from {{schema}}.kit_reviews;
     delete from {{schema}}.status_changes;
     delete from {{schema}}.applications;
@@ -33,5 +36,6 @@ export async function POST() {
   `);
   // A pipeline left running from an earlier test must not take the next test's answers.
   setScriptedAnswers({});
+  resetTestGmail();
   return new NextResponse(null, { status: 204 });
 }

@@ -36,6 +36,7 @@ import {
   NO_DECISIONS,
   type ReviewDecisions,
 } from "./decisions";
+import { isLive, type KitSend, latestSend } from "./kitSends";
 
 /**
  * What the job page and the jobs list show (review spec, as far as the thin
@@ -95,6 +96,11 @@ export interface JobView {
    * another route, or before there is a kit.
    */
   handoff: { to: string; typed: boolean } | null;
+  /**
+   * The chosen role's "Approve & send" the page shows: the one counting
+   * down, sending or sent, else the latest; null when there was none.
+   */
+  send: KitSend | null;
 }
 
 const NOT_CHECKED: AddressCheck = {
@@ -196,6 +202,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     : ready && role && extraction
       ? await unopenedDuplicates(deps.db, role, extraction, handoff)
       : [];
+  const send = role ? await latestSend(deps.db, id, role.id) : null;
   const kitParts =
     draft && role && extraction
       ? kitPartsOf({
@@ -210,6 +217,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
             application?.status === "sent" ||
             application?.status === "submitted" ||
             application?.status === "bounced",
+          sending: send !== null && isLive(send, deps.clock.now()),
         })
       : null;
   return {
@@ -241,6 +249,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
         ? { decisions, gate: canHandOff(gateInputOf(kitParts, decisions)) }
         : null,
     handoff,
+    send,
   };
 }
 
@@ -338,6 +347,7 @@ function kitPartsOf(parts: {
   addressChecks: AddressCheck[] | null;
   duplicates: JobView["duplicates"];
   sent: boolean;
+  sending: boolean;
 }): KitParts {
   const { kind } = parts.role.route;
   return {
@@ -355,6 +365,7 @@ function kitPartsOf(parts: {
     ),
     duplicates: duplicateParts(parts.duplicates),
     sent: parts.sent,
+    sending: parts.sending,
   };
 }
 

@@ -57,6 +57,21 @@ export interface Dns {
   lookup(name: string, type: "MX" | "A" | "AAAA"): Promise<DnsAnswer>;
 }
 
+/**
+ * What sending one email from the owner's Gmail came to (decisions A20):
+ * sent, with Gmail's IDs; refused by Google, so the owner must connect Gmail
+ * again; unknown, when the answer was lost after Gmail had the email, so it
+ * may have gone; or failed, and not sent, for any other reason.
+ */
+export type GmailSendResult =
+  | { ok: true; messageId: string; threadId: string }
+  | { ok: false; reason: "unauthorised" | "unknown" | "failed"; message: string };
+
+/** Sends one MIME message from the owner's connected Gmail. */
+export interface GmailSender {
+  send(message: string): Promise<GmailSendResult>;
+}
+
 export interface Clock {
   now(): Date;
 }

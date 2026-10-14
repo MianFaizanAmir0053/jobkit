@@ -9,6 +9,7 @@ import { listDevices, type Device } from "@/core/platform/devices";
 import { waitingPhones, type WaitingPhone } from "@/core/platform/pairing";
 import {
   getActiveProfile,
+  getProfileVersion,
   type Profile,
   profileCounts,
   type ProfileCounts,
@@ -20,6 +21,7 @@ import {
   type SessionRequirements,
 } from "@/core/platform/sessions";
 import { type JobListItem, listJobViews, jobView, type JobView } from "@/core/review/jobView";
+import { cvFileName } from "@/core/review/send";
 import { isUuid } from "@/lib/uuid";
 
 import { getContainer } from "./container";
@@ -121,3 +123,13 @@ export const profileForViewer = cache(
     return profile && counts ? { profile, counts } : null;
   },
 );
+
+/**
+ * The CV "Approve & send" attaches, as the recruiter sees it: the one of the
+ * profile version the email was written with; null when that version is gone.
+ */
+export const kitCvForViewer = cache(async (versionId: string): Promise<string | null> => {
+  await requireSession();
+  const profile = await getProfileVersion((await getContainer()).db, versionId);
+  return profile && cvFileName(profile.owner.name);
+});

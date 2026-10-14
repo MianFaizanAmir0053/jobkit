@@ -14,12 +14,16 @@ import type { AddressCheck } from "./addressChecks";
  * clears the judge's verdict on its own sentence alone. A disputed or
  * missing contact clears only with a retyped value that passes the strict
  * check, and the address checks are those of the address that goes out. A
- * kit marked sent holds everything, so the same email never goes twice.
+ * kit marked sent holds everything, so the same email never goes twice, and
+ * so does one jobkit is sending (decisions A20), until it went or the owner
+ * pressed Undo.
  */
 
 export interface GateInput {
   /** Whether the owner marked the kit sent. */
   sent: boolean;
+  /** Whether jobkit is sending the kit from the owner's Gmail: counting down to it, or sending. */
+  sending: boolean;
   /** validate's flags on the kit as it stands, the owner's decisions applied: each one blocks. */
   flags: readonly KitFlag[];
   /** The judge's verdict on each sentence. */
@@ -46,6 +50,7 @@ export interface GateInput {
 
 export type GateReason = { message: string } & (
   | { kind: "sent" }
+  | { kind: "sending" }
   | { kind: "scam"; signals: readonly string[] }
   | { kind: "duplicate"; reason: string }
   | { kind: "contact" }
@@ -112,14 +117,23 @@ export function flagRank(kind: string): number {
 
 /**
  * The open reasons, the most serious first; none opens every outbound
- * control. A kit marked sent is held for that alone.
+ * control. A kit marked sent is held for that alone, and so is one jobkit
+ * is sending.
  */
 export function canHandOff(input: GateInput): GateReason[] {
   if (input.sent) {
     return [
       {
         kind: "sent",
-        message: "You marked this email sent, so nothing goes out from this page again.",
+        message: "This email was sent, so nothing goes out from this page again.",
+      },
+    ];
+  }
+  if (input.sending) {
+    return [
+      {
+        kind: "sending",
+        message: "jobkit is sending this email from your Gmail. Press Undo to stop it.",
       },
     ];
   }

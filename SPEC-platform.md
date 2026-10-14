@@ -13,7 +13,7 @@ Part A sets the conventions every module follows. Part B specifies the platform 
 
 ### A1. Objective of jobkit
 
-jobkit turns a job post the owner shares from their Android phone into an application kit: a structured job record, an eligibility check, a per-requirement fit table, and an email, form or message draft in which every claim cites a fact the owner approved. The owner reviews the kit and sends it through the Gmail app, WhatsApp or the application form. The tool serves one owner and doubles as a portfolio case study, so every stage records its time and cost. Success targets are in ADR 0001 entry 7 and amendment A8. One-tap sending is milestone 2 (amendment A1).
+jobkit turns a job post the owner shares from their Android phone into an application kit: a structured job record, an eligibility check, a per-requirement fit table, and an email, form or message draft in which every claim cites a fact the owner approved. The owner reviews the kit and sends it through the Gmail app, WhatsApp or the application form. The tool serves one owner and doubles as a portfolio case study, so every stage records its time and cost. Success targets are in ADR 0001 entry 7 and amendment A8. Sending in one click from the owner's Gmail came into the MVP with amendment A20 (SPEC-send.md); the rest of milestone 2's send waits (amendment A1).
 
 ### A2. Tech stack
 

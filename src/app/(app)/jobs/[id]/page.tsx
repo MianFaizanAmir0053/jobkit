@@ -12,12 +12,21 @@ import { flagRank, judgeMessage } from "@/core/review/canHandOff";
 import { flagKey, NO_DECISIONS } from "@/core/review/decisions";
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { JobView, Step } from "@/core/review/jobView";
+import { isLive } from "@/core/review/kitSends";
 import { appConfig } from "@/server/config";
-import { jobForViewer, requireSession, viewerTimeZone } from "@/server/dal";
+import {
+  gmailForViewer,
+  jobForViewer,
+  kitCvForViewer,
+  requestTime,
+  requireSession,
+  viewerTimeZone,
+} from "@/server/dal";
 
 import { duplicateLine, formatTime, placeOfFlag, STATE_WORDS, withoutContacts } from "../words";
 
 import { ActionButton } from "./ActionButton";
+import { ApproveSend } from "./ApproveSend";
 import { JobPoller } from "./JobPoller";
 import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
@@ -72,8 +81,9 @@ const ABOUT_A_REQUIREMENT: ReadonlySet<KitFlagKind> = new Set([
  * The job page (review spec, as far as the thin path goes): the steps as
  * they run, the owner's answers in waiting and stopped states, Retry and
  * Skip after a failure, and the email kit: the banners, the contact, what
- * to check, the checklist and the fit, then the outbound controls, held by
- * the gate, and Mark sent. It polls while the job runs or uploads.
+ * to check, the checklist and the fit, then Approve & send from the owner's
+ * Gmail (decisions A20) and the outbound controls, held by the gate, and
+ * Mark sent. It polls while the job runs or uploads.
  */
 export default async function JobPage(props: PageProps<"/jobs/[id]">) {
   await requireSession();
@@ -88,6 +98,9 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
   const polling = view.kind === "running" || view.kind === "client";
   const ready = view.state === "kit_ready";
   const readable = ready && view.draft && view.role && view.kitParts && view.kitKey;
+  const gmail = readable ? await gmailForViewer() : null;
+  const cv = readable ? await kitCvForViewer(view.draft!.profileVersion) : null;
+  const now = await requestTime();
 
   return (
     <section aria-labelledby="job-heading" className="flex flex-col gap-6">
@@ -116,7 +129,14 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
       {readable && <EligibilityBanner view={view} />}
       {record && <PostPanel view={view} />}
       {readable ? (
-        <KitPanel view={view} account={account} timeZone={timeZone} />
+        <KitPanel
+          view={view}
+          account={account}
+          sendsFrom={gmail?.email ?? null}
+          cvFile={cv}
+          now={now}
+          timeZone={timeZone}
+        />
       ) : (
         ready && (
           <Panel title="This kit cannot be read">
@@ -429,10 +449,18 @@ function PostPanel({ view }: { view: JobView }) {
 function KitPanel({
   view,
   account,
+  sendsFrom,
+  cvFile,
+  now,
   timeZone,
 }: {
   view: JobView;
   account: string;
+  /** The Gmail account Approve & send sends from; null while Gmail is not connected. */
+  sendsFrom: string | null;
+  /** The CV Approve & send attaches, as the recruiter sees its name. */
+  cvFile: string | null;
+  now: Date;
   timeZone: string;
 }) {
   const draft = view.draft!;
@@ -474,6 +502,33 @@ function KitPanel({
   const gate = view.review?.gate ?? [];
   const open = view.review !== null && gate.length === 0;
   const sent = parts.sent;
+  // While jobkit sends the email, nothing on the page changes it.
+  const locked = sent || parts.sending;
+  // The send of this kit the page shows: counting down, sending, or how the last one went.
+  const send =
+    view.send && (view.send.kit === kitKey || view.send.status === "sent") ? view.send : null;
+  const live =
+    send && (send.status === "scheduled" || send.status === "sending") && isLive(send, now)
+      ? {
+          id: send.id,
+          status: send.status,
+          leftMs: Math.max(0, send.sendAt.getTime() - now.getTime()),
+        }
+      : null;
+  // The countdown says jobkit is sending it; the list says what else holds it.
+  const reasons = gate.filter((reason) => reason.kind !== "sending");
+  // Approve & send marks every flagged sentence and flag checked; the other reasons need the owner.
+  const approvals = reasons.flatMap((reason) => {
+    if (reason.kind === "judge") {
+      return [`${reason.message} — "${blockText.get(reason.blockId) ?? ""}"`];
+    }
+    if (reason.kind === "flag") {
+      const about = aboutFlag(reason.flag);
+      return [about ? `${reason.message} — "${about}"` : reason.message];
+    }
+    return [];
+  });
+  const held = reasons.some((reason) => reason.kind !== "judge" && reason.kind !== "flag");
   const needsRetype = parts.contact?.needsRetype ?? false;
   // Where the kit goes: the post's contact, or the one typed in its place once it passes.
   const to = view.handoff?.to ?? "";
@@ -546,7 +601,7 @@ function KitPanel({
                     {check.message}
                   </p>
                 ))}
-            {needsRetype && parts.contact && !sent && (
+            {needsRetype && parts.contact && !locked && (
               <RetypeField
                 jobId={view.id}
                 kit={kitKey}
@@ -596,7 +651,7 @@ function KitPanel({
                   {" "}
                   — &ldquo;{blockText.get(verdict.blockId)}&rdquo;
                 </span>
-                {!sent && (
+                {!locked && (
                   <div className="mt-1 flex items-center gap-2">
                     {checked.has(verdict.blockId) ? (
                       <>
@@ -630,7 +685,7 @@ function KitPanel({
                 <li key={key}>
                   {flag.message}
                   {about && <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>}
-                  {!sent && (
+                  {!locked && (
                     <div className="mt-1 flex items-center gap-2">
                       {flagsChecked.has(key) ? (
                         <>
@@ -686,7 +741,7 @@ function KitPanel({
               id={attachment.id}
               name={attachment.name}
               ticked={decisions.attached.includes(attachment.id)}
-              disabled={sent}
+              disabled={locked}
             />
           ))}
         </Panel>
@@ -714,11 +769,11 @@ function KitPanel({
 
       <Panel title="Send it">
         <div aria-live="polite">
-          {!open && (
+          {reasons.length > 0 && (
             <div className="rounded-md border border-destructive/40 p-3 text-sm">
               <p className="font-medium">{sent ? "Sent already" : "Before you send"}</p>
               <ul className="mt-1 list-disc pl-5 [overflow-wrap:anywhere]">
-                {gate.map((reason, i) => {
+                {reasons.map((reason, i) => {
                   // A sentence's finding names the sentence, so two findings never read alike.
                   const about =
                     reason.kind === "judge"
@@ -739,6 +794,31 @@ function KitPanel({
             </div>
           )}
         </div>
+        {byEmail && !sent && (
+          <>
+            {send?.status === "failed" && send.error && (
+              <p className="text-sm text-destructive [overflow-wrap:anywhere]">{send.error}</p>
+            )}
+            {send?.status === "cancelled" && (
+              <p className="text-sm text-muted-foreground">
+                You pressed Undo, so nothing was sent.
+              </p>
+            )}
+            <ApproveSend
+              key={live ? `${live.id}-${live.status}` : "none"}
+              jobId={view.id}
+              kit={kitKey}
+              to={to}
+              subject={kit.subject}
+              from={sendsFrom}
+              cv={cvFile}
+              approvals={approvals}
+              held={held}
+              live={live}
+            />
+            <p className="text-sm font-medium">Or send it yourself</p>
+          </>
+        )}
         <Outbound
           jobId={view.id}
           kit={kitKey}
@@ -753,7 +833,7 @@ function KitPanel({
           subject={kit.subject}
           body={body}
         />
-        {byEmail && (
+        {byEmail && !sent && (
           <p className="text-sm text-muted-foreground">
             In Gmail, {account ? `check that From shows ${account}, ` : "check the From address, "}
             attach your CV, and send. Gmail adds your signature. If you change the email&apos;s
@@ -766,25 +846,34 @@ function KitPanel({
         {sent ? (
           <div className="flex flex-col gap-2 text-sm">
             <p>
-              {view.application?.sentAt
-                ? `Marked sent on ${formatTime(view.application.sentAt, timeZone)}.`
-                : "Marked sent."}
+              {send?.status === "sent"
+                ? `Sent from your Gmail${view.application?.sentAt ? ` on ${formatTime(view.application.sentAt, timeZone)}` : ""}.`
+                : view.application?.sentAt
+                  ? `Marked sent on ${formatTime(view.application.sentAt, timeZone)}.`
+                  : "Marked sent."}
             </p>
-            {view.application?.status === "sent" && view.application.sentAt && (
-              <div>
-                <ActionButton
-                  url={`/api/jobs/${view.id}/take-back`}
-                  label="Take back Mark sent"
-                  variant="outline"
-                  body={{ sentAt: view.application.sentAt.toISOString() }}
-                  gateOf={view.id}
-                  confirmText="Take back Mark sent? Do this only if you did not send it: the kit opens again."
-                />
-              </div>
+            {send?.status === "sent" && send.error && (
+              <p className="text-destructive [overflow-wrap:anywhere]">{send.error}</p>
             )}
+            {view.application?.status === "sent" &&
+              view.application.sentAt &&
+              send?.status !== "sent" && (
+                <div>
+                  <ActionButton
+                    url={`/api/jobs/${view.id}/take-back`}
+                    label="Take back Mark sent"
+                    variant="outline"
+                    body={{ sentAt: view.application.sentAt.toISOString() }}
+                    gateOf={view.id}
+                    confirmText="Take back Mark sent? Do this only if you did not send it: the kit opens again."
+                  />
+                </div>
+              )}
           </div>
         ) : byEmail ? (
-          open ? (
+          parts.sending ? (
+            <p className="text-sm text-muted-foreground">jobkit is sending it.</p>
+          ) : open ? (
             <MarkSent jobId={view.id} kit={kitKey} to={to} />
           ) : (
             <p className="text-sm text-muted-foreground">
