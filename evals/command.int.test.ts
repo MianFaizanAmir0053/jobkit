@@ -21,6 +21,7 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
+import { EXTRACT } from "@/core/extraction/extract";
 import { createTestDb } from "@/server/db/testDb";
 
 import type { Labels } from "./cases";
@@ -54,7 +55,7 @@ let lines: string[];
 function io(overrides: Partial<EvalIo> = {}): EvalIo {
   return {
     env: {},
-    localEnv: { ANTHROPIC_EVALS_API_KEY: "fixture-evals-key" },
+    localEnv: { GEMINI_EVALS_API_KEY: "fixture-evals-key" },
     archive: join(dir, "archive"),
     profileFile: join(SYNTHETIC, "profile.sample.yaml"),
     syntheticDir: join(dir, "synthetic"),
@@ -178,18 +179,24 @@ afterEach(() => {
 });
 
 describe("evalCommand", () => {
-  it("refuses to start without the evaluation key, before reading any case", async () => {
+  it("refuses to start without the evaluation key of the model it runs, before reading any case", async () => {
     await labelledCase(CASE, "dev");
 
     await expect(
       evalCommand(["--stage", "extract", "--yes"], io({ localEnv: {} })),
+    ).rejects.toThrow(/GEMINI_EVALS_API_KEY/);
+    await expect(
+      evalCommand(
+        ["--stage", "extract", "--model", "claude-opus-5-5", "--yes"],
+        io({ localEnv: { GEMINI_EVALS_API_KEY: "fixture-evals-key" } }),
+      ),
     ).rejects.toThrow(/ANTHROPIC_EVALS_API_KEY/);
     expect([opened, lines.length]).toEqual([0, 0]);
   });
 
   it("refuses to start beside an app key or a remote database, in the process or in .env.local", async () => {
     await labelledCase(CASE, "dev");
-    const key = { ANTHROPIC_EVALS_API_KEY: "fixture-evals-key" };
+    const key = { GEMINI_EVALS_API_KEY: "fixture-evals-key" };
 
     await expect(
       evalCommand(
@@ -213,7 +220,9 @@ describe("evalCommand", () => {
 
     expect([opened, llm.calls.length]).toEqual([0, 0]);
     expect(lines[0]).toBe("1 labelled dev cases to run; 0 in dev have no labels yet.");
-    expect(lines[1]).toMatch(/^At most \$\d+\.\d\d for extract with claude-opus-5-5/);
+    expect(lines[1]).toMatch(
+      new RegExp(`^At most \\$\\d+\\.\\d\\d for extract with ${EXTRACT.model}`),
+    );
     expect(lines.at(-1)).toBe("Nothing was spent. Run again with --yes to spend.");
     expect(existsSync(join(dir, "evals"))).toBe(false);
   });
@@ -226,14 +235,14 @@ describe("evalCommand", () => {
 
     const runs = join(dir, "evals", "runs");
     const [folder] = readdirSync(runs);
-    expect(folder).toBe("2026-10-13T12-00-00.000Z-extract-claude-opus-5-5");
+    expect(folder).toBe(`2026-10-13T12-00-00.000Z-extract-${EXTRACT.model}`);
     const saved = JSON.parse(readFileSync(join(runs, folder!, "report.json"), "utf8")) as RunReport;
     expect(saved).toMatchObject({
       stage: "extract",
       split: "dev",
       final: false,
       commit: "0123456789abcdef0123",
-      model: "claude-opus-5-5",
+      model: EXTRACT.model,
       prompt: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(saved.cases.map((result) => result.id)).toEqual([CASE]);
@@ -257,7 +266,7 @@ describe("evalCommand", () => {
       expect.objectContaining({
         at: "2026-10-13T12:00:00.000Z",
         stage: "extract",
-        model: "claude-opus-5-5",
+        model: EXTRACT.model,
       }),
     ]);
     expect(lines.some((line) => line.includes(CASE))).toBe(false);

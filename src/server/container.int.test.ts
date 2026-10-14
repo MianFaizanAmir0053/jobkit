@@ -94,7 +94,7 @@ describe("createContainer", () => {
 
   it("in test, answers only from the script, whatever keys the shell holds", async () => {
     container = await createContainer({ JOBKIT_ENV: "test", ANTHROPIC_EVALS_API_KEY: "evals-key" });
-    setScriptedAnswers([]);
+    setScriptedAnswers({});
 
     // No provider is loaded: with no answer set, the call says so instead of reaching one.
     await expect(

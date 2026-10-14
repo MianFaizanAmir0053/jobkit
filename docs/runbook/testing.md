@@ -26,6 +26,6 @@ The dev server, and any local run not set up as production, refuses to start whe
 
 These touch the real Supabase project or spend real money, so they run only by hand, with the owner's go-ahead, one file at a time:
 
-- `npx vitest run --mode live src/adapters/anthropic.live.test.ts`: Claude Opus 5.5 on `ANTHROPIC_EVALS_API_KEY` from `.env.local`, usually a few cents and at most about fifteen. It prints the longest silence while the model thinks with its thinking hidden; the wrapper gives up after 45 silent seconds (platform spec B4).
+- `npx vitest run --mode live src/adapters/anthropic.live.test.ts` (only with a Claude key; no stage runs on Claude now): Claude Opus 5.5 on `ANTHROPIC_EVALS_API_KEY` from `.env.local`, usually a few cents and at most about fifteen. It prints the longest silence while the model thinks with its thinking hidden; the wrapper gives up after 45 silent seconds (platform spec B4).
 - `npx vitest run --mode live src/adapters/gemini.live.test.ts`: Gemini 3.8 Flash on `GEMINI_EVALS_API_KEY`, about a cent. It reads an image at the high thinking level and prints the longest silence too.
 - `src/adapters/pg.live.test.ts`, `src/adapters/supabaseStorage.live.test.ts` and `src/core/platform/pairing.live.test.ts` read `.env.ops.local` and use the Supabase project.

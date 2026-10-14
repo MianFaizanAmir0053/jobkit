@@ -27,7 +27,7 @@ Major versions are pinned when the project is scaffolded; exact versions live in
 | Sign-in | `arctic` for Google's OAuth flow; sessions in a jobkit table (B2) |
 | Database | Postgres: Supabase Free in production through `pg`; PGlite (`@electric-sql/pglite`) in tests and local development |
 | Files | Supabase Storage through `@supabase/supabase-js`, server side only; the local file system in tests and development |
-| Models | `@anthropic-ai/sdk` with structured outputs through `zodOutputFormat`; `@google/genai` for the Gemini second read |
+| Models | `@google/genai` with structured outputs through `responseJsonSchema`, for every model stage (decisions A18); `@anthropic-ai/sdk` with `zodOutputFormat`, kept for a stage run on Claude |
 | Validation | `zod` for every external input and every model output |
 | Tests | Vitest (unit and integration), Playwright with axe (end-to-end tests of jobkit itself only) |
 | Tooling | ESLint (Next config), Prettier, `tsx` for scripts |
@@ -39,7 +39,7 @@ Any other runtime dependency needs the owner's approval first. Approved since: `
 
 - Domain logic lives in `src/core/<module id>/` as plain TypeScript. It imports no framework, network or file-system code.
 - Side effects go through ports declared in `src/core/ports.ts`: `Db`, `Storage`, `Llm`, `Dns`, `Clock` and `Random`.
-- Adapters live in `src/adapters/`. Production uses `pg`, Supabase Storage, Anthropic and Gemini, and `node:dns`. Tests and development use PGlite, the local file system, and fakes for the rest.
+- Adapters live in `src/adapters/`. Production uses `pg`, Supabase Storage, Gemini (and Anthropic for a stage run on Claude), and `node:dns`. Tests and development use PGlite, the local file system, and fakes for the rest.
 - Routes, pages and server actions in `src/app/` stay thin: parse input with zod, check the session (B2), call core, render.
 - A composition root (`src/server/container.ts`) wires adapters to ports from environment variables.
 
@@ -59,7 +59,7 @@ npm run check          # lint, typecheck and test; run before every commit
 npm run db:bootstrap   # once, from the laptop: create the jobkit_app role and schema (B1)
 npm run db:migrate     # apply db/migrations/*.sql to DATABASE_URL, or to PGlite in development
 npm run profile:seed   # validate private/profile.yaml and load it as a new profile version
-npm run eval -- --stage extract --model claude-opus-5-5   # live model calls; costs money; owner-approved runs only
+npm run eval -- --stage extract --model gemini-3.8-flash  # live model calls; costs money; owner-approved runs only
 ```
 
 ### A5. Project structure
@@ -204,12 +204,12 @@ Rules:
   - **Gemini:** a JSON-schema response format, then the same zod parse. The model ID is pinned at implementation after checking Google's current model list, and only the paid tier is used (ADR 0001 entry 2).
 - The wrapper has no parameter for tools, so no stage can hand a tool to a model that reads post text.
 - **Logging, one row per request attempt:** before each attempt the wrapper inserts a `model_calls` row with outcome `started`, then completes it: the model that actually answered (`response.model`), input, output (thinking included), cache-read and cache-write tokens per iteration, cost in US dollars, end time, outcome, and the provider's request ID. A retried request has two rows. An attempt that ends without usage (timeout, dropped connection, a row left `started` by a killed invocation and marked `abandoned` when the job is next claimed) records a provisional cost: its input tokens, counted before sending, at the input rate, plus its `max_tokens` at the output rate. Provisional costs count towards the cap and are labelled as upper bounds on the Spend page. A reply that arrives without usage keeps its provisional cost too. The bound covers one run of the requested model: with refusal fallbacks on, an attempt that falls back and then breaks off can have cost more, by at most its fallback run.
-- **Costs** come from a price table in code, checked against the providers' pricing pages whenever the table changes: Claude Opus 5.5 at $4 per million input tokens and $20 per million output tokens, Claude Sonnet 5.5 at $2 and $10, any model a refusal fallback can route to at its own rates, cache reads and writes at their published rates, and Gemini Flash at Google's published rates. Both providers bill thinking tokens as output. Each fallback iteration is priced at the rates of the model that ran it. An unknown model ID gets the provisional cost above and a warning on the Spend page.
+- **Costs** come from a price table in code, checked against the providers' pricing pages whenever the table changes: Claude Opus 5.5 at $4 per million input tokens and $20 per million output tokens, Claude Sonnet 5.5 at $2 and $10, any model a refusal fallback can route to at its own rates, cache reads and writes at their published rates, and Gemini 3.8 and 3.6 Flash, Gemini 3.1 Pro and Gemini 2.5 Pro at Google's published rates. Both providers bill thinking tokens as output. Each fallback iteration is priced at the rates of the model that ran it. An unknown model ID gets the provisional cost above and a warning on the Spend page.
 - **Guard:** before each attempt the wrapper runs a guard injected by the composition root. In the app, the ledger supplies it to enforce the monthly cap. When the guard refuses, no request is sent and the outcome is `refused-cap`.
 - **Timeouts and retries:** the SDKs' own retries are switched off (`maxRetries: 0`). Responses are streamed: an attempt is abandoned when no event arrives for 45 seconds, or when it passes 200 seconds in all. Anything the provider sends counts, keep-alive pings included, and Gemini is asked to stream its thought summaries, since a model that thinks silently would otherwise look stalled. The wrapper retries once on a rate limit, a server error or a dropped connection, after the `retry-after` the provider sends, capped at 15 seconds; it never retries a timeout, a refusal or any other client error. A model stage's worst case is therefore about 225 seconds (up to 10 to count the input, then 200 for its attempts and 15 for one retry's wait) plus its own image and database work.
 - **Refusal:** a `refusal` stop reason fails the stage at once, with no retry and the message "The model declined this post."
 - **Caching** is decided per stage in the module specs. In the MVP no stage uses prompt caching (drafting spec explains why); the stable parts of each prompt still come first, so caching can be switched on without reordering.
-- **Evaluations** use the same wrapper with their own composition: a local PGlite database seeded from `private/profile.yaml`, `ANTHROPIC_EVALS_API_KEY` and `GEMINI_EVALS_API_KEY`, and a guard enforcing the run's `--budget`. They refuse to start with any remote database URL or with the app's keys, so evaluation spend never reaches the app's `model_calls`, its cap or its workspace.
+- **Evaluations** use the same wrapper with their own composition: a local PGlite database seeded from `private/profile.yaml`, the evaluation key of the model a run uses (`GEMINI_EVALS_API_KEY`, or `ANTHROPIC_EVALS_API_KEY` for a run on Claude), and a guard enforcing the run's `--budget`. They refuse to start with any remote database URL or with the app's keys, so evaluation spend never reaches the app's `model_calls`, its cap or its workspace.
 
 ### B5. App shell and PWA
 
@@ -229,7 +229,7 @@ Rules:
 - GitHub Actions on every push and pull request: `npm ci`, lint, typecheck, tests with the coverage threshold, build, and the guard below over the whole tree and over every commit the push adds. The checkout fetches full history; on a new branch, whose `before` is all zeros, "added commits" means those not on `main`. These jobs get no secrets.
 - `npm run prepare` sets `core.hooksPath` to `.githooks`. The pre-commit hook runs the same guard on staged changes. It blocks:
   - a path under `private/` or `.data/` (the local database, which holds copies of the profile and CV), a `.env` file other than `.env.example`, or a file larger than 1 MB;
-  - content matching a key pattern: Anthropic keys (`sk-ant-`), Google API keys (`AIza`), Google OAuth client secrets (`GOCSPX-`), Supabase secret keys (`sb_secret_`), connection strings carrying a password (`postgres://user:password@` and `postgresql://` alike), private-key headers, and long JWT-shaped strings;
+  - content matching a key pattern: Anthropic keys (`sk-ant-`), Google API keys (`AIza`, and the newer `AQ.`), Google OAuth client secrets (`GOCSPX-`), Supabase secret keys (`sb_secret_`), connection strings carrying a password (`postgres://user:password@` and `postgresql://` alike), private-key headers, and long JWT-shaped strings;
   - on the laptop, any staged text containing an exact value of 12 characters or more from `.env.local` or `.env.ops.local`, which catches the random secrets no pattern can.
 - Before the repository is made public, a full-history scan runs (ADR 0001 entry 30).
 
@@ -238,7 +238,7 @@ Rules:
 Three places hold values, each with its own purpose. All are documented in `.env.example` with empty values; the owner sets real values, and none goes in chat or git.
 
 - **Vercel (production only):** `OWNER_EMAIL`, `APP_ORIGIN`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `DATABASE_URL` (as `jobkit_app`, through the transaction pooler), `SUPABASE_URL`, `SUPABASE_SECRET_KEY` (Supabase's newer secret key format; the legacy `service_role` key is not used), `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `CRON_SECRET`, `KEEPALIVE_SECRET` and `JOBKIT_ENV=production`.
-- **`.env.local` (development and evaluations on the laptop; `next dev` loads it):** `OWNER_EMAIL`, `APP_ORIGIN=http://localhost:3000`, the Google client values, `JOBKIT_ENV=development`, `ANTHROPIC_EVALS_API_KEY` and `GEMINI_EVALS_API_KEY`. No production database URL and no production model key: the dev server and the evaluation runner refuse to start if they find a remote `DATABASE_URL`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`, so a local run can never spend the app's budget unseen.
+- **`.env.local` (development and evaluations on the laptop; `next dev` loads it):** `OWNER_EMAIL`, `APP_ORIGIN=http://localhost:3000`, the Google client values, `JOBKIT_ENV=development` and `GEMINI_EVALS_API_KEY`, with `ANTHROPIC_EVALS_API_KEY` only for a stage run on Claude. No production database URL and no production model key: the dev server and the evaluation runner refuse to start if they find a remote `DATABASE_URL`, `ANTHROPIC_API_KEY` or `GEMINI_API_KEY`, so a local run can never spend the app's budget unseen.
 - **`.env.ops.local` (laptop operations only; never loaded by the app):** `DATABASE_BOOTSTRAP_URL` (Supabase's session pooler for the `postgres` role, which works over IPv4), `JOBKIT_APP_DB_PASSWORD`, the production `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, and copies of `CRON_SECRET` and `KEEPALIVE_SECRET` so the guard's exact-value check knows them.
 
 **Scripts never reach production by accident.** The bootstrap, migrate, seed and import scripts work on the local PGlite database by default. Only with `--prod` do they load `.env.ops.local`, and then they print the target project and ask the owner to type its reference before changing anything. The bootstrap also creates the private storage bucket `jobkit-private`.

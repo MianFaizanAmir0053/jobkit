@@ -79,7 +79,7 @@ Any other transition is refused, and "Mark sent" needs the email route while "Ma
 
 ## Spend cap
 
-- Month-to-date cost is the sum of the app's `model_calls.cost_usd` in the current UTC calendar month, matching how Anthropic's workspace limit counts. Evaluation runs use their own key and local database (platform B4) and never appear here.
+- Month-to-date cost is the sum of the app's `model_calls.cost_usd` in the current UTC calendar month, the same way a provider's workspace limit counts. Evaluation runs use their own key and local database (platform B4) and never appear here.
 - New jobs are refused when month-to-date cost is at least $25. The guard injected into the model wrapper refuses any call once it reaches $26, so a job already running can finish but overshoot stays bounded. A warning banner shows from $20. Calls with unknown cost are counted at the most expensive known rate.
 - The Spend page shows month-to-date cost, the median cost per job, and cost per stage. On day 3 of real use the owner reviews the measured cost per job and decides whether to change the cap or move a stage to a cheaper model (amendment A9).
 

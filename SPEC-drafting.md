@@ -4,7 +4,7 @@
 - **Depends on:** `extraction`, `profile`
 - **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 8, 9, 12, 15, 20, 21 and 28, and amendments A11, A14 and A15
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A; job states, stage hashes and the model wrapper from platform B4 and B9
-- **References:** [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs), [effort](https://platform.claude.com/docs/en/build-with-claude/effort), [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
+- **References:** [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output), [Gemini thinking](https://ai.google.dev/gemini-api/docs/thinking); for a stage run on Claude, [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs), [effort](https://platform.claude.com/docs/en/build-with-claude/effort), [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
@@ -52,7 +52,7 @@ The model never writes the answer to a topic question.
 
 ## Stage `draft`
 
-One Claude Opus 5.5 call through the platform wrapper, with structured output: the fit table and the kit. Effort starts at `medium`; `max_tokens` is 16,000.
+One Gemini 3.8 Flash call (decisions A18) through the platform wrapper, with structured output: the fit table and the kit. Effort starts at `medium`; `max_tokens` is 16,000, covering thinking and output.
 
 - **Fit table:** one row per requirement of the chosen role: verdict `met`, `partial` or `gap`, the fact IDs behind it, and a short note.
 - **Inputs:**
@@ -77,7 +77,7 @@ One Claude Opus 5.5 call through the platform wrapper, with structured output: t
 
 ## Stage `draft_answers`
 
-Runs when `extract_questions` added questions to a job whose kit already exists. One Opus 5.5 call answers only the new questions without a fixed topic, with the same inputs and rules; code fills the topic answers. The new answers are appended to the kit; existing blocks, verdicts and the owner's edits are untouched. `judge` then checks the new answers only.
+Runs when `extract_questions` added questions to a job whose kit already exists. One call on the draft's model answers only the new questions without a fixed topic, with the same inputs and rules; code fills the topic answers. The new answers are appended to the kit; existing blocks, verdicts and the owner's edits are untouched. `judge` then checks the new answers only.
 
 ## Code-built parts
 
@@ -123,7 +123,7 @@ A must-have gap line is never dropped to meet a limit. When the limits cannot al
 
 ## Stage `judge`
 
-One Claude Opus 5.5 call with structured output, independent of the drafter. Effort starts at `low`; `max_tokens` is 16,000.
+One Gemini 3.8 Flash call (decisions A18) with structured output, independent of the drafter's. Effort starts at `low`; `max_tokens` is 16,000.
 
 - **Input:** every block of the kit (or, after `draft_answers`, only the new answers) with the drafter's references, the full text of every cited fact (statement, kind, skills, depth, years, source), and the text of every cited record field. The blocks themselves may repeat words from the post (names, titles, requirement wording, an accepted keyword), so the blocks and the cited fields both sit between per-call random markers, as data. A drafted form answer comes with its question, also inside the markers. The drafter's proposed classes are not sent.
 - **Output: a verdict for every block.** The judge classifies each block and returns, for claims, `supported`, `overstated` (the facts support only a weaker version: depth, years, scale, seniority, "led") or `unsupported`; for other classes, `not_a_claim`; and for every block, whether it says anything about the company beyond its name, the role or a requirement (`company_claim`). A block with no verdict in the output counts as `unsupported`.

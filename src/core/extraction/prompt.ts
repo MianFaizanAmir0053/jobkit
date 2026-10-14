@@ -6,7 +6,7 @@ import { TILE_OVERLAP } from "@/core/shared/tileGeometry";
 import type { Tile } from "./tiles";
 
 /**
- * What `extract` sends Claude (extraction spec, "Stage extract"). The system
+ * What `extract` sends the model (extraction spec, "Stage extract"). The system
  * prompt holds the rules and never any of the post; the user turn holds the
  * tiles and the pasted text between two marker lines built from a random
  * value made for that one call, so text in a post cannot close the data

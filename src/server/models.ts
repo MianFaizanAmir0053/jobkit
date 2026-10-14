@@ -22,8 +22,12 @@ const KEY_NAMES = {
  */
 export function modelsFor(kind: keyof typeof KEY_NAMES, env: Env): (model: string) => Llm {
   if (kind === "test") {
-    const scripted = { anthropic: scriptedLlm("anthropic"), gemini: scriptedLlm("gemini") };
-    return (model) => scripted[providerOf(model)];
+    const scripted = scriptedLlm();
+    return (model) => {
+      // A model no provider serves fails here, as it would with keys.
+      providerOf(model);
+      return scripted;
+    };
   }
   const names = KEY_NAMES[kind];
   const llms = {

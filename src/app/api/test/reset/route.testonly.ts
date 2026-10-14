@@ -32,7 +32,6 @@ export async function POST() {
     delete from {{schema}}.jobs;
   `);
   // A pipeline left running from an earlier test must not take the next test's answers.
-  setScriptedAnswers([]);
-  setScriptedAnswers([], "gemini");
+  setScriptedAnswers({});
   return new NextResponse(null, { status: 204 });
 }

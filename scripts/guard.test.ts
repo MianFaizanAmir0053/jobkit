@@ -6,6 +6,8 @@ import { checkContent, checkPath, checkSize, knownSecretsFrom, pushRange } from 
 const fake = {
   anthropic: "sk-" + "ant-" + "api03-" + "a".repeat(40),
   googleApi: "AI" + "za" + "B".repeat(35),
+  // The newer form of a Google API key, as AI Studio issues for Gemini.
+  googleApiAq: "AQ" + "." + "Ab8" + "h".repeat(48),
   googleOAuth: "GOC" + "SPX-" + "c".repeat(28),
   supabase: "sb_" + "secret_" + "d".repeat(32),
   privateKey: "-----BEGIN " + "PRIVATE KEY-----",
@@ -56,7 +58,7 @@ describe("checkContent", () => {
 
   it("ignores the prefixes the specs mention in prose", () => {
     const prose =
-      "Anthropic keys (`sk-ant-`), Google API keys (`AIza`), Supabase secret keys (`sb_secret_`).";
+      "Anthropic keys (`sk-ant-`), Google API keys (`AIza`, `AQ.`), Supabase secret keys (`sb_secret_`).";
     expect(checkContent(prose, [])).toEqual([]);
   });
 

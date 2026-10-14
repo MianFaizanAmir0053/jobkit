@@ -31,6 +31,16 @@ describe("costOf", () => {
     expect(costOf(usage("gemini-3.8-flash", M, M), JAN_2027)).toEqual({ usd: 9, known: true });
   });
 
+  it("prices the other Gemini models a stage or an evaluation can run at Google's paid rates", () => {
+    expect(costOf(usage("gemini-3.6-flash", M, M), OCT_2026)).toEqual({ usd: 4.5, known: true });
+    expect(costOf(usage("gemini-3.6-flash", M, M), JAN_2027)).toEqual({ usd: 9, known: true });
+    expect(costOf(usage("gemini-3.1-pro-preview", M, M), OCT_2026)).toEqual({
+      usd: 14,
+      known: true,
+    });
+    expect(costOf(usage("gemini-2.5-pro", M, M), OCT_2026)).toEqual({ usd: 11.25, known: true });
+  });
+
   it("charges an unknown model at the highest rates in the table, and says it is unknown", () => {
     const unknown = costOf(usage("claude-something-new", M, M), OCT_2026);
 
@@ -41,7 +51,10 @@ describe("costOf", () => {
   });
 
   it("prices a dated snapshot as its model", () => {
-    expect(costOf(usage("claude-opus-4-8-20260301", M, M), OCT_2026)).toEqual({ usd: 30, known: true });
+    expect(costOf(usage("claude-opus-4-8-20260301", M, M), OCT_2026)).toEqual({
+      usd: 30,
+      known: true,
+    });
   });
 
   it("rounds to a millionth of a dollar", () => {

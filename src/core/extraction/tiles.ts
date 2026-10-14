@@ -5,7 +5,7 @@ import { LIMITS, TOO_TALL } from "@/core/intake/limits";
 import { MAX_LONG_EDGE, type TilePlace, tileCount, tileSpans } from "@/core/shared/tileGeometry";
 
 /**
- * Images as Claude receives them (extraction spec, "Images sent to Claude"):
+ * Images as the model receives them (extraction spec, "Images sent to the model"):
  * each image cut into tiles that fit (tileGeometry.ts), encoded losslessly,
  * with each tile's place in its image kept so a contact box can be mapped
  * back to the screenshot the owner sees.
@@ -76,7 +76,9 @@ export async function cutTiles(images: readonly Uint8Array[]): Promise<CutResult
 }
 
 /** An image's size once turned upright, from its header alone, or null when it cannot be read. */
-export async function uprightSize(bytes: Uint8Array): Promise<{ width: number; height: number } | null> {
+export async function uprightSize(
+  bytes: Uint8Array,
+): Promise<{ width: number; height: number } | null> {
   let metadata: Metadata;
   try {
     metadata = await sharp(bytes).metadata();

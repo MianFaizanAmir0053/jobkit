@@ -290,7 +290,7 @@ describe("the thin drafting group", () => {
 
     const request = llm.calls[1]!;
     expect(request).toMatchObject({
-      model: "claude-opus-5-5",
+      model: "gemini-3.8-flash",
       effort: "medium",
       maxTokens: 16_000,
     });

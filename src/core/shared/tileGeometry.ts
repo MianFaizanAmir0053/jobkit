@@ -1,5 +1,5 @@
 /**
- * The geometry of tiles (extraction spec, "Images sent to Claude"). Claude's
+ * The geometry of tiles (extraction spec, "Images sent to the model"). Claude's
  * high-resolution models take at most 2,576 pixels on the long edge and 4,784
  * visual tokens per image, and silently shrink a larger image, after which the
  * coordinates they return refer to the shrunken copy; so images are cut into

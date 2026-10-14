@@ -16,7 +16,7 @@ import { checkRequest, cutTiles } from "./tiles";
 import type { JobRecord } from "./record";
 
 /**
- * The `extract` stage (extraction spec, "Stage extract"): one Claude call
+ * The `extract` stage (extraction spec, "Stage extract"): one model call
  * with every tile of the job's post screenshots, in order, and any pasted
  * text, parsed with the job record's schema. Output that parses but fails a
  * check is kept with its flags, never retried; the phrase backstop adds scam
@@ -27,7 +27,7 @@ import type { JobRecord } from "./record";
  */
 
 export const EXTRACT = {
-  model: "claude-opus-5-5",
+  model: "gemini-3.8-flash",
   effort: "medium" satisfies Effort,
   maxTokens: 16_000,
 } as const;

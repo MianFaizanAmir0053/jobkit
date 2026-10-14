@@ -5,7 +5,7 @@ import type { Profile } from "@/core/profile/profile";
 import { oneLine } from "./build";
 
 /**
- * What `draft` sends Claude (drafting spec, "Stage draft"). The rules sit in
+ * What `draft` sends the model (drafting spec, "Stage draft"). The rules sit in
  * the system prompt. The user turn holds the owner's approved profile, and
  * the chosen role's typed fields between two marker lines built from a
  * random value made for that call: every one of those strings came from the

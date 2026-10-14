@@ -18,7 +18,7 @@ import { hasWord, type KitFlag, validateEmailKit } from "./validate";
 
 /**
  * The `draft` stage for an email kit (drafting spec, "Stage draft"): one
- * Claude Opus 5.5 call with the approved profile and the chosen role's typed
+ * Gemini 3.8 Flash call with the approved profile and the chosen role's typed
  * fields, never raw post text, for the fit table and the body's blocks. Code
  * then writes the subject, greeting, gap lines and closing, and runs the
  * checks; the kit is kept with its flags for the owner to review. On the
@@ -28,7 +28,7 @@ import { hasWord, type KitFlag, validateEmailKit } from "./validate";
  */
 
 export const DRAFT = {
-  model: "claude-opus-5-5",
+  model: "gemini-3.8-flash",
   effort: "medium" satisfies Effort,
   maxTokens: 16_000,
 } as const;

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { extname, join } from "node:path";
 
 import { EXTRACT, EXTRACT_PROMPT } from "@/core/extraction/extract";
+import { providerOf } from "@/core/platform/models";
 import { assertLocalOnly } from "@/server/localOnly";
 
 import { listCases, readCase } from "./cases";
@@ -26,7 +27,7 @@ import { type Renders, syntheticCases } from "./synthetic";
  * `npm run eval` (evals spec, "Runs, budget and reports"): checks that the
  * run is local before anything else, with no production key or remote
  * database in the process or in .env.local (platform AC13), and refuses
- * without the evaluation key. It prints the cases and the most the run can
+ * without the evaluation key of the model it runs. It prints the cases and the most the run can
  * cost, and spends only with --yes, up to --budget. Test cases run only
  * with --final, which is recorded; per-case lines are printed for dev and
  * the synthetic posts alone. `--split synthetic` runs the public posts on
@@ -67,6 +68,12 @@ export interface EvalArgs {
 }
 
 const STAGES_BUILT = ["extract"] as const;
+
+/** The evaluation key each provider's models run on (platform spec B8). */
+const EVAL_KEYS = {
+  anthropic: "ANTHROPIC_EVALS_API_KEY",
+  gemini: "GEMINI_EVALS_API_KEY",
+} as const;
 const DEFAULT_BUDGET_USD = 5;
 
 export function parseEvalArgs(argv: readonly string[]): EvalArgs {
@@ -298,12 +305,13 @@ export function reportMarkdown(report: RunReport): string {
 export async function evalCommand(argv: readonly string[], io: EvalIo): Promise<RunReport | null> {
   assertLocalOnly(io.env, "npm run eval");
   assertLocalOnly(io.localEnv, "npm run eval (.env.local)");
-  if (!(io.localEnv.ANTHROPIC_EVALS_API_KEY ?? io.env.ANTHROPIC_EVALS_API_KEY)) {
+  const args = parseEvalArgs(argv);
+  const key = EVAL_KEYS[providerOf(args.model)];
+  if (!(io.localEnv[key] ?? io.env[key])) {
     throw new Error(
-      "npm run eval needs ANTHROPIC_EVALS_API_KEY in .env.local: see docs/runbook/setup.md",
+      `npm run eval needs ${key} in .env.local to run ${args.model}: see docs/runbook/setup.md`,
     );
   }
-  const args = parseEvalArgs(argv);
   const { split } = args;
   let cases: EvalCase[];
   let renders: Renders | null = null;

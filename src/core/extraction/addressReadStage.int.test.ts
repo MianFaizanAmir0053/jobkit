@@ -32,7 +32,7 @@ import {
   addressReadStage,
 } from "./addressReadStage";
 import { CROP } from "./crop";
-import { extractStage } from "./extract";
+import { EXTRACT, extractStage } from "./extract";
 import type { JobRecord } from "./record";
 
 /*
@@ -52,13 +52,17 @@ const random: Random = {
   bytes: (length) => Uint8Array.from({ length }, () => counter++ % 256),
 };
 
-/** The models, with or without a Gemini key on this machine. */
+/**
+ * The models, with or without a key for the second read's model on this
+ * machine: as when the stages that read the post run on another provider's
+ * key than the second read's.
+ */
 function models(gemini: "set" | "missing" = "set"): ModelCallDeps {
   return {
     db,
     clock,
     llmFor: (model) => {
-      if (gemini === "missing" && model.startsWith("gemini-")) {
+      if (gemini === "missing" && model === ADDRESS_READ.model) {
         throw new Error("GEMINI_EVALS_API_KEY is not set, so the model cannot run here");
       }
       return llm;
@@ -210,6 +214,12 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
 
+describe("address_read's model", () => {
+  it("is another model than the one that read the post, so the two reads do not share one model's mistakes", () => {
+    expect(ADDRESS_READ.model).not.toBe(EXTRACT.model);
+  });
+});
+
 describe("address_read from a screenshot", () => {
   const box = { tile: 1, x1: 100, y1: 100, x2: 400, y2: 140 };
 
@@ -260,7 +270,7 @@ describe("address_read from a screenshot", () => {
     });
   });
 
-  it("leaves the read missing, never failing the job, when the model fails or no Gemini key is set", async () => {
+  it("leaves the read missing, never failing the job, when the model fails or has no key here", async () => {
     const failed = await queuedJob([await png(800, 600)]);
     llm = fakeLlm([answer(withBox(box)), failure("server"), failure("server")]);
     await run(failed);
@@ -354,7 +364,7 @@ describe("address_read from a screenshot", () => {
     expect((await readOf(unread)).second).toEqual({ problem: "no_crop" });
   });
 
-  it("reads again once this machine has a Gemini key", async () => {
+  it("reads again once this machine has a key for the second read's model", async () => {
     const id = await queuedJob([await png(800, 600)]);
     llm = fakeLlm([answer(withBox(box))]);
     await run(id, "missing");

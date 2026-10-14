@@ -197,7 +197,7 @@ describe("extract's input", () => {
       images: [sha256(one), sha256(two)],
       pastedText: "Apply at jobs@example.com",
       postConfirmed: false,
-      model: "claude-opus-5-5",
+      model: "gemini-3.8-flash",
       effort: "medium",
       prompt: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
@@ -233,7 +233,7 @@ describe("extract's run", () => {
     expect(result.ok).toBe(true);
     const [request] = llm.calls;
     expect(request).toMatchObject({
-      model: "claude-opus-5-5",
+      model: "gemini-3.8-flash",
       effort: "medium",
       maxTokens: 16_000,
     });
@@ -536,7 +536,7 @@ describe("extract in the runner", () => {
     ]);
     const output = readExtractOutput((await stageOutput(db, id, "extract"))!.output);
     expect(output?.record.roles.map((role) => role.id)).toEqual(["P1", "P2"]);
-    expect(EXTRACT.model).toBe("claude-opus-5-5");
+    expect(EXTRACT.model).toBe("gemini-3.8-flash");
   });
 
   it("stops a post in another language with no drafting cost", async () => {

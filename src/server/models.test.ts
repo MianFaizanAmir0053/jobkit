@@ -53,7 +53,7 @@ describe("modelsFor", () => {
       ANTHROPIC_API_KEY: "app-key",
       ANTHROPIC_EVALS_API_KEY: "evals-key",
     });
-    setScriptedAnswers([{ post_kind: "job_post" }]);
+    setScriptedAnswers({ "claude-opus-5-5": [{ post_kind: "job_post" }] });
 
     const reply = await llmFor("claude-opus-5-5").call({
       model: "claude-opus-5-5",

@@ -65,17 +65,19 @@ Both go into Vercel and into `.env.ops.local` (the commit guard reads them there
 
 ## 6. Anthropic
 
+Not needed while every model stage runs on Gemini (decisions A18); these keys matter only to run a stage on Claude again.
+
 1. In the Claude Console, create a workspace `jobkit` with a monthly spend limit of $30, and an API key in it: `ANTHROPIC_API_KEY`, in Vercel only.
 2. Create a second workspace `jobkit-evals` with a $15 limit, and a key in it: `ANTHROPIC_EVALS_API_KEY`, in `.env.local` only.
 
 ## 7. Gemini
 
-Quotas are counted per Google Cloud project, so the app and the evaluations get separate projects, and neither shares mailagent's quota. In Google AI Studio, create two projects, `jobkit` and `jobkit-evals`, both linked to the billing account mailagent already uses (paid tier; no new card). Create one key in each: `GEMINI_API_KEY` (Vercel only) and `GEMINI_EVALS_API_KEY` (`.env.local` only).
+Quotas are counted per Google Cloud project, so the app and the evaluations get separate projects, and neither shares mailagent's quota. In Google AI Studio, create two projects, `jobkit` and `jobkit-evals`, both linked to the billing account mailagent already uses (paid tier; no new card). Create one key in each: `GEMINI_API_KEY` (Vercel only) and `GEMINI_EVALS_API_KEY` (`.env.local` only). Every model stage runs on these keys (decisions A18). A project without billing runs on the free tier, where Google may use what jobkit sends, the profile's facts included, to improve its products; the paid tier does not.
 
 ## 8. The rest of `.env.local` and Vercel
 
-- **`.env.local`:** `OWNER_EMAIL=faizanamir0053@gmail.com`, `APP_ORIGIN=http://localhost:3000`, `JOBKIT_ENV=development`, `JOBKIT_LOCAL_EVALS=1`, plus the Google client values and the two evaluation keys above.
-- **Vercel (Production only):** `OWNER_EMAIL=faizanamir0053@gmail.com`, `APP_ORIGIN=https://<your-vercel-domain>`, `JOBKIT_ENV=production`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `CRON_SECRET` and `KEEPALIVE_SECRET`. Never the bootstrap URL, the role password or the evaluation keys.
+- **`.env.local`:** `OWNER_EMAIL=faizanamir0053@gmail.com`, `APP_ORIGIN=http://localhost:3000`, `JOBKIT_ENV=development`, `JOBKIT_LOCAL_EVALS=1`, plus the Google client values and `GEMINI_EVALS_API_KEY`.
+- **Vercel (Production only):** `OWNER_EMAIL=faizanamir0053@gmail.com`, `APP_ORIGIN=https://<your-vercel-domain>`, `JOBKIT_ENV=production`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `DATABASE_URL`, `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `GEMINI_API_KEY` (and `ANTHROPIC_API_KEY` only for a stage run on Claude), `CRON_SECRET` and `KEEPALIVE_SECRET`. Never the bootstrap URL, the role password or the evaluation keys.
 
 ## 9. Gmail signature
 

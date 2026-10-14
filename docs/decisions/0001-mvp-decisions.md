@@ -212,3 +212,16 @@ A spec had made address-only matches informational and dropped post-text matchin
 ### A17. Evaluation design (refines A9 and A10)
 
 The ten held-out test cases are the ten labelled blind, so the headline numbers rest on labels no model shaped. The judge is measured on a frozen set of at least 80 sentences written against the owner's real facts and labelled once. Model comparisons use an exact McNemar test on the same cases. A month's planned evaluation runs cost about $14, inside the $15 evaluation workspace.
+
+## Changes during the build
+
+### A18. Gemini at every model stage (2026-10-14; refines entry 2, A4, A9 and A17)
+
+The owner has no Claude API key, so every model stage runs on Gemini, through the Gemini adapter the second read already used: `extract`, `draft` and `judge` on Gemini 3.8 Flash, and the second read on Gemini 3.6 Flash, so the two reads of a contact still come from two models. Flash rather than Pro: Gemini 3.1 Pro, in preview, has no free tier and costs about three times as much, while both Flash models have a free tier and cost $0.75 and $3.75 per million tokens on the paid tier, doubling from 2027-01-01 (Google's pricing page, 2026-10-14). The Claude adapter and its prices stay, so a stage returns to Claude by changing its model ID once there is a key. Local runs and evaluations need only `GEMINI_EVALS_API_KEY`; the evaluation runner asks for the key of the model it runs. What follows from it:
+
+- The two reads of a contact come from two Gemini models rather than two providers, so they may share more of their mistakes; the evaluation's second-read metric measures it.
+- `extract` asks for the contact's box in tile pixels, while Gemini gives boxes natively as `[ymin, xmin, ymax, xmax]` in thousandths of the image. A box given that way misplaces the crop, which only leaves the second read missing, so the owner types the address. The first live runs show which Gemini gives; if it is thousandths, `extract` asks for them and code converts.
+- On Gemini's free tier, Google may use what jobkit sends, the profile's facts and the posts included, to improve its products; on the paid tier it does not. The owner chooses the tier with the key.
+- The evaluation's model comparison becomes Gemini 3.8 Flash against another Gemini model (Gemini 3.1 Pro on a paid key), and a month's planned evaluation runs cost about $5 at Gemini's prices.
+- Images are still cut to the tile geometry made for Claude; Gemini reads such tiles, and the cost estimate, which counts their tokens at Claude's rate, errs high.
+- The commit guard also finds Google API keys of the newer `AQ.` form.

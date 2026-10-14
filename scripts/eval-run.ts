@@ -2,7 +2,7 @@
  *   npm run eval -- --stage extract                          dev cases: what a run would cost; spends nothing
  *   npm run eval -- --stage extract --yes                     run them, up to the $5 budget
  *   npm run eval -- --stage extract --yes --budget 2          another budget, in dollars
- *   npm run eval -- --stage extract --model claude-sonnet-5-5 --yes      another model
+ *   npm run eval -- --stage extract --model gemini-3.1-pro-preview --yes another model
  *   npm run eval -- --stage extract --split test --final --yes           the final run on test
  *   npm run eval -- --stage extract --split synthetic --yes              the public synthetic posts
  *

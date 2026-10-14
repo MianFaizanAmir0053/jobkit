@@ -9,7 +9,11 @@ import type { LlmUsage } from "@/core/ports";
  *   MVP sends no cache breakpoints, so they should stay at zero.
  * - Gemini 3.8 Flash, from https://ai.google.dev/gemini-api/docs/pricing on
  *   2026-10-09: $0.75 and $3.75 (thinking billed as output), doubling on
- *   2027-01-01.
+ *   2027-01-01. Gemini 3.6 Flash, from the same page on 2026-10-14: the same.
+ *   Gemini 3.1 Pro preview ($2 and $12) and Gemini 2.5 Pro ($1.25 and $10),
+ *   from the same page on 2026-10-14, at their rates for prompts of up to
+ *   200,000 tokens, which no stage comes near; their cache rates are taken
+ *   as a tenth of input, as Flash's are, since jobkit caches nothing.
  * Thinking tokens arrive inside the output count from both providers.
  */
 export interface Rates {
@@ -40,6 +44,12 @@ const PRICES: Readonly<Record<string, readonly { from?: string; rates: Rates }[]
     { rates: { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 } },
     { from: "2027-01-01", rates: { input: 1.5, output: 7.5, cacheRead: 0.15, cacheWrite: 1.5 } },
   ],
+  "gemini-3.6-flash": [
+    { rates: { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 } },
+    { from: "2027-01-01", rates: { input: 1.5, output: 7.5, cacheRead: 0.15, cacheWrite: 1.5 } },
+  ],
+  "gemini-3.1-pro-preview": [{ rates: { input: 2, output: 12, cacheRead: 0.2, cacheWrite: 2 } }],
+  "gemini-2.5-pro": [{ rates: { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 1.25 } }],
 };
 
 /** An unknown model counts at the highest rates anywhere in the table, so the cap errs high. */

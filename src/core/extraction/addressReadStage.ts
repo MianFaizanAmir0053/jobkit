@@ -36,7 +36,7 @@ import type { Role } from "./record";
  */
 
 export const ADDRESS_READ = {
-  model: "gemini-3.8-flash",
+  model: "gemini-3.6-flash",
   effort: "low" satisfies Effort,
   maxTokens: 4_000,
 } as const;

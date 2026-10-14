@@ -9,6 +9,8 @@ const ONE_MB = 1024 * 1024;
 const KEY_PATTERNS: { name: string; pattern: RegExp }[] = [
   { name: "Anthropic key", pattern: /sk-ant-[A-Za-z0-9_-]{20,}/ },
   { name: "Google API key", pattern: /AIza[0-9A-Za-z_-]{35}/ },
+  // The newer form AI Studio issues for Gemini.
+  { name: "Google API key", pattern: /\bAQ\.[A-Za-z0-9_-]{40,}/ },
   { name: "Google OAuth client secret", pattern: /GOCSPX-[A-Za-z0-9_-]{20,}/ },
   { name: "Supabase secret key", pattern: /sb_secret_[A-Za-z0-9_-]{20,}/ },
   { name: "private key", pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },

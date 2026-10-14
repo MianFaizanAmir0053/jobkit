@@ -20,7 +20,7 @@ import {
 } from "./judge";
 
 /**
- * The `judge` stage (drafting spec, "Stage judge"): one Claude Opus 5.5 call
+ * The `judge` stage (drafting spec, "Stage judge"): one Gemini 3.8 Flash call
  * at low effort, independent of the drafter, with a verdict for every block
  * of the kit. Overstated and unsupported claims, and any claim about the
  * company, are shown on the job page for the owner to check before sending
@@ -28,7 +28,7 @@ import {
  */
 
 export const JUDGE = {
-  model: "claude-opus-5-5",
+  model: "gemini-3.8-flash",
   effort: "low" satisfies Effort,
   maxTokens: 16_000,
 } as const;

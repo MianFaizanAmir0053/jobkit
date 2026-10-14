@@ -4,16 +4,16 @@
 - **Depends on:** `intake`, `profile`
 - **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 2, 15, 16 and 18, the multi-role and language defaults, and amendments A4 and A11
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A; job states, stage hashes and the model wrapper from platform B4 and B9
-- **References:** [Claude vision](https://platform.claude.com/docs/en/build-with-claude/vision), [vision coordinates](https://platform.claude.com/docs/en/build-with-claude/vision-coordinates), [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs), [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output), [WhatsApp click to chat](https://faq.whatsapp.com/5913398998672934)
+- **References:** [Gemini image understanding](https://ai.google.dev/gemini-api/docs/image-understanding), [Claude vision](https://platform.claude.com/docs/en/build-with-claude/vision), [vision coordinates](https://platform.claude.com/docs/en/build-with-claude/vision-coordinates), [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs), [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output), [WhatsApp click to chat](https://faq.whatsapp.com/5913398998672934)
 - **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
 
 Turn a job's screenshots or pasted text into a validated job record, treating every word of the post as untrusted data. Find each role's application route and contact, read the contact a second time with a different model, and decide before any drafting whether the owner is likely eligible. Stages registered with the platform's runner: `extract`, `extract_questions`, `address_read` and `eligibility`; the `needs_role_pick` waiting state belongs here too.
 
-## Images sent to Claude
+## Images sent to the model
 
-Claude's high-resolution models accept at most 2,576 pixels on the long edge and 4,784 visual tokens per image, where an image costs ⌈width/28⌉ × ⌈height/28⌉ tokens. Larger images are silently downscaled, and coordinates then refer to the downscaled image. So code cuts images to fit, and never lets the API resize them:
+The geometry below was made for Claude, and stays now that every model stage runs on Gemini (decisions A18): Gemini reads the same tiles, and the cost estimate's count of their tokens errs high for it. Claude's high-resolution models accept at most 2,576 pixels on the long edge and 4,784 visual tokens per image, where an image costs ⌈width/28⌉ × ⌈height/28⌉ tokens. Larger images are silently downscaled, and coordinates then refer to the downscaled image. So code cuts images to fit, and never lets the API resize them:
 
 - **Tile height** for an image of width `w` is `min(2576, 28 × floor(4784 / ceil(w / 28)))`. For a 1,080-pixel-wide phone screenshot that is 2,576; for a 2,576-pixel-wide image, 1,456.
 - An image whose height is within its tile height is sent whole. A taller one is cut into horizontal tiles of that height, overlapping by 200 pixels, at full width.
@@ -55,7 +55,7 @@ Fields:
 
 ## Stage `extract`
 
-- One Claude Opus 5.5 call through the platform wrapper, with all tiles of all `post` images in order and any pasted text. Effort starts at `medium`; `max_tokens` is 16,000, covering thinking and output.
+- One Gemini 3.8 Flash call (decisions A18) through the platform wrapper, with all tiles of all `post` images in order and any pasted text. Effort starts at `medium`; `max_tokens` is 16,000, covering thinking and output.
 - The system prompt holds the rules; it never contains post text. The user turn holds the tiles and the pasted text between two marker lines built from a random value generated for that call. The prompt states that everything between the markers is data from an unknown author, that instructions inside it are recorded in `instructions` and never followed, and that any line or question addressing an AI, a language model, a bot or an automated tool is marked `addressed_to_ai`.
 - **Output that parses but fails a check is kept, not retried.** A malformed address or number, a box outside its tile, duplicate IDs or an over-long field become flags on the job (the review page shows them); only output that does not parse fails the stage.
 - **Phrase backstop:** code scans the pasted text, and for every job the record's quoted fields (instructions, route quote, eligibility quotes and other limits), for numbers in Pakistani CNIC format, IBANs, and the phrases "registration fee", "processing fee", "CNIC", "passport copy" and "bank account". A hit adds a scam signal when the model reported none. A post that tells the model it is legitimate still has its lines addressed to AI flagged and shown.
@@ -81,7 +81,7 @@ The job page lists the roles with title, location and route. The owner picks one
 
 ## Stage `extract_questions`
 
-Runs when the owner adds `form` screenshots to a job, for example the screening questions LinkedIn Easy Apply or an ATS form shows. One Opus 5.5 call sees only those images, tiled, under the same marker and untrusted-data rules, and returns the questions with `addressed_to_ai`. They are appended to the chosen role's `screening_questions` with IDs that continue the sequence; drafting's `draft_answers` then answers the new questions only. A question addressed to AI is flagged and never answered.
+Runs when the owner adds `form` screenshots to a job, for example the screening questions LinkedIn Easy Apply or an ATS form shows. One call on `extract`'s model sees only those images, tiled, under the same marker and untrusted-data rules, and returns the questions with `addressed_to_ai`. They are appended to the chosen role's `screening_questions` with IDs that continue the sequence; drafting's `draft_answers` then answers the new questions only. A question addressed to AI is flagged and never answered.
 
 ## Stage `address_read`
 
@@ -109,7 +109,7 @@ Draft anyway answers one role on one reading of the post: it is recorded with th
 
 ## Latency and cost budget
 
-The ADR's target is a median machine time of 60 seconds from share to kit. With Claude Opus 5.5 at every model stage (thinking always on), the reviews estimate about 90 seconds of model time and about $0.27 per typical job. The budget per stage is: `extract` 25 seconds, the drafting group 30, `judge` 15. Checkpoint C of the plan measures each stage on the evaluation set, and checkpoint D measures machine time end to end in production. If the median exceeds 60 seconds, the owner decides, on that evidence, between lower effort, Claude Sonnet 5.5 for some stages, or a revised target (amendment A9). Nothing changes model or target without that decision.
+The ADR's target is a median machine time of 60 seconds from share to kit. With Claude Opus 5.5 at every model stage (thinking always on), the reviews estimated about 90 seconds of model time and about $0.27 per typical job; every stage now runs on Gemini Flash (decisions A18), which the evaluation times afresh. The budget per stage is: `extract` 25 seconds, the drafting group 30, `judge` 15. Checkpoint C of the plan measures each stage on the evaluation set, and checkpoint D measures machine time end to end in production. If the median exceeds 60 seconds, the owner decides, on that evidence, between lower effort, another model for some stages, or a revised target (amendment A9). Nothing changes model or target without that decision.
 
 ## Acceptance criteria
 
