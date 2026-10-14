@@ -1,6 +1,7 @@
 import type { NextConfig } from "next";
 
 import { onVercelDeployment } from "./src/server/deployEnv";
+import { devOriginsFor } from "./src/server/devOrigins";
 
 // Test-only routes (files named route.testonly.ts or page.testonly.tsx, only
 // under /api/test/ and /test/) exist only in the dev server the end-to-end
@@ -30,6 +31,9 @@ const localOnly =
 
 const nextConfig: NextConfig = {
   pageExtensions: ["tsx", "ts", "jsx", "js", ...testOnly, ...localOnly],
+  // A tunnel to the dev server, for the phone, is APP_ORIGIN while in use (docs/runbook/local.md);
+  // Next loads .env.local before this file. Dev servers alone read it.
+  allowedDevOrigins: devOriginsFor(process.env.APP_ORIGIN),
   // PGlite finds its WebAssembly files with new URL(…, import.meta.url), which
   // breaks once Turbopack bundles it: a persistent database (JOBKIT_ENV=
   // development) then fails to open. Node's own import keeps the URLs right.

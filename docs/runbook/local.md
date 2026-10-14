@@ -20,6 +20,13 @@ The thin path (the owner's choice, 2026-10-12) is built first so the owner can t
 
 A post you try in jobkit cannot be a blind test case for the evaluation, since you saw jobkit's reading of it. The labelling page asks, for each sent email, whether you ever ran its post through jobkit: answer it honestly, and a post you did goes to `dev`.
 
-## Not in the thin path yet
+## The phone, through a tunnel
 
-- the phone: test on the laptop first; the phone follows through a tunnel to the dev server. The labelling page and its routes answer only on the laptop itself, never through the tunnel.
+The dev server runs on the laptop, and the phone reaches it through a free ngrok tunnel, which gives it an https address.
+
+1. **Start the tunnel** from the hobby folder: `tools/ngrok/ngrok.exe http 3000 --config tools/ngrok/ngrok.yml` (Claude's launch setting `jobkit-tunnel` runs the same). Its address shows at http://localhost:4040.
+2. **Point the app at it:** put the address in `.env.local` as `APP_ORIGIN`, with no trailing slash, and start `npm run dev` again. The laptop then uses that address too: while `APP_ORIGIN` is the tunnel's, requests from http://localhost:3000 are refused, and the dev server lets the tunnel's hostname load its pages (`allowedDevOrigins` in next.config.ts).
+3. **Tell Google:** in Google Cloud Console, add the address to the OAuth client as an authorised JavaScript origin, and the address followed by `/api/auth/google/callback` as an authorised redirect URI. Google can take a few minutes to apply it.
+4. **On the phone**, open the address in Chrome, press "Visit Site" on ngrok's warning (once per browser), and sign in with Google.
+
+A free tunnel's address changes every time ngrok starts, and step 3 must follow it. A free static domain from the ngrok dashboard (Domains) keeps it fixed: start ngrok with `--url https://<your-domain>` and register it once. While the tunnel runs, the dev server can be reached from the internet: only the owner can sign in, but stop the tunnel when you are done and set `APP_ORIGIN` back to `http://localhost:3000`. The labelling page and its routes answer only on the laptop itself, never through the tunnel.
