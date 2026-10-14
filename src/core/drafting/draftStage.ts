@@ -41,7 +41,7 @@ export const DRAFT = {
  * below, so an output kept from before is not reused. The skills table's
  * data is hashed whole.
  */
-const BUILD_VERSION = 4;
+const BUILD_VERSION = 5;
 
 // The prompt as sent (its rules, the user turn's layout, the output's schema) and the build.
 const PROMPT = sha256Hex(

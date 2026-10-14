@@ -20,6 +20,29 @@ describe("skillTag", () => {
     expect(skillTag(text)).toBe(tag);
   });
 
+  it.each([
+    ["LangGraph", "ai-agents"],
+    ["Agentic AI", "ai-agents"],
+    ["agent workflows", "ai-agents"],
+    ["function calling", "ai-agents"],
+    ["Agentic RAG", "rag"],
+    ["pgvector", "rag"],
+    ["vector database", "rag"],
+    ["LLM Integration", "llm"],
+    ["Gemini", "llm"],
+    ["NextAuth", "authentication"],
+    ["Auth.js", "authentication"],
+    ["GSAP", "gsap"],
+    ["Headless UI", "headless-ui"],
+    ["Payload CMS", "headless-cms"],
+    ["Turborepo", "monorepo"],
+    ["AWS S3", "aws"],
+    ["third-party APIs", "api-integrations"],
+    ["webhooks", "api-integrations"],
+  ])("maps %j, as the owner's stack and posts write it, to %j", (text, tag) => {
+    expect(skillTag(text)).toBe(tag);
+  });
+
   it("knows nothing it was not told", () => {
     expect(skillTag("cobol")).toBeNull();
   });
