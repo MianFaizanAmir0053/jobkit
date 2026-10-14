@@ -52,7 +52,7 @@ The model never writes the answer to a topic question.
 
 ## Stage `draft`
 
-One Gemini 3.8 Flash call (decisions A18) through the platform wrapper, with structured output: the fit table and the kit. Effort starts at `medium`; `max_tokens` is 16,000, covering thinking and output.
+One Gemini 3.8 Flash call (decisions A18) through the platform wrapper, with structured output: the fit table and the kit. Effort is `low` (decisions A19, after it started at `medium`); `max_tokens` is 16,000, covering thinking and output.
 
 - **Fit table:** one row per requirement of the chosen role: verdict `met`, `partial` or `gap`, the fact IDs behind it, and a short note.
 - **Inputs:**

@@ -29,7 +29,8 @@ import { hasWord, type KitFlag, validateEmailKit } from "./validate";
 
 export const DRAFT = {
   model: "gemini-3.8-flash",
-  effort: "medium" satisfies Effort,
+  // Low since decisions A19: at medium, the owner's first job spent 59 seconds here.
+  effort: "low" satisfies Effort,
   maxTokens: 16_000,
 } as const;
 

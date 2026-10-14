@@ -291,7 +291,7 @@ describe("the thin drafting group", () => {
     const request = llm.calls[1]!;
     expect(request).toMatchObject({
       model: "gemini-3.8-flash",
-      effort: "medium",
+      effort: "low",
       maxTokens: 16_000,
     });
     expect(request.system).not.toContain("Woodgrove");
