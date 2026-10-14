@@ -3,7 +3,7 @@ import { z, type ZodType } from "zod";
 
 import { chosenRole } from "@/core/extraction/owner";
 import type { Clock, Db, GmailSender, Storage } from "@/core/ports";
-import { asShown, type KitSend, latestSend, UNDO_MS } from "@/core/review/kitSends";
+import { asShown, type KitSend, latestSend, showsFor, UNDO_MS } from "@/core/review/kitSends";
 import { type DeliverOutcome, deliverSend, scheduleSend, undoSend } from "@/core/review/send";
 import { isUuid } from "@/lib/uuid";
 import { type AppConfig, appConfig } from "@/server/config";
@@ -110,8 +110,12 @@ async function deliverWhenDue(
   return outcome;
 }
 
-/** The kit and the address the page showed as the owner pressed Send. */
-const sendBody = z.object({ kit: z.string().min(1).max(100), to: z.string().max(400) });
+/** The kit, the address and the send that may have gone, as the page showed them at the press. */
+const sendBody = z.object({
+  kit: z.string().min(1).max(100),
+  to: z.string().max(400),
+  uncertain: z.uuid().nullable(),
+});
 
 /**
  * POST /api/jobs/<id>/send: "Approve & send", answered with the send and
@@ -180,7 +184,11 @@ export async function deliver(
   return ok(200, { send: shown(outcome.send, deps.clock.now()) });
 }
 
-/** GET /api/jobs/<id>/send: the chosen role's send as it stands, for the page to follow. */
+/**
+ * GET /api/jobs/<id>/send?kit=<kit>: the chosen role's send as it now
+ * stands, for the page to follow: the one the page shows beside the kit it
+ * names, so the two never disagree about an earlier kit's send.
+ */
 export async function sendState(
   request: NextRequest,
   deps: SendDeps,
@@ -191,7 +199,10 @@ export async function sendState(
   if (!isUuid(jobId)) return refusal(404, "not-found");
   const role = await chosenRole(deps.db, jobId);
   const latest = role ? await latestSend(deps.db, jobId, role.id) : null;
-  return ok(200, { send: latest && shown(latest, deps.clock.now()) });
+  const now = deps.clock.now();
+  const kit = request.nextUrl.searchParams.get("kit");
+  const showing = latest && (kit === null || showsFor(asShown(latest, now), kit)) ? latest : null;
+  return ok(200, { send: showing && shown(showing, now) });
 }
 
 /** The app's wiring: the container, the config, the owner's Gmail, and after() to deliver. */

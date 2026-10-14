@@ -10,7 +10,7 @@ import { fakeGmail, type FakeGmail } from "@/adapters/fakeGmail";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { emailBody } from "@/core/drafting/kit";
-import type { GmailSender } from "@/core/ports";
+import type { Db, GmailSender, QueryResult, Row } from "@/core/ports";
 import { cryptoRandom } from "@/adapters/random";
 import { issueSession } from "@/core/platform/sessions";
 import { createTestDb } from "@/server/db/testDb";
@@ -20,7 +20,15 @@ import { storedDecisions } from "./jobView";
 import { type JobView, jobView } from "./jobView";
 import { recordReview } from "./kitReview";
 import { markSent, takeBackSent } from "./markSent";
-import { deliverSend, LATE_MS, scheduleSend, STUCK_MS, UNDO_MS, undoSend } from "./send";
+import {
+  BEGIN_WITHIN_MS,
+  deliverSend,
+  LATE_MS,
+  scheduleSend,
+  STUCK_MS,
+  UNDO_MS,
+  undoSend,
+} from "./send";
 import { readyKit as kitFor, resetKitBed, SYNTHETIC } from "./testKit";
 
 /* "Approve & send" from the owner's Gmail, with ten seconds to undo: decisions A20. */
@@ -40,12 +48,30 @@ const readyKit = (text: string, opts?: Parameters<typeof kitFor>[2]) =>
 const view = async (id: string): Promise<JobView> => (await jobView({ db, clock }, id))!;
 
 /** The delivery's ports: the fake Gmail, or one that does something more as it sends. */
-const sendDeps = (sender: GmailSender = gmail) => ({
-  db,
+const sendDeps = (sender: GmailSender = gmail, database: Db = db) => ({
+  db: database,
   clock,
   storage,
   gmail: async (): Promise<GmailSender | null> => (connected ? sender : null),
 });
+
+/** The database, its first statement that records a send as sent failing, as on a dropped connection. */
+function droppingFirstSentWrite(inner: Db): Db {
+  let dropped = false;
+  const wrap = (base: Db): Db => ({
+    schema: base.schema,
+    query: <T extends Row = Row>(sql: string, params?: readonly unknown[]) => {
+      if (!dropped && sql.includes("set status = 'sent'")) {
+        dropped = true;
+        return Promise.reject<QueryResult<T>>(new Error("Connection terminated unexpectedly"));
+      }
+      return base.query<T>(sql, params);
+    },
+    exec: (sql) => base.exec(sql),
+    tx: (fn) => base.tx((tx) => fn(wrap(tx))),
+  });
+  return wrap(inner);
+}
 
 /** A Gmail that runs `meanwhile` while it has the email, then sends it as the fake does. */
 const slowGmail = (meanwhile: () => Promise<void>): GmailSender => ({
@@ -55,10 +81,11 @@ const slowGmail = (meanwhile: () => Promise<void>): GmailSender => ({
   },
 });
 
-/** What the page showed as the owner pressed Send: the kit and the address. */
+/** What the page showed as the owner pressed Send: the kit, the address, and any send that may have gone. */
 const pressed = (shown: JobView, sessionId: string | null = null) => ({
   kit: shown.kitKey!,
   to: shown.handoff!.to,
+  uncertain: shown.uncertain?.id ?? null,
   sessionId,
 });
 
@@ -248,6 +275,22 @@ describe("scheduleSend", () => {
     });
   });
 
+  it("refuses a press from a page that did not show a send that may have gone", async () => {
+    const id = await readyKit(POST);
+    gmail.answerWith({ ok: false, reason: "unknown", message: "fetch failed" });
+    const first = await press(id);
+    clock.advance(UNDO_MS);
+    await deliverSend(sendDeps(), id, first.id);
+    const shown = await view(id);
+
+    // A page drawn before it may have gone, as on the other device.
+    expect(await scheduleSend({ db, clock }, id, { ...pressed(shown), uncertain: null })).toEqual({
+      ok: false,
+      reason: "uncertain",
+    });
+    expect(await scheduleSend({ db, clock }, id, pressed(shown))).toMatchObject({ ok: true });
+  });
+
   it("takes no decision while jobkit sends the email", async () => {
     const id = await readyKit(POST);
     await press(id);
@@ -413,6 +456,26 @@ describe("deliverSend", () => {
     expect(kinds(await view(id))).toEqual([]);
   });
 
+  it("keeps warning that a send may have gone, though a later one was undone or failed", async () => {
+    const id = await readyKit(POST);
+    gmail.answerWith({ ok: false, reason: "unknown", message: "fetch failed" });
+    const first = await press(id);
+    clock.advance(UNDO_MS);
+    await deliverSend(sendDeps(), id, first.id);
+    gmail.answerWith(null);
+    const second = await press(id);
+    await undoSend({ db, clock }, id, second.id);
+
+    const after = await view(id);
+
+    expect(after.send).toMatchObject({ id: second.id, status: "cancelled" });
+    expect(after.uncertain).toMatchObject({
+      id: first.id,
+      status: "unknown",
+      error: expect.stringMatching(/Sent folder/),
+    });
+  });
+
   it("says to connect Gmail again when Google refuses, and to connect it when it is not", async () => {
     const id = await readyKit(POST);
     gmail.answerWith({ ok: false, reason: "unauthorised", message: "Gmail answered 401" });
@@ -467,6 +530,62 @@ describe("deliverSend", () => {
       send: { status: "failed", error: expect.stringMatching(/already/) },
     });
     expect(gmail.sent).toHaveLength(1);
+  });
+
+  it("records Gmail's acceptance though the first write of it meets a dropped connection", async () => {
+    const id = await readyKit(POST);
+    const send = await press(id);
+    clock.advance(UNDO_MS);
+
+    expect(
+      await deliverSend(sendDeps(gmail, droppingFirstSentWrite(db)), id, send.id),
+    ).toMatchObject({ send: { status: "sent", messageId: "m1" } });
+    expect((await view(id)).application!.status).toBe("sent");
+  });
+
+  it("holds a later send once an earlier one Gmail took late is recorded", async () => {
+    const id = await readyKit(POST);
+    const first = await press(id);
+    // The first send's server stalled while Gmail had it, so the owner pressed again.
+    await db.query(
+      "update {{schema}}.kit_sends set status = 'sending', updated_at = $2 where id = $1",
+      [first.id, clock.now()],
+    );
+    clock.advance(STUCK_MS + 1);
+    const second = await press(id);
+    // Then Gmail's answer to the first came through.
+    await db.query(
+      "update {{schema}}.kit_sends set status = 'sent', gmail_message_id = 'm0' where id = $1",
+      [first.id],
+    );
+    expect(kinds(await view(id))).toEqual(["sent"]);
+    clock.advance(UNDO_MS);
+
+    expect(await deliverSend(sendDeps(), id, second.id)).toMatchObject({
+      send: { status: "failed", error: expect.stringMatching(/already/) },
+    });
+    expect(gmail.sent).toEqual([]);
+  });
+
+  it("begins no send whose delivery took too long to reach Gmail", async () => {
+    const id = await readyKit(POST);
+    const send = await press(id);
+    clock.advance(UNDO_MS);
+    const late = {
+      db,
+      clock,
+      storage,
+      // The connection's lookup stalls past the time a delivery may take to begin.
+      gmail: async (): Promise<GmailSender | null> => {
+        clock.advance(BEGIN_WITHIN_MS + 1);
+        return gmail;
+      },
+    };
+
+    expect(await deliverSend(late, id, send.id)).toMatchObject({
+      send: { status: "failed", error: expect.stringMatching(/not sent/i) },
+    });
+    expect(gmail.sent).toEqual([]);
   });
 
   it("records in the ledger the address the email went to", async () => {

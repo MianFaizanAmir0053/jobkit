@@ -8,6 +8,7 @@ import { canHandOff } from "./canHandOff";
 import { approveAll, gateInputOf, NO_DECISIONS } from "./decisions";
 import type { JobView } from "./jobView";
 import {
+  BEGIN_WITHIN_MS,
   type KitSend,
   LAPSED,
   LATE_MS,
@@ -17,12 +18,13 @@ import {
   type SendRow,
   STUCK_MS,
   UNDO_MS,
+  uncertainSend,
 } from "./kitSends";
 import { keep, lockedKit } from "./kitReview";
 import { keepGate, lockReview, markSentByJobkit } from "./markSent";
 import { buildMime } from "./mime";
 
-export { LATE_MS, STUCK_MS, UNDO_MS } from "./kitSends";
+export { BEGIN_WITHIN_MS, LATE_MS, STUCK_MS, UNDO_MS } from "./kitSends";
 
 /**
  * "Approve & send" (decisions A20). The press, under the kit's review row's
@@ -44,17 +46,22 @@ export { LATE_MS, STUCK_MS, UNDO_MS } from "./kitSends";
 
 /** How long reading the CV may take; Gmail's own steps have theirs (src/adapters/gmail.ts). */
 const CV_READ_MS = 15_000;
+/** How often recording what Gmail said is tried, since its IDs are only in memory. */
+const RECORD_TRIES = 3;
+
+const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const NOT_SENT = {
   changed:
     "Not sent: the email changed after you pressed Send. Check it, then press Approve & send again.",
   alreadySent: "Not sent: this email was already sent.",
   notConnected:
-    "Not sent: Gmail is not connected. Connect Gmail on the Devices page, then press Approve & send again.",
+    "Not sent: jobkit cannot use your Gmail. Connect Gmail on the Devices page, then press Approve & send again.",
   refused:
     "Not sent: Google refused jobkit's access to your Gmail. Connect Gmail again on the Devices page, then press Approve & send again.",
   noProfile: "Not sent: the profile this email was written with is gone.",
   noCv: "Not sent: jobkit cannot find the CV this email was written with. Seed that profile again, or send it yourself with Open in Gmail.",
+  slow: "Not sent: jobkit took too long to begin sending it. Press Approve & send again.",
 };
 
 export type ScheduleOutcome =
@@ -69,13 +76,19 @@ export type ScheduleOutcome =
         | "not-email"
         | "sending"
         | "held"
-        | "attachment";
+        | "attachment"
+        | "uncertain";
     };
 
-/** The kit and the address the page showed as the owner pressed Send, and their session. */
+/**
+ * What the page showed as the owner pressed Send: the kit, the address, and
+ * the earlier send that may have gone, if any, which the confirmation warned
+ * about; and the session that pressed it.
+ */
 export interface Pressed {
   kit: string;
   to: string;
+  uncertain: string | null;
   sessionId: string | null;
 }
 
@@ -102,6 +115,9 @@ export async function scheduleSend(
     const to = view.handoff?.to ?? "";
     if (to === "" || to !== pressed.to) return { ok: false, reason: "changed" };
     const now = deps.clock.now();
+    // A send that may have gone is pressed past only from a page that warned about it.
+    const uncertain = await uncertainSend(tx, jobId, roleId, now);
+    if ((uncertain?.id ?? null) !== pressed.uncertain) return { ok: false, reason: "uncertain" };
     await settleLeftBehind(tx, jobId, roleId, now);
     const { rows } = await tx.query<SendRow>(
       `insert into {{schema}}.kit_sends
@@ -191,6 +207,8 @@ export interface DeliverDeps {
   storage: Storage;
   /** The owner's Gmail; null when it is not connected. */
   gmail: () => Promise<GmailSender | null>;
+  /** Waits between tries at recording what Gmail said. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 export type DeliverOutcome =
@@ -223,6 +241,10 @@ export async function deliverSend(
   }
   if (typeof email !== "string") return settle(deps, jobId, row, "failed", email.problem);
   if (!gmail) return settle(deps, jobId, row, "failed", NOT_SENT.notConnected);
+  // A delivery this slow to reach Gmail may meet a press made since its send looked stuck.
+  if (deps.clock.now().getTime() - row.updated_at.getTime() > BEGIN_WITHIN_MS) {
+    return settle(deps, jobId, row, "failed", NOT_SENT.slow);
+  }
   let result: GmailSendResult;
   try {
     result = await gmail.send(email);
@@ -285,7 +307,7 @@ async function claimSend(deps: DeliverDeps, jobId: string, found: SendRow): Prom
 function notSentWords(result: Extract<GmailSendResult, { ok: false }>): string {
   switch (result.reason) {
     case "unauthorised":
-      return NOT_SENT.refused;
+      return `${NOT_SENT.refused} (${result.message})`;
     case "unknown":
       return `jobkit cannot tell whether Gmail sent this email (${result.message}). Check your Gmail Sent folder: if it went, use Mark sent; if not, press Approve & send again.`;
     case "failed":
@@ -349,9 +371,27 @@ async function settleRow(
   return sendOf(rows[0]!);
 }
 
+/** One write tried again after a throw, as a dropped database connection gives. */
+async function retried<T>(
+  deps: DeliverDeps,
+  attempt: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+  let last: unknown;
+  for (let tries = 1; tries <= RECORD_TRIES; tries++) {
+    try {
+      return { ok: true, value: await attempt() };
+    } catch (error) {
+      last = error;
+      if (tries < RECORD_TRIES) await (deps.sleep ?? wait)(250 * tries);
+    }
+  }
+  return { ok: false, error: last };
+}
+
 /**
  * A send that did not go, or may have: failed or unknown, with why, and the
- * kit's gate kept as it now stands.
+ * kit's gate kept as it now stands; tried again after a dropped connection,
+ * since a send left sending later reads as one that may have gone.
  */
 async function settle(
   deps: DeliverDeps,
@@ -360,21 +400,27 @@ async function settle(
   status: "failed" | "unknown",
   error: string,
 ): Promise<DeliverOutcome> {
-  return deps.db.tx(async (tx) => {
-    const at = { db: tx, clock: deps.clock };
-    await lockReview(at, jobId, row.role_id);
-    const send = await settleRow(tx, row, status, deps.clock.now(), error);
-    await keepGate(at, jobId, row.role_id);
-    return { ok: true as const, send };
-  });
+  const settled = await retried(deps, () =>
+    deps.db.tx(async (tx) => {
+      const at = { db: tx, clock: deps.clock };
+      await lockReview(at, jobId, row.role_id);
+      const send = await settleRow(tx, row, status, deps.clock.now(), error);
+      await keepGate(at, jobId, row.role_id);
+      return send;
+    }),
+  );
+  if (!settled.ok) throw settled.error;
+  return { ok: true, send: settled.value };
 }
 
 /**
- * A send Gmail took. That it went is kept first, on its own, whatever
- * happened meanwhile, as a press made after the send looked stuck; then the
- * application is marked sent, by the session that pressed it while that
- * session lasts. A ledger that cannot take it leaves the send sent, with
- * why.
+ * A send Gmail took: kept as sent, with Gmail's IDs, in one transaction with
+ * the application marked sent, by the session that pressed it while that
+ * session lasts, at the address the email went to. It is tried again after
+ * a dropped connection, since the IDs are only in memory. A ledger that
+ * cannot take the send, or a write that keeps failing, leaves the send
+ * sent, with why; a database that takes nothing leaves the IDs in the
+ * server log.
  */
 async function sent(
   deps: DeliverDeps,
@@ -382,19 +428,21 @@ async function sent(
   row: SendRow,
   result: Extract<GmailSendResult, { ok: true }>,
 ): Promise<DeliverOutcome> {
-  await deps.db.query(
-    `update {{schema}}.kit_sends
-        set status = 'sent', gmail_message_id = $2, gmail_thread_id = $3, error = null,
-            updated_at = $4
-      where id = $1`,
-    [row.id, result.messageId, result.threadId || null, deps.clock.now()],
-  );
   const unrecorded = (why: string) =>
     `Sent from your Gmail, but jobkit could not record it in your applications (${why}).`;
-  try {
-    await deps.db.tx(async (tx) => {
+  const keepSent = (db: Db, error: string | null) =>
+    db.query(
+      `update {{schema}}.kit_sends
+          set status = 'sent', gmail_message_id = $2, gmail_thread_id = $3, error = $4,
+              updated_at = $5
+        where id = $1`,
+      [row.id, result.messageId || null, result.threadId || null, error, deps.clock.now()],
+    );
+  const recorded = await retried(deps, () =>
+    deps.db.tx(async (tx) => {
       const at = { db: tx, clock: deps.clock };
       await lockReview(at, jobId, row.role_id);
+      await keepSent(tx, null);
       // The session that pressed it, kept from being deleted until this ends; none once signed out.
       const { rows: sessions } = await tx.query<{ id: string }>(
         `select s.id from {{schema}}.kit_sends as k
@@ -410,16 +458,17 @@ async function sent(
           unrecorded(marked.reason),
         ]);
       }
-    });
-  } catch (error) {
-    await deps.db
-      .query("update {{schema}}.kit_sends set error = $2 where id = $1", [
-        row.id,
-        unrecorded(errorText(error)),
-      ])
-      .catch(() => {
-        // The send stays sent; only the reason the ledger missed it is lost.
-      });
+    }),
+  );
+  if (!recorded.ok) {
+    const kept = await retried(deps, () =>
+      keepSent(deps.db, unrecorded(errorText(recorded.error))),
+    );
+    if (!kept.ok) {
+      console.error(
+        `Gmail sent message ${result.messageId || "(no ID)"} for job ${jobId}, but jobkit could not record it: ${errorText(kept.error)}`,
+      );
+    }
   }
   const { rows } = await deps.db.query<SendRow>(
     `select ${SEND_COLUMNS} from {{schema}}.kit_sends where id = $1`,

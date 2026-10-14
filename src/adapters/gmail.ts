@@ -23,6 +23,9 @@ const SEND_TIMEOUT_MS = 30_000;
 /** Gmail's words for a refusal under its sending limits, rather than for jobkit's access. */
 const LIMITED =
   /rateLimitExceeded|userRateLimitExceeded|dailyLimitExceeded|quotaExceeded|RESOURCE_EXHAUSTED|limit exceeded/i;
+/** Google's words for a project where the Gmail API is not enabled, which no new connection mends. */
+const NOT_ENABLED =
+  /accessNotConfigured|SERVICE_DISABLED|has not been used in project|is disabled/i;
 /** messages.send's upload limit, 35 MB, from the Gmail API's discovery document (mediaUpload.maxSize). */
 export const MAX_MESSAGE_BYTES = 36_700_160;
 
@@ -83,6 +86,13 @@ export function createGmailSender(opts: {
             message: `Gmail's sending limit was reached, so try again later (${said})`,
           };
         }
+        if (response.status === 403 && NOT_ENABLED.test(text)) {
+          return {
+            ok: false,
+            reason: "failed",
+            message: `The Gmail API is not enabled in the Google Cloud project: enable it, as docs/runbook/setup.md says (${said})`,
+          };
+        }
         if (response.status === 401 || response.status === 403) {
           return { ok: false, reason: "unauthorised", message: said };
         }
@@ -94,16 +104,10 @@ export function createGmailSender(opts: {
         id?: unknown;
         threadId?: unknown;
       };
-      if (typeof sent.id !== "string") {
-        return {
-          ok: false,
-          reason: "unknown",
-          message: "Gmail took the email but gave no message ID",
-        };
-      }
+      // Gmail answered success: it sent the email, whether or not its IDs can be read.
       return {
         ok: true,
-        messageId: sent.id,
+        messageId: typeof sent.id === "string" ? sent.id : "",
         threadId: typeof sent.threadId === "string" ? sent.threadId : "",
       };
     },

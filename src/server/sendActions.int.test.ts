@@ -103,7 +103,7 @@ function droppingFirstClaim(inner: Db): Db {
 /** What the job page shows as the owner presses Send: the kit and the address. */
 async function pressedOn(id: string) {
   const view = (await jobView({ db, clock }, id))!;
-  return { kit: view.kitKey!, to: view.handoff!.to };
+  return { kit: view.kitKey!, to: view.handoff!.to, uncertain: view.uncertain?.id ?? null };
 }
 
 /** Runs what the routes scheduled, as after() would once the response has gone. */
@@ -244,6 +244,37 @@ describe("POST /api/jobs/<id>/send/undo and /deliver", () => {
     expect((await nudged.json()).send).toMatchObject({ status: "cancelled" });
     await drain();
     expect(gmail.sent).toEqual([]);
+  });
+
+  it("answers with the send the page shows for the kit it names", async () => {
+    const cookie = await signedIn();
+    await connectGmail();
+    const id = await readyKit({ db, clock, storage }, POST);
+    const shown = await pressedOn(id);
+    const pressed = await send(post(`/api/jobs/${id}/send`, shown, cookie), deps(), id);
+    const sendId = (await pressed.json()).send.id as string;
+    await undo(post(`/api/jobs/${id}/send/undo`, { sendId }, cookie), deps(), id);
+    // The kit is drafted again: an undone send of the earlier kit says nothing about it.
+    await db.query(
+      `update {{schema}}.job_stage_runs set output_hash = 'drafted again'
+        where job_id = $1 and stage = 'draft'`,
+      [id],
+    );
+    const { kit: redrafted } = await pressedOn(id);
+
+    const forNew = await sendState(
+      get(`/api/jobs/${id}/send?kit=${redrafted}`, cookie),
+      deps(),
+      id,
+    );
+    const forOld = await sendState(
+      get(`/api/jobs/${id}/send?kit=${shown.kit}`, cookie),
+      deps(),
+      id,
+    );
+
+    expect((await forNew.json()).send).toBeNull();
+    expect((await forOld.json()).send).toMatchObject({ id: sendId, status: "cancelled" });
   });
 
   it("gives a send nothing delivered in time as not sent", async () => {

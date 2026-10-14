@@ -12,6 +12,7 @@ import { flagRank, judgeMessage } from "@/core/review/canHandOff";
 import { flagKey, NO_DECISIONS } from "@/core/review/decisions";
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { JobView, Step } from "@/core/review/jobView";
+import { showsFor } from "@/core/review/kitSends";
 import { appConfig } from "@/server/config";
 import {
   gmailForViewer,
@@ -85,7 +86,7 @@ const ABOUT_A_REQUIREMENT: ReadonlySet<KitFlagKind> = new Set([
  * Mark sent. It polls while the job runs or uploads.
  */
 export default async function JobPage(props: PageProps<"/jobs/[id]">) {
-  await requireSession();
+  const session = await requireSession();
   const { id } = await props.params;
   const view = await jobForViewer(id);
   if (!view) notFound();
@@ -137,6 +138,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
               : { state: "not-connected", email: null }
           }
           cvFile={cv}
+          onLaptop={session.kind === "google"}
           now={now}
           timeZone={timeZone}
         />
@@ -454,6 +456,7 @@ function KitPanel({
   account,
   gmail,
   cvFile,
+  onLaptop,
   now,
   timeZone,
 }: {
@@ -463,6 +466,8 @@ function KitPanel({
   gmail: { state: "connected" | "not-connected" | "refused"; email: string | null };
   /** The CV Approve & send attaches, as the recruiter sees its name. */
   cvFile: string | null;
+  /** Whether this device can open Devices: a paired phone cannot. */
+  onLaptop: boolean;
   now: Date;
   timeZone: string;
 }) {
@@ -507,13 +512,10 @@ function KitPanel({
   const sent = parts.sent;
   // While jobkit sends the email, nothing on the page changes it.
   const locked = sent || parts.sending;
-  // The send of this kit the page shows: counting down, sending, or how the last one went; one
-  // that went, or may have, whatever kit it was pressed on.
-  const send =
-    view.send &&
-    (view.send.kit === kitKey || view.send.status === "sent" || view.send.status === "unknown")
-      ? view.send
-      : null;
+  // The send the page shows beside this kit, by the rule the send's route answers with too.
+  const send = view.send && showsFor(view.send, kitKey) ? view.send : null;
+  // A send that may have gone, whatever came after it: the page warns until the kit is sent.
+  const uncertain = view.uncertain;
   const shown = send && {
     id: send.id,
     status: send.status,
@@ -779,13 +781,20 @@ function KitPanel({
       </Panel>
 
       <Panel title="Send it">
+        {/* One live region for the send's steps, which outlives Approve & send as it is drawn again. */}
         <div aria-live="polite" className="flex flex-col gap-2">
+          {byEmail && !sent && send?.status === "scheduled" && (
+            <p className="sr-only">jobkit is about to send this email. Press Undo to stop it.</p>
+          )}
+          {byEmail && !sent && send?.status === "sending" && (
+            <p className="sr-only">jobkit is sending this email from your Gmail.</p>
+          )}
           {byEmail && !sent && send?.status === "failed" && send.error && (
             <p className="text-sm text-destructive [overflow-wrap:anywhere]">{send.error}</p>
           )}
-          {byEmail && !sent && send?.status === "unknown" && send.error && (
+          {byEmail && !sent && uncertain?.error && (
             <p className="rounded-md border border-destructive/40 p-3 text-sm [overflow-wrap:anywhere]">
-              {send.error}
+              {uncertain.error}
             </p>
           )}
           {byEmail && !sent && send?.status === "cancelled" && (
@@ -825,9 +834,11 @@ function KitPanel({
               to={to}
               subject={kit.subject}
               gmail={gmail}
+              onLaptop={onLaptop}
               cv={cvFile}
               approvals={approvals}
               held={held}
+              uncertainId={uncertain?.id ?? null}
               shown={shown}
             />
             <p className="text-sm font-medium">Or send it yourself</p>

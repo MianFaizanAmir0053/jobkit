@@ -80,10 +80,7 @@ export async function startGmailConnect(
     );
   }
   if (!deps.key) {
-    return new NextResponse(
-      "One-click send is not configured: set GMAIL_TOKEN_KEY (docs/runbook/setup.md).",
-      { status: 500 },
-    );
+    return NextResponse.redirect(new URL(`${RETURN}?gmail=no-key`, config.appOrigin), 303);
   }
   if (!(await signedInWithGoogle(request, deps))) {
     // Sign-in comes back here, as pairing's does.

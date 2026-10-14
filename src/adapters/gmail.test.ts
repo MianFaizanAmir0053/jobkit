@@ -124,6 +124,25 @@ describe("createGmailSender", () => {
     expect(await sender().send(MESSAGE)).toMatchObject({ ok: false, reason: "failed" });
   });
 
+  it("says the Gmail API is not enabled, not to connect again, when Google answers so", async () => {
+    const disabled = {
+      error: {
+        code: 403,
+        message:
+          "Gmail API has not been used in project 123 before or it is disabled. Enable it by visiting the console, then retry.",
+        errors: [{ reason: "accessNotConfigured" }],
+        status: "PERMISSION_DENIED",
+      },
+    };
+    google((url) => (url === TOKEN_URL ? tokens() : Response.json(disabled, { status: 403 })));
+
+    expect(await sender().send(MESSAGE)).toMatchObject({
+      ok: false,
+      reason: "failed",
+      message: expect.stringMatching(/^The Gmail API is not enabled in the Google Cloud project/),
+    });
+  });
+
   it("gives up on a token refresh that hangs, having sent nothing", async () => {
     vi.useFakeTimers();
     try {
@@ -137,6 +156,12 @@ describe("createGmailSender", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("takes an answer of success as sent, though it carries no message ID", async () => {
+    google((url) => (url === TOKEN_URL ? tokens() : new Response("", { status: 200 })));
+
+    expect(await sender().send(MESSAGE)).toEqual({ ok: true, messageId: "", threadId: "" });
   });
 
   it("refuses a message larger than Gmail takes, without sending it", async () => {

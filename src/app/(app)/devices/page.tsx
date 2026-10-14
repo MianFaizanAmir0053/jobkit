@@ -23,6 +23,8 @@ const GMAIL_OUTCOMES: Readonly<Record<string, string>> = {
   unrevoked:
     "jobkit forgot the connection, but Google did not confirm that jobkit's access ended. Remove jobkit's access in your Google Account's security settings, among the apps connected to it.",
   cancelled: "You cancelled on Google's screen, so Gmail was not connected.",
+  "no-key":
+    "One-click send is not set up on this server: GMAIL_TOKEN_KEY is missing. docs/runbook/setup.md says how to make one.",
   denied: "That Google account is not the owner's, so it was not connected.",
   "no-send-permission":
     "Gmail was not connected: tick the permission to send email on Google's screen.",
@@ -43,8 +45,15 @@ export default async function DevicesPage({ searchParams }: PageProps<"/devices"
     gmailForViewer(),
     searchParams,
   ]);
+  // An outcome about the connection is said only while the connection still bears it out.
+  const bornOut =
+    outcome === "connected"
+      ? gmail !== null && gmail.refusedAt === null
+      : outcome === "disconnected" || outcome === "unrevoked"
+        ? gmail === null
+        : true;
   const said =
-    typeof outcome === "string" && Object.hasOwn(GMAIL_OUTCOMES, outcome)
+    typeof outcome === "string" && Object.hasOwn(GMAIL_OUTCOMES, outcome) && bornOut
       ? GMAIL_OUTCOMES[outcome]
       : undefined;
 
@@ -70,7 +79,8 @@ export default async function DevicesPage({ searchParams }: PageProps<"/devices"
         <div className="mt-2 flex flex-col gap-2">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <p className="text-sm">
-              Sending as <span className="font-medium">{gmail.email}</span>, connected{" "}
+              {gmail.refusedAt ? "Connected as " : "Sending as "}
+              <span className="font-medium">{gmail.email}</span>, connected{" "}
               {lastSeen(gmail.connectedAt, now)}.
             </p>
             <div className="flex flex-wrap gap-2">

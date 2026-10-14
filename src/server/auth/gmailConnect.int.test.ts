@@ -208,7 +208,8 @@ describe("startGmailConnect", () => {
       }),
       { ...deps(), key: null },
     );
-    expect(keyless.status).toBe(500);
+    // The owner reads why on Devices, rather than a bare error page.
+    expect(keyless.headers.get("location")).toBe(`${ORIGIN}/devices?gmail=no-key`);
   });
 });
 

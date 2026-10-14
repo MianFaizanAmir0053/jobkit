@@ -36,7 +36,7 @@ import {
   NO_DECISIONS,
   type ReviewDecisions,
 } from "./decisions";
-import { asShown, isLive, type KitSend, latestSend } from "./kitSends";
+import { anySent, asShown, isLive, type KitSend, latestSend, uncertainSend } from "./kitSends";
 
 /**
  * What the job page and the jobs list show (review spec, as far as the thin
@@ -102,6 +102,11 @@ export interface JobView {
    * was none.
    */
   send: KitSend | null;
+  /**
+   * The role's latest send that may have gone, whatever came after it, for
+   * the page to keep warning about until the kit is sent; null when none.
+   */
+  uncertain: KitSend | null;
 }
 
 const NOT_CHECKED: AddressCheck = {
@@ -205,6 +210,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       : [];
   const latest = role ? await latestSend(deps.db, id, role.id) : null;
   const now = deps.clock.now();
+  const sentByJobkit = role ? await anySent(deps.db, id, role.id) : false;
   const kitParts =
     draft && role && extraction
       ? kitPartsOf({
@@ -220,7 +226,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
             application?.status === "submitted" ||
             application?.status === "bounced" ||
             // jobkit sent it, though the ledger may not have recorded it: it went.
-            latest?.status === "sent",
+            sentByJobkit,
           sending: latest !== null && isLive(latest, now),
         })
       : null;
@@ -254,6 +260,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
         : null,
     handoff,
     send: latest && asShown(latest, now),
+    uncertain: role ? await uncertainSend(deps.db, id, role.id, now) : null,
   };
 }
 
