@@ -19,6 +19,7 @@ export const ENV_GROUPS = {
     "SUPABASE_SECRET_KEY",
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
+    "GMAIL_TOKEN_KEY",
     "CRON_SECRET",
     "KEEPALIVE_SECRET",
     "JOBKIT_ENV",
@@ -32,6 +33,7 @@ export const ENV_GROUPS = {
     "JOBKIT_LOCAL_EVALS",
     "ANTHROPIC_EVALS_API_KEY",
     "GEMINI_EVALS_API_KEY",
+    "GMAIL_TOKEN_KEY",
   ],
   ops: [
     "DATABASE_BOOTSTRAP_URL",

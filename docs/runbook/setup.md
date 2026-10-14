@@ -49,6 +49,7 @@ Both go into Vercel and into `.env.ops.local` (the commit guard reads them there
      - Authorised JavaScript origins: `http://localhost:3000` and `https://<your-vercel-domain>`.
      - Authorised redirect URIs: `http://localhost:3000/api/auth/google/callback` and `https://<your-vercel-domain>/api/auth/google/callback`.
 3. The client ID and secret go into Vercel and `.env.local` as `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET`.
+4. **One-click send** (decisions A20): in the same project, enable the Gmail API (APIs & Services, Library, Gmail API, Enable), and under Google Auth Platform, Data access, add the scope `https://www.googleapis.com/auth/gmail.send`. Keep the app published ("In production"), so the Gmail connection does not lapse after seven days. Make a key that seals the Gmail token, `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`, and put it in `.env.local` and Vercel as `GMAIL_TOKEN_KEY` (one each). Then, in jobkit, open Devices and press Connect Gmail: Google warns that the app is unverified, which is expected for your own app (Advanced, then Go to jobkit), and asks to let it send email on your behalf. Connecting goes through the sign-in callback above, so it needs no other redirect URI.
 
 ## 5. Supabase
 

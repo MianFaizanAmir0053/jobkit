@@ -23,6 +23,7 @@ import { type JobListItem, listJobViews, jobView, type JobView } from "@/core/re
 import { isUuid } from "@/lib/uuid";
 
 import { getContainer } from "./container";
+import { gmailConnection, type GmailConnection } from "./gmail/connection";
 import { SESSION_COOKIE } from "./sessionCookie";
 
 /**
@@ -94,6 +95,12 @@ export const waitingPhonesForViewer = cache(async (): Promise<WaitingPhone[]> =>
 
 /** The request's time from the container's clock, for pages that show ages. */
 export const requestTime = cache(async (): Promise<Date> => (await getContainer()).clock.now());
+
+/** The owner's Gmail connection for one-click send, without its token; null when not connected. */
+export const gmailForViewer = cache(async (): Promise<GmailConnection | null> => {
+  await requireSession();
+  return gmailConnection((await getContainer()).db);
+});
 
 /** The Baseline page: the stopwatch and the manual runs' timings (ledger spec). */
 export const baselineForViewer = cache(async (): Promise<BaselineSummary> => {
