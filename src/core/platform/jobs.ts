@@ -146,7 +146,8 @@ export interface Move {
  * acts on a stale read. Returns false when the job was not as expected,
  * because another request moved it first. A failed job resumes only at
  * the stage it failed at, and keeps the failure's stage and reason when
- * Skip closes it. A job that leaves the running states leaves its lease
+ * Skip closes it; one that goes back to its ready kit, as after a Gemini
+ * draft the owner asked for failed (decisions A22), keeps neither. A job that leaves the running states leaves its lease
  * too, so a job the runner parked is free to claim at once, though the
  * invocation dies before it releases the lease. A move outside the table,
  * or a running job moved without
@@ -179,7 +180,7 @@ export async function moveJob(db: Db, id: string, move: Move): Promise<boolean> 
               lease_expires_at = case when $3 = any($13::text[]) then lease_expires_at end
         where id = $1 and state = $2
           and ($9::uuid is null or (lease_id = $9 and lease_expires_at > $5))
-          and ($2 <> 'failed' or $3 = 'closed' or pending_stage = $4)
+          and ($2 <> 'failed' or $3 in ('closed', 'kit_ready') or pending_stage = $4)
           and ($10::timestamptz is null or date_trunc('milliseconds', state_changed_at) = $10)
           and (not $11::boolean or pending_stage is not distinct from $12::text)
         returning id`,

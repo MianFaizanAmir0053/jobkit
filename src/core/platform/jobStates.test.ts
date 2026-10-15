@@ -19,11 +19,14 @@ const TABLE: Record<JobState, { kind: string; next: JobState[] }> = {
   },
   needs_eligibility_decision: { kind: "waiting", next: ["needs_kit_type", "drafting", "closed"] },
   needs_kit_type: { kind: "waiting", next: ["drafting", "closed"] },
-  drafting: { kind: "running", next: ["judging", "failed"] },
+  drafting: { kind: "running", next: ["judging", "kit_ready", "drafting", "failed"] },
   judging: { kind: "running", next: ["kit_ready", "failed"] },
   kit_ready: { kind: "ready", next: ["extracting", "drafting", "needs_role_pick"] },
   stopped: { kind: "owner", next: ["extracting", "closed"] },
-  failed: { kind: "owner", next: ["extracting", "checking", "drafting", "judging", "closed"] },
+  failed: {
+    kind: "owner",
+    next: ["extracting", "checking", "drafting", "judging", "kit_ready", "closed"],
+  },
   closed: { kind: "final", next: [] },
 };
 
@@ -36,9 +39,12 @@ const ENTRY_STAGE: Partial<Record<JobState, StageName>> = {
 };
 
 // The stage pending as a running job leaves its state: new form questions on a ready kit
-// are the only extraction that goes straight on to drafting.
+// are the only extraction that goes straight on to drafting, and the templates the only
+// drafting that goes straight to a ready kit, or on to draft.
 function leavingFor(from: JobState, to: JobState): StageName | null {
   if (from === "extracting") return to === "drafting" ? "extract_questions" : "extract";
+  if (from === "drafting") return to === "kit_ready" || to === "drafting" ? "templates" : "draft";
+  if (from === "failed" && to === "kit_ready") return "draft";
   return from === "queued" ? null : (ENTRY_STAGE[from] ?? null);
 }
 
@@ -46,6 +52,7 @@ function leavingFor(from: JobState, to: JobState): StageName | null {
 function pendingFor(from: JobState, to: JobState): StageName | null {
   if (to === "failed") return leavingFor(from, to);
   if (from === "extracting" && to === "drafting") return "draft_answers";
+  if (from === "drafting" && to === "drafting") return "draft";
   return ENTRY_STAGE[to] ?? null;
 }
 
@@ -99,9 +106,32 @@ describe("job states", () => {
     expect(checkMove("extracting", "failed", "extract_questions", "extract").ok).toBe(false);
   });
 
+  it("goes from drafting to a ready kit only from the templates, and judges every drafted email", () => {
+    expect(checkMove("checking", "drafting", "templates", "eligibility").ok).toBe(true);
+    expect(checkMove("drafting", "kit_ready", null, "templates").ok).toBe(true);
+    expect(checkMove("drafting", "kit_ready", null, "draft").ok).toBe(false);
+    expect(checkMove("drafting", "kit_ready", null, "draft_answers").ok).toBe(false);
+    // No template fits: draft writes the email.
+    expect(checkMove("drafting", "drafting", "draft", "templates").ok).toBe(true);
+    expect(checkMove("drafting", "drafting", "templates", "templates").ok).toBe(false);
+    expect(checkMove("drafting", "drafting", "draft", "draft").ok).toBe(false);
+    expect(checkMove("drafting", "judging", "judge", "templates").ok).toBe(false);
+    expect(checkMove("drafting", "judging", "judge", "draft").ok).toBe(true);
+    expect(checkMove("drafting", "failed", "templates", "templates").ok).toBe(true);
+    // The owner asks for a Gemini draft beside the templates' (decisions A22).
+    expect(checkMove("kit_ready", "drafting", "draft").ok).toBe(true);
+  });
+
   it("retries a failed job only into the running state of the stage it failed at", () => {
     expect(checkMove("failed", "drafting", "draft_answers").ok).toBe(true);
     expect(checkMove("failed", "extracting", "draft").ok).toBe(false);
     expect(checkMove("failed", "closed", null).ok).toBe(true);
+    // Back to the templates' drafts, when the Gemini draft the owner asked for, or its check, fails.
+    expect(checkMove("failed", "kit_ready", null, "draft").ok).toBe(true);
+    expect(checkMove("failed", "kit_ready", null, "judge").ok).toBe(true);
+    expect(checkMove("failed", "kit_ready", "draft", "draft").ok).toBe(false);
+    for (const stage of [null, "extract", "eligibility", "templates", "address_read"] as const) {
+      expect(checkMove("failed", "kit_ready", null, stage).ok, `after ${stage}`).toBe(false);
+    }
   });
 });

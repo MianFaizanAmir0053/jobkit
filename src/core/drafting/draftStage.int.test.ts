@@ -24,6 +24,7 @@ import { createTestDb } from "@/server/db/testDb";
 import { DEFAULT_GREETING, CLOSING } from "./build";
 import { type DraftOutput, draftStage, NO_PROFILE } from "./draftStage";
 import { type JudgeOutput, judgeStage } from "./judgeStage";
+import { noTemplateDrafts } from "./testTemplates";
 import type { DraftAnswer } from "./kit";
 
 /*
@@ -65,6 +66,7 @@ function pipeline() {
   return {
     extract: extractStage({ db, storage, random, models: models() }),
     eligibility: eligibilityStage({ db, clock }),
+    templates: noTemplateDrafts(),
     draft: draftStage({ db, random, models: models() }),
     judge: judgeStage({ db, random, models: models() }),
   };

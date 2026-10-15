@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { KitFlag } from "@/core/drafting/validate";
+import type { KitFlag, KitFlagKind } from "@/core/drafting/validate";
 import { type BlockVerdict, isBlocking } from "@/core/drafting/verdict";
 import { isStrictAddress } from "@/core/extraction/contacts";
 
@@ -197,10 +197,32 @@ export interface KitParts {
 }
 
 /**
+ * validate's flags that make the email wrong to send as it stands: a line
+ * the owner must write, a placeholder in the subject, a reference's
+ * details, or a line written for an AI tool. Approve & send sends the
+ * words as they stand, so a kit with one goes through Gmail, where the
+ * owner changes them. Other flags new words would resolve (a missing
+ * keyword, the length, a must-have with no gap line, no claims) leave the
+ * email whole, and the press takes them as they are, as the confirmation
+ * lists them.
+ */
+export const NEEDS_NEW_WORDS: ReadonlySet<KitFlagKind> = new Set([
+  "needs_your_line",
+  "subject_placeholder",
+  "reference_leak",
+  "ai_instruction_followed",
+]);
+
+/** Whether the kit's words must change before it goes, so Approve & send cannot send it. */
+export function needsNewWords(parts: Pick<KitParts, "flags">): boolean {
+  return parts.flags.some((flag) => NEEDS_NEW_WORDS.has(flag.kind));
+}
+
+/**
  * "Approve & send" (decisions A20): "I checked this" on every sentence the
  * separate check holds and every one of validate's flags, as the page shows
- * them above the button. Nothing else: the hard stops hold the kit until the
- * owner acts on each.
+ * them above the button, but for those only new words resolve. Nothing
+ * else: the hard stops hold the kit until the owner acts on each.
  */
 export function approveAll(parts: KitParts, decisions: ReviewDecisions): ReviewDecisions {
   const held = parts.verdicts.filter(isBlocking).map((verdict) => verdict.blockId);
@@ -208,7 +230,7 @@ export function approveAll(parts: KitParts, decisions: ReviewDecisions): ReviewD
     ...decisions,
     checked: held.reduce(withOne, decisions.checked),
     flagsChecked: parts.flags
-      .map((_, place) => flagKey(place))
+      .flatMap((flag, place) => (NEEDS_NEW_WORDS.has(flag.kind) ? [] : [flagKey(place)]))
       .reduce(withOne, decisions.flagsChecked),
   };
 }

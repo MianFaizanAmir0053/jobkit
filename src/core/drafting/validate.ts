@@ -50,12 +50,15 @@ export interface KitContext {
   markers: readonly string[];
 }
 
+/** What a requirement only the owner can confirm says on the page. */
+export const ONLY_YOU_CAN_CONFIRM = "Only you can confirm you meet this requirement.";
+
 const MESSAGES = {
   invalid_citation:
     "This sentence cites something that is not in your approved profile or the post. Check it, or cut it.",
   fit_facts:
     "Marked as met, but no cited fact shows every skill named at the depth and for the years asked.",
-  fit_tick: "Only you can confirm you meet this requirement.",
+  fit_tick: ONLY_YOU_CAN_CONFIRM,
   fit_missing: "The draft did not weigh this requirement.",
   missing_gap_line: "A must-have you do not fully meet has no honest line about it.",
   keyword_missing: "The post asks you to include a keyword, and the email does not.",
@@ -263,7 +266,7 @@ function citesTruly(block: KitBlock, context: KitContext, factIds: ReadonlySet<s
 }
 
 /** Whether `token` stands alone in `text`, not inside a longer word: "S3" never matches "F-S3". */
-function hasToken(text: string, token: string): boolean {
+export function hasToken(text: string, token: string): boolean {
   let from = 0;
   for (;;) {
     const at = text.indexOf(token, from);

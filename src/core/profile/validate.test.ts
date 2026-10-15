@@ -561,6 +561,12 @@ describe("validateProfile", () => {
         line: lineOf(text, '- text: "I would welcome a call about how I could help."'),
         message: "email_templates[0].sentences[3]: a claim cites the facts it rests on",
       },
+      // With its one claim made courtesy, the waiting template claims nothing.
+      {
+        line: lineOf(text, "- text:", "id: T-waiting"),
+        message:
+          "email_templates[2].sentences: the template makes no claim; it needs a claim citing your facts",
+      },
       {
         line: lineOf(text, "facts: [F-react-production]", "This template is waiting"),
         message:
@@ -614,6 +620,27 @@ describe("validateProfile", () => {
         line: lineOf(text, "id: T-ai-features"),
         message:
           "email_templates[1]: the template has 144 words; at most 120, to leave room for gap lines and the post's names",
+      },
+    ]);
+  });
+
+  it("rejects an email template that makes no claim", () => {
+    const text = SAMPLE.replace(
+      `      - text: "This template is waiting for approval and must never appear in a draft."
+        kind: claim
+        facts: [F-react-production]`,
+      `      - text: "Thank you for reading."
+        kind: courtesy`,
+    ).replace(
+      "name: Waiting for approval\n    skills: [react]",
+      "name: Waiting for approval\n    skills: []",
+    );
+
+    expect(problemsOf(text)).toEqual([
+      {
+        line: lineOf(text, "- text:", "id: T-waiting"),
+        message:
+          "email_templates[2].sentences: the template makes no claim; it needs a claim citing your facts",
       },
     ]);
   });

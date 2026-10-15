@@ -156,7 +156,7 @@ export async function draftAnyway(
     const moved = await moveJob(tx, jobId, {
       from: "needs_eligibility_decision",
       to: "drafting",
-      pending: "draft",
+      pending: "templates",
       at: deps.clock.now(),
       ifChangedAt: job.stateChangedAt,
     });

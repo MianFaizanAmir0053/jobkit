@@ -1,5 +1,6 @@
 import { draftStage } from "@/core/drafting/draftStage";
 import { judgeStage } from "@/core/drafting/judgeStage";
+import { templatesStage } from "@/core/drafting/templatesStage";
 import { addressReadStage, contactOf } from "@/core/extraction/addressReadStage";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
@@ -15,8 +16,8 @@ import { modelCallDeps } from "@/server/models";
 /**
  * The stages the app's runner knows, built on the container. Each module
  * registers its own as it arrives; a job fails at any stage the pipeline
- * lacks, with "This step is not available yet." Beside draft run the
- * contact's second read and, for an email address, its checks (B9).
+ * lacks, with "This step is not available yet." Beside templates and draft
+ * run the contact's second read and, for an email address, its checks (B9).
  */
 export function appPipeline(container: Container): Pipeline {
   const models = modelCallDeps(container);
@@ -33,6 +34,10 @@ function stagesOf(container: Container, models: ReturnType<typeof modelCallDeps>
       models,
     }),
     eligibility: eligibilityStage({ db: container.db, clock: container.clock }),
+    templates: {
+      ...templatesStage({ db: container.db }),
+      alongside: async (ctx) => besideDraft(await chosenRole(container.db, ctx.job.id)),
+    },
     draft: {
       ...draftStage({ db: container.db, random: container.random, models }),
       alongside: async (ctx) => besideDraft(await chosenRole(container.db, ctx.job.id)),

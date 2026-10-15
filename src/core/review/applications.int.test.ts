@@ -12,6 +12,7 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { draftStage } from "@/core/drafting/draftStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { passingJudge } from "@/core/drafting/testJudge";
+import { noTemplateDrafts } from "@/core/drafting/testTemplates";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import { pickRole } from "@/core/extraction/owner";
@@ -76,6 +77,7 @@ const pipeline = (): Pipeline =>
     {
       extract: extractStage({ db, storage, random, models: models() }),
       eligibility: eligibilityStage({ db, clock }),
+      templates: noTemplateDrafts(),
       draft: draftStage({ db, random, models: models() }),
       judge: passingJudge(),
     },
@@ -312,6 +314,7 @@ describe("duplicates in the gate", () => {
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], {
       extract: extractStage({ db, storage, random, models: models() }),
       eligibility: eligibilityStage({ db, clock }),
+      templates: noTemplateDrafts(),
       draft: draftStage({ db, random, models: models() }),
       judge: passingJudge(),
     });
@@ -362,6 +365,7 @@ describe("duplicates in the gate", () => {
     await run(id, [answer(record), answer(DRAFT)], {
       extract: extractStage({ db, storage, random, models: models() }),
       eligibility: eligibilityStage({ db, clock }),
+      templates: noTemplateDrafts(),
       draft: draftStage({ db, random, models: models() }),
       judge: passingJudge(),
     });

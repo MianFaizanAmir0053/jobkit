@@ -9,6 +9,7 @@ import {
   gateInputOf,
   keptLookup,
   type KitParts,
+  needsNewWords,
   NO_DECISIONS,
   reviewActionSchema,
   type ReviewDecisions,
@@ -216,5 +217,24 @@ describe("approveAll", () => {
     };
 
     expect(approveAll(parts, NO_DECISIONS).checked).toEqual(["S3"]);
+  });
+
+  it("leaves the flags only new words resolve, since it sends the words as they stand", () => {
+    const words = (kind: KitParts["flags"][number]["kind"]) => ({ kind, at: "S1", message: "" });
+    const parts: KitParts = {
+      ...PARTS,
+      flags: [
+        words("needs_your_line"),
+        FLAG,
+        words("subject_placeholder"),
+        words("reference_leak"),
+        words("ai_instruction_followed"),
+        words("keyword_missing"),
+      ],
+    };
+
+    expect(approveAll(parts, NO_DECISIONS).flagsChecked).toEqual(["F2", "F6"]);
+    expect(needsNewWords(parts)).toBe(true);
+    expect(needsNewWords({ flags: [FLAG, words("keyword_missing")] })).toBe(false);
   });
 });

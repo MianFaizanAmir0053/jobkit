@@ -185,6 +185,7 @@ function checkTemplates(data: unknown, at: Report): void {
     // A fact the file lacks has no skills to weigh: the template's are not checked against it.
     let unknownFact = false;
     let words = 0;
+    let claims = 0;
     asList(record.sentences).forEach((sentence, s) => {
       const fields = asRecord(sentence);
       if (!fields) return;
@@ -195,6 +196,7 @@ function checkTemplates(data: unknown, at: Report): void {
       words += text.split(/\s+/).filter(Boolean).length;
       switch (fields.kind) {
         case "claim":
+          claims += 1;
           if (cited.length === 0) at(at_, "a claim cites the facts it rests on");
           if (names) {
             at(
@@ -244,6 +246,10 @@ function checkTemplates(data: unknown, at: Report): void {
         here,
         `the template has ${words} words; at most ${TEMPLATE_MAX_WORDS}, to leave room for gap lines and the post's names`,
       );
+    }
+    // A draft says what the owner has done: one with no claim could cover no requirement.
+    if (claims === 0 && asList(record.sentences).length > 0) {
+      at([...here, "sentences"], "the template makes no claim; it needs a claim citing your facts");
     }
   });
 }

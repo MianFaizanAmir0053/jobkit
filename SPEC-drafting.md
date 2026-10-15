@@ -2,14 +2,14 @@
 
 - **Module id:** `drafting` (see [CAPABILITIES.md](CAPABILITIES.md))
 - **Depends on:** `extraction`, `profile`
-- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 8, 9, 12, 15, 20, 21 and 28, and amendments A11, A14 and A15
+- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 8, 9, 12, 15, 20, 21 and 28, and amendments A11, A14, A15, A21 and A22
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A; job states, stage hashes and the model wrapper from platform B4 and B9
 - **References:** [Gemini structured output](https://ai.google.dev/gemini-api/docs/structured-output), [Gemini thinking](https://ai.google.dev/gemini-api/docs/thinking); for a stage run on Claude, [structured outputs](https://platform.claude.com/docs/en/build-with-claude/structured-outputs), [effort](https://platform.claude.com/docs/en/build-with-claude/effort), [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
 
-Write the kit for the route the post asks for, so that every statement about the owner traces to an approved fact, statements about the company stay within what the post says, every must-have gap gets an honest line, and nothing the post's author typed acts as an instruction. Then have a separate call check every sentence. Stages registered with the platform's runner: `draft`, `draft_answers` and `judge`. The module also offers `validate(kit, context)`, the full set of code checks, which the review module runs on every edit and before every outbound action.
+Write the kit for the route the post asks for, so that every statement about the owner traces to an approved fact, statements about the company stay within what the post says, every must-have gap gets an honest line, and nothing the post's author typed acts as an instruction. Then have a separate call check every sentence. Stages registered with the platform's runner: `templates`, `draft`, `draft_answers` and `judge`. The module also offers `validate(kit, context)`, the full set of code checks, which the review module runs on every edit and before every outbound action.
 
 ## Kit type
 
@@ -49,6 +49,16 @@ Two classifiers label every screening question with a fixed-answer topic: a keyw
 - The question gives a currency by its code or sign, a place by its name or, for a short one, its code in capitals ("UK", "UAE", never "in" or a sentence's "Do"), and a skill by the shared vocabulary. A place falls under a listed region that takes it in, and the owner's home country needs no entry: there the owner may work, with no sponsor.
 
 The model never writes the answer to a topic question.
+
+## Stage `templates`
+
+Code only, no model (decisions A21 and A22): the first stage of drafting, with `address_read` and `address_checks` beside it. It drafts the email from the owner's approved email templates (profile spec). No separate check weighs a template draft, so it holds only the owner's approved words, each word for word: the template's sentences, approved facts and known gap lines. Code writes no words of its own.
+
+- **What code weighs:** the requirements the drafting call would see, and of those the ones it can weigh against facts: a `skill`, or `experience` naming skills, every one in the shared vocabulary. A template shows such a requirement when its `skills` name every skill asked and a fact it cites meets it, at the depth and years asked, as the fit check weighs any draft. Each template that shows at least 60% of the weighable must-haves becomes a draft, the two best at most; a role with none of them, or whose requirements share an ID, gets none. Coverage, for ranking, is the share of the weighable must-haves a finished draft meets, for Gemini's drafts too.
+- **What the owner confirms:** a requirement code cannot weigh (a degree, a language, experience naming no skill, a skill outside the vocabulary, anything "other", or one a line aimed at AI took a skill tag from) gets no fit row, so the page shows it not weighed, and is not counted; as a must-have it is flagged "Only you can confirm you meet this requirement". A requirement that repeats a line aimed at AI is not weighed either: it shows not weighed, for the owner to look at, and no gap line is asked for it.
+- **Building:** code fills `{company}` and `{role}` from the post, as the drafting call may see them, in one pass, and uses a template only when every name it needs is a plain name: on one line as the post gives it, at most 80 characters and 10 words, with no braces. For a weighable must-have the template does not show, code adds an approved fact that meets it alone, word for word, at most two, or else a known gap line naming its skill; with neither, or with one known line for two must-haves, the template is not used. The added facts and the gap lines each go in a paragraph of their own, before the template's closing courtesy sentences, or at the end. The draft then goes through the same build and `validate` as a model's answer, and is not offered with a flag only new words resolve ("Needs your line", a subject placeholder, a reference's details, a line aimed at AI), a citation that does not hold, a template's ID in the text, the post's keyword missing or past the email's limit or the post's: Gemini drafts that post.
+- **Next:** with a draft, the kit is ready (`kit_ready`); with none, `draft` writes it. The owner can ask for a Gemini draft beside the templates' on the ready kit (review spec).
+- **Checks:** code gives each claim and gap line `supported` and each other sentence `not_a_claim`. The template's post and courtesy sentences go to every company, so the owner's approval is their check (profile spec).
 
 ## Stage `draft`
 
@@ -150,3 +160,4 @@ Criteria about what the model writes or notices (classifying tricky sentences, c
 11. `draft_answers` appends answers for new questions only; existing blocks, verdicts and edits are unchanged; `judge` then sees only the new answers.
 12. A must-have gap line is never dropped; an over-long draft raises `over_limit` instead; declining the post's word limit clears the flag it caused.
 13. Owner edits: an unchanged kit keeps every verdict; an edited block needs confirmation; a deleted gap line raises `missing_gap_line`; a block the owner marks as answering a requirement clears it.
+14. Templates: on the synthetic post, the two templates that show all its must-haves become drafts, best first, with no model call, and the kit is ready; one whose facts miss a must-have another approved fact meets gets that fact word for word, at most two; a must-have no fact meets gets its known gap line before the closing courtesy, even when the closing shares a paragraph; a must-have with no known line, one the template's skills do not name in full, a template under 60%, a name that is not plain, a draft that would need "Needs your line", one without the post's keyword, one past the post's word limit, two must-haves on one known line, and a record whose requirements share an ID give no template draft; a degree, a skill outside the vocabulary and an "other" requirement are flagged for the owner, never written as gaps; a requirement repeating a line aimed at AI is not weighed; with no template drafted, `draft` runs.

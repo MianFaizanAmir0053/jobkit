@@ -40,9 +40,10 @@ export const DRAFT = {
  * these change: build.ts, validate.ts, fit.ts, bodyWords in kit.ts, the
  * skill lookup in skills.ts (skillTag and its key), or withoutAiLines
  * below, so an output kept from before is not reused. The skills table's
- * data is hashed whole.
+ * data is hashed whole. The templates stage builds its drafts with the same
+ * code, so its input carries this too.
  */
-const BUILD_VERSION = 6;
+export const BUILD_VERSION = 6;
 
 // The prompt as sent (its rules, the user turn's layout, the output's schema) and the build.
 const PROMPT = sha256Hex(
@@ -191,7 +192,7 @@ export function draftStage(deps: DraftDeps): StageDefinition {
  * the extractor reworded into a requirement is beyond this check: the
  * markers and the system prompt's rule are the defence there.
  */
-function withoutAiLines(
+export function withoutAiLines(
   record: JobRecord,
   role: Role,
   keyword: string | null,

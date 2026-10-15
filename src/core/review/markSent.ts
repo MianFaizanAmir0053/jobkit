@@ -146,13 +146,15 @@ async function marking(
       const changed = typed && !sameAddress(to, role.route.address) ? ["address"] : [];
       await tx.query(
         `insert into {{schema}}.draft_outcomes
-           (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at)
-         values ($1, $2, 'email', $3, $4, $5, $6)
+           (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at,
+            draft)
+         values ($1, $2, 'email', $3, $4, $5, $6, $7)
          on conflict (application_id) do update
            set changed = excluded.changed,
                changed_in_gmail = excluded.changed_in_gmail,
                factual_edit = excluded.factual_edit,
-               recorded_at = excluded.recorded_at`,
+               recorded_at = excluded.recorded_at,
+               draft = excluded.draft`,
         [
           applicationId,
           jobId,
@@ -160,6 +162,8 @@ async function marking(
           answer.changedInGmail,
           answer.changedInGmail || changed.length > 0,
           deps.clock.now(),
+          // Which draft went (decisions A22): Gemini's, or a template's, the owner's own words.
+          view.picked,
         ],
       );
     }

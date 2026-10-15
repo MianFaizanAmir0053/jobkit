@@ -32,6 +32,7 @@ export const STAGES = [
   "extract",
   "extract_questions",
   "eligibility",
+  "templates",
   "draft",
   "draft_answers",
   "address_read",
@@ -57,25 +58,29 @@ const STATES: Record<JobState, { kind: StateKind; next: readonly JobState[] }> =
   },
   needs_eligibility_decision: { kind: "waiting", next: ["needs_kit_type", "drafting", "closed"] },
   needs_kit_type: { kind: "waiting", next: ["drafting", "closed"] },
-  drafting: { kind: "running", next: ["judging", "failed"] },
+  drafting: { kind: "running", next: ["judging", "kit_ready", "drafting", "failed"] },
   judging: { kind: "running", next: ["kit_ready", "failed"] },
   kit_ready: { kind: "ready", next: ["extracting", "drafting", "needs_role_pick"] },
   stopped: { kind: "owner", next: ["extracting", "closed"] },
-  failed: { kind: "owner", next: ["extracting", "checking", "drafting", "judging", "closed"] },
+  failed: {
+    kind: "owner",
+    next: ["extracting", "checking", "drafting", "judging", "kit_ready", "closed"],
+  },
   closed: { kind: "final", next: [] },
 };
 
 /**
  * The stages a running state can have pending: `extracting` runs `extract`
- * or `extract_questions`, `drafting` runs `draft` or `draft_answers`.
- * `queued` runs nothing; the runner moves it on to `extract`. The address
- * stages are never pending: they run alongside `draft`.
+ * or `extract_questions`, `drafting` runs `templates` first, then `draft`
+ * or `draft_answers`. `queued` runs nothing; the runner moves it on to
+ * `extract`. The address stages are never pending: they run alongside
+ * `templates` and `draft`.
  */
 const PENDING: Partial<Record<JobState, readonly StageName[]>> = {
   queued: [],
   extracting: ["extract", "extract_questions"],
   checking: ["eligibility"],
-  drafting: ["draft", "draft_answers"],
+  drafting: ["templates", "draft", "draft_answers"],
   judging: ["judge"],
 };
 
@@ -108,6 +113,15 @@ const AFTER_EXTRACTION: Partial<Record<StageName, readonly JobState[]>> = {
   extract_questions: ["drafting", "failed"],
 };
 
+// What drafting may lead to, by the stage that ran (decisions A22): only `templates` goes
+// straight to a ready kit, when the owner's templates drafted it, or on to `draft` when none
+// fits; a drafted email is always judged.
+const AFTER_DRAFTING: Partial<Record<StageName, readonly JobState[]>> = {
+  templates: ["kit_ready", "drafting", "failed"],
+  draft: ["judging", "failed"],
+  draft_answers: ["judging", "failed"],
+};
+
 /**
  * Whether a job may move from one state to another, carrying `pending` as
  * its pending stage; `leaving` is the stage pending as a running job leaves
@@ -115,9 +129,11 @@ const AFTER_EXTRACTION: Partial<Record<StageName, readonly JobState[]>> = {
  * none), so a retried job can only resume in the state its stage belongs
  * to; `failed` keeps the very stage that failed; every other state has none.
  * The rows of the table that hold for one stage only are checked too: a new
- * job and a post the owner confirms start at `extract`, and only
+ * job and a post the owner confirms start at `extract`, only
  * `extract_questions` leads from extracting to drafting, with
- * `draft_answers`.
+ * `draft_answers`, only `templates` leads from drafting to a ready kit, or
+ * on to `draft`, and a failed job goes back to its kit only from `draft` or
+ * `judge`, named as the stage it leaves.
  */
 export function checkMove(
   from: JobState,
@@ -142,6 +158,18 @@ export function checkMove(
     if (to === "drafting" && pending !== "draft_answers") {
       return { ok: false, reason: "new form questions are drafted by draft_answers" };
     }
+  }
+  if (from === "drafting" && leaving !== null) {
+    if (!(AFTER_DRAFTING[leaving] ?? []).includes(to)) {
+      return { ok: false, reason: `drafting cannot move to ${to} after ${leaving}` };
+    }
+    if (to === "drafting" && pending !== "draft") {
+      return { ok: false, reason: "a post no template fits is drafted by draft" };
+    }
+  }
+  // Back to its kit only from a Gemini draft asked for beside the templates' (decisions A22).
+  if (from === "failed" && to === "kit_ready" && leaving !== "draft" && leaving !== "judge") {
+    return { ok: false, reason: "a failed job goes back to its kit only from draft or judge" };
   }
   if ((from === "queued" || from === "stopped") && to === "extracting" && pending !== "extract") {
     return { ok: false, reason: `${from} moves to extracting only with extract` };

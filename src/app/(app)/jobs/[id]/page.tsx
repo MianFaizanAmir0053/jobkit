@@ -9,9 +9,9 @@ import type { AgreementProblem } from "@/core/extraction/addressRead";
 import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
 import { flagRank, judgeMessage } from "@/core/review/canHandOff";
-import { flagKey, NO_DECISIONS } from "@/core/review/decisions";
+import { flagKey, NEEDS_NEW_WORDS, needsNewWords, NO_DECISIONS } from "@/core/review/decisions";
 import { gmailComposeUrl } from "@/core/review/gmail";
-import type { JobView, Step } from "@/core/review/jobView";
+import type { DraftChoice, JobView, Step } from "@/core/review/jobView";
 import { showsFor } from "@/core/review/kitSends";
 import { appConfig } from "@/server/config";
 import {
@@ -52,12 +52,17 @@ const STEP_WORDS: Readonly<Record<Step["status"], string>> = {
   failed: "Failed",
   waiting: "",
   not_checked: "Not checked yet",
+  skipped: "Not needed",
+  none_fit: "None fits this role",
 };
 
 /**
- * Flags only a change to the email's words resolves. jobkit cannot change
- * them until the block editor exists (Task 29), so the owner fixes them in
- * Gmail, and answers Yes when asked whether they changed anything.
+ * Flags a change to the email's words would resolve. jobkit cannot change
+ * them until the block editor exists (Task 29), so on the way through Gmail
+ * the owner fixes them there, and answers Yes when asked whether they
+ * changed anything. Approve & send sends the words as they stand: it
+ * refuses a kit with one of those that make the email wrong to send
+ * (NEEDS_NEW_WORDS), and takes the others as they are.
  */
 const FIXED_IN_GMAIL: ReadonlySet<KitFlagKind> = new Set([
   "needs_your_line",
@@ -193,8 +198,20 @@ function StatePanel({ view }: { view: JobView }) {
               <pre className="mt-2 whitespace-pre-wrap">{view.failure.detail}</pre>
             </details>
           )}
-          <div className="flex gap-2">
-            <ActionButton url={`${base}/retry`} label="Retry" />
+          {view.canGoBackToDrafts && (
+            <p className="text-sm text-muted-foreground">
+              Your templates&apos; drafts are still there: go back to them, or retry Gemini.
+            </p>
+          )}
+          <div className="flex flex-wrap gap-2">
+            {view.canGoBackToDrafts && (
+              <ActionButton url={`${base}/back-to-drafts`} label="Back to your drafts" />
+            )}
+            <ActionButton
+              url={`${base}/retry`}
+              label="Retry"
+              variant={view.canGoBackToDrafts ? "outline" : "default"}
+            />
             {skip}
           </div>
         </Panel>
@@ -523,25 +540,28 @@ function KitPanel({
   };
   // The countdown says jobkit is sending it; the list says what else holds it.
   const reasons = gate.filter((reason) => reason.kind !== "sending");
-  // Approve & send marks every flagged sentence and flag checked; the other reasons need the owner.
+  // Approve & send marks every flagged sentence and flag checked, but for those only new words
+  // resolve; the other reasons need the owner.
   const approvals = reasons.flatMap((reason) => {
     if (reason.kind === "judge") {
       return [`${reason.message} — "${blockText.get(reason.blockId) ?? ""}"`];
     }
-    if (reason.kind === "flag") {
+    if (reason.kind === "flag" && !NEEDS_NEW_WORDS.has(reason.flag.kind)) {
       const about = aboutFlag(reason.flag);
       return [about ? `${reason.message} — "${about}"` : reason.message];
     }
     return [];
   });
-  // What Approve & send cannot settle: a file besides the CV, which it cannot attach, and the
-  // reasons only the owner can.
+  // What Approve & send cannot settle: a file besides the CV, which it cannot attach, words that
+  // must change, which it cannot change, and the reasons only the owner can.
   const held =
     parts.attachments.length > 0
       ? "This post asks for a file besides your CV, which jobkit cannot attach: send it yourself with Open in Gmail, and attach the file there."
-      : reasons.some((reason) => reason.kind !== "judge" && reason.kind !== "flag")
-        ? "Approve & send marks the sentences and flags above as checked, but the other reasons listed need you first."
-        : null;
+      : needsNewWords(parts)
+        ? "Some of this email's words must change before it goes, which jobkit cannot do: send it yourself with Open in Gmail, and change them there."
+        : reasons.some((reason) => reason.kind !== "judge" && reason.kind !== "flag")
+          ? "Approve & send marks the sentences and flags above as checked, but the other reasons listed need you first."
+          : null;
   const needsRetype = parts.contact?.needsRetype ?? false;
   // Where the kit goes: the post's contact, or the one typed in its place once it passes.
   const to = view.handoff?.to ?? "";
@@ -572,7 +592,12 @@ function KitPanel({
         </Panel>
       )}
 
+      {(view.drafts.length > 1 || view.canDraftWithGemini) && (
+        <DraftPicker view={view} locked={locked} />
+      )}
+
       <Panel title="The email">
+        <p className="text-sm text-muted-foreground">{sourceWords(view)}</p>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
           <dt className="text-muted-foreground">To</dt>
           <dd className="min-w-0 [overflow-wrap:anywhere]">
@@ -914,6 +939,94 @@ function KitPanel({
         )}
       </Panel>
     </div>
+  );
+}
+
+/** A draft by whose words it holds. */
+function draftName(draft: DraftChoice): string {
+  return draft.source === "template" ? `Your template: ${draft.name}` : "Gemini's draft";
+}
+
+/** Where the email shown came from, and so what checked its sentences. */
+function sourceWords(view: JobView): string {
+  const draft = view.drafts.find((each) => each.id === view.picked);
+  if (draft?.source !== "template") {
+    return view.judge
+      ? "Gemini wrote this from your approved facts, and a separate check weighed every sentence."
+      : "Gemini wrote this from your approved facts. No separate check weighed it, so check each sentence against your facts.";
+  }
+  return `Written from your approved template "${draft.name}", with the post's company and role, and your approved facts and gap lines for what the template does not cover.`;
+}
+
+/**
+ * The kit's drafts, best first, the first recommended (decisions A21): the
+ * one shown is the kit, and showing another makes that one the kit. Below
+ * them, while only the templates drafted it, Gemini can write one too.
+ */
+function DraftPicker({ view, locked }: { view: JobView; locked: boolean }) {
+  return (
+    <Panel title="Drafts">
+      <ol className="flex flex-col gap-2">
+        {view.drafts.map((draft, rank) => {
+          const shown = draft.id === view.picked;
+          return (
+            <li
+              key={draft.id}
+              aria-current={shown ? "true" : undefined}
+              className={`flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 ${shown ? "border-foreground" : "border-border"}`}
+            >
+              <div className="flex min-w-0 flex-col gap-1 text-sm">
+                <span className="font-medium [overflow-wrap:anywhere]">
+                  {rank === 0 && (
+                    <span className="mr-2 rounded-sm bg-foreground px-1.5 py-0.5 text-xs text-background">
+                      Recommended
+                    </span>
+                  )}
+                  {draftName(draft)}
+                </span>
+                <span className="text-muted-foreground">
+                  Covers {Math.round(draft.coverage * 100)}% of the must-haves ·{" "}
+                  {draft.open === 0
+                    ? "nothing flagged"
+                    : `${draft.open} ${draft.open === 1 ? "thing" : "things"} to check`}{" "}
+                  · {draft.words} words
+                </span>
+              </div>
+              {shown ? (
+                <span className="text-sm text-muted-foreground">Shown below</span>
+              ) : (
+                !locked && (
+                  <ActionButton
+                    url={`/api/jobs/${view.id}/pick`}
+                    gateOf={view.id}
+                    label="Show this one"
+                    variant="outline"
+                    body={{ draft: draft.id, kit: view.kitKey }}
+                  />
+                )
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      {view.canDraftWithGemini && (
+        <div className="flex flex-col gap-2">
+          <p className="text-sm text-muted-foreground">
+            Your templates drafted this email, so Gemini has not written one. Gemini takes about a
+            minute, and its draft then shows here beside these.
+          </p>
+          <div>
+            <ActionButton
+              url={`/api/jobs/${view.id}/draft-with-gemini`}
+              gateOf={view.id}
+              label="Write a draft with Gemini too"
+              variant="outline"
+              body={{ kit: view.kitKey }}
+            />
+          </div>
+        </div>
+      )}
+    </Panel>
   );
 }
 

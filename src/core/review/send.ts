@@ -5,7 +5,7 @@ import { isUuid } from "@/lib/uuid";
 import { within } from "@/lib/within";
 
 import { canHandOff } from "./canHandOff";
-import { approveAll, gateInputOf, NO_DECISIONS } from "./decisions";
+import { approveAll, gateInputOf, needsNewWords, NO_DECISIONS } from "./decisions";
 import type { JobView } from "./jobView";
 import {
   BEGIN_WITHIN_MS,
@@ -32,8 +32,9 @@ export { BEGIN_WITHIN_MS, LATE_MS, STUCK_MS, UNDO_MS } from "./kitSends";
  * marks "I checked this" on every flagged sentence and flag, and schedules
  * the send ten seconds ahead, all or nothing: refused while a hard stop
  * holds the kit, for a post that asks for a file besides the CV, which
- * jobkit cannot attach, while another send of it is in flight, or once it
- * went. Undo stops it until it begins. Delivery claims it when due, under
+ * jobkit cannot attach, for a kit whose words must change first, as a line
+ * the owner must write, which it cannot change, while another send of it
+ * is in flight, or once it went. Undo stops it until it begins. Delivery claims it when due, under
  * the same locks, so two deliveries send once; checks again that the kit,
  * its address and its open gate are as pressed; then sends the email with
  * the profile's signature and CV from the owner's Gmail. What Gmail took is
@@ -77,6 +78,7 @@ export type ScheduleOutcome =
         | "sending"
         | "held"
         | "attachment"
+        | "words"
         | "uncertain";
     };
 
@@ -108,6 +110,8 @@ export async function scheduleSend(
     if (view.kitParts.sending) return { ok: false, reason: "sending" };
     // jobkit attaches the CV alone: a post asking for another file goes through Gmail.
     if (view.kitParts.attachments.length > 0) return { ok: false, reason: "attachment" };
+    // It sends the words as they stand: one that must change goes through Gmail too.
+    if (needsNewWords(view.kitParts)) return { ok: false, reason: "words" };
     const decisions = approveAll(view.kitParts, view.review?.decisions ?? NO_DECISIONS);
     if (canHandOff(gateInputOf(view.kitParts, decisions)).length > 0) {
       return { ok: false, reason: "held" };

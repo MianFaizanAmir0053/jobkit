@@ -2,13 +2,13 @@
 
 - **Module id:** `review` (see [CAPABILITIES.md](CAPABILITIES.md))
 - **Depends on:** `drafting`, `ledger`
-- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 9, 11, 13, 15, 16, 18, 21, 28 and 29, the status default, and amendments A1, A4, A5, A8 and A11
+- **Decisions:** [ADR 0001](docs/decisions/0001-mvp-decisions.md) entries 9, 11, 13, 15, 16, 18, 21, 28 and 29, the status default, and amendments A1, A4, A5, A8, A11, A20, A21 and A22
 - **Conventions:** [SPEC-platform.md](SPEC-platform.md) Part A; job states from platform B9
 - **Status:** approved by the owner on 2026-10-06, after two review cycles
 
 ## Objective
 
-Put everything the owner must check on one phone screen, refuse every outbound action while a blocking issue stands, and hand the finished kit to Gmail, WhatsApp or the clipboard with as few taps as possible. Stage registered with the platform's runner: `address_checks`, which runs in the `drafting` group beside `draft` and `address_read`.
+Put everything the owner must check on one phone screen, refuse every outbound action while a blocking issue stands, and hand the finished kit to Gmail, WhatsApp or the clipboard with as few taps as possible. Stage registered with the platform's runner: `address_checks`, which runs in the `drafting` group beside `templates` or `draft`, and `address_read`.
 
 ## Jobs list
 
@@ -25,7 +25,7 @@ Put everything the owner must check on one phone screen, refuse every outbound a
 - `needs_eligibility_decision`: the reasons, with Draft anyway and Skip.
 - `needs_kit_type`: email, form or message, and Skip.
 - `stopped`: the reason. For "not a job post", the button "This is a job post" sends it back to extraction.
-- `failed`: the stage, a readable reason, Retry and Skip.
+- `failed`: the stage, a readable reason, Retry and Skip; when a Gemini draft the owner asked for beside the templates' failed, "Back to your drafts" first (decisions A22).
 - `upload_failed`: "Upload again" and Skip.
 - While a stage runs: state names and elapsed seconds.
 
@@ -43,6 +43,7 @@ Put everything the owner must check on one phone screen, refuse every outbound a
    - screening questions addressed to AI, marked "Not answered".
 4. **Fit table:** each requirement with Met, Partial or Gap; tapping a verdict shows the cited facts; `fit_unverified` and `fit_missing` rows say why, and requirements that need the owner's tick (a language, an "other" requirement) offer it.
 5. **Draft:**
+   - the drafts (decisions A21 and A22), when there are several or Gemini can write one: each with whose words it holds (one of the owner's templates, or Gemini's), the share of the must-haves it covers, what it has to check and its length, best first, the first marked Recommended. The one shown is the kit, the owner's pick or else the Recommended one, and "Show this one" picks another; decisions on sentences and flags count for the draft they were made on, and come back when the owner picks it again, while those on the post go with the pick. On a kit only the templates drafted, "Write a draft with Gemini too" keeps the draft shown as the pick and runs drafting again, in a new round of attempts; Gemini's draft, once judged in that round, then ranks among them. A Gemini draft from an earlier reading of the post, or one its check never weighed, is not offered;
    - email: To and Subject as fields, and the body as a list of blocks, each editable on its own, with buttons to add or delete a block. A note says the Gmail app adds the owner's Gmail signature;
    - form: the cover note as blocks, and each answer with a copy button; topic answers marked "from your profile"; a question only one classifier tied to a topic offers "Use my profile answer" or "Draft it"; "Needs your answer" fields where the question or the profile lacks what the answer needs;
    - message: the message as blocks, and a copy button.
@@ -81,7 +82,7 @@ The page runs `validate` and `canHandOff` in the browser on every edit, so the c
 
 ## Handoffs
 
-- **Email: Approve & send** (decisions A20; [SPEC-send.md](SPEC-send.md)). Once Gmail is connected, the email kit's first control sends it from the owner's Gmail with the profile's signature and CV. One press opens a confirmation in its place, with From, To, the subject, the CV's file name and the flagged sentences and flags the press marks "I checked this"; Send then counts down ten seconds with Undo, and the page shows how it went. The hard stops hold the button: an address not confirmed, a blocking address check, a possible repeat and a scam warning, each listed above it. A post that asks for a file besides the CV is sent from Gmail, where the owner attaches it. An email jobkit sent is marked sent, and its Mark sent cannot be taken back. The handoffs below stay as the way to send it yourself.
+- **Email: Approve & send** (decisions A20; [SPEC-send.md](SPEC-send.md)). Once Gmail is connected, the email kit's first control sends it from the owner's Gmail with the profile's signature and CV. One press opens a confirmation in its place, with From, To, the subject, the CV's file name and the flagged sentences and flags the press marks "I checked this"; Send then counts down ten seconds with Undo, and the page shows how it went. The hard stops hold the button: an address not confirmed, a blocking address check, a possible repeat and a scam warning, each listed above it. A post that asks for a file besides the CV is sent from Gmail, where the owner attaches it, and so is a kit whose words must change first: a line the owner must write, a placeholder in the subject, a reference's details or a line written for an AI tool (decisions A22). An email jobkit sent is marked sent, and its Mark sent cannot be taken back. The handoffs below stay as the way to send it yourself.
 - **Email, sent by the owner.** Two mechanisms are built for the tap-count spike, and the one that takes fewer taps on the owner's phone stays:
   - **A:** "Open in Gmail" follows a `mailto:` link built by code: the address after the strict check, then `subject` and `body`, each part encoded with `encodeURIComponent`, so nothing in a post can add a header or a recipient. The owner attaches the CV in Gmail; the job page offers the CV for download once, after which it sits among Gmail's recent files.
   - **B:** "Share with CV" copies the address and subject to the clipboard, then calls the Web Share API with the CV file and the body text. It is shown only where file sharing is supported.
@@ -114,3 +115,4 @@ Neutral shadcn components on the dark theme with the lime accent (platform A2). 
 11. The scam banner needs the explicit override before any outbound action.
 12. End-to-end test with the fake models: upload a synthetic post, reach the kit, resolve each flag, hand off, mark sent, and see the stats change.
 13. An automated accessibility check (axe through Playwright) reports no serious violations on the job page.
+14. Drafts (decisions A21 and A22): a kit the templates drafted shows their drafts best first with the first shown and nothing for a separate check to hold; picking another makes it the kit, its own sentence and flag decisions apart and restored on picking it again, the typed address carried; a pick from a page drawn on another kit, of a draft the kit lacks, or while it sends, is refused; "Write a draft with Gemini too" ranks Gemini's draft among them and keeps the kit shown and its decisions though Gemini's ranks first, and earlier failures never fail it at once; "Back to your drafts" after it fails, or after its check fails, makes the kit ready again with the templates' drafts alone; a Gemini draft from an earlier reading of the post is not offered; a kit drafted before the templates keeps its key; the email's outcome records which draft went.

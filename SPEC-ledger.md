@@ -15,7 +15,7 @@ Keep the truth about applications: what was applied for, by which route, when, a
 - `applications`: one per job and role, by the role's ID in the extraction (SPEC-extraction, `roles`), so two roles written alike stay apart. A row is created when a role is chosen (automatically for a single-role post, by the owner otherwise); choosing the same role again, after a new extraction, updates it while no kit has gone out. It holds company, role, normalised keys, address or number, route, status, the time of each status change, the matches the owner's "apply again" taps covered, CV label, profile version, the final draft, the timing arm, and whether the job is an evaluation or test job.
 - `earlier_applications`: applications made before jobkit, imported from the owner's list.
 - `status_changes`: an audit row for every status change, with time and session.
-- `draft_outcomes`: one row per email kit handed off, with the list of changed sentences and fields and `changed_in_gmail`, written by the review module in the same transaction as the move to `sent`; taking back a sent tap removes it.
+- `draft_outcomes`: one row per email kit handed off, with the list of changed sentences and fields, `changed_in_gmail` and which draft went (`gemini`, or a template's ID: the owner's own words, decisions A22; none before the templates), written by the review module in the same transaction as the move to `sent`; taking back a sent tap removes it.
 - `baseline_runs`: the manual runs, each tied to the job that started it.
 - `upload_attempts`: written by intake, read for the Stats page.
 

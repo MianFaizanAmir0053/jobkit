@@ -3,10 +3,12 @@ import { join } from "node:path";
 
 import type { FakeClock } from "@/adapters/clock";
 import { offlineDns } from "@/adapters/dns";
-import { answer, fakeLlm, type FakeLlm } from "@/adapters/fakeLlm";
+import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm";
 import type { LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { draftStage } from "@/core/drafting/draftStage";
+import { templatesStage } from "@/core/drafting/templatesStage";
+import { noTemplateDrafts } from "@/core/drafting/testTemplates";
 import type { BlockVerdict } from "@/core/drafting/judge";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { addressReadStage } from "@/core/extraction/addressReadStage";
@@ -61,17 +63,23 @@ export const KIT_DRAFT: DraftAnswer = {
   ],
 };
 
-/** The judge, as a stage that gives these verdicts on the kit; or the output of a kit from before it was built. */
-const judging = (verdicts: BlockVerdict[] | "before the judge") => ({
+/**
+ * The judge, as a stage that gives these verdicts on the kit; or the output
+ * of a kit from before it was built; or one that fails, as a refusal does.
+ */
+const judging = (verdicts: BlockVerdict[] | "before the judge" | "fails") => ({
   callsModel: false,
   input: () => ({}),
-  run: async () => ({
-    ok: true as const,
-    output:
-      verdicts === "before the judge"
-        ? { checked: false }
-        : { checked: true, verdicts, markers: [] },
-  }),
+  run: async () =>
+    verdicts === "fails"
+      ? { ok: false as const, reason: "The separate check failed.", retry: false }
+      : {
+          ok: true as const,
+          output:
+            verdicts === "before the judge"
+              ? { checked: false }
+              : { checked: true, verdicts, markers: [] },
+        },
   next: () => ({ state: "kit_ready" as const, pending: null }),
 });
 
@@ -92,18 +100,20 @@ export async function resetKitBed(bed: KitBed): Promise<void> {
   await seedProfile(bed, checked);
 }
 
+export interface KitOptions {
+  draft?: DraftAnswer;
+  dns?: Dns;
+  verdicts?: BlockVerdict[] | "before the judge" | "fails";
+  /** Changes the synthetic record extract answers with. */
+  record?: (record: JobRecord) => JobRecord;
+  /** Drafts from the sample profile's templates too; by default none, so the kit is drafted. */
+  templates?: boolean;
+  /** Eligibility fails, as with no profile: the round of drafting stops before the templates. */
+  eligibilityFails?: boolean;
+}
+
 /** A job run to its kit, its post pasted with `text`, the judge calling S1 overstated. */
-export async function readyKit(
-  bed: KitBed,
-  text: string,
-  opts: {
-    draft?: DraftAnswer;
-    dns?: Dns;
-    verdicts?: BlockVerdict[] | "before the judge";
-    /** Changes the synthetic record extract answers with. */
-    record?: (record: JobRecord) => JobRecord;
-  } = {},
-): Promise<string> {
+export async function readyKit(bed: KitBed, text: string, opts: KitOptions = {}): Promise<string> {
   const { db, clock, storage } = bed;
   const started = await startJob(
     { db, clock, storage },
@@ -114,11 +124,37 @@ export async function readyKit(
     readFileSync(join(SYNTHETIC, "records", "S01-email-simple.json"), "utf8"),
   ) as JobRecord;
   const record = opts.record ? opts.record(read) : read;
-  const llm: FakeLlm = fakeLlm([answer(record), answer(opts.draft ?? KIT_DRAFT)]);
+  await runKit(bed, started.jobId, [answer(record), answer(opts.draft ?? KIT_DRAFT)], opts);
+  return started.jobId;
+}
+
+/**
+ * Runs a job's pipeline as far as it goes, the models answering with
+ * `steps` in turn: as again after the owner asks for a Gemini draft.
+ */
+export async function runKit(
+  bed: KitBed,
+  jobId: string,
+  steps: readonly FakeStep[],
+  opts: KitOptions = {},
+): Promise<void> {
+  const { db, clock, storage } = bed;
+  const llm: FakeLlm = fakeLlm(steps);
   const models: ModelCallDeps = { db, clock, llmFor: () => llm, guard: async () => ({ ok: true }) };
   const pipeline: Pipeline = {
     extract: extractStage({ db, storage, random, models }),
-    eligibility: eligibilityStage({ db, clock }),
+    eligibility: opts.eligibilityFails
+      ? {
+          callsModel: false,
+          input: () => ({ failing: true }),
+          run: async () => ({ ok: false as const, reason: "Eligibility failed.", retry: false }),
+          next: () => ({ state: "drafting" as const, pending: "templates" as const }),
+        }
+      : eligibilityStage({ db, clock }),
+    templates: {
+      ...(opts.templates ? templatesStage({ db }) : noTemplateDrafts()),
+      alongside: () => ["address_read", "address_checks"],
+    },
     draft: {
       ...draftStage({ db, random, models }),
       alongside: () => ["address_read", "address_checks"],
@@ -132,8 +168,7 @@ export async function readyKit(
     ),
   };
   const deps = { db, clock, pipeline };
-  const lease = await claimJob(deps, started.jobId);
+  const lease = await claimJob(deps, jobId);
   if (!lease) throw new Error("not claimed");
   await runJob(deps, lease);
-  return started.jobId;
 }

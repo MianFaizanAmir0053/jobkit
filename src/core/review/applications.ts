@@ -131,16 +131,19 @@ function after(
 /**
  * The pipeline with the application's statuses kept: extract opens it when
  * the post's one role goes on to eligibility (a pick of several opens it
- * at the owner's answer), and the judge marks it kit_ready with the job.
+ * at the owner's answer), and the stage that makes the kit ready, the
+ * templates or the judge, marks it kit_ready with the job.
  */
 export function trackApplications(pipeline: Pipeline, deps: Deps): Pipeline {
+  const ready = async (jobId: string, state: string) => {
+    if (state === "kit_ready") await kitReadyForJob(deps, jobId);
+  };
   return {
     ...pipeline,
     extract: after(pipeline.extract, async (jobId, state) => {
       if (state === "checking") await openForJob(deps, jobId, null);
     }),
-    judge: after(pipeline.judge, async (jobId, state) => {
-      if (state === "kit_ready") await kitReadyForJob(deps, jobId);
-    }),
+    templates: after(pipeline.templates, ready),
+    judge: after(pipeline.judge, ready),
   };
 }

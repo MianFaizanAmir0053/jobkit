@@ -263,15 +263,15 @@ Modules register stages; the runner owns their order, the job's state and the bo
 | `checking` | running | `eligibility` (code only, no model) | `needs_eligibility_decision`, `needs_kit_type`, `drafting`, `failed` |
 | `needs_eligibility_decision` | waiting | Draft anyway or Skip | `needs_kit_type`, `drafting`, `closed` |
 | `needs_kit_type` | waiting | the route is `other` or `unknown`; the owner picks email, form or message | `drafting`, `closed` |
-| `drafting` | running | `draft` or `draft_answers`, with `address_read` and `address_checks` alongside | `judging`, `failed` |
+| `drafting` | running | `templates` first (code only: drafts from the owner's approved templates, decisions A22), then `draft` or `draft_answers`, each with `address_read` and `address_checks` alongside | `kit_ready` (after `templates`, when a template drafted the kit), `drafting` (after `templates`, with `draft`, when none did), `judging` (after `draft` or `draft_answers`), `failed` |
 | `judging` | running | `judge` | `kit_ready`, `failed` |
-| `kit_ready` | ready | the kit is ready for review | `extracting` (screenshots added), `drafting` (contact edited, another kit type, or new questions), `needs_role_pick` (another role) |
+| `kit_ready` | ready | the kit is ready for review | `extracting` (screenshots added), `drafting` (contact edited, another kit type, new questions, or a Gemini draft beside the templates', decisions A22), `needs_role_pick` (another role) |
 | `stopped` | owner | not a job post, not in English, or no role found | `extracting` (the owner confirms a post marked "not a job post", or has a post with no role found read again; the confirmation is given once per job, never for language), `closed` |
-| `failed` | owner | a stage failed; the page shows the stage, a readable reason, Retry and Skip | the failed stage's running state (Retry), `closed` (Skip) |
+| `failed` | owner | a stage failed; the page shows the stage, a readable reason, Retry and Skip | the failed stage's running state (Retry), `kit_ready` ("Back to your drafts", only from `draft` or `judge`, when a Gemini draft asked for beside the templates' failed), `closed` (Skip) |
 | `closed` | final | finished without a kit, or skipped | none |
 
 - **Kinds:** only `running` jobs are advanced by the runner. `waiting` and `owner` states move only on the owner's action; `client` moves on intake's requests; `ready` and `final` never advance by themselves. The application's outcome (sent, submitted, skipped, bounced) is the ledger's status, not a job state.
-- **Pending stage:** a running job records which stage is due next (`jobs.pending_stage`), so `extracting` knows whether `extract` or `extract_questions` comes next, and `drafting` whether it is `draft` or `draft_answers`.
+- **Pending stage:** a running job records which stage is due next (`jobs.pending_stage`), so `extracting` knows whether `extract` or `extract_questions` comes next, and `drafting` whether it is `templates`, `draft` or `draft_answers`.
 - **Timeouts are checked when status is read** (each poll and page load), and again by the daily cron as a backstop: a job still `uploading` 15 minutes after it began uploading (at creation, or at Upload again) moves to `upload_failed`; a pending pairing older than 5 minutes is deleted.
 
 **Stage runs and idempotency:** each stage run is recorded in `job_stage_runs` with the stage, its input hash, its output and output hash, start and end times, and an attempt number. Each stage hashes only what it reads, and a stage whose output already exists for the same input hash reuses it without calling a model:
@@ -281,6 +281,7 @@ Modules register stages; the runner owns their order, the job's state and the bo
 | `extract` | post image hashes and pasted text; the owner's "This is a job post" confirmation; model, effort and prompt version |
 | `extract_questions` | form image hashes; model, effort and prompt version |
 | `eligibility` | the record's output hash; the chosen role; the profile version; the owner's eligibility decision; the role's zone's offset from UTC that day, on which the overlap turns |
+| `templates` | the record's output hash; the chosen role; the profile version; the build's version |
 | `draft` | the record's output hash; the chosen role; the profile version; the kit type; the owner's declined instructions; model, effort and prompt version |
 | `draft_answers` | the IDs and texts of questions not yet answered; the profile version; model, effort and prompt version |
 | `address_read` | the contact and its kind, which the output is for; from a screenshot, the crop's hash, by the screenshot's hash, the box and the crop's rules it is made from, with the model, whether this machine has it, effort, the token limit and the prompt version; from pasted text, the text's hash and the matching's version |

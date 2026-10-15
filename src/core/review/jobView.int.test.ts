@@ -10,6 +10,7 @@ import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { offlineDns } from "@/adapters/dns";
 import { draftStage } from "@/core/drafting/draftStage";
+import { noTemplateDrafts } from "@/core/drafting/testTemplates";
 import { addressReadStage } from "@/core/extraction/addressReadStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { eligibilityStage } from "@/core/extraction/eligibility";
@@ -73,6 +74,7 @@ function models(): ModelCallDeps {
 const pipeline = () => ({
   extract: extractStage({ db, storage, random, models: models() }),
   eligibility: eligibilityStage({ db, clock }),
+  templates: noTemplateDrafts(),
   draft: draftStage({ db, random, models: models() }),
   // The judge has its own tests; here it passes every kit.
   judge: {
@@ -179,10 +181,12 @@ describe("jobView", () => {
       failure: null,
       application: null,
     });
+    // No template fits in this pipeline, so Gemini drafted the kit.
     expect(view.steps.map(({ label, status }) => [label, status])).toEqual([
       ["Read the post", "done"],
       ["Check eligibility", "done"],
-      ["Write the email", "done"],
+      ["Draft from your templates", "none_fit"],
+      ["Write a draft with Gemini", "done"],
       ["Check every sentence separately", "done"],
     ]);
     expect(view.role?.id).toBe("P1");
@@ -208,6 +212,7 @@ describe("jobView", () => {
     expect(view.steps.map(({ stage, status }) => [stage, status])).toEqual([
       ["extract", "done"],
       ["eligibility", "done"],
+      ["templates", "none_fit"],
       ["draft", "done"],
       ["judge", "not_checked"],
     ]);

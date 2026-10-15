@@ -7,13 +7,15 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { offlineDns } from "@/adapters/dns";
-import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm";
+import { answer, fakeLlm, type FakeLlm, type FakeStep, refusal } from "@/adapters/fakeLlm";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { draftStage } from "@/core/drafting/draftStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { passingJudge } from "@/core/drafting/testJudge";
+import { templatesStage } from "@/core/drafting/templatesStage";
+import { noTemplateDrafts } from "@/core/drafting/testTemplates";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
@@ -33,8 +35,11 @@ import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 
 import {
   applyAgainRoute,
+  backToDrafts,
   draftAnyway,
   gate,
+  geminiDraft,
+  pick,
   readAgain,
   retry,
   review,
@@ -70,7 +75,8 @@ const models = (): ModelCallDeps => ({
   guard: async () => ({ ok: true }),
 });
 
-const deps = () => ({
+/** The routes' ports; with `templates`, the sample profile's templates draft what they fit. */
+const deps = (templates = false) => ({
   db,
   clock,
   dns: offlineDns(),
@@ -78,6 +84,7 @@ const deps = () => ({
   pipeline: {
     extract: extractStage({ db, storage, random, models: models() }),
     eligibility: eligibilityStage({ db, clock }),
+    templates: templates ? templatesStage({ db }) : noTemplateDrafts(),
     draft: draftStage({ db, random, models: models() }),
     // The judge has its own tests; here it finds every sentence supported.
     judge: passingJudge(),
@@ -167,13 +174,13 @@ async function drain(steps: readonly FakeStep[] = []): Promise<void> {
 }
 
 /** A paste-only job, run until it settles with the fake model's answers. */
-async function settled(steps: readonly FakeStep[]): Promise<string> {
+async function settled(steps: readonly FakeStep[], templates = false): Promise<string> {
   const started = await startJob(
     { db, clock, storage },
     { images: [], pastedText: "A job post. Apply at jobs@example.com", clientElapsedMs: 0 },
   );
   if (!started.ok) throw new Error(started.message);
-  await startPipeline(deps(), started.jobId, clock.now());
+  await startPipeline(deps(templates), started.jobId, clock.now());
   await drain(steps);
   return started.jobId;
 }
@@ -488,6 +495,49 @@ describe("the job page's routes", () => {
     expect((await jobView({ db, clock }, ready))!.duplicates[0]!.covered).toBe(true);
   });
 
+  it("pick a draft, ask Gemini for one beside the templates', and go back when it fails", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const id = await settled([answer(fixture("S01-email-simple"))], true);
+    expect((await jobView({ db, clock }, id))!.drafts.map((draft) => draft.id)).toEqual([
+      "T-full-stack",
+      "T-ai-features",
+    ]);
+    const kit = await kitOf(id);
+    const pickOne = (body: string) =>
+      pick(post(`/api/jobs/${id}/pick`, body, cookie), deps(true), id);
+
+    expect((await pickOne(JSON.stringify({ draft: "T-ai-features" }))).status).toBe(400);
+    expect((await pickOne(JSON.stringify({ draft: "T-elsewhere", kit }))).status).toBe(409);
+    const picked = await pickOne(JSON.stringify({ draft: "T-ai-features", kit }));
+    expect(picked.status).toBe(200);
+    // These routes run no address stages, so the address waits for the owner on every draft.
+    expect(
+      ((await picked.json()) as { gate: { kind: string }[] }).gate.map((reason) => reason.kind),
+    ).toEqual(["contact"]);
+    expect((await jobView({ db, clock }, id))!.picked).toBe("T-ai-features");
+
+    const ask = (body: string) =>
+      geminiDraft(post(`/api/jobs/${id}/draft-with-gemini`, body, cookie), deps(true), id);
+    expect((await ask(JSON.stringify({ kit }))).status).toBe(409);
+    expect((await ask(JSON.stringify({ kit: await kitOf(id) }))).status).toBe(202);
+    // Gemini refuses: the job fails at draft, and goes back to the templates' drafts.
+    await drain([refusal()]);
+    expect(await stateOf(id)).toBe("failed");
+    const back = () =>
+      backToDrafts(post(`/api/jobs/${id}/back-to-drafts`, "", cookie), deps(true), id);
+    expect((await back()).status).toBe(200);
+    expect(await stateOf(id)).toBe("kit_ready");
+    expect((await jobView({ db, clock }, id))!.picked).toBe("T-ai-features");
+    expect((await back()).status).toBe(409);
+
+    // Asked again, Gemini drafts: its draft ranks among the templates'.
+    expect((await ask(JSON.stringify({ kit: await kitOf(id) }))).status).toBe(202);
+    await drain([answer(DRAFT)]);
+    expect(await stateOf(id)).toBe("kit_ready");
+    expect((await jobView({ db, clock }, id))!.drafts.map((draft) => draft.id)).toContain("gemini");
+  });
+
   it("refuse another origin, a missing session and an unknown job", async () => {
     const cookie = await signedIn();
     const id = await settled([answer(fixture("S08-urdu"))]);
@@ -501,6 +551,9 @@ describe("the job page's routes", () => {
       review,
       applyAgainRoute,
       takeBack,
+      pick,
+      geminiDraft,
+      backToDrafts,
     ] as const;
 
     for (const action of actions) {

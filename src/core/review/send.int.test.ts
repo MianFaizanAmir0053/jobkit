@@ -15,7 +15,7 @@ import { cryptoRandom } from "@/adapters/random";
 import { issueSession } from "@/core/platform/sessions";
 import { createTestDb } from "@/server/db/testDb";
 
-import { NO_DECISIONS } from "./decisions";
+import { flagKey, NO_DECISIONS } from "./decisions";
 import { storedDecisions } from "./jobView";
 import { type JobView, jobView } from "./jobView";
 import { recordReview } from "./kitReview";
@@ -29,7 +29,7 @@ import {
   UNDO_MS,
   undoSend,
 } from "./send";
-import { readyKit as kitFor, resetKitBed, SYNTHETIC } from "./testKit";
+import { KIT_DRAFT, readyKit as kitFor, resetKitBed, SYNTHETIC } from "./testKit";
 
 /* "Approve & send" from the owner's Gmail, with ten seconds to undo: decisions A20. */
 
@@ -182,6 +182,51 @@ describe("scheduleSend", () => {
     const after = await view(again);
     expect(after.review!.decisions).toEqual(NO_DECISIONS);
     expect(after.send).toBeNull();
+  });
+
+  it("sends no kit whose words must change: it goes through Gmail, its flags ticked or not", async () => {
+    // A must-have's line left to the owner: "Needs your line".
+    const id = await readyKit(POST, {
+      draft: {
+        ...KIT_DRAFT,
+        blocks: [
+          ...KIT_DRAFT.blocks,
+          {
+            id: "S2",
+            text: "",
+            paragraph_break: true,
+            class: "gap",
+            fact_ids: [],
+            fields: [],
+            gap: { requirement_id: "R2", known_line_id: "", template_id: "", related_fact_id: "" },
+          },
+        ],
+      },
+      verdicts: [
+        { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
+        { blockId: "S2", verdict: "supported", companyClaim: false, note: "" },
+      ],
+    });
+    const shown = await view(id);
+    expect(shown.kitParts!.flags.map((flag) => flag.kind)).toContain("needs_your_line");
+
+    expect(await scheduleSend({ db, clock }, id, pressed(shown))).toEqual({
+      ok: false,
+      reason: "words",
+    });
+    // "I will fix it in Gmail" on each: Open in Gmail opens, Approve & send still does not send.
+    for (const [place] of shown.kitParts!.flags.entries()) {
+      await recordReview({ db, clock, dns: offlineDns() }, id, {
+        kind: "check_flag",
+        flag: flagKey(place),
+      });
+    }
+    expect(kinds(await view(id))).toEqual([]);
+    expect(await scheduleSend({ db, clock }, id, pressed(await view(id)))).toEqual({
+      ok: false,
+      reason: "words",
+    });
+    expect((await view(id)).send).toBeNull();
   });
 
   it("refuses a press from a page drawn on another kit, or showing another address", async () => {

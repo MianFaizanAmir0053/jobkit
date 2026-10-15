@@ -12,6 +12,11 @@ import type { RunnerDeps } from "@/core/platform/runner";
 import type { Dns } from "@/core/ports";
 import { openForJob, skippedForJob } from "@/core/review/applications";
 import { reviewActionSchema } from "@/core/review/decisions";
+import {
+  backToDrafts as backToDraftsCore,
+  draftWithGemini,
+  pickDraft,
+} from "@/core/review/draftChoice";
 import { jobView } from "@/core/review/jobView";
 import { applyAgainForJob, recordReview } from "@/core/review/kitReview";
 import { markSent, takeBackSent } from "@/core/review/markSent";
@@ -23,9 +28,12 @@ import { startPipeline } from "@/server/jobs";
 /**
  * The owner's answers on the job page (platform spec B9; extraction and
  * review specs): Retry, Skip, the role pick, "This is a job post" or "Read
- * it again", Draft anyway, a decision on the kit, and Mark sent. Each needs an approved session and the app's
- * own origin, moves the job only from the state it was read in, and, where
- * the job runs again, starts the pipeline as the upload confirmation does.
+ * it again", Draft anyway, a decision on the kit, the pick of a draft, a
+ * Gemini draft beside the templates' and the way back from one that failed
+ * (decisions A22), and Mark sent. Each needs an approved session and the
+ * app's own origin, moves the job only from the state it was read in, and,
+ * where the job runs again, starts the pipeline as the upload confirmation
+ * does.
  */
 
 type Deps = RunnerDeps & {
@@ -179,6 +187,96 @@ export async function review(
   });
   if (!outcome.ok) return refusal(outcome.reason === "not-found" ? 404 : 409, outcome.reason);
   return ok(200, { gate: outcome.gate });
+}
+
+/** A small JSON body, parsed with its schema: null when it is too large, not JSON or not of it. */
+async function bodyOf<T>(
+  request: NextRequest,
+  schema: z.ZodType<T>,
+): Promise<{ ok: true; data: T } | { ok: false; response: NextResponse }> {
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return { ok: false, response: refusal(413, "too-large") };
+  let json: unknown = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    // Not JSON: refused below.
+  }
+  const parsed = schema.safeParse(json);
+  return parsed.success
+    ? { ok: true, data: parsed.data }
+    : { ok: false, response: refusal(400, "invalid") };
+}
+
+/** A draft of the kit's, as the page names it: Gemini's, or a template's by its ID. */
+const pickBody = z.object({
+  draft: z
+    .string()
+    .max(200)
+    .regex(/^(gemini|T-[a-z0-9-]+)$/),
+  kit: kitShown,
+});
+
+/**
+ * POST /api/jobs/<id>/pick: the owner picks one of the kit's drafts, which
+ * the page then shows and Approve & send sends, answered with the gate as
+ * it then stands.
+ */
+export async function pick(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await bodyOf(request, pickBody);
+  if (!body.ok) return body.response;
+  const picked = await pickDraft(deps, jobId, body.data.draft, {
+    kit: body.data.kit,
+    sessionId: actor.session.id,
+  });
+  if (!picked.ok) return refusal(picked.reason === "not-found" ? 404 : 409, picked.reason);
+  return ok(200, { gate: picked.gate });
+}
+
+const kitBody = z.object({ kit: kitShown });
+
+/**
+ * POST /api/jobs/<id>/draft-with-gemini: on a kit the templates drafted,
+ * Gemini writes a draft beside theirs, and the pipeline runs again.
+ */
+export async function geminiDraft(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+  startedAt: Date = deps.clock.now(),
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await bodyOf(request, kitBody);
+  if (!body.ok) return body.response;
+  const asked = await draftWithGemini(deps, jobId, {
+    kit: body.data.kit,
+    sessionId: actor.session.id,
+  });
+  if (!asked.ok) return refusal(asked.reason === "not-found" ? 404 : 409, asked.reason);
+  await startPipeline(deps, jobId, startedAt);
+  return ok(202);
+}
+
+/**
+ * POST /api/jobs/<id>/back-to-drafts: the Gemini draft the owner asked for
+ * failed, and the kit is ready again with the templates' drafts.
+ */
+export async function backToDrafts(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const back = await backToDraftsCore(deps, jobId);
+  if (!back.ok) return refusal(back.reason === "not-found" ? 404 : 409, back.reason);
+  return ok();
 }
 
 /** The keys of the matches the banner showed: every one, however many earlier kits there were. */

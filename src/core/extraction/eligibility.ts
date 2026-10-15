@@ -78,7 +78,8 @@ export function eligibilityStage(deps: { db: Db; clock: Clock }): StageDefinitio
       if (output.result === "likely_ineligible" && !(await draftedAnyway(deps.db, ctx.job.id))) {
         return { state: "needs_eligibility_decision", pending: null };
       }
-      return { state: "drafting", pending: "draft" };
+      // The owner's templates come first (decisions A22).
+      return { state: "drafting", pending: "templates" };
     },
   };
 }
