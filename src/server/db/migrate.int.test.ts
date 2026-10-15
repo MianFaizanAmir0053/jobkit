@@ -100,5 +100,9 @@ describe("createPgliteDb", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+    // A fresh data folder: on top of the start every PGlite database makes,
+    // PGlite writes the new database to the folder, nearly a thousand files
+    // one by one. The test takes about 9 seconds in a full check; the same
+    // work took the failed-start test in container.int.test.ts past 30 once.
+  }, 60_000);
 });

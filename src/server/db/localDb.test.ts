@@ -93,5 +93,9 @@ describe("openLocalDb", () => {
     expect((await db.query<{ one: number }>("select 1 as one")).rows).toEqual([{ one: 1 }]);
     await db.close();
     expect(existsSync(lockFile())).toBe(false);
-  });
+    // A fresh data folder: on top of the start every PGlite database makes,
+    // PGlite writes the new database to the folder, nearly a thousand files
+    // one by one. The test takes about 7 seconds in a full check; the same
+    // work took the failed-start test in container.int.test.ts past 30 once.
+  }, 60_000);
 });

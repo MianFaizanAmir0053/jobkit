@@ -12,7 +12,7 @@ Every command runs from the `jobkit` folder.
 
 ## Unit and integration tests
 
-Integration tests (`*.int.test.ts`) boot an in-memory Postgres (PGlite) per file, which keeps a CPU core busy for several seconds. Vitest therefore runs files on half the logical CPUs, and allows 30 seconds per test and per hook. On a laptop that is busy with other work, a run can still slow down; check the load before raising either limit.
+Integration tests (`*.int.test.ts`) boot an in-memory Postgres (PGlite) per file, which keeps a CPU core busy for several seconds. Vitest therefore runs files on half the logical CPUs, and allows 30 seconds per test and per hook. On a laptop that is busy with other work, a run can still slow down; check the load before raising either limit. A test or hook that opens a fresh PGlite data folder on disk needs longer: on top of the usual start, PGlite writes the new database to the folder, nearly a thousand files one by one, and that slows down most on a busy laptop. Give it 60 seconds of its own, with a comment saying why.
 
 ## End-to-end tests
 
