@@ -36,7 +36,12 @@ describe("createContainer", () => {
     ).rejects.toThrow();
 
     expect(() => lockLocalData(dataDir!, "the next try")()).not.toThrow();
-  });
+    // Slow for its fresh data folder, not its one broken migration: on top of
+    // the start every PGlite database makes, PGlite writes the new database to
+    // the folder, nearly a thousand files one by one. The test takes about 4
+    // seconds alone and 9 in a full check, and once went past 30 in a check on
+    // a busy laptop.
+  }, 60_000);
 
   it("in development, uses PGlite and local files under the data folder, migrated and ready", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "jobkit-dev-"));
@@ -52,8 +57,9 @@ describe("createContainer", () => {
     expect(heartbeat.rows).toEqual([{ id: 1 }]);
     await container.storage.put("probe/a.txt", new TextEncoder().encode("a"), "text/plain");
     expect(await container.storage.stat("probe/a.txt")).toEqual({ size: 1 });
-    // The only test that writes a whole PGlite data directory to disk: about
-    // 10 seconds alone, and well past 30 while other files boot in parallel.
+    // A fresh data folder, as in the failed-start test, with every migration
+    // applied there: about 3 seconds alone and 10 in a full check, and well
+    // past 30 at times while other files boot in parallel.
   }, 60_000);
 
   it("in test, uses an in-memory database", async () => {
