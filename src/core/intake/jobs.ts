@@ -1,3 +1,4 @@
+import { spendState } from "@/core/ledger/spend";
 import { createJob, expireUploads, loadJob, moveJob } from "@/core/platform/jobs";
 import { tileCount } from "@/core/shared/tileGeometry";
 import type { Clock, Db, Storage } from "@/core/ports";
@@ -26,6 +27,10 @@ export { type ImageMeta, LIMITS } from "./limits";
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 const CLOCK_WRONG = "The page's clock went wrong. Reload the page and press Start again.";
+
+/** New jobs stop at the monthly spend cap (ledger spec, "Spend cap"). */
+export const CAP_REACHED =
+  "This month's model spend has reached its cap for new jobs, so jobkit starts none until next month.";
 
 const EXTENSIONS = {
   "image/webp": "webp",
@@ -66,6 +71,7 @@ export async function startJob(
   const refused = refusal(images, pastedText);
   if (refused) return { ok: false, message: refused };
   if (job.clientElapsedMs > MAX_HELD_MS) return { ok: false, message: CLOCK_WRONG };
+  if (!(await spendState(deps)).newJobsAllowed) return { ok: false, message: CAP_REACHED };
 
   const now = deps.clock.now();
   const purgeAfter = new Date(now.getTime() + RETENTION_MS);

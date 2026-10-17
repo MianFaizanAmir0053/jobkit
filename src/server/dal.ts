@@ -22,6 +22,7 @@ import {
 } from "@/core/platform/sessions";
 import { type JobListItem, listJobViews, jobView, type JobView } from "@/core/review/jobView";
 import { cvFileName } from "@/core/review/send";
+import { spendState } from "@/core/ledger/spend";
 import { isUuid } from "@/lib/uuid";
 
 import { getContainer } from "./container";
@@ -102,6 +103,12 @@ export const requestTime = cache(async (): Promise<Date> => (await getContainer(
 export const gmailForViewer = cache(async (): Promise<GmailConnection | null> => {
   await requireSession();
   return gmailConnection((await getContainer()).db);
+});
+
+/** Whether a new job may start: none once this month's spend reaches the cap (ledger spec). */
+export const newJobsAllowedForViewer = cache(async (): Promise<boolean> => {
+  await requireSession();
+  return (await spendState(await getContainer())).newJobsAllowed;
 });
 
 /** The Baseline page: the stopwatch and the manual runs' timings (ledger spec). */

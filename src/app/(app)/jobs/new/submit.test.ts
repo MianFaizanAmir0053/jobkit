@@ -398,6 +398,19 @@ describe("submitJob", () => {
     expect(fake.kept.size).toBe(0);
   });
 
+  it("counts the time a share waited before the page took it into the job's clock", async () => {
+    // The page's start, the upload deadline, then the request.
+    const fake = browser({}, server("job-23", 0), [1_000, 1_000, 1_500]);
+
+    await submitJob(
+      fake.deps,
+      { files: [], text: "A post", inputKind: "share", startedAgo: 4_000 },
+      fake.onStatus,
+    );
+
+    expect(fake.calls[0]!.body).toMatchObject({ clientElapsedMs: 4_500 });
+  });
+
   it("sends how the job came in and a shared link with its metadata", async () => {
     const fake = browser({}, server("job-22", 0));
 

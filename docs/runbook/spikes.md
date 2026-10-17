@@ -1,23 +1,23 @@
 # Runbook: spikes (Task 8)
 
-Three early checks, run once the first deploy is live and the phone is paired (setup steps 10 and 11). Each answers a question the plan depends on; the answers below decide what Tasks 13 and 27 build. Open `https://<your-vercel-domain>/spike` on the device named in each spike. Afterwards, the spike page, its share report and the `/api/spike/after` route are deleted, and Task 13 replaces the service worker's spike handler with the real share flow.
+Three early checks, run once the first deploy is live and the phone is paired (setup steps 10 and 11). Each answers a question the plan depends on; the answers below decide what Task 27 builds and whether the share target stays on. Open `https://<your-vercel-domain>/spike` on the device named in each spike. Afterwards, the spike page and the `/api/spike/after` route are deleted. Task 13 replaced the service worker's spike report with the real share flow (2026-10-18), so the share target's check uses it.
 
 ## 1. Share target, on the phone
 
 **Question:** does Chrome on the owner's Android phone deliver shared screenshots to an installed web app? A third-party report says Chrome 153 sends share requests with no parts at all.
 
 1. In Chrome on the phone, open the site, then Chrome's menu, Install app. Note whether the install offer appeared.
-2. In the gallery, select two screenshots, tap Share and choose jobkit.
-3. jobkit opens a page titled "What the share delivered". Note the numbers on it.
+2. In the gallery, select two screenshots of a job post, tap Share and choose jobkit.
+3. jobkit opens New job and uploads the two screenshots with no tap, then opens the job. If it says "Nothing arrived from the share", Chrome delivered no screenshots.
 
 | Item | Result |
 |---|---|
 | Date, phone model, Android version, Chrome version | |
 | Install offered and installed | |
-| Page says the images arrived | |
-| Parts, images, total size, types | |
+| The job opened with both screenshots | |
+| Or: "Nothing arrived from the share" | |
 
-**Decision:** if the images arrived, the server's share-target switch stays on; if not, it goes off and the New job page's upload button carries the flow (intake spec, "Share-target switch").
+**Decision:** if the job opened, the server's share-target switch stays on; if nothing arrived, `SHARE_TARGET_ON` in `src/server/shareTarget.ts` goes to false, and the New job page's upload button carries the flow (intake spec, "Share-target switch").
 
 ## 2. Gmail handoffs, on the phone
 

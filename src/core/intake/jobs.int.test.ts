@@ -12,7 +12,16 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { loadJob } from "@/core/platform/jobs";
 import { createTestDb } from "@/server/db/testDb";
 
-import { confirmUploads, type ImageMeta, LIMITS, reissueUploads, startJob } from "./jobs";
+import { SPEND_LIMITS } from "@/core/ledger/spend";
+
+import {
+  CAP_REACHED,
+  confirmUploads,
+  type ImageMeta,
+  LIMITS,
+  reissueUploads,
+  startJob,
+} from "./jobs";
 
 let db: PgliteDb;
 let clock: FakeClock;
@@ -40,7 +49,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.exec(
-    `delete from {{schema}}.upload_attempts; delete from {{schema}}.job_images;
+    `delete from {{schema}}.model_calls; delete from {{schema}}.upload_attempts;
+     delete from {{schema}}.job_images;
      delete from {{schema}}.job_state_changes; delete from {{schema}}.jobs`,
   );
   clock = fakeClock();
@@ -525,5 +535,25 @@ describe("reissueUploads", () => {
       ok: false,
       reason: "not-found",
     });
+  });
+});
+
+describe("the monthly spend cap", () => {
+  it("refuses a new job once this month's model calls reach the cap for new jobs, creating none", async () => {
+    await db.query(
+      `insert into {{schema}}.model_calls
+         (stage, attempt, provider, requested_model, started_at, outcome, cost_usd,
+          cost_provisional, price_known)
+       values ('extract', 1, 'gemini', 'gemini-3.8-flash', $1, 'ok', $2, false, true)`,
+      [clock.now(), SPEND_LIMITS.newJobsUsd],
+    );
+
+    expect(
+      await startJob(deps(), { images: [], pastedText: "A job post", clientElapsedMs: 0 }),
+    ).toEqual({ ok: false, message: CAP_REACHED });
+    const { rows } = await db.query<{ n: number }>(
+      "select count(*)::int as n from {{schema}}.jobs",
+    );
+    expect(rows).toEqual([{ n: 0 }]);
   });
 });

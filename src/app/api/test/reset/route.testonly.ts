@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getContainer } from "@/server/container";
 import { resetTestGmail } from "@/server/gmail/sender";
 import { setScriptedAnswers } from "@/server/scriptedModels";
+import { setShareTargetForTests } from "@/server/shareTarget";
 import { testRoutesAllowed } from "@/server/testOnly";
 
 /**
@@ -30,6 +31,7 @@ export async function POST() {
     delete from {{schema}}.model_calls;
     delete from {{schema}}.job_stage_runs;
     delete from {{schema}}.job_leases;
+    delete from {{schema}}.upload_attempts;
     delete from {{schema}}.job_images;
     delete from {{schema}}.job_state_changes;
     delete from {{schema}}.jobs;
@@ -37,5 +39,6 @@ export async function POST() {
   // A pipeline left running from an earlier test must not take the next test's answers.
   setScriptedAnswers({});
   resetTestGmail();
+  setShareTargetForTests(undefined);
   return new NextResponse(null, { status: 204 });
 }

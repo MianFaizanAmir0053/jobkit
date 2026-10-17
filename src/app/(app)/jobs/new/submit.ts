@@ -114,6 +114,8 @@ export async function submitJob(
     inputKind?: "page" | "share";
     /** A share's url field, which the job keeps as a link. */
     sharedUrl?: string;
+    /** How long a share waited before the page took it, which the job's clock counts. */
+    startedAgo?: number;
   },
   onStatus: (status: string) => void,
 ): Promise<Submitted> {
@@ -149,7 +151,7 @@ export async function submitJob(
         pastedText: input.text,
         inputKind: input.inputKind ?? "page",
         sharedUrl: input.sharedUrl ?? "",
-        clientElapsedMs: Math.max(0, Math.round(deps.now() - startedAt)),
+        clientElapsedMs: Math.max(0, Math.round(deps.now() - startedAt + (input.startedAgo ?? 0))),
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });

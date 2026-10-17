@@ -61,3 +61,33 @@ export const pendingUploads: PendingUploads = {
     await onStore(UPLOADS, "readwrite", (objects) => objects.delete(jobId));
   },
 };
+
+/** A share the service worker kept (public/sw.js), for New job to start. */
+export interface Share {
+  id: string;
+  images: File[];
+  text: string;
+  url: string;
+  /** When the share arrived, by the wall clock: the job's clock starts there. */
+  arrivedAt: number;
+}
+
+/** Takes a kept share out of the store: it is read and deleted at once, so it starts one job. */
+export async function takeShare(id: string): Promise<Share | null> {
+  const db = await openIntakeDb();
+  try {
+    return await new Promise<Share | null>((resolve, reject) => {
+      const transaction = db.transaction(SHARES, "readwrite");
+      const objects = transaction.objectStore(SHARES);
+      const request = objects.get(id);
+      request.onsuccess = () => {
+        if (request.result) objects.delete(id);
+      };
+      transaction.oncomplete = () => resolve((request.result as Share | undefined) ?? null);
+      transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB failed"));
+      transaction.onabort = () => reject(transaction.error ?? new Error("IndexedDB aborted"));
+    });
+  } finally {
+    db.close();
+  }
+}

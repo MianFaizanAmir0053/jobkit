@@ -5,9 +5,11 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
+import { takeShare } from "./pendingUploads";
 import { browserDeps, resumeUpload, type Submitted, submitJob } from "./submit";
 
 const WENT_WRONG = "Something went wrong. Check the connection and press Start again.";
+const SHARE_GONE = "The shared screenshots are gone. Share them again, or use Choose screenshots.";
 
 /** The run finishing a kept upload: one at a time, though React runs an effect twice in development. */
 let finishing: Promise<Submitted | null> | null = null;
@@ -16,24 +18,37 @@ let finishing: Promise<Submitted | null> | null = null;
  * The New job page's form (intake spec, "Inputs"): screenshots of a post,
  * its pasted text, or both. Start hands them to submitJob, which prepares,
  * uploads and confirms them, then opens the job. On opening, the page
- * finishes an upload a reload or a dropped connection cut short, with no
- * tap (intake spec, "Upload path", step 3).
+ * starts a share the service worker kept, with no tap (intake spec,
+ * "Inputs"), and otherwise finishes an upload a reload or a dropped
+ * connection cut short (intake spec, "Upload path", step 3). A share whose
+ * start fails leaves its screenshots and text in the form, for Start.
  */
-export function NewJobForm() {
+export function NewJobForm({
+  share,
+  refused,
+}: {
+  /** The ID of a share the service worker kept. */
+  share: string | null;
+  /** Why the service worker refused a share, in the page's words. */
+  refused: string | null;
+}) {
   const router = useRouter();
   const [files, setFiles] = useState<File[]>([]);
   const [text, setText] = useState("");
   const [status, setStatus] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(refused);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     // Set when the page goes, so a run that ends later opens no job over another page.
     let left = false;
-    finishing ??= resumeUpload(browserDeps, (shown) => {
+    const shown = (words: string) => {
       setBusy(true);
-      setStatus(shown);
-    }).finally(() => {
+      setStatus(words);
+    };
+    finishing ??= (
+      share ? startShare(share, shown, setFiles, setText) : resumeUpload(browserDeps, shown)
+    ).finally(() => {
       finishing = null;
     });
     void finishing
@@ -56,7 +71,7 @@ export function NewJobForm() {
     return () => {
       left = true;
     };
-  }, [router]);
+  }, [router, share]);
 
   async function start() {
     setBusy(true);
@@ -125,5 +140,33 @@ export function NewJobForm() {
         </p>
       )}
     </form>
+  );
+}
+
+/**
+ * Starts the job from a share the service worker kept, taking it out of the
+ * store; its screenshots and text go into the form too, so a start that fails
+ * leaves them for Start.
+ */
+async function startShare(
+  id: string,
+  shown: (words: string) => void,
+  setFiles: (files: File[]) => void,
+  setText: (text: string) => void,
+): Promise<Submitted> {
+  const kept = await takeShare(id).catch(() => null);
+  if (!kept) return { ok: false, message: SHARE_GONE };
+  setFiles(kept.images);
+  setText(kept.text);
+  return submitJob(
+    browserDeps,
+    {
+      files: kept.images,
+      text: kept.text,
+      inputKind: "share",
+      sharedUrl: kept.url,
+      startedAgo: Math.max(0, Date.now() - kept.arrivedAt),
+    },
+    shown,
   );
 }
