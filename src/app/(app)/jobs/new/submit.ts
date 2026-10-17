@@ -1,23 +1,45 @@
 import { refusal } from "@/core/intake/limits";
 import { UPLOAD_TIMEOUT_MS } from "@/core/platform/jobs";
 
+import { pendingUploads } from "./pendingUploads";
 import { type Prepared, type PreparedImage, prepareImage } from "./prepare";
 
 /**
  * What Start does (intake spec, "Upload path"): prepare each screenshot,
  * refuse what breaks intake's limits with the server's own words, create the
  * job with metadata only, upload each file straight to its URL, and ask the
- * server to confirm the files arrived. The job's clock starts at the tap:
- * Start calls this at once, and it reads the time before anything else. The
- * browser's pieces come in as deps, so the flow is tested without a browser.
+ * server to confirm the files arrived. When some did not, the page asks for
+ * fresh URLs for those and uploads them again, twice at most; and it keeps
+ * the upload in the browser until the server has it, so New job finishes it
+ * after a reload (step 3). The job's clock starts at the tap: Start calls
+ * this at once, and it reads the time before anything else. The browser's
+ * pieces come in as deps, so the flow is tested without a browser.
  */
+
+/** An upload the page started, kept so a reload can finish it. */
+export interface PendingUpload {
+  jobId: string;
+  /** When the page stops trying, by the wall clock: a minute before the server's 15 minutes. */
+  deadlineAt: number;
+  images: { imageId: string; blob: Blob }[];
+}
+
+/** Where the browser keeps uploads to finish (IndexedDB; pendingUploads.ts). */
+export interface PendingUploads {
+  save(upload: PendingUpload): Promise<void>;
+  latest(): Promise<PendingUpload | null>;
+  clear(jobId: string): Promise<void>;
+}
 
 export interface SubmitDeps {
   prepare: (file: File) => Promise<Prepared>;
   fetch: (url: string, init: RequestInit) => Promise<Response>;
   /** Monotonic milliseconds. */
   now: () => number;
+  /** Wall-clock milliseconds, which a kept upload's deadline survives a reload in. */
+  wallNow: () => number;
   wait: (ms: number) => Promise<void>;
+  pending: PendingUploads;
 }
 
 export type Submitted = { ok: true; jobId: string } | { ok: false; message: string };
@@ -43,7 +65,12 @@ export const MESSAGES = {
   uploadTimedOut:
     "The upload took more than 15 minutes, so it was stopped. Press Start again on a faster connection.",
   notFound: "The job could not be found. Press Start again.",
+  notResumed:
+    "The upload could not finish yet. Check the connection: jobkit tries again when you open New job.",
 } as const;
+
+/** How many times the page asks for fresh URLs for screenshots that did not arrive. */
+export const RESUME_ROUNDS = 2;
 
 /** Waits before the second and third attempt of a request. */
 export const BACKOFF_MS = [1_000, 3_000] as const;
@@ -71,12 +98,23 @@ export const browserDeps: SubmitDeps = {
   // Called through a wrapper: fetch detached from window throws in Chrome.
   fetch: (url, init) => fetch(url, init),
   now: () => performance.now(),
+  wallNow: () => Date.now(),
   wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  pending: pendingUploads,
 };
+
+type Uploads = { imageId: string; url: string }[];
 
 export async function submitJob(
   deps: SubmitDeps,
-  input: { files: readonly File[]; text: string },
+  input: {
+    files: readonly File[];
+    text: string;
+    /** Where the job came from: the New job page, or a share. */
+    inputKind?: "page" | "share";
+    /** A share's url field, which the job keeps as a link. */
+    sharedUrl?: string;
+  },
   onStatus: (status: string) => void,
 ): Promise<Submitted> {
   const startedAt = deps.now();
@@ -100,7 +138,8 @@ export async function submitJob(
   onStatus("Starting the job…");
   // The server's upload clock starts when this request arrives; the page's starts sooner.
   const deadline = deps.now() + UPLOAD_DEADLINE_MS;
-  let created: { jobId: string; uploads: { imageId: string; url: string }[] };
+  const deadlineAt = deps.wallNow() + UPLOAD_DEADLINE_MS;
+  let created: { jobId: string; uploads: Uploads };
   try {
     const response = await deps.fetch("/api/jobs", {
       method: "POST",
@@ -108,6 +147,8 @@ export async function submitJob(
       body: JSON.stringify({
         images: images.map((image) => image.meta),
         pastedText: input.text,
+        inputKind: input.inputKind ?? "page",
+        sharedUrl: input.sharedUrl ?? "",
         clientElapsedMs: Math.max(0, Math.round(deps.now() - startedAt)),
       }),
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -122,19 +163,130 @@ export async function submitJob(
     return { ok: false, message: MESSAGES.createLost };
   }
   if (created.uploads.length !== images.length) return { ok: false, message: MESSAGES.notStarted };
+  if (images.length === 0) return { ok: true, jobId: created.jobId };
 
-  for (const [i, upload] of created.uploads.entries()) {
-    onStatus(`Uploading screenshot ${i + 1} of ${created.uploads.length}…`);
-    const uploaded = await uploadFile(deps, upload.url, images[i]!.blob, deadline);
+  const { jobId } = created;
+  const blobs = new Map(created.uploads.map((upload, i) => [upload.imageId, images[i]!.blob]));
+  // Kept until the server has it, so a reload can finish it; a browser that cannot keep it still uploads.
+  await deps.pending
+    .save({ jobId, deadlineAt, images: [...blobs].map(([imageId, blob]) => ({ imageId, blob })) })
+    .catch(() => undefined);
+  const uploaded = await uploadAll(deps, created.uploads, blobs, deadline, onStatus);
+  if (uploaded) return settled(deps, jobId, uploaded);
+  return finish(deps, jobId, blobs, deadline, onStatus);
+}
+
+/**
+ * Finishes an upload a reload cut short (intake spec, "Upload path", step 3):
+ * fresh URLs for the screenshots the server does not have yet, then the
+ * confirmation. Null when no upload waits.
+ */
+export async function resumeUpload(
+  deps: SubmitDeps,
+  onStatus: (status: string) => void,
+): Promise<Submitted | null> {
+  const pending = await deps.pending.latest().catch(() => null);
+  if (!pending) return null;
+  onStatus("Finishing the upload of a job started before…");
+  const left = pending.deadlineAt - deps.wallNow();
+  if (left <= 0)
+    return settled(deps, pending.jobId, { ok: false, message: MESSAGES.uploadTimedOut });
+  const deadline = deps.now() + left;
+  const blobs = new Map(pending.images.map((image) => [image.imageId, image.blob]));
+  const fresh = await freshUploads(deps, pending.jobId);
+  if (!Array.isArray(fresh)) return settled(deps, pending.jobId, fresh);
+  const uploaded = await uploadAll(deps, fresh, blobs, deadline, onStatus);
+  if (uploaded) return settled(deps, pending.jobId, uploaded);
+  return finish(deps, pending.jobId, blobs, deadline, onStatus);
+}
+
+/** Uploads each file to its URL in turn; null when every one went, or why the upload stops. */
+async function uploadAll(
+  deps: SubmitDeps,
+  uploads: Uploads,
+  blobs: ReadonlyMap<string, Blob>,
+  deadline: number,
+  onStatus: (status: string) => void,
+): Promise<Submitted | null> {
+  for (const [i, upload] of uploads.entries()) {
+    const blob = blobs.get(upload.imageId);
+    if (!blob) return { ok: false, message: MESSAGES.notStarted };
+    onStatus(`Uploading screenshot ${i + 1} of ${uploads.length}…`);
+    const uploaded = await uploadFile(deps, upload.url, blob, deadline);
     if (uploaded === "too-slow") return { ok: false, message: MESSAGES.tooSlow };
     if (uploaded === "refused") return { ok: false, message: MESSAGES.refusedUpload };
   }
-  if (images.length > 0) {
+  return null;
+}
+
+/**
+ * Confirms the upload; for screenshots that did not arrive, asks for fresh
+ * URLs and uploads those again, twice at most, then confirms again.
+ */
+async function finish(
+  deps: SubmitDeps,
+  jobId: string,
+  blobs: ReadonlyMap<string, Blob>,
+  deadline: number,
+  onStatus: (status: string) => void,
+): Promise<Submitted> {
+  for (let round = 0; ; round++) {
     onStatus("Checking the upload…");
-    const confirmed = await confirmUpload(deps, created.jobId);
-    if (!confirmed.ok) return confirmed;
+    const confirmed = await confirmUpload(deps, jobId);
+    if (confirmed !== "missing") return settled(deps, jobId, confirmed);
+    // Kept: opening New job again tries once more while the server still waits for it.
+    if (round === RESUME_ROUNDS) return { ok: false, message: MESSAGES.notArrived };
+    const fresh = await freshUploads(deps, jobId);
+    if (!Array.isArray(fresh)) return settled(deps, jobId, fresh);
+    const uploaded = await uploadAll(deps, fresh, blobs, deadline, onStatus);
+    if (uploaded) return settled(deps, jobId, uploaded);
   }
-  return { ok: true, jobId: created.jobId };
+}
+
+/**
+ * Forgets a kept upload once nothing more can come of it: the server has it,
+ * it ran out of time, the job is gone, or storage refused a screenshot. One
+ * cut short by the connection or the session is kept to try again.
+ */
+async function settled(deps: SubmitDeps, jobId: string, outcome: Submitted): Promise<Submitted> {
+  const over = [
+    MESSAGES.uploadTimedOut,
+    MESSAGES.notFound,
+    MESSAGES.refusedUpload,
+    MESSAGES.notStarted,
+  ];
+  // A message may carry the advice to check the Jobs list after it.
+  const done = outcome.ok || over.some((message) => outcome.message.startsWith(message));
+  if (done) await deps.pending.clear(jobId).catch(() => undefined);
+  return outcome;
+}
+
+/**
+ * Fresh URLs for the screenshots the server does not have yet, or what the
+ * page should say: a job the server took already opens, one past its time
+ * or gone says so, and anything else keeps the upload to try again.
+ */
+async function freshUploads(deps: SubmitDeps, jobId: string): Promise<Uploads | Submitted> {
+  let response: Response;
+  try {
+    response = await deps.fetch(`/api/jobs/${jobId}/upload-urls`, {
+      method: "POST",
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    });
+  } catch {
+    return { ok: false, message: MESSAGES.notResumed };
+  }
+  const body = (await response.json().catch(() => null)) as {
+    uploads?: unknown;
+    error?: unknown;
+  } | null;
+  if (response.ok && Array.isArray(body?.uploads)) return body.uploads as Uploads;
+  if (response.status === 409 && body?.error === "not-uploading") return { ok: true, jobId };
+  if (response.status === 409 && body?.error === "upload-failed") {
+    return { ok: false, message: MESSAGES.uploadTimedOut };
+  }
+  if (response.status === 404) return { ok: false, message: MESSAGES.notFound };
+  return { ok: false, message: sessionMessage(response.status) ?? MESSAGES.notResumed };
 }
 
 /** The server's own words for a job it refused; otherwise what the owner can do about it. */
@@ -195,7 +347,7 @@ async function uploadFile(
  * dropped connection, timeout or server error may have come after the job
  * was queued, so from then on every refusal says to check the Jobs list.
  */
-async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted> {
+async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted | "missing"> {
   let uncertain = false;
   const failed = (message: string): Submitted => ({
     ok: false,
@@ -224,6 +376,7 @@ async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted
       return { ok: false, message: MESSAGES.uploadTimedOut };
     }
     if (response.status === 404) return failed(MESSAGES.notFound);
+    if (response.status === 409 && body?.error === "missing") return "missing";
     if (response.status === 409) return failed(MESSAGES.notArrived);
     return failed(sessionMessage(response.status) ?? MESSAGES.notArrived);
   }

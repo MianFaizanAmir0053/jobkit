@@ -1,18 +1,23 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
-import { browserDeps, submitJob } from "./submit";
+import { browserDeps, resumeUpload, type Submitted, submitJob } from "./submit";
 
 const WENT_WRONG = "Something went wrong. Check the connection and press Start again.";
+
+/** The run finishing a kept upload: one at a time, though React runs an effect twice in development. */
+let finishing: Promise<Submitted | null> | null = null;
 
 /**
  * The New job page's form (intake spec, "Inputs"): screenshots of a post,
  * its pasted text, or both. Start hands them to submitJob, which prepares,
- * uploads and confirms them, then opens the job.
+ * uploads and confirms them, then opens the job. On opening, the page
+ * finishes an upload a reload or a dropped connection cut short, with no
+ * tap (intake spec, "Upload path", step 3).
  */
 export function NewJobForm() {
   const router = useRouter();
@@ -21,6 +26,37 @@ export function NewJobForm() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    // Set when the page goes, so a run that ends later opens no job over another page.
+    let left = false;
+    finishing ??= resumeUpload(browserDeps, (shown) => {
+      setBusy(true);
+      setStatus(shown);
+    }).finally(() => {
+      finishing = null;
+    });
+    void finishing
+      .then((resumed) => {
+        if (left || !resumed) return;
+        if (resumed.ok) {
+          setStatus("Opening the job…");
+          router.push(`/jobs/${resumed.jobId}`);
+          return;
+        }
+        setStatus(null);
+        setError(resumed.message);
+        setBusy(false);
+      })
+      .catch(() => {
+        if (left) return;
+        setStatus(null);
+        setBusy(false);
+      });
+    return () => {
+      left = true;
+    };
+  }, [router]);
 
   async function start() {
     setBusy(true);
