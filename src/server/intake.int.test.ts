@@ -17,7 +17,7 @@ import { issueSession } from "@/core/platform/sessions";
 import type { AppConfig } from "@/server/config";
 import { createTestDb } from "@/server/db/testDb";
 
-import { confirm, create } from "./intake";
+import { confirm, create, reissue } from "./intake";
 
 const ORIGIN = "http://localhost:3000";
 const config: AppConfig = {
@@ -94,7 +94,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.exec(
-    `delete from {{schema}}.sessions; delete from {{schema}}.job_stage_runs;
+    `delete from {{schema}}.sessions; delete from {{schema}}.upload_attempts;
+     delete from {{schema}}.job_stage_runs;
      delete from {{schema}}.job_leases; delete from {{schema}}.job_images;
      delete from {{schema}}.job_state_changes; delete from {{schema}}.jobs`,
   );
@@ -384,5 +385,75 @@ describe("POST /api/jobs/<id>/uploaded", () => {
     expect((await confirm(post(`/api/jobs/${jobId}/uploaded`, ""), deps(), jobId)).status).toBe(
       401,
     );
+  });
+});
+
+describe("POST /api/jobs/<id>/upload-urls", () => {
+  it("gives fresh URLs for the screenshots not yet stored, after which the job completes (intake AC7)", async () => {
+    const cookie = await signedIn();
+    const shots = [await webp(10), await webp(20)];
+    const created = await newJob(
+      {
+        images: shots.map((shot) => shot.meta),
+        pastedText: "",
+        clientElapsedMs: 0,
+        inputKind: "page",
+      },
+      cookie,
+    );
+    const { jobId, uploads } = (await created.json()) as {
+      jobId: string;
+      uploads: { imageId: string; url: string }[];
+    };
+    // The first screenshot arrived before the page reloaded; the second never did.
+    const token = new URL(uploads[0]!.url).pathname.split("/").pop()!;
+    expect(await storage.acceptSignedUpload(token, shots[0]!.bytes)).toBe(true);
+
+    const response = await reissue(
+      post(`/api/jobs/${jobId}/upload-urls`, "", cookie),
+      deps(),
+      jobId,
+    );
+
+    expect(response.status).toBe(200);
+    const fresh = (await response.json()) as { uploads: { imageId: string; url: string }[] };
+    expect(fresh.uploads.map((upload) => upload.imageId)).toEqual([uploads[1]!.imageId]);
+    const again = new URL(fresh.uploads[0]!.url).pathname.split("/").pop()!;
+    expect(await storage.acceptSignedUpload(again, shots[1]!.bytes)).toBe(true);
+    expect(
+      (await confirm(post(`/api/jobs/${jobId}/uploaded`, "", cookie), deps(), jobId)).status,
+    ).toBe(202);
+  });
+
+  it("refuses a job that is not uploading, one that does not exist, another origin, and no session", async () => {
+    const cookie = await signedIn();
+    const paste = await newJob(
+      { images: [], pastedText: "A job post", clientElapsedMs: 0 },
+      cookie,
+    );
+    const { jobId } = (await paste.json()) as { jobId: string };
+    const ask = (id: string, who?: string, origin?: string) =>
+      reissue(post(`/api/jobs/${id}/upload-urls`, "", who, origin), deps(), id);
+
+    expect((await ask(jobId, cookie)).status).toBe(409);
+    expect((await ask("not-a-uuid", cookie)).status).toBe(404);
+    expect((await ask(jobId, cookie, "https://evil.example")).status).toBe(403);
+    expect((await ask(jobId)).status).toBe(401);
+  });
+
+  it("refuses a body over 64 KB, which could only be image bytes", async () => {
+    const cookie = await signedIn();
+    const created = await newJob(
+      { images: [image(1, 1_000)], pastedText: "", clientElapsedMs: 0 },
+      cookie,
+    );
+    const { jobId } = (await created.json()) as { jobId: string };
+
+    const response = await reissue(
+      post(`/api/jobs/${jobId}/upload-urls`, "x".repeat(64 * 1024 + 1), cookie),
+      deps(),
+      jobId,
+    );
+    expect(response.status).toBe(413);
   });
 });

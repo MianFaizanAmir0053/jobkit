@@ -18,7 +18,7 @@ Get a job post from the owner's phone into storage as one job, as fast as the ne
    - refuses a share holding only a link, with "LinkedIn's share sends only a link, which jobkit never opens. Take screenshots of the post and share those.";
    - refuses every share while the server's share-target switch is off (below);
    - otherwise stores the files and text in IndexedDB under a share ID and redirects to `/jobs/new?share=<id>`, which loads them, starts the upload with no further tap, and deletes them from IndexedDB.
-3. **Pasted text.** Up to 20,000 characters, from the box or from a share's `text` field. A URL in the text or in the share's `url` field is stored as a reference and never fetched.
+3. **Pasted text.** Up to 20,000 characters, from the box or from a share's `text` field. A URL in the text or in the share's `url` field is stored as a reference and never fetched: each web address as written (the share's first), without the sentence marks around it, at most 10, each at most 2,000 characters, in the job's `post_links`.
 4. **Adding screenshots to a job.** The job page offers "Add screenshots", with a purpose: `post` (more of the post) or `form` (an application form's screening questions). Adding `post` images moves the job to `extracting` for a fresh `extract`. Adding `form` images runs `extract_questions`, then drafting and judging for the new questions only.
 
 **Share-target switch.** Turning the share target off in the manifest takes effect only when Chrome next updates the installed app, which can take days. So the switch lives on the server: the service worker reads it (cached for at most an hour) and refuses shares while it is off. The day-1 spike tests the share target on the owner's phone, because a third-party report says Chrome 153 on Android delivers share requests with no parts at all; if it fails, the switch goes off and the upload button carries the flow.
@@ -31,12 +31,12 @@ Get a job post from the owner's phone into storage as one job, as fast as the ne
    - encodes it as WebP at quality 0.9 when both sides are at most 16,383 pixels (WebP's limit), otherwise as JPEG at 0.92;
    - computes its SHA-256 and drops exact duplicates within the job;
    - computes how many tiles it needs, with the extraction spec's formula.
-2. `POST /api/jobs` sends only metadata: count, sizes, dimensions, hashes, tile counts, the input kind, the pasted text, and `clientElapsedMs`, the monotonic time between the share's arrival (or the Start tap) and this request. The server checks every limit again, creates the job and assigns its timing arm (ledger spec). A manual-arm job starts in `manual_run`, uploads nothing, and the page shows the manual-run screen. Otherwise the job starts in `uploading` with its image rows, and the server returns one signed upload URL per image, each for a single path `jobs/<jobId>/<imageId>.<ext>` in the private bucket. Supabase fixes such URLs' validity at two hours.
+2. `POST /api/jobs` sends only metadata: count, sizes, dimensions, hashes, tile counts, the input kind (`page` for the New job page, `share` for the share target), the share's `url` field, the pasted text, and `clientElapsedMs`, the monotonic time between the share's arrival (or the Start tap) and this request. The server checks every limit again, creates the job and assigns its timing arm (ledger spec). A manual-arm job starts in `manual_run`, uploads nothing, and the page shows the manual-run screen. Otherwise the job starts in `uploading` with its image rows, and the server returns one signed upload URL per image, each for a single path `jobs/<jobId>/<imageId>.<ext>` in the private bucket. Supabase fixes such URLs' validity at two hours.
 3. The client uploads each file straight to Supabase Storage, with up to three attempts per file. If the page reloads or the network drops, `POST /api/jobs/<id>/upload-urls` issues fresh URLs for the files not yet stored, and the client resumes.
 4. `POST /api/jobs/<id>/uploaded` asks the server to confirm that every object exists with the declared size. The job then moves to `queued` and the runner starts `extract`.
 5. A job still `uploading` 15 minutes after it began uploading (at creation, or at Upload again) moves to `upload_failed`; the page offers "Upload again". Objects that arrive after that are deleted by the purge.
 
-Route handlers in this module reject request bodies over 64 KB, so image bytes cannot reach a function by mistake. Every upload attempt and its outcome is logged, so the Stats page can report upload success (the one-pager's 95% target).
+Route handlers in this module reject request bodies over 64 KB, so image bytes cannot reach a function by mistake. Every upload attempt and its outcome is logged, so the Stats page can report upload success (the one-pager's 95% target): a job's first attempt starts as it is created, with its files' count and bytes; each request for fresh URLs ends the attempt before it as failed and starts another with the files left; a confirmed upload ends its attempt as ok. An attempt still open when its job left `uploading` another way (the upload timeout, Skip) failed.
 
 ## Limits
 
@@ -55,7 +55,7 @@ The job stores `received_at` (server time of `POST /api/jobs`) and `client_elaps
 - The daily purge (platform B6) deletes, from storage and from the tables:
   - images and crops past `purge_after`, unless kept for evaluation;
   - objects under a job's path that arrived after the job left `uploading`;
-  - pasted raw text older than 30 days.
+  - pasted raw text older than 30 days, with the links found in it.
 - `npm run eval:pull` copies kept images to the laptop's evaluation folder and then clears `kept_for_eval`, so the 30-day rule deletes the cloud copy (amendment A7).
 
 ## Acceptance criteria

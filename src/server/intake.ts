@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
-import { confirmUploads, startJob } from "@/core/intake/jobs";
+import { confirmUploads, reissueUploads, startJob } from "@/core/intake/jobs";
 import { CONTENT_TYPES } from "@/core/intake/limits";
 import type { RunnerDeps } from "@/core/platform/runner";
 import type { Storage } from "@/core/ports";
@@ -13,7 +13,8 @@ import { startPipeline } from "@/server/jobs";
  * Intake's routes (intake spec, "Upload path"). Only metadata reaches them:
  * the phone uploads image bytes straight to storage through the URLs these
  * hand back, so a body over 64 KB is refused as one that could only be
- * image bytes. Creating or confirming a job needs an approved session.
+ * image bytes. Creating a job, asking for fresh upload URLs and confirming
+ * one need an approved session.
  */
 
 type Deps = RunnerDeps & {
@@ -37,6 +38,10 @@ const newJobBody = z.object({
   ),
   pastedText: z.string().default(""),
   clientElapsedMs: z.number().int().nonnegative(),
+  /** Where the job came from (intake spec, "Upload path", step 2). */
+  inputKind: z.enum(["page", "share"]).default("page"),
+  /** A share's url field, kept as a reference and never fetched. */
+  sharedUrl: z.string().max(2_000).default(""),
 });
 
 /** POST /api/jobs: creates the job and hands back an upload URL per image; a paste-only job starts at once. */
@@ -92,6 +97,32 @@ export async function confirm(
   // Queued now: a pipeline that fails to start is started by the job page's next poll.
   await startPipeline(deps, jobId, startedAt).catch(() => false);
   return NextResponse.json({ queued: true }, { status: 202, headers: NO_STORE });
+}
+
+/**
+ * POST /api/jobs/<id>/upload-urls: fresh upload URLs for the screenshots
+ * not yet stored, after the page reloaded or the connection dropped
+ * (intake spec, "Upload path", step 3).
+ */
+export async function reissue(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if ((await readLimited(request, MAX_BODY_BYTES)) === "too-large") {
+    return refusal(413, "too-large");
+  }
+  let reissued: Awaited<ReturnType<typeof reissueUploads>>;
+  try {
+    reissued = await reissueUploads(deps, jobId);
+  } catch {
+    // Storage could not say what arrived, or give a URL; the page asks again.
+    return refusal(503, "storage-unavailable");
+  }
+  if (!reissued.ok) return refusal(reissued.reason === "not-found" ? 404 : 409, reissued.reason);
+  return NextResponse.json({ uploads: reissued.uploads }, { status: 200, headers: NO_STORE });
 }
 
 /** The body as JSON, null when it is not JSON, or "too-large" past 64 KB, declared or sent. */

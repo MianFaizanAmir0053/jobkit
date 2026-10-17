@@ -17,7 +17,7 @@ Keep the truth about applications: what was applied for, by which route, when, a
 - `status_changes`: an audit row for every status change, with time and session.
 - `draft_outcomes`: one row per email kit handed off, with the list of changed sentences and fields, `changed_in_gmail` and which draft went (`gemini`, or a template's ID: the owner's own words, decisions A22; none before the templates), written by the review module in the same transaction as the move to `sent`; taking back a sent tap removes it.
 - `baseline_runs`: the manual runs, each tied to the job that started it.
-- `upload_attempts`: written by intake, read for the Stats page.
+- `upload_attempts`: written by intake, read for the Stats page: each attempt's job, start, files and bytes, and its outcome (`ok` or `failed`) with when it ended; one still open whose job has left `uploading` counts as failed.
 
 ## Normalisation and keys
 

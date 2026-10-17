@@ -12,7 +12,7 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { loadJob } from "@/core/platform/jobs";
 import { createTestDb } from "@/server/db/testDb";
 
-import { confirmUploads, type ImageMeta, LIMITS, startJob } from "./jobs";
+import { confirmUploads, type ImageMeta, LIMITS, reissueUploads, startJob } from "./jobs";
 
 let db: PgliteDb;
 let clock: FakeClock;
@@ -40,8 +40,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.exec(
-    `delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
-     delete from {{schema}}.jobs`,
+    `delete from {{schema}}.upload_attempts; delete from {{schema}}.job_images;
+     delete from {{schema}}.job_state_changes; delete from {{schema}}.jobs`,
   );
   clock = fakeClock();
   root = mkdtempSync(join(tmpdir(), "jobkit-intake-"));
@@ -332,5 +332,198 @@ describe("confirmUploads", () => {
       reason: "not-uploading",
     });
     expect(await confirmUploads(deps(), "not-a-uuid")).toEqual({ ok: false, reason: "not-found" });
+  });
+});
+
+async function attempts(jobId: string) {
+  const { rows } = await db.query<{
+    files: number;
+    bytes: number;
+    outcome: string | null;
+    started_at: Date;
+    ended_at: Date | null;
+  }>(
+    `select files, bytes, outcome, started_at, ended_at from {{schema}}.upload_attempts
+      where job_id = $1 order by started_at, id`,
+    [jobId],
+  );
+  return rows;
+}
+
+describe("how a job came in", () => {
+  it("records its input kind, and the links its post gives, stored and never fetched (intake AC5)", async () => {
+    const fetched: string[] = [];
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (input: unknown) => {
+      fetched.push(String(input));
+      throw new Error("intake fetches nothing");
+    }) as typeof fetch;
+    try {
+      const started = await startJob(deps(), {
+        images: [],
+        pastedText:
+          "Senior engineer, remote. Apply: https://www.linkedin.com/jobs/view/4012345678/?ref=feed. " +
+          "More at www.northwind.example/careers, or (https://jobs.example.com/a). " +
+          "Again: https://www.linkedin.com/jobs/view/4012345678/?ref=feed",
+        sharedUrl: "https://lnkd.in/abc",
+        clientElapsedMs: 0,
+        inputKind: "share",
+      });
+
+      if (!started.ok) throw new Error(started.message);
+      const { rows } = await db.query<{ input_kind: string; post_links: string[] }>(
+        "select input_kind, post_links from {{schema}}.jobs where id = $1",
+        [started.jobId],
+      );
+      expect(rows).toEqual([
+        {
+          input_kind: "share",
+          post_links: [
+            "https://lnkd.in/abc",
+            "https://www.linkedin.com/jobs/view/4012345678/?ref=feed",
+            "www.northwind.example/careers",
+            "https://jobs.example.com/a",
+          ],
+        },
+      ]);
+      expect(fetched).toEqual([]);
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
+  it("takes a job from the New job page with no links as such", async () => {
+    const started = await startJob(deps(), {
+      images: [image(1)],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+
+    if (!started.ok) throw new Error(started.message);
+    const { rows } = await db.query<{ input_kind: string; post_links: string[] }>(
+      "select input_kind, post_links from {{schema}}.jobs where id = $1",
+      [started.jobId],
+    );
+    expect(rows).toEqual([{ input_kind: "page", post_links: [] }]);
+  });
+});
+
+describe("upload attempts", () => {
+  it("logs each attempt with the files it carries, and its outcome once confirmed", async () => {
+    const [one, two] = await Promise.all([webp(1080, 2400, 10), webp(1080, 2400, 20)]);
+    const started = await startJob(deps(), {
+      images: [one.meta, two.meta],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    if (!started.ok) throw new Error(started.message);
+    expect(await attempts(started.jobId)).toEqual([
+      {
+        files: 2,
+        bytes: one.bytes.length + two.bytes.length,
+        outcome: null,
+        started_at: clock.now(),
+        ended_at: null,
+      },
+    ]);
+
+    const paths = (await images(started.jobId)).map((row) => row.storage_path);
+    await storage.put(paths[0]!, one.bytes, "image/webp");
+    await storage.put(paths[1]!, two.bytes, "image/webp");
+    clock.advance(30_000);
+    expect(await confirmUploads(deps(), started.jobId)).toEqual({ ok: true });
+
+    expect(await attempts(started.jobId)).toMatchObject([{ outcome: "ok", ended_at: clock.now() }]);
+  });
+
+  it("logs none for a job with nothing to upload", async () => {
+    const started = await startJob(deps(), {
+      images: [],
+      pastedText: "a post",
+      clientElapsedMs: 0,
+    });
+
+    if (!started.ok) throw new Error(started.message);
+    expect(await attempts(started.jobId)).toEqual([]);
+  });
+});
+
+describe("reissueUploads", () => {
+  it("gives fresh URLs for the files not stored as declared, and only those, as a new attempt", async () => {
+    const real = await Promise.all([10, 20, 30].map((shade) => webp(1080, 2400, shade)));
+    const started = await startJob(deps(), {
+      images: real.map((each) => each.meta),
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    if (!started.ok) throw new Error(started.message);
+    const rows = await images(started.jobId);
+    await storage.put(rows[0]!.storage_path, real[0]!.bytes, "image/webp");
+    await storage.put(rows[1]!.storage_path, real[1]!.bytes.subarray(1), "image/webp");
+    clock.advance(60_000);
+
+    const reissued = await reissueUploads(deps(), started.jobId);
+
+    expect(reissued).toEqual({
+      ok: true,
+      uploads: [
+        { imageId: rows[1]!.id, url: expect.any(String) },
+        { imageId: rows[2]!.id, url: expect.any(String) },
+      ],
+    });
+    // The file of the wrong size is gone, so its fresh URL can take the right one.
+    expect(await storage.stat(rows[1]!.storage_path)).toBeNull();
+    expect(await attempts(started.jobId)).toEqual([
+      expect.objectContaining({ files: 3, outcome: "failed", ended_at: clock.now() }),
+      expect.objectContaining({
+        files: 2,
+        bytes: real[1]!.bytes.length + real[2]!.bytes.length,
+        outcome: null,
+        started_at: clock.now(),
+      }),
+    ]);
+
+    await storage.put(rows[1]!.storage_path, real[1]!.bytes, "image/webp");
+    await storage.put(rows[2]!.storage_path, real[2]!.bytes, "image/webp");
+    expect(await confirmUploads(deps(), started.jobId)).toEqual({ ok: true });
+    expect((await attempts(started.jobId)).map((attempt) => attempt.outcome)).toEqual([
+      "failed",
+      "ok",
+    ]);
+  });
+
+  it("gives no URL when every file arrived, so the phone goes on to confirm", async () => {
+    const one = await webp(1080, 2400, 10);
+    const started = await startJob(deps(), {
+      images: [one.meta],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    if (!started.ok) throw new Error(started.message);
+    await storage.put((await images(started.jobId))[0]!.storage_path, one.bytes, "image/webp");
+
+    expect(await reissueUploads(deps(), started.jobId)).toEqual({ ok: true, uploads: [] });
+    expect((await attempts(started.jobId)).map((attempt) => attempt.outcome)).toEqual([null]);
+  });
+
+  it("refuses a job that is not uploading, one past its upload time, and one that does not exist", async () => {
+    const pasted = await startJob(deps(), { images: [], pastedText: "a post", clientElapsedMs: 0 });
+    const late = await startJob(deps(), { images: [image(1)], pastedText: "", clientElapsedMs: 0 });
+    if (!pasted.ok || !late.ok) throw new Error("not started");
+    clock.advance(15 * 60_000 + 1);
+
+    expect(await reissueUploads(deps(), pasted.jobId)).toEqual({
+      ok: false,
+      reason: "not-uploading",
+    });
+    expect(await reissueUploads(deps(), late.jobId)).toEqual({
+      ok: false,
+      reason: "upload-failed",
+    });
+    expect(await reissueUploads(deps(), "not-a-uuid")).toEqual({ ok: false, reason: "not-found" });
+    expect(await reissueUploads(deps(), "11111111-1111-4111-8111-111111111111")).toEqual({
+      ok: false,
+      reason: "not-found",
+    });
   });
 });
