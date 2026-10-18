@@ -1,14 +1,22 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { buttonVariants } from "@/components/ui/button";
 import { listJobs, requireSession, viewerTimeZone } from "@/server/dal";
 
+import { ActionButton } from "./[id]/ActionButton";
 import { JobsRefresher } from "./JobsRefresher";
-import { formatTime, STATE_WORDS } from "./words";
+import { formatTime, ROUTE_LABELS, STATE_WORDS } from "./words";
 
 export const metadata: Metadata = { title: "Jobs · jobkit" };
 
-/** The jobs list, newest first; it refreshes every 10 seconds while a job runs (platform spec B9). */
+/**
+ * The jobs list, newest first (review spec, "Jobs list"): each job's company
+ * and role, its route, and its state or status; a failed job's reason with
+ * Retry and Skip, and a failed upload's Upload again and Skip. A failed job
+ * whose kit's send may have gone is skipped from its page, which warns of
+ * the send. It refreshes every 10 seconds while a job runs (platform spec B9).
+ */
 export default async function JobsPage() {
   await requireSession();
   const jobs = await listJobs();
@@ -32,8 +40,8 @@ export default async function JobsPage() {
       ) : (
         <ul className="mt-4 divide-y divide-border">
           {jobs.map((job) => (
-            <li key={job.id}>
-              <Link href={`/jobs/${job.id}`} className="flex flex-col gap-0.5 py-3 hover:bg-muted">
+            <li key={job.id} className="flex flex-col gap-2 py-3">
+              <Link href={`/jobs/${job.id}`} className="flex flex-col gap-0.5 hover:bg-muted">
                 <span className="font-medium">
                   {[job.title, job.company].filter(Boolean).join(" · ") || "A job post"}
                 </span>
@@ -45,9 +53,48 @@ export default async function JobsPage() {
                       : job.skipped
                         ? "Skipped"
                         : STATE_WORDS[job.state]}{" "}
-                  · {formatTime(job.receivedAt, timeZone)}
+                  {job.route && `· ${ROUTE_LABELS[job.route]} `}·{" "}
+                  {formatTime(job.receivedAt, timeZone)}
                 </span>
               </Link>
+              {job.state === "failed" && (
+                <div className="flex flex-col gap-2 text-sm">
+                  <p className="[overflow-wrap:anywhere]">{job.failure}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <ActionButton url={`/api/jobs/${job.id}/retry`} label="Retry" />
+                    {job.uncertain ? (
+                      <p className="text-muted-foreground">
+                        A send of its email may have gone: open the job to check before you skip it.
+                      </p>
+                    ) : (
+                      <ActionButton
+                        url={`/api/jobs/${job.id}/skip`}
+                        label="Skip"
+                        variant="outline"
+                        body={{ state: job.state, uncertain: null }}
+                        confirmText="Skip this job? It closes for good."
+                      />
+                    )}
+                  </div>
+                </div>
+              )}
+              {job.state === "upload_failed" && (
+                <div className="flex flex-wrap gap-2">
+                  <Link
+                    href={`/jobs/new?again=${job.id}`}
+                    className={`${buttonVariants()} min-h-11`}
+                  >
+                    Upload again
+                  </Link>
+                  <ActionButton
+                    url={`/api/jobs/${job.id}/skip`}
+                    label="Skip"
+                    variant="outline"
+                    body={{ state: job.state, uncertain: null }}
+                    confirmText="Skip this job? It closes for good."
+                  />
+                </div>
+              )}
             </li>
           ))}
         </ul>

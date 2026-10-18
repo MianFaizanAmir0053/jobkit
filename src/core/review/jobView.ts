@@ -850,6 +850,16 @@ export interface JobListItem {
   receivedAt: Date;
   company: string;
   title: string;
+  /** How the chosen role applies; null before a role is chosen. */
+  route: Role["route"]["kind"] | null;
+  /** Why a failed job failed, in the words its page shows; null for any other. */
+  failure: string | null;
+  /**
+   * Whether a send of a failed job's kit may have gone, as when a Gemini
+   * draft asked for beside the kit failed: its Skip waits for its page,
+   * which warns of the send.
+   */
+  uncertain: boolean;
   /**
    * Whether the chosen role's kit went, as the job page says: sent, submitted
    * or bounced in the ledger, or taken by Gmail from jobkit.
@@ -880,13 +890,14 @@ export async function listJobViews(
     received_at: Date;
     chosen_role: string | null;
     chosen_role_output: string | null;
+    failure: string | null;
     output: unknown;
     output_hash: string | null;
     sent_roles: string[];
     skipped_roles: string[];
     bounced_roles: string[];
   }>(
-    `select j.id, j.state, j.received_at, j.chosen_role, j.chosen_role_output,
+    `select j.id, j.state, j.received_at, j.chosen_role, j.chosen_role_output, j.failure,
             x.output, x.output_hash,
             array(select a.role_id from {{schema}}.applications as a
                    where a.job_id = j.id and a.status in ('sent', 'submitted', 'bounced')
@@ -907,28 +918,37 @@ export async function listJobViews(
       limit $1`,
     [limit],
   );
-  return rows.map((row) => {
-    const extraction = readExtractOutput(row.output);
-    const roles = extraction?.record.roles ?? [];
-    const picked =
-      row.chosen_role !== null && row.chosen_role_output === row.output_hash
-        ? roles.find((role) => role.id === row.chosen_role)
-        : undefined;
-    const role = picked ?? (roles.length === 1 ? roles[0] : undefined);
-    return {
-      id: row.id,
-      state: row.state,
-      kind: kindOf(row.state),
-      receivedAt: row.received_at,
-      company: extraction?.record.company.name ?? "",
-      title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : ""),
-      sent: role !== undefined && row.sent_roles.includes(role.id),
-      bounced: role !== undefined && row.bounced_roles.includes(role.id),
-      skipped:
-        row.state === "kit_ready" &&
-        role !== undefined &&
-        row.skipped_roles.includes(role.id) &&
-        !row.sent_roles.includes(role.id),
-    };
-  });
+  const now = deps.clock.now();
+  return Promise.all(
+    rows.map(async (row): Promise<JobListItem> => {
+      const extraction = readExtractOutput(row.output);
+      const roles = extraction?.record.roles ?? [];
+      const picked =
+        row.chosen_role !== null && row.chosen_role_output === row.output_hash
+          ? roles.find((role) => role.id === row.chosen_role)
+          : undefined;
+      const role = picked ?? (roles.length === 1 ? roles[0] : undefined);
+      return {
+        id: row.id,
+        state: row.state,
+        kind: kindOf(row.state),
+        receivedAt: row.received_at,
+        company: extraction?.record.company.name ?? "",
+        title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : ""),
+        route: role?.route.kind ?? null,
+        failure: row.state === "failed" ? (row.failure ?? "This step failed.") : null,
+        uncertain:
+          row.state === "failed" &&
+          role !== undefined &&
+          (await uncertainSend(db, row.id, role.id, now)) !== null,
+        sent: role !== undefined && row.sent_roles.includes(role.id),
+        bounced: role !== undefined && row.bounced_roles.includes(role.id),
+        skipped:
+          row.state === "kit_ready" &&
+          role !== undefined &&
+          row.skipped_roles.includes(role.id) &&
+          !row.sent_roles.includes(role.id),
+      };
+    }),
+  );
 }

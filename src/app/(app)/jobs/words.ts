@@ -98,3 +98,16 @@ export function placeOfFlag(path: string): string {
   if (path.includes(".route.")) named.push("contact");
   return named.join(", ");
 }
+
+/** How a job's chosen role applies, as the jobs list names it. */
+export const ROUTE_LABELS: Readonly<Record<string, string>> = {
+  email: "Email",
+  ats_form: "Application form",
+  easy_apply: "Easy Apply",
+  careers_page: "Careers page",
+  whatsapp: "WhatsApp",
+  linkedin_dm: "LinkedIn message",
+  linkedin_comment: "LinkedIn comment",
+  other: "Another way",
+  unknown: "No route given",
+};

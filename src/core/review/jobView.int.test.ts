@@ -1171,6 +1171,46 @@ describe("listJobViews", () => {
       },
     ]);
   });
+  it("names each job's route, a failed job's reason, and whether a send of its kit may have gone", async () => {
+    await seedSample();
+    // Reads the post, then fails to draft: the fake model has no draft to give.
+    const failed = await pasted();
+    await run(failed, [answer(fixture("S01-email-simple"))]);
+    const picking = await pasted();
+    await run(picking, [answer(fixture("S07-two-roles"))]);
+    // A kit whose send may have gone, then a Gemini draft asked for beside it that failed.
+    const unsure = await pasted();
+    await run(unsure, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await db.query(
+      `insert into {{schema}}.kit_sends
+         (job_id, role_id, kit, to_address, status, send_at, created_at, updated_at)
+       values ($1, 'P1', 'K', 'jobs@example.com', 'unknown', $2, $2, $2)`,
+      [unsure, clock.now()],
+    );
+    await db.query(
+      "update {{schema}}.jobs set state = 'failed', pending_stage = 'draft', failed_stage = 'draft', failure = 'Gemini could not draft it.' where id = $1",
+      [unsure],
+    );
+
+    const list = await listJobViews({ db, clock });
+    const item = (id: string) => list.find((job) => job.id === id)!;
+
+    expect(item(failed)).toMatchObject({
+      state: "failed",
+      route: "email",
+      failure: expect.any(String),
+      uncertain: false,
+    });
+    expect(item(failed).failure).not.toBe("");
+    // A post with several roles names no route until one is picked; it has not failed.
+    expect(item(picking)).toMatchObject({ route: null, failure: null, uncertain: false });
+    expect(item(unsure)).toMatchObject({
+      state: "failed",
+      failure: "Gemini could not draft it.",
+      uncertain: true,
+    });
+  });
+
   it("shows a sent kit as sent, and a long-dead upload as failed", async () => {
     await seedSample();
     const sentJob = await pasted();
