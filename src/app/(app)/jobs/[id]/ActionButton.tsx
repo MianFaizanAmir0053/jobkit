@@ -7,6 +7,8 @@ import { Button } from "@/components/ui/button";
 
 import { gateChanged, holdOutbound } from "../polling";
 
+import { decided, wordsAfter } from "./wordsChain";
+
 /** A refused answer in plain words, by its HTTP status. */
 export function messageFor(status: number): string {
   if (status === 401) return "You are signed out. Sign in again, then try.";
@@ -50,13 +52,21 @@ export function ActionButton({
     setBusy(true);
     setError(null);
     const release = gateOf ? holdOutbound() : () => undefined;
+    // A decision on the kit names the words this page's own decisions left (wordsChain).
+    const shown = (body as { words?: unknown } | undefined)?.words;
+    const words = gateOf && typeof shown === "string" ? wordsAfter(gateOf, shown) : null;
+    const sent = words === null ? body : { ...body, words };
     try {
       const response = await fetch(url, {
         method: "POST",
-        ...(body
-          ? { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }
+        ...(sent
+          ? { headers: { "content-type": "application/json" }, body: JSON.stringify(sent) }
           : {}),
       });
+      if (response.ok && gateOf && words !== null) {
+        const answer = (await response.json().catch(() => null)) as { words?: unknown } | null;
+        if (typeof answer?.words === "string") decided(gateOf, words, answer.words);
+      }
       if (!response.ok) setError(messageFor(response.status));
       router.refresh();
     } catch {

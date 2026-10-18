@@ -45,7 +45,13 @@ import { type JobView, jobView, storedDecisions } from "./jobView";
  */
 
 export type ReviewOutcome =
-  | { ok: true; decisions: ReviewDecisions; gate: GateReason[] }
+  | {
+      ok: true;
+      decisions: ReviewDecisions;
+      gate: GateReason[];
+      /** The email's words as the decision left them (wordsKey), for the page's next one. */
+      words: string | null;
+    }
   | {
       ok: false;
       reason: "not-found" | "not-ready" | "not-in-kit" | "sent" | "skipped" | "changed" | "sending";
@@ -79,8 +85,13 @@ function fits(action: ReviewAction, parts: KitParts, decisions: ReviewDecisions)
         (action.after === "" ||
           (parts.blocks.includes(action.after) && !isDeleted(decisions, action.after)))
       );
+    // The email keeps at least one sentence.
     case "delete":
-      return parts.blocks.includes(action.blockId) && !isDeleted(decisions, action.blockId);
+      return (
+        parts.blocks.includes(action.blockId) &&
+        !isDeleted(decisions, action.blockId) &&
+        parts.blocks.filter((id) => !isDeleted(decisions, id)).length > 1
+      );
     // Declining an instruction drafting applied; taking a decline back goes on any draft.
     case "decline":
       return !action.declined || (parts.applied ?? []).includes(action.instruction);
@@ -178,7 +189,7 @@ export async function keep(
       where job_id = $1 and role_id = $2`,
     [jobId, roleId, storedDecisions(kitKey, current), JSON.stringify(now.review.gate)],
   );
-  return { ok: true, decisions: current, gate: now.review.gate };
+  return { ok: true, decisions: current, gate: now.review.gate, words: now.wordsKey };
 }
 
 /**
@@ -235,7 +246,10 @@ export async function recordReview(
     const { view } = locked;
     // While jobkit sends the email, nothing changes what it sends (decisions A20).
     if (view.kitParts.sending) return { ok: false, reason: "sending" };
-    const before = view.review?.decisions ?? NO_DECISIONS;
+    // A check on a flag the email does not have is no check, so the decision never brings it back.
+    const kept = view.review?.decisions ?? NO_DECISIONS;
+    const names = new Set(view.kitParts.flags.map(flagKey));
+    const before = { ...kept, flagsChecked: kept.flagsChecked.filter((name) => names.has(name)) };
     if (!fits(action, view.kitParts, before)) return { ok: false, reason: "not-in-kit" };
     // Words written back as drafted are no edit.
     const drafted = view.draft!.kit.blocks.find(

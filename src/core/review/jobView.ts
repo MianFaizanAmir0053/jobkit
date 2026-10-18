@@ -389,6 +389,10 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       ? kitPartsOf({
           draft: { ...chosen.draft, flags },
           added: owners.added.map((sentence) => sentence.id),
+          // The must-haves a line in the owner's words answers in the email as it stands.
+          ownLines: (kit?.blocks ?? []).flatMap((block) =>
+            block.owner && block.class === "gap" && block.gap ? [block.gap.requirementId] : [],
+          ),
           verdicts: chosen.verdicts,
           role,
           extraction,
@@ -738,6 +742,7 @@ function kitPartsOf(parts: {
   draft: DraftOutput;
   /** The sentences the owner added, by ID. */
   added: readonly string[];
+  ownLines: string[];
   verdicts: KitParts["verdicts"];
   role: Role;
   extraction: ExtractOutput;
@@ -754,6 +759,7 @@ function kitPartsOf(parts: {
   return {
     blocks: [...parts.draft.kit.blocks.map((block) => block.id), ...parts.added],
     applied: appliedInstructions(parts.draft, parts.role),
+    ownLines: parts.ownLines,
     flags: parts.draft.flags,
     verdicts: parts.verdicts,
     attachments: parts.role.required_attachments.flatMap((attachment, i) =>

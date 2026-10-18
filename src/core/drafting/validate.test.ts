@@ -306,6 +306,10 @@ describe("validateEmailKit", () => {
     const marked = cleanKit();
     marked.closing = "Kind regards, 0f1e2d3c4b5a69788796a5b4c3d2e1f0";
     expect(kinds(marked)).toEqual([["reference_leak", "kit"]]);
+    // Each leak is its own finding, so a check on one never covers another.
+    const message = (kit: EmailKit) =>
+      validateEmailKit(kit, context()).find((flag) => flag.kind === "reference_leak")?.message;
+    expect(message(leaked)).not.toBe(message(marked));
 
     // A longer word that only contains an ID is not the ID.
     const longer = cleanKit();

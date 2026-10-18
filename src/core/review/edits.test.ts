@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { EmailKit, KitBlock } from "@/core/drafting/kit";
 
 import { NO_DECISIONS } from "./decisions";
-import { editedKit, listedSentences } from "./edits";
+import { editedKit, listedSentences, wordsKey } from "./edits";
 
 /* The email as it stands, with the owner's edits: drafting spec, "Owner edits"; review AC4. */
 
@@ -116,6 +116,33 @@ describe("editedKit", () => {
       class: "gap",
       gap: { requirementId: "R6" },
     });
+  });
+
+  it("takes a gap line the owner rewrote and said answers no requirement as a sentence of theirs", () => {
+    const gap = {
+      ...block("S5", "I have not used AWS at work."),
+      class: "gap" as const,
+      factIds: [],
+      gap: { requirementId: "R4", knownLineId: "K-aws", templateId: "", relatedFactId: "" },
+    };
+    const kit = { ...KIT, blocks: [...KIT.blocks, gap] };
+
+    const kept = editedKit(kit, { edits: { S5: "I like cats." }, added: [], deleted: [] });
+    expect(kept.blocks.at(-1)).toMatchObject({ class: "gap", gap: { requirementId: "R4" } });
+    const none = editedKit(kit, {
+      edits: { S5: "I like cats." },
+      added: [],
+      deleted: [],
+      answers: { S5: "" },
+    });
+    expect(none.blocks.at(-1)).toMatchObject({ class: "claim", gap: null, owner: true });
+  });
+
+  it("keys the email's words so a sentence's own text never passes for a paragraph's end", () => {
+    const one = { ...KIT, blocks: [block("S1", "¶a")] };
+    const other = { ...KIT, blocks: [block("S1", "a", true)] };
+
+    expect(wordsKey(one)).not.toBe(wordsKey(other));
   });
 
   it("keeps the place of a sentence added after one the owner then deleted", () => {

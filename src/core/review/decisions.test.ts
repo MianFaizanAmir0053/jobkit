@@ -190,6 +190,34 @@ describe("decide", () => {
     ).toBe(false);
   });
 
+  it("takes back the check on a requirement's flag when a line of the owner's comes to answer it, or stops", () => {
+    const onR5 = flagKey({ kind: "fit_unverified", at: "R5", message: "Only you can confirm." });
+    let decisions = decide(NO_DECISIONS, { kind: "check_flag", flag: onR5 });
+    decisions = decide(decisions, { kind: "add", after: "S3", text: "I do not hold it." });
+
+    // Checked as "I will fix it in Gmail": a line now answers it, which the check never weighed.
+    const lined = decide(decisions, { kind: "answers", blockId: "N1", requirementId: "R5" });
+    expect(lined.flagsChecked).toEqual([]);
+    const rechecked = decide(lined, { kind: "check_flag", flag: onR5 });
+    expect(
+      decide(rechecked, { kind: "answers", blockId: "N1", requirementId: "" }).flagsChecked,
+    ).toEqual([]);
+  });
+
+  it("cleans the owner's words as it cleans drafting's: nothing that hides a word, an emoji kept whole", () => {
+    const joiner = String.fromCodePoint(0x34f);
+    const coder = String.fromCodePoint(0x1f469, 0x200d, 0x1f4bb);
+    const lone = String.fromCharCode(0xd800);
+
+    expect(cleanSentence(`pine${joiner}apple${lone} for a ${coder}.`)).toBe(
+      `pineapple for a ${coder}.`,
+    );
+    // A typed address with half a broken pair is no address: refused, never stored.
+    expect(
+      reviewActionSchema.safeParse({ kind: "retype", value: `jobs${lone}@example.com` }).success,
+    ).toBe(false);
+  });
+
   it("deletes a drafted sentence with its edit and checks, until the owner takes the deletion back", () => {
     const onS2 = flagKey({ kind: "sensitive_topic_drafted", at: "S2", message: "Check this." });
     let decisions = decide(NO_DECISIONS, { kind: "edit", blockId: "S2", text: "New words." });
@@ -199,11 +227,17 @@ describe("decide", () => {
 
     expect(decisions).toMatchObject({
       deleted: ["S2"],
-      edits: {},
-      confirmed: [],
+      edits: { S2: "New words." },
+      confirmed: ["S2"],
       flagsChecked: [],
     });
-    expect(decide(decisions, { kind: "revert", blockId: "S2" }).deleted).toEqual([]);
+    // Undo delete brings back the owner's words, as they were; Undo edit then drafting's.
+    const back = decide(decisions, { kind: "revert", blockId: "S2" });
+    expect(back).toMatchObject({ deleted: [], edits: { S2: "New words." }, confirmed: ["S2"] });
+    expect(decide(back, { kind: "revert", blockId: "S2" })).toMatchObject({
+      edits: {},
+      confirmed: [],
+    });
   });
 
   it("deletes an added sentence outright, one added after it taking its place", () => {
@@ -258,7 +292,7 @@ describe("decide", () => {
     expect(decisions.answers).toEqual({ N1: "R5" });
     expect(
       decide(decisions, { kind: "answers", blockId: "N1", requirementId: "" }).answers,
-    ).toEqual({});
+    ).toEqual({ N1: "" });
     expect(decide(decisions, { kind: "delete", blockId: "N1" }).answers).toEqual({});
     // An edited sentence's mark goes with the edit taken back: drafting's words answer nothing new.
     let edited = decide(NO_DECISIONS, { kind: "edit", blockId: "S2", text: "My words." });
@@ -546,12 +580,9 @@ describe("approveAll", () => {
     const checked = decide(NO_DECISIONS, { kind: "check_flag", flag: F });
     expect(needsNewWords(PARTS, checked)).toBe(true);
 
-    let lined = decide(checked, { kind: "add", after: "S3", text: "I do not hold that." });
-    lined = decide(lined, { kind: "answers", blockId: "N1", requirementId: "R2" });
-
-    expect(needsNewWords(PARTS, lined)).toBe(false);
-    // Deleted, the line answers nothing.
-    expect(needsNewWords(PARTS, decide(lined, { kind: "delete", blockId: "N1" }))).toBe(true);
+    // A line of the owner's about R2 in the email as it stands, as the job view finds it.
+    expect(needsNewWords({ ...PARTS, ownLines: ["R2"] }, checked)).toBe(false);
+    expect(needsNewWords({ ...PARTS, ownLines: ["R9"] }, checked)).toBe(true);
   });
 
   it("names what Approve & send marks: the sentences and flags the gate holds that it may settle", () => {

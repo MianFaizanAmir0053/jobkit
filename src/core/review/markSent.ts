@@ -127,7 +127,10 @@ export function changesOf(
     ...added.map((sentence) => `sentence:${sentence.id}`),
   ];
   const names = [view.extraction!.record.company.name, role.title].filter((name) => name);
+  // A sentence the owner made a gap line, as they marked it, is factual whatever drafting's was.
+  const standing = new Map(view.kit!.blocks.map((block) => [block.id, block.class]));
   const factualChange = (block: KitBlock) => {
+    if (standing.get(block.id) === "gap") return true;
     if (block.class !== "post") return FACTUAL_CLASSES.has(block.class);
     const now = deleted.includes(block.id) ? "" : (edits[block.id] ?? block.text);
     return names.some((name) => block.text.includes(name) !== now.includes(name));

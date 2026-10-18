@@ -44,7 +44,7 @@ export const DRAFT = {
  * data is hashed whole. The templates stage builds its drafts with the same
  * code, so its input carries this too.
  */
-export const BUILD_VERSION = 8;
+export const BUILD_VERSION = 9;
 
 // The prompt as sent (its rules, the user turn's layout, the output's schema) and the build.
 const PROMPT = sha256Hex(

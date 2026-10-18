@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { oneLine } from "@/core/drafting/build";
 import { type KitFlag, type KitFlagKind, ONLY_YOU_CAN_CONFIRM } from "@/core/drafting/validate";
 import { type BlockVerdict, isBlocking } from "@/core/drafting/verdict";
 import { isStrictAddress } from "@/core/extraction/contacts";
@@ -171,17 +172,16 @@ export const MAX_SENTENCE = 1500;
 export const MAX_ADDED = 30;
 
 /**
- * The owner's words as one line of what can be seen: each run of white
- * space one space, and no control or format character (a soft hyphen, a
- * zero-width space) nor half of a broken pair, which would hide a word from
- * the checks, end a line in the middle of the email, or fail to be stored.
+ * The owner's words as one line of what can be seen, as drafting's are: each
+ * run of white space one space, no character that shows nothing (a soft
+ * hyphen, a zero-width space, a joiner outside an emoji), which would hide a
+ * word from the checks, and no half of a broken pair, which fails to be
+ * stored. A joiner some scripts write between letters goes too: no word
+ * may hide behind one.
  */
 export function cleanSentence(text: string): string {
-  return text
-    .replace(/\s+/gu, " ")
-    .replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, "")
-    .replace(/ {2,}/g, " ")
-    .trim();
+  // As drafting's own sentences are cleaned (oneLine), half of a broken pair gone first.
+  return oneLine(text.replace(/\p{Cs}/gu, ""));
 }
 
 /** A sentence in the owner's words, as the page posts it: cleaned, never empty, as long as a sentence runs. */
@@ -205,7 +205,14 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("uncheck"), blockId: z.string().min(1).max(20) }),
   z.strictObject({ kind: z.literal("check_flag"), flag: z.string().regex(FLAG_NAME) }),
   z.strictObject({ kind: z.literal("uncheck_flag"), flag: z.string().regex(FLAG_NAME) }),
-  z.strictObject({ kind: z.literal("retype"), value: z.string().max(320) }),
+  // An address or number holds no control character nor half of a broken pair, which fails to be stored.
+  z.strictObject({
+    kind: z.literal("retype"),
+    value: z
+      .string()
+      .max(320)
+      .refine((value) => !/[\p{Cc}\p{Cs}]/u.test(value.trim())),
+  }),
   z.strictObject({
     kind: z.literal("attach"),
     id: z.string().regex(/^A\d{1,3}$/),
@@ -405,13 +412,14 @@ export function decide(
     // Drafting's words again, for a sentence edited or deleted: they answer nothing the owner marked.
     // One with drafting's words already is left as it is, its checks with it.
     case "revert":
-      if (!isEdited(decisions, action.blockId) && !isDeleted(decisions, action.blockId)) {
-        return decisions;
+      // A deleted sentence back as it was, the owner's words and all; then drafting's words.
+      if (isDeleted(decisions, action.blockId)) {
+        return { ...decisions, deleted: without(decisions.deleted, action.blockId) };
       }
+      if (!isEdited(decisions, action.blockId)) return decisions;
       return {
         ...decisions,
         edits: withoutKey(decisions.edits, action.blockId),
-        deleted: without(decisions.deleted, action.blockId),
         answers: withoutKey(decisions.answers, action.blockId),
         confirmed: without(decisions.confirmed, action.blockId),
         flagsChecked: notAt(decisions.flagsChecked, action.blockId),
@@ -430,25 +438,23 @@ export function decide(
       return { ...decisions, added: [...decisions.added, sentence] };
     }
     case "delete": {
-      const cleared = {
-        ...decisions,
-        confirmed: without(decisions.confirmed, action.blockId),
-        flagsChecked: notAt(decisions.flagsChecked, action.blockId),
-        answers: withoutKey(decisions.answers, action.blockId),
-      };
       const gone = decisions.added.find((each) => each.id === action.blockId);
       // An added sentence goes outright, and one added after it takes its place.
       if (gone) {
         return {
-          ...cleared,
+          ...decisions,
+          confirmed: without(decisions.confirmed, action.blockId),
+          flagsChecked: notAt(decisions.flagsChecked, action.blockId),
+          answers: withoutKey(decisions.answers, action.blockId),
           added: decisions.added
             .filter((each) => each !== gone)
             .map((each) => (each.after === gone.id ? { ...each, after: gone.after } : each)),
         };
       }
+      // A drafted one leaves the email, the owner's words for it kept for Undo delete.
       return {
-        ...cleared,
-        edits: withoutKey(decisions.edits, action.blockId),
+        ...decisions,
+        flagsChecked: notAt(decisions.flagsChecked, action.blockId),
         deleted: withOne(decisions.deleted, action.blockId),
       };
     }
@@ -456,14 +462,16 @@ export function decide(
       const others = decisions.declined.filter((each) => each !== action.instruction);
       return { ...decisions, declined: action.declined ? [...others, action.instruction] : others };
     }
-    case "answers":
+    // "No requirement" is kept, so a drafted gap line the owner rewrote can stop being one. A check
+    // on the requirement it answered, or comes to answer, weighed the email without this line.
+    case "answers": {
+      const was = decisions.answers[action.blockId] ?? "";
       return {
         ...decisions,
-        answers:
-          action.requirementId === ""
-            ? withoutKey(decisions.answers, action.blockId)
-            : { ...decisions.answers, [action.blockId]: action.requirementId },
+        answers: { ...decisions.answers, [action.blockId]: action.requirementId },
+        flagsChecked: notAt(notAt(decisions.flagsChecked, was), action.requirementId),
       };
+    }
     case "confirm":
       return { ...decisions, confirmed: withOne(decisions.confirmed, action.blockId) };
   }
@@ -498,6 +506,11 @@ export function isOwners(
 export interface KitParts {
   /** The post's instructions drafting applied, which the owner may decline. */
   applied?: Declinable[];
+  /**
+   * The must-haves a line in the owner's words answers in the email as it
+   * stands: one they marked, or a drafted gap line they rewrote.
+   */
+  ownLines?: string[];
   /** The kit's sentences by ID: the draft's, those the owner deleted included, then those they added. */
   blocks: readonly string[];
   flags: readonly KitFlag[];
@@ -552,15 +565,14 @@ export const NEEDS_NEW_WORDS: ReadonlySet<KitFlagKind> = new Set([
 
 /** Whether the kit's words must change before it goes, so Approve & send cannot send it. */
 export function needsNewWords(
-  parts: Pick<KitParts, "flags" | "mustHaves">,
-  decisions: Pick<ReviewDecisions, "flagsChecked" | "meets"> &
-    Partial<Pick<ReviewDecisions, "answers">> = NO_DECISIONS,
+  parts: Pick<KitParts, "flags" | "mustHaves" | "ownLines">,
+  decisions: Pick<ReviewDecisions, "flagsChecked" | "meets"> = NO_DECISIONS,
 ): boolean {
   const checked = new Set(decisions.flagsChecked);
   const meets = new Set(decisions.meets);
   const musts = new Set(parts.mustHaves ?? []);
-  // The must-haves a sentence of the owner's answers: their line about each.
-  const lined = new Set(Object.values(decisions.answers ?? {}));
+  // The must-haves a line of the owner's answers in the email as it stands.
+  const lined = new Set(parts.ownLines ?? []);
   return parts.flags.some(
     (flag) =>
       NEEDS_NEW_WORDS.has(flag.kind) ||

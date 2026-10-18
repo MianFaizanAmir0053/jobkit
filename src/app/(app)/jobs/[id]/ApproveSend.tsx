@@ -21,6 +21,19 @@ export interface ShownSend {
 /** The server's latest word on the send, and when it came, by this page's clock. */
 type Known = ShownSend & { at: number };
 
+/**
+ * The confirmation as it opened: what it lists and what its press names. A
+ * page drawn again meanwhile, as after a decision on the other device,
+ * leaves it as it was, says the email changed, and holds Send.
+ */
+interface Opened {
+  approvals: string[];
+  approved: string;
+  words: string;
+  to: string;
+  subject: string;
+}
+
 /** How often the page asks how its send stands: often while one is in flight, else now and then. */
 const ASK_IN_FLIGHT_MS = 1_500;
 const ASK_IDLE_MS = 15_000;
@@ -117,7 +130,11 @@ export function ApproveSend({
   const [known, setKnown] = useState<Known | null>(() =>
     shown ? { ...shown, at: performance.now() } : null,
   );
-  const [confirming, setConfirming] = useState(false);
+  const [opened, setOpened] = useState<Opened | null>(null);
+  const confirming = opened !== null;
+  // What it would send, or mark, changed after the confirmation opened.
+  const stale =
+    opened !== null && (opened.approved !== approved || opened.words !== words || opened.to !== to);
   const [now, setNow] = useState(() => performance.now());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -228,23 +245,29 @@ export function ApproveSend({
       const response = await fetch(`/api/jobs/${jobId}/send`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kit, to, uncertain: uncertainId, approved, words }),
+        body: JSON.stringify({
+          kit,
+          to: opened?.to ?? to,
+          uncertain: uncertainId,
+          approved: opened?.approved ?? approved,
+          words: opened?.words ?? words,
+        }),
         signal: AbortSignal.timeout(ANSWER_MS),
       });
       if (!response.ok) {
         setError(await refusalOf(response));
-        setConfirming(false);
+        setOpened(null);
         router.refresh();
         return;
       }
-      setConfirming(false);
+      setOpened(null);
       heard(((await response.json()) as { send: ShownSend }).send);
     } catch {
       // The press may have reached the server: the next question finds out, and brings back Undo.
       setError(
         "The connection dropped. The page shows the email's state as soon as jobkit answers.",
       );
-      setConfirming(false);
+      setOpened(null);
     } finally {
       release();
       gateChanged(jobId);
@@ -330,7 +353,7 @@ export function ApproveSend({
       </div>
     );
   }
-  if (confirming) {
+  if (opened) {
     return (
       <div ref={box} className="flex flex-col gap-3 rounded-md border border-border p-3 text-sm">
         <p ref={heading} tabIndex={-1} className="font-medium outline-none">
@@ -346,18 +369,18 @@ export function ApproveSend({
           <dt className="text-muted-foreground">From</dt>
           <dd>{gmail.email}</dd>
           <dt className="text-muted-foreground">To</dt>
-          <dd>{to}</dd>
+          <dd>{opened.to}</dd>
           <dt className="text-muted-foreground">Subject</dt>
-          <dd>{subject}</dd>
+          <dd>{opened.subject}</dd>
           <dt className="text-muted-foreground">Attached</dt>
           <dd>{cv}</dd>
         </dl>
         <p className="text-muted-foreground">Your signature goes under the email.</p>
-        {approvals.length > 0 && (
+        {opened.approvals.length > 0 && (
           <div>
             <p>Pressing Send marks these as checked by you, even if you then press Undo:</p>
             <ul className="mt-1 list-disc pl-5 text-muted-foreground [overflow-wrap:anywhere]">
-              {approvals.map((approval, i) => (
+              {opened.approvals.map((approval, i) => (
                 <li key={i}>{approval}</li>
               ))}
             </ul>
@@ -366,8 +389,14 @@ export function ApproveSend({
         <p className="text-muted-foreground">
           You have ten seconds to undo it once you press Send.
         </p>
+        {stale && (
+          <p role="status" className="font-medium text-destructive">
+            The email changed after you opened this, as on your other device. Cancel, read it again,
+            then press Approve &amp; send.
+          </p>
+        )}
         <div className="flex gap-2">
-          <Button className="min-h-11" disabled={busy || decisionInFlight} onClick={press}>
+          <Button className="min-h-11" disabled={busy || decisionInFlight || stale} onClick={press}>
             Send
           </Button>
           <Button
@@ -376,7 +405,7 @@ export function ApproveSend({
             disabled={busy}
             onClick={() => {
               setError(null);
-              setConfirming(false);
+              setOpened(null);
             }}
           >
             Cancel
@@ -402,7 +431,7 @@ export function ApproveSend({
         <Button
           className="min-h-11"
           disabled={!ready || decisionInFlight || busy}
-          onClick={() => setConfirming(true)}
+          onClick={() => setOpened({ approvals, approved, words, to, subject })}
         >
           Approve &amp; send
         </Button>

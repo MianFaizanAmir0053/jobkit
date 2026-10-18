@@ -298,17 +298,17 @@ describe("recordReview", () => {
 
   it("forgets a check on a flag the email no longer has, so the flag never comes back checked", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
-    // The only claim deleted: the email says nothing about the owner, which they check.
-    await recordReview(deps(), id, { kind: "delete", blockId: "S1" });
+    // The only claim says nothing: the email says nothing about the owner, which they check.
+    await recordReview(deps(), id, { kind: "edit", blockId: "S1", text: "—" });
     const flag = (await jobView({ db, clock }, id))!.kitParts!.flags.find(
       (each) => each.kind === "no_claims",
     )!;
     await recordReview(deps(), id, { kind: "check_flag", flag: flagKey(flag) });
 
-    // The sentence back, and the flag gone: its check goes too.
+    // The words back, and the flag gone: its check goes too.
     await recordReview(deps(), id, { kind: "revert", blockId: "S1" });
     expect((await jobView({ db, clock }, id))!.review!.decisions.flagsChecked).toEqual([]);
-    const again = await recordReview(deps(), id, { kind: "delete", blockId: "S1" });
+    const again = await recordReview(deps(), id, { kind: "edit", blockId: "S1", text: "—" });
     expect(
       again.ok &&
         again.gate.some((reason) => reason.kind === "flag" && reason.flag.kind === "no_claims"),
@@ -473,6 +473,77 @@ describe("recordReview", () => {
     expect(
       await recordHandoff({ db, clock }, id, { kit: "another kit", words: shown.wordsKey! }),
     ).toEqual({ ok: false, reason: "changed" });
+  });
+
+  it("keeps at least one sentence in the email", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+
+    expect(await recordReview(deps(), id, { kind: "delete", blockId: "S1" })).toEqual({
+      ok: false,
+      reason: "not-in-kit",
+    });
+    await recordReview(deps(), id, { kind: "add", after: "S1", text: "I lead code reviews." });
+    expect((await recordReview(deps(), id, { kind: "delete", blockId: "S1" })).ok).toBe(true);
+    expect(await recordReview(deps(), id, { kind: "delete", blockId: "N1" })).toEqual({
+      ok: false,
+      reason: "not-in-kit",
+    });
+  });
+
+  it("forgets, at the next decision, a check kept on a flag the email did not have, so it never comes back checked", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    const view = (await jobView({ db, clock }, id))!;
+    // As kept before checks were forgotten with their flag: no_claims checked while the email had none.
+    const stale = flagKey({
+      kind: "no_claims",
+      at: "body",
+      message:
+        "The email says nothing about you yet. Write at least one sentence from your profile.",
+    });
+    await db.query(
+      `insert into {{schema}}.kit_reviews (job_id, role_id, decisions, gate, updated_at)
+       values ($1, $2, $3::jsonb, '[]'::jsonb, $4)
+       on conflict (job_id, role_id) do update set decisions = excluded.decisions`,
+      [
+        id,
+        view.role!.id,
+        storedDecisions(view.kitKey!, { ...NO_DECISIONS, flagsChecked: [stale] }),
+        clock.now(),
+      ],
+    );
+    expect((await jobView({ db, clock }, id))!.review!.decisions.flagsChecked).toEqual([stale]);
+
+    const said = await recordReview(deps(), id, { kind: "edit", blockId: "S1", text: "—" });
+
+    expect(
+      said.ok &&
+        said.gate.some((reason) => reason.kind === "flag" && reason.flag.kind === "no_claims"),
+    ).toBe(true);
+  });
+
+  it("records a sentence the owner rewrote into a line about a must-have as a factual edit", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      templates: true,
+    });
+    const courtesy = (await jobView({ db, clock }, id))!.kit!.blocks.findLast(
+      (block) => block.class === "courtesy",
+    )!;
+    for (const action of [
+      { kind: "edit", blockId: courtesy.id, text: "I have not run React at that scale yet." },
+      { kind: "answers", blockId: courtesy.id, requirementId: "R1" },
+      { kind: "confirm", blockId: courtesy.id },
+    ] as const) {
+      await recordReview(deps(), id, action);
+    }
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+    const { rows } = await db.query<{ factual_edit: boolean }>(
+      "select factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+      [id],
+    );
+    expect(rows[0]!.factual_edit).toBe(true);
   });
 
   it("runs validate again on the email as the owner edited it", async () => {

@@ -62,7 +62,6 @@ const MESSAGES = {
   fit_missing: "The draft did not weigh this requirement.",
   missing_gap_line: "A must-have you do not fully meet has no honest line about it.",
   keyword_missing: "The post asks you to include a keyword, and the email does not.",
-  reference_leak: "An internal ID or marker appears in the email. Take it out.",
   needs_your_line: "Write this line yourself: no gap line in your profile fits this requirement.",
   sensitive_topic_drafted:
     "This mentions money, visas, work permits or another personal topic only your profile may answer. Check it.",
@@ -242,8 +241,22 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     ...context.markers,
   ].filter((reference) => reference !== "");
   const texts = [kit.subject, kit.greeting, ...kit.blocks.map((block) => block.text), kit.closing];
-  if (references.some((reference) => texts.some((text) => hasToken(text, reference)))) {
-    flag("reference_leak", "kit", MESSAGES.reference_leak);
+  // Each leak named, so a check on one never covers another: a profile ID as it is, a marker by
+  // its start.
+  const leaked = references.filter((reference) => texts.some((text) => hasToken(text, reference)));
+  if (leaked.length > 0) {
+    const named = [
+      ...new Set(
+        leaked.map((reference) =>
+          context.markers.includes(reference) ? `a marker (${reference.slice(0, 6)}…)` : reference,
+        ),
+      ),
+    ];
+    flag(
+      "reference_leak",
+      "kit",
+      `An internal ID or marker appears in the email: ${named.join(", ")}. Take it out.`,
+    );
   }
   return flags;
 }

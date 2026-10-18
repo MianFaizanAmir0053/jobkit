@@ -67,22 +67,20 @@ export function listedSentences(
  */
 function withOwnersWords(kit: EmailKit, decisions: Owners): KitBlock[] {
   const answers = decisions.answers ?? {};
-  return placed(kit, decisions).map((block) =>
-    block.owner && Object.hasOwn(answers, block.id)
-      ? {
-          ...block,
-          class: "gap",
-          factIds: [],
-          fields: [],
-          gap: {
-            requirementId: answers[block.id]!,
-            knownLineId: "",
-            templateId: "",
-            relatedFactId: "",
-          },
-        }
-      : block,
-  );
+  return placed(kit, decisions).map((block): KitBlock => {
+    if (!block.owner || !Object.hasOwn(answers, block.id)) return block;
+    const requirementId = answers[block.id]!;
+    // "No requirement": a sentence of theirs, whatever drafting's was.
+    if (requirementId === "")
+      return { ...block, class: "claim", factIds: [], fields: [], gap: null };
+    return {
+      ...block,
+      class: "gap",
+      factIds: [],
+      fields: [],
+      gap: { requirementId, knownLineId: "", templateId: "", relatedFactId: "" },
+    };
+  });
 }
 
 /** The draft's sentences with the owner's words for each they edited, and theirs where they added them. */
@@ -117,13 +115,14 @@ function placed(kit: EmailKit, { edits, added }: Owners): KitBlock[] {
  * another tab, hands none of them off.
  */
 export function wordsKey(kit: EmailKit): string {
+  // As JSON, so no sentence's own text passes for a paragraph's end or another sentence.
   return shortHash(
-    [
+    JSON.stringify([
       kit.subject,
       kit.greeting,
-      ...kit.blocks.map((block) => `${block.paragraphBreak ? "¶" : ""}${block.text}`),
+      kit.blocks.map((block) => [block.paragraphBreak, block.text]),
       kit.closing,
-    ].join("\n"),
+    ]),
   );
 }
 
@@ -186,7 +185,12 @@ export async function asItStands(
     fit: draft.fit,
     wordLimit: declined.has("word_limit") ? BODY_WORD_LIMIT : draft.wordLimit,
     keyword: declined.has("keyword") ? null : draft.keyword,
-    subjectFormat: declined.has("subject_format") ? null : (draft.subjectFormat ?? null),
+    // A draft from before drafting kept its subject format applied the post's.
+    subjectFormat: declined.has("subject_format")
+      ? null
+      : draft.subjectFormat === undefined
+        ? acceptedInstructions(role).subjectFormat
+        : draft.subjectFormat,
     markers: draft.markers,
   });
   return { kit, flags: input.template ? templateFlags(found, record, role) : found };

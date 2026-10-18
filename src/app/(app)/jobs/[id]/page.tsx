@@ -22,6 +22,7 @@ import {
   isMeetable,
   MAX_ADDED,
   MAX_SENTENCE,
+  NEEDS_NEW_WORDS,
   needsNewWords,
   NO_DECISIONS,
 } from "@/core/review/decisions";
@@ -95,25 +96,6 @@ const STEP_WORDS: Readonly<Record<Step["status"], string>> = {
   skipped: "Not needed",
   none_fit: "None fits this role",
 };
-
-/**
- * Flags a change to the email's words would resolve. jobkit cannot change
- * them until the block editor exists (Task 29), so on the way through Gmail
- * the owner fixes them there, and answers Yes when asked whether they
- * changed anything. Approve & send sends the words as they stand: it
- * refuses a kit with one of those that make the email wrong to send
- * (NEEDS_NEW_WORDS), and takes the others as they are.
- */
-const FIXED_IN_GMAIL: ReadonlySet<KitFlagKind> = new Set([
-  "needs_your_line",
-  "subject_placeholder",
-  "reference_leak",
-  "ai_instruction_followed",
-  "no_claims",
-  "missing_gap_line",
-  "over_limit",
-  "keyword_missing",
-]);
 
 /** Flags that point at one of the role's requirements rather than a sentence. */
 const ABOUT_A_REQUIREMENT: ReadonlySet<KitFlagKind> = new Set([
@@ -696,8 +678,16 @@ function KitPanel({
   };
   // The chosen role's must-haves: one the owner does not meet needs a line saying so.
   const musts = new Set(parts.mustHaves ?? []);
-  // The must-haves a sentence of the owner's answers, as their line about each.
-  const lined = new Set(Object.values(decisions.answers));
+  // The must-haves a line in the owner's words answers in the email as it stands.
+  const lined = new Set(parts.ownLines ?? []);
+  // Each sentence of the owner's that is a gap line, with the must-have it answers.
+  const lineOf = new Map(
+    kit.blocks.flatMap((block): [string, string][] =>
+      block.owner && block.class === "gap" && block.gap
+        ? [[block.id, block.gap.requirementId]]
+        : [],
+    ),
+  );
   // The must-haves a line of the owner's may answer: each with no honest line, each only they can
   // confirm they meet, and each a line of theirs answers now.
   const lineFor = [
@@ -761,7 +751,12 @@ function KitPanel({
   // The must-haves the owner said they will fix in Gmail, not meeting them.
   const unmet = fitRows.filter(
     (row) =>
-      row.tick && row.must && row.flag !== null && flagsChecked.has(row.flag) && !meets.has(row.id),
+      row.tick &&
+      row.must &&
+      row.flag !== null &&
+      flagsChecked.has(row.flag) &&
+      !meets.has(row.id) &&
+      !lined.has(row.id),
   ).length;
   // What Approve & send cannot settle: a file besides the CV, which it cannot attach, words that
   // must change, which it cannot change, and the reasons only the owner can.
@@ -1047,6 +1042,7 @@ function KitPanel({
                       text={block.text}
                       maxLength={MAX_SENTENCE}
                       prompt={yourLine(block)}
+                      added={added}
                     />
                   )}
                   {edited && (
@@ -1085,6 +1081,7 @@ function KitPanel({
                           gateOf={view.id}
                           label="Delete"
                           ariaLabel={`Delete your sentence: ${block.text}`}
+                          confirmText="Delete your sentence? It cannot be brought back."
                           variant="outline"
                           body={decision({ kind: "delete", blockId: block.id })}
                         />
@@ -1103,12 +1100,13 @@ function KitPanel({
                   {(edited || added) && !locked && lineFor.length > 0 && (
                     <div className="mt-1">
                       <AnswersPick
-                        key={`${kitKey}:${block.id}:${decisions.answers[block.id] ?? ""}`}
+                        key={`${kitKey}:${block.id}`}
                         jobId={view.id}
                         kit={kitKey}
                         words={words}
                         blockId={block.id}
-                        value={decisions.answers[block.id] ?? ""}
+                        sentence={block.text}
+                        value={lineOf.get(block.id) ?? ""}
                         options={lineFor}
                       />
                     </div>
@@ -1125,6 +1123,12 @@ function KitPanel({
                 kit={kitKey}
                 words={words}
                 sentences={kit.blocks.map((block) => ({ id: block.id, text: block.text }))}
+                // Before the sign-off by default: after the last sentence that is not courtesy.
+                defaultAfter={
+                  kit.blocks.findLast((block) => block.class !== "courtesy")?.id ??
+                  kit.blocks.at(-1)?.id ??
+                  ""
+                }
                 maxLength={MAX_SENTENCE}
                 full={decisions.added.length >= MAX_ADDED}
               />
@@ -1138,7 +1142,8 @@ function KitPanel({
         <Panel title="Check these before you send">
           {flags.some(
             (flag) =>
-              FIXED_IN_GMAIL.has(flag.kind) || (meetable.has(flagKey(flag)) && musts.has(flag.at)),
+              NEEDS_NEW_WORDS.has(flag.kind) ||
+              (meetable.has(flagKey(flag)) && musts.has(flag.at) && !lined.has(flag.at)),
           ) && (
             <p className="text-sm text-muted-foreground">
               {byEmail
@@ -1195,7 +1200,9 @@ function KitPanel({
               // marked as their line about it, or written where they send the email.
               const must = meetsIt && musts.has(flag.at);
               const hasLine = must && lined.has(flag.at);
-              const inGmail = FIXED_IN_GMAIL.has(flag.kind) || (must && !hasLine);
+              // Only new words resolve these, which Approve & send cannot give: the owner changes them
+              // above, or where they send the email.
+              const inGmail = NEEDS_NEW_WORDS.has(flag.kind) || (must && !hasLine);
               // Its place too, so two flags of one message, as on the subject and the greeting, differ.
               const named =
                 about ??
@@ -1206,7 +1213,7 @@ function KitPanel({
                     : flag.message);
               return (
                 <li key={twin > 0 ? `${key}#${twin}` : key}>
-                  {flag.message}
+                  {about ? flag.message : named}
                   {about && <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>}
                   {meetsIt && !met && !locked && (
                     <p className="mt-1 text-muted-foreground">
@@ -1403,7 +1410,9 @@ function KitPanel({
                       ? "You said you meet it."
                       : unconfirmed
                         ? row.must
-                          ? `You will fix the email ${where}: take out what it says about this, and add a line saying you do not meet it.`
+                          ? lined.has(row.id)
+                            ? "You checked this: your line says you do not meet it, and the email claims nothing more."
+                            : `You will fix the email ${where}: take out what it says about this, and add a line saying you do not meet it.`
                           : "You checked this: the email must not claim it."
                         : checked
                           ? `You checked this: ${row.why}`
@@ -1468,9 +1477,17 @@ function KitPanel({
                       : reason.kind === "flag"
                         ? aboutFlag(reason.flag)
                         : undefined;
+                  // A flag on the subject or the greeting says so, as two may read alike.
+                  const place =
+                    reason.kind === "flag" && reason.flag.at === "subject"
+                      ? " (the subject)"
+                      : reason.kind === "flag" && reason.flag.at === "greeting"
+                        ? " (the greeting)"
+                        : "";
                   return (
                     <li key={i}>
                       {withoutContacts(reason.message, typing(view))}
+                      {!about && place}
                       {about && (
                         <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>
                       )}
@@ -1484,9 +1501,7 @@ function KitPanel({
         {byEmail && !sent && !skipped && (
           <>
             <ApproveSend
-              // Drawn anew when the server's word changes what it would send, so an open
-              // confirmation never changes under the owner's eyes.
-              key={`${shown ? `${shown.id}-${shown.status}` : "none"}:${approved}:${words}:${to}`}
+              key={shown ? `${shown.id}-${shown.status}` : "none"}
               jobId={view.id}
               kit={kitKey}
               words={words}

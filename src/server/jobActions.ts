@@ -255,7 +255,8 @@ export async function review(
     sessionId: actor.session.id,
   });
   if (!outcome.ok) return refusal(outcome.reason === "not-found" ? 404 : 409, outcome.reason);
-  return ok(200, { gate: outcome.gate });
+  // The words the decision left, which the page's next decision names until it is drawn again.
+  return ok(200, { gate: outcome.gate, words: outcome.words });
 }
 
 /** A small JSON body, parsed with its schema: null when it is too large, not JSON or not of it. */

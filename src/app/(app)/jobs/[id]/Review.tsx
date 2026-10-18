@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { gateChanged, holdOutbound } from "../polling";
 
 import { messageFor } from "./ActionButton";
+import { decided, wordsAfter } from "./wordsChain";
 
 /**
  * Posts one of the owner's decisions on the kit the page shows; the page is
@@ -24,12 +25,18 @@ async function decide(
   action: object,
 ): Promise<{ error: string | null; answered: boolean }> {
   const release = holdOutbound();
+  // The words this page's own decisions left, so a second tap before it is drawn again counts.
+  const named = wordsAfter(jobId, words);
   try {
     const response = await fetch(`/api/jobs/${jobId}/review`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ action, kit, words }),
+      body: JSON.stringify({ action, kit, words: named }),
     });
+    if (response.ok) {
+      const answer = (await response.json().catch(() => null)) as { words?: unknown } | null;
+      if (typeof answer?.words === "string") decided(jobId, named, answer.words);
+    }
     return { error: response.ok ? null : messageFor(response.status), answered: true };
   } catch {
     return { error: "The connection dropped. Try again.", answered: false };
@@ -55,6 +62,7 @@ export function SentenceEdit({
   text,
   maxLength,
   prompt,
+  added = false,
 }: {
   jobId: string;
   kit: string;
@@ -70,19 +78,31 @@ export function SentenceEdit({
    * shown in place of the placeholder, whose box opens empty.
    */
   prompt?: string;
+  /** Whether it is a sentence the owner added, which a deletion takes for good. */
+  added?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   // The box opens with the sentence, or empty for a line still to write.
   const start = prompt === undefined ? text : "";
   const [typed, setTyped] = useState(start);
+  // The sentence as it read when the box opened: one changed since, as on the other device, is
+  // never saved over.
+  const [openedOn, setOpenedOn] = useState(text);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The page drawn again after a save or a deletion: the box shows until it is.
   const [refreshing, startRefresh] = useTransition();
   const shown = open || refreshing;
-  const held = busy || refreshing;
+  const changedElsewhere = open && !busy && !refreshing && openedOn !== text;
+  const held = busy || refreshing || changedElsewhere;
   const editButton = useRef<HTMLButtonElement>(null);
+
+  // While the box is open, the handoffs wait: the page shows words not saved yet.
+  useEffect(() => {
+    if (!open) return;
+    return holdOutbound();
+  }, [open]);
   // Focus goes back to Edit once the box closes, for keyboard and screen-reader users.
   const closing = useRef(false);
 
@@ -133,6 +153,7 @@ export function SentenceEdit({
           aria-label={prompt === undefined ? `Edit: ${text}` : `Write it: ${prompt}`}
           onClick={() => {
             setTyped(start);
+            setOpenedOn(text);
             setError(null);
             setOpen(true);
           }}
@@ -156,15 +177,21 @@ export function SentenceEdit({
           className="min-h-24 w-full rounded-md border border-border bg-background p-2"
         />
       </label>
+      {changedElsewhere && (
+        <p role="status" className="font-medium">
+          This sentence changed elsewhere since you opened it, as on your other device: it now reads
+          &ldquo;{text}&rdquo;. Copy your words if you need them, then Cancel and edit it again.
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         <Button type="submit" className="min-h-11" disabled={held || typed.trim() === ""}>
-          {held ? "Saving…" : "Save"}
+          {busy || refreshing ? "Saving…" : "Save"}
         </Button>
         <Button
           type="button"
           variant="outline"
           className="min-h-11"
-          disabled={held}
+          disabled={busy || refreshing}
           onClick={close}
         >
           Cancel
@@ -174,7 +201,12 @@ export function SentenceEdit({
           variant="outline"
           className="min-h-11 text-destructive"
           disabled={held}
-          onClick={() => void send({ kind: "delete", blockId })}
+          onClick={() => {
+            // A sentence the owner added is gone for good; a drafted one comes back with Undo delete.
+            if (added && !window.confirm("Delete your sentence? It cannot be brought back."))
+              return;
+            void send({ kind: "delete", blockId });
+          }}
         >
           Delete this sentence
         </Button>
@@ -191,13 +223,16 @@ export function SentenceEdit({
 /**
  * "Your line about", on a sentence in the owner's own words (drafting spec,
  * "Owner edits"): the must-have it answers, as its gap line, which a
- * missing line then no longer holds the email for; or none.
+ * missing line then no longer holds the email for; or none. The choice is
+ * made, then saved with Save, so a keyboard's arrows never save one on the
+ * way to another.
  */
 export function AnswersPick({
   jobId,
   kit,
   words,
   blockId,
+  sentence,
   value,
   options,
 }: {
@@ -206,6 +241,8 @@ export function AnswersPick({
   /** The email's words as the page shows them (wordsKey), which each decision names. */
   words: string;
   blockId: string;
+  /** The sentence's words, which name the choice for a screen reader. */
+  sentence: string;
   /** The requirement the sentence answers now; "" for none. */
   value: string;
   /** The must-haves it may answer, each with its words. */
@@ -213,60 +250,82 @@ export function AnswersPick({
 }) {
   const router = useRouter();
   const [picked, setPicked] = useState(value);
+  // The server's word as the page was last drawn with it: a new one replaces what was picked.
+  const [drawn, setDrawn] = useState(value);
+  if (value !== drawn) {
+    setDrawn(value);
+    setPicked(value);
+  }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function change(next: string) {
-    setPicked(next);
+  async function save() {
     setBusy(true);
     const { error, answered } = await decide(jobId, kit, words, {
       kind: "answers",
       blockId,
-      requirementId: next,
+      requirementId: picked,
     });
     setBusy(false);
     setError(error);
-    if (error !== null) setPicked(value);
     if (answered) router.refresh();
   }
 
   return (
-    <label className="flex flex-col gap-1">
-      <span className="text-muted-foreground">Your line about</span>
-      <select
-        value={picked}
-        disabled={busy}
-        onChange={(event) => void change(event.currentTarget.value)}
-        className="min-h-11 w-full rounded-md border border-border bg-background px-2"
-      >
-        <option value="">No requirement</option>
-        {options.map((option) => (
-          <option key={option.id} value={option.id}>
-            {option.text}
-          </option>
-        ))}
-      </select>
+    <div className="flex flex-col gap-1">
+      <label className="flex flex-col gap-1">
+        <span className="text-muted-foreground">
+          Your line about<span className="sr-only">, for &ldquo;{sentence}&rdquo;</span>
+        </span>
+        <select
+          value={picked}
+          disabled={busy}
+          onChange={(event) => setPicked(event.currentTarget.value)}
+          className="min-h-11 w-full rounded-md border border-border bg-background px-2"
+        >
+          <option value="">No requirement</option>
+          {options.map((option) => (
+            <option key={option.id} value={option.id}>
+              {option.text}
+            </option>
+          ))}
+        </select>
+      </label>
+      {picked !== value && (
+        <div>
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-11"
+            disabled={busy}
+            onClick={() => void save()}
+          >
+            {busy ? "Saving…" : "Save"}
+          </Button>
+        </div>
+      )}
       {error && (
         <span role="alert" className="text-destructive">
           {error}
         </span>
       )}
-    </label>
+    </div>
   );
 }
 
 /**
  * "Add a sentence", below the email (review spec, "Job page"): a box for a
- * sentence in the owner's own words, put after the sentence they choose,
- * the last by default, or first; it waits, as an edit does, until they
- * confirm it. The box stays until the page shows it, and a refusal keeps
- * what they typed.
+ * sentence in the owner's own words, put after the sentence they choose
+ * (before the sign-off by default) or first; it waits, as an edit does,
+ * until they confirm it. The box stays until the page shows it, a refusal
+ * keeps what they typed, and the handoffs wait while it is open.
  */
 export function AddSentence({
   jobId,
   kit,
   words,
   sentences,
+  defaultAfter,
   maxLength,
   full,
 }: {
@@ -276,21 +335,28 @@ export function AddSentence({
   words: string;
   /** The email's sentences as they stand, in order: each one the new sentence may follow. */
   sentences: { id: string; text: string }[];
+  /** The sentence it follows unless the owner chooses another: the last before the sign-off. */
+  defaultAfter: string;
   /** The most characters a sentence holds. */
   maxLength: number;
   /** Whether the owner added as many sentences as one draft takes. */
   full: boolean;
 }) {
   const router = useRouter();
-  const last = sentences.at(-1)?.id ?? "";
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState("");
-  const [after, setAfter] = useState(last);
+  const [after, setAfter] = useState(defaultAfter);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, startRefresh] = useTransition();
   const shown = open || refreshing;
   const held = busy || refreshing;
+
+  // While the box is open, the handoffs wait: the owner is still writing.
+  useEffect(() => {
+    if (!open) return;
+    return holdOutbound();
+  }, [open]);
 
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -324,7 +390,7 @@ export function AddSentence({
           variant="outline"
           className="min-h-11"
           onClick={() => {
-            setAfter(last);
+            setAfter(defaultAfter);
             setError(null);
             setOpen(true);
           }}

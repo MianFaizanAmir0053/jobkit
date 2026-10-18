@@ -115,7 +115,7 @@ export function Outbound({
   const waiting = !open
     ? ""
     : held
-      ? "Saving your change first: the buttons wait for it."
+      ? "Your change is not saved yet: the buttons wait for it."
       : confirmed === shown
         ? ""
         : unreachable
