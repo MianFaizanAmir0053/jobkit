@@ -10,12 +10,18 @@ import { gateChanged, holdOutbound } from "../polling";
 import { messageFor } from "./ActionButton";
 
 /**
- * Posts one of the owner's decisions on the kit the page shows, then renders
- * the page again with the gate it leaves. A page drawn on another kit is
- * refused, and drawn again. While it is in flight the outbound controls
- * wait, and the job's pages in other tabs are told once it lands.
+ * Posts one of the owner's decisions on the kit the page shows; the page is
+ * then drawn again with the gate it leaves, but only once the server
+ * answered: drawing it again on a dropped connection, Next reloads it whole
+ * and loses what the owner typed. A page drawn on another kit is refused,
+ * and drawn again. While it is in flight the outbound controls wait, and
+ * the job's pages in other tabs are told once it lands.
  */
-async function decide(jobId: string, kit: string, action: object): Promise<string | null> {
+async function decide(
+  jobId: string,
+  kit: string,
+  action: object,
+): Promise<{ error: string | null; answered: boolean }> {
   const release = holdOutbound();
   try {
     const response = await fetch(`/api/jobs/${jobId}/review`, {
@@ -23,9 +29,9 @@ async function decide(jobId: string, kit: string, action: object): Promise<strin
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ action, kit }),
     });
-    return response.ok ? null : messageFor(response.status);
+    return { error: response.ok ? null : messageFor(response.status), answered: true };
   } catch {
-    return "The connection dropped. Try again.";
+    return { error: "The connection dropped. Try again.", answered: false };
   } finally {
     release();
     gateChanged(jobId);
@@ -55,9 +61,10 @@ export function RetypeField({
     event.preventDefault();
     const typed = String(new FormData(event.currentTarget).get("contact") ?? "");
     setBusy(true);
-    setError(await decide(jobId, kit, { kind: "retype", value: typed }));
+    const { error, answered } = await decide(jobId, kit, { kind: "retype", value: typed });
+    setError(error);
     setBusy(false);
-    router.refresh();
+    if (answered) router.refresh();
   }
 
   return (
@@ -111,9 +118,13 @@ export function FitTick({
 
   async function toggle(next: boolean) {
     setBusy(true);
-    setError(await decide(jobId, kit, { kind: next ? "check_flag" : "uncheck_flag", flag }));
+    const { error, answered } = await decide(jobId, kit, {
+      kind: next ? "check_flag" : "uncheck_flag",
+      flag,
+    });
+    setError(error);
     setBusy(false);
-    router.refresh();
+    if (answered) router.refresh();
   }
 
   return (
@@ -164,9 +175,10 @@ export function AttachTick({
 
   async function toggle(next: boolean) {
     setBusy(true);
-    setError(await decide(jobId, kit, { kind: "attach", id, ticked: next }));
+    const { error, answered } = await decide(jobId, kit, { kind: "attach", id, ticked: next });
+    setError(error);
     setBusy(false);
-    router.refresh();
+    if (answered) router.refresh();
   }
 
   return (

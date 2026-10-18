@@ -160,6 +160,19 @@ describe("postImages", () => {
     }
   });
 
+  it("leaves out an image storage takes too long to sign", async () => {
+    await screenshot(0);
+    await storage.put(CROP, new Uint8Array([4]), "image/png");
+    const stalled = { ...storage, createSignedReadUrl: () => new Promise<string>(() => {}) };
+
+    expect(
+      await postImages({ db, storage: stalled, signMs: 20 }, JOB, {
+        cropPath: CROP,
+        screenshots: "always",
+      }),
+    ).toEqual({ crop: null, screenshots: [] });
+  });
+
   it("signs nothing for a job that is not one", async () => {
     expect(
       await postImages({ db, storage }, "not-a-uuid", { cropPath: CROP, screenshots: "always" }),

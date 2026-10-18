@@ -9,11 +9,14 @@ import { isUuid } from "@/lib/uuid";
  * screenshots, the one the contact was read on first, show when the owner
  * must type the contact from them, and, until the kit has gone, whenever
  * there is no crop to show: none was made, or storage cannot sign it, as
- * one a purge removed. An image storage cannot sign is left out rather
- * than failing the page.
+ * one a purge removed. An image storage cannot sign, or takes longer than
+ * SIGN_MS to, is left out rather than failing or holding up the page.
  */
 
 export const IMAGE_URL_SECONDS = 60;
+
+/** How long storage may take to sign one image's URL. */
+export const SIGN_MS = 5_000;
 
 /** Which of the post's images a kit's page shows (the job view decides). */
 export interface ImagesWanted {
@@ -46,13 +49,26 @@ export interface PostImages {
 }
 
 export async function postImages(
-  deps: { db: Db; storage: Storage },
+  deps: { db: Db; storage: Storage; signMs?: number },
   jobId: string,
   wanted: ImagesWanted,
 ): Promise<PostImages> {
   if (!isUuid(jobId)) return { crop: null, screenshots: [] };
+  const signMs = deps.signMs ?? SIGN_MS;
   const signed = (path: string) =>
-    deps.storage.createSignedReadUrl(path, IMAGE_URL_SECONDS).catch(() => null);
+    new Promise<string | null>((resolve) => {
+      const timer = setTimeout(() => resolve(null), signMs);
+      deps.storage.createSignedReadUrl(path, IMAGE_URL_SECONDS).then(
+        (url) => {
+          clearTimeout(timer);
+          resolve(url);
+        },
+        () => {
+          clearTimeout(timer);
+          resolve(null);
+        },
+      );
+    });
   // The job's own crops, whatever case the job's ID was given in.
   const folder = `jobs/${jobId.toLowerCase()}/crops/`;
   const ours = wanted.cropPath?.startsWith(folder) ? wanted.cropPath : null;

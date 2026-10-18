@@ -140,11 +140,18 @@ export interface JobView {
    */
   contactScreenshot: number | null;
   /**
-   * Whether the contact's box lies on a screenshot but its second read has
-   * no crop of it to show, on a kit that has not gone: the owner then types
-   * the contact from the screenshots (review spec, "Contact panel").
+   * Whether the contact's box lies on a screenshot, its two reads agree,
+   * but its second read has no crop of it to show, on a kit that has not
+   * gone: the owner then types the contact from the screenshots (review
+   * spec, "Contact panel"). A skipped kit keeps it, as its contact was.
    */
   noCrop: boolean;
+  /**
+   * Where the kit went, as the ledger records it: the address or number
+   * its application keeps; null before it went, or for a kit that goes to
+   * none, as a form.
+   */
+  wentTo: string | null;
   /** Which of the post's images the kit's page shows; null for a kit with no contact panel. */
   images: ImagesWanted | null;
   /** The email address's checks; null before they ran, or for another route. */
@@ -318,7 +325,6 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const sentByJobkit = role ? await anySent(deps.db, id, role.id) : false;
   // jobkit sent it, though the ledger may not have recorded it: it went.
   const went = Boolean(application && WENT.has(application.status)) || sentByJobkit;
-  const gone = went || application?.status === "skipped";
   // As kitRouteOf decides, so the page offers what Mark sent and Mark submitted accept.
   const kitRoute = application ? application.route : role ? routeOf(role.route.kind) : null;
   // The screenshot the contact's box lies on, from the post's reading, which a purge leaves.
@@ -326,10 +332,10 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     role && extraction ? (mapBox(role.route.box, extraction.tiles)?.image ?? null) : null;
   // A contact read from a screenshot shows its crop beside it; with none to show, the owner types
   // it from the screenshots, however the reads settled (review spec, "Contact panel"). One settled
-  // from the pasted text, its box on no screenshot, was read as written. A kit that went, or was
-  // skipped, keeps the address it had.
+  // from the pasted text, its box on no screenshot, was read as written. A kit that went shows
+  // where it went, as the ledger keeps it.
   const noCrop =
-    !gone &&
+    !went &&
     contactScreenshot !== null &&
     settled?.agreement.ok === true &&
     settled.cropPath === null;
@@ -405,11 +411,24 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     contact: settled,
     contactScreenshot,
     noCrop,
+    wentTo: went ? (application?.address ?? null) : null,
+    // The screenshots while the owner types the contact from them, or checks a bounced one against
+    // the post; in place of a crop that cannot be shown; none once the kit went, or where no crop
+    // could be, as for a contact the pasted text settled.
     images:
       ready && kitKey && kitParts?.contact
         ? {
             cropPath: settled?.cropPath ?? null,
-            screenshots: gone ? "never" : needsRetype ? "always" : "without-crop",
+            screenshots:
+              application?.status === "bounced"
+                ? "always"
+                : went
+                  ? "never"
+                  : needsRetype
+                    ? "always"
+                    : contactScreenshot !== null
+                      ? "without-crop"
+                      : "never",
             first: contactScreenshot,
           }
         : null,
@@ -864,6 +883,7 @@ async function applicationOf(
   bouncedAt: Date | null;
   submittedAt: Date | null;
   route: Route | null;
+  address: string | null;
 } | null> {
   const { rows } = await db.query<{
     id: string;
@@ -873,8 +893,10 @@ async function applicationOf(
     bounced_at: Date | null;
     submitted_at: Date | null;
     route: Route | null;
+    address: string | null;
   }>(
-    `select id, status, sent_at, skipped_at, bounced_at, submitted_at, route from {{schema}}.applications
+    `select id, status, sent_at, skipped_at, bounced_at, submitted_at, route, address
+       from {{schema}}.applications
       where job_id = $1 and role_id = $2`,
     [jobId, roleId],
   );
@@ -888,6 +910,7 @@ async function applicationOf(
         bouncedAt: row.bounced_at,
         submittedAt: row.submitted_at,
         route: row.route,
+        address: row.address,
       }
     : null;
 }

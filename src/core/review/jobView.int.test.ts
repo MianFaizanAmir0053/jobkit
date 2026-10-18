@@ -431,7 +431,8 @@ describe("jobView", () => {
     const agreed = (await jobView({ db, clock }, id))!;
     expect(agreed.noCrop).toBe(false);
     expect(agreed.kitParts?.contact?.needsRetype).toBe(false);
-    expect(agreed.images).toEqual({ cropPath: null, screenshots: "without-crop", first: null });
+    // Pasted text alone: no cut-out could be made, so no screenshot is looked for.
+    expect(agreed.images).toEqual({ cropPath: null, screenshots: "never", first: null });
 
     // The contact's box lies on a screenshot, but its crop could not be stored.
     await onScreenshot(id);
@@ -468,9 +469,11 @@ describe("jobView", () => {
     expect(view.noCrop).toBe(false);
     expect(view.kitParts?.contact?.needsRetype).toBe(false);
     expect(view.handoff).toEqual({ to: "jobs@example.com", typed: false });
+    // No cut-out was possible, and the contact is not on the screenshots: none is shown.
+    expect(view.images).toEqual({ cropPath: null, screenshots: "never", first: null });
   });
 
-  it("keeps the address of a kit that went, or was skipped, and shows no screenshots once it went", async () => {
+  it("shows where a kit went, as the ledger keeps it, with no screenshots until it bounced", async () => {
     await seedSample();
     const sent = await agreedKit();
     await cleared(sent);
@@ -480,19 +483,40 @@ describe("jobView", () => {
 
     const went = (await jobView({ db, clock }, sent))!;
     expect(went.noCrop).toBe(false);
-    expect(went.handoff).toEqual({ to: "jobs@example.com", typed: false });
+    expect(went.wentTo).toBe("jobs@example.com");
     expect(went.images).toEqual({ cropPath: null, screenshots: "never", first: 0 });
 
+    // Bounced: the owner checks the address against the post again.
+    await markBounced({ db, clock }, sent, null, went.application!.sentAt!);
+    expect((await jobView({ db, clock }, sent))!.images?.screenshots).toBe("always");
+  });
+
+  it("shows where a kit went when the owner typed the address of a contact with no crop", async () => {
+    await seedSample();
+    const id = await agreedKit();
+    await onScreenshot(id);
+    await cleared(id, "hr@example.com");
+    expect((await jobView({ db, clock }, id))!.wentTo).toBeNull();
+    await markSent({ db, clock }, id, null, { changedInGmail: false });
+
+    const view = (await jobView({ db, clock }, id))!;
+
+    expect(view.wentTo).toBe("hr@example.com");
+    expect(view.noCrop).toBe(false);
+  });
+
+  it("keeps a skipped kit's contact as it was, unconfirmed while it has no crop", async () => {
+    await seedSample();
     const skipped = await agreedKit();
     await onScreenshot(skipped);
     const kit = (await jobView({ db, clock }, skipped))!.kitKey!;
     await skipKit({ db, clock }, skipped, null, { kit, uncertain: null });
+
     const view = (await jobView({ db, clock }, skipped))!;
-    expect(view.noCrop).toBe(false);
-    expect(view.images?.screenshots).toBe("never");
-    // Taken back, the kit asks for it again.
-    await takeBackSkip({ db, clock }, skipped, null, view.application!.skippedAt!);
-    expect((await jobView({ db, clock }, skipped))!.noCrop).toBe(true);
+
+    expect(view.noCrop).toBe(true);
+    expect(view.handoff).toEqual({ to: "", typed: true });
+    expect(view.images?.screenshots).toBe("always");
   });
 
   it("names the screenshot the contact's box lies on", async () => {

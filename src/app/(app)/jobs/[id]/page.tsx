@@ -652,6 +652,8 @@ function KitPanel({
   // box lies on one; the rest open on a tap, so a phone fetches them only then.
   const shots = images?.screenshots ?? [];
   const readOnFirst = shots[0] !== undefined && shots[0].position === view.contactScreenshot;
+  // Whether the post came as screenshots, as its reading's tiles say, whatever storage still holds.
+  const fromScreenshots = (view.extraction?.tiles.length ?? 0) > 0;
   // Where to type the contact from, when the reads agree but there is no crop of it to show.
   const typeFrom = shots.length > 0 ? "the post's screenshots below" : "the post";
   // Where the kit goes: the post's contact, or the one typed in its place once it passes.
@@ -692,7 +694,12 @@ function KitPanel({
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
           <dt className="text-muted-foreground">To</dt>
           <dd className="min-w-0 [overflow-wrap:anywhere]">
-            {!byEmail ? (
+            {view.went && view.wentTo ? (
+              <>
+                <span className="block text-muted-foreground">It went to</span>
+                <span className="text-xl font-medium">{view.wentTo}</span>
+              </>
+            ) : !byEmail ? (
               <>
                 <span>
                   The post asks you to apply {ROUTE_WORDS[role.route.kind]}
@@ -734,7 +741,7 @@ function KitPanel({
                 from {typeFrom}.
               </p>
             )}
-            {disputed && <p className="mt-1 text-destructive">{disputed}</p>}
+            {disputed && !view.went && <p className="mt-1 text-destructive">{disputed}</p>}
             {images?.crop && (
               <div className="mt-2 flex flex-col gap-1">
                 {needsRetype && (
@@ -757,12 +764,14 @@ function KitPanel({
                     src={images.crop}
                     alt={`The ${noun} in the post's screenshot, enlarged`}
                     className="h-24 w-auto max-w-none rounded border border-border"
+                    failedWords="The cut-out did not load. Reload the page to see the post's screenshots in its place."
                   />
                 </div>
               </div>
             )}
             {needsRetype &&
               to === "" &&
+              !view.went &&
               postChecks
                 .filter((check) => check.blocking && check.kind !== "syntax")
                 .map((check) => (
@@ -786,13 +795,13 @@ function KitPanel({
                 value={decisions.retyped?.value ?? null}
               />
             )}
-            {needsRetype && to !== "" && (
+            {needsRetype && to !== "" && !view.went && (
               <p className="mt-1">
                 You typed it: {goes}
                 <span className="block text-xl font-medium">{to}</span>
               </p>
             )}
-            {typedChecks.map((check) => (
+            {(view.went ? [] : typedChecks).map((check) => (
               <p
                 key={`typed-${check.kind}`}
                 className={`mt-1 ${check.blocking ? "text-destructive" : "text-muted-foreground"}`}
@@ -804,11 +813,21 @@ function KitPanel({
               <p className="mt-1 text-muted-foreground">Read a second time: it matches.</p>
             )}
           </dd>
+          {view.images?.screenshots === "always" && shots.length === 0 && fromScreenshots && (
+            <dd className="col-span-2 text-muted-foreground">
+              jobkit cannot show the post&apos;s screenshots just now. Reload the page to try again.
+            </dd>
+          )}
           {shots.length > 0 && (
             // The panel's whole width, below the field the contact is typed in.
             <dd className="col-span-2 flex min-w-0 flex-col gap-2">
               <p className="text-muted-foreground">
-                {needsRetype ? (
+                {view.went ? (
+                  <>
+                    The post&apos;s screenshots, to check the {noun} it went to against
+                    {readOnFirst && ", the one jobkit read it on first"}.
+                  </>
+                ) : needsRetype ? (
                   <>
                     The post&apos;s screenshots, to type the {noun} from
                     {readOnFirst && ", the one jobkit read it on first"}. Zoom in to read it.
