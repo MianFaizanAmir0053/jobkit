@@ -8,16 +8,17 @@ Three early checks, run once the first deploy is live and the phone is paired (s
 
 1. In Chrome on the phone, open the site, then Chrome's menu, Install app. Note whether the install offer appeared.
 2. In the gallery, select two screenshots of a job post, tap Share and choose jobkit.
-3. jobkit opens New job and uploads the two screenshots with no tap, then opens the job. If it says "Nothing arrived from the share", Chrome delivered no screenshots.
+3. jobkit opens New job and uploads the two screenshots with no tap, then opens the job. If it says "Nothing arrived from the share", Chrome delivered no screenshots. If it says "This share may have come from another site. Check it, then press Start.", the screenshots arrived, but Chrome did not mark the share as the owner's own doing (`Sec-Fetch-Site: none`); press Start, and note it.
 
 | Item | Result |
 |---|---|
 | Date, phone model, Android version, Chrome version | |
 | Install offered and installed | |
-| The job opened with both screenshots | |
+| The job opened with both screenshots, with no tap | |
+| Or: "This share may have come from another site" (it needed Start) | |
 | Or: "Nothing arrived from the share" | |
 
-**Decision:** if the job opened, the server's share-target switch stays on; if nothing arrived, `SHARE_TARGET_ON` in `src/server/shareTarget.ts` goes to false, and the New job page's upload button carries the flow (intake spec, "Share-target switch").
+**Decision:** if the job opened, the server's share-target switch stays on; if nothing arrived, `SHARE_TARGET_ON` in `src/server/shareTarget.ts` goes to false, and the New job page's upload button carries the flow (intake spec, "Share-target switch"). If the share needed Start, the switch stays on and the share costs one tap; whether to start such shares untapped is the owner's call, since another site's page could then start a job (intake spec, "Inputs").
 
 ## 2. Gmail handoffs, on the phone
 

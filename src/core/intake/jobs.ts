@@ -4,6 +4,7 @@ import { tileCount } from "@/core/shared/tileGeometry";
 import type { Clock, Db, Storage } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
+import { withoutHidden } from "./hidden";
 import { type ImageMeta, MAX_HELD_MS, refusal } from "./limits";
 import { linksIn } from "./links";
 
@@ -66,8 +67,8 @@ export async function startJob(
   // Exact repeats within one job are dropped, the first kept.
   const seen = new Set<string>();
   const images = job.images.filter((image) => !seen.has(image.sha256) && seen.add(image.sha256));
-  // A NUL character means nothing in a post, and Postgres text cannot hold one.
-  const pastedText = job.pastedText.split(String.fromCharCode(0)).join("");
+  const pastedText = withoutHidden(job.pastedText);
+  const sharedUrl = withoutHidden(job.sharedUrl ?? "");
   const refused = refusal(images, pastedText);
   if (refused) return { ok: false, message: refused };
   if (job.clientElapsedMs > MAX_HELD_MS) return { ok: false, message: CLOCK_WRONG };
@@ -87,7 +88,7 @@ export async function startJob(
         jobId,
         pastedText.trim() === "" ? null : pastedText,
         job.inputKind ?? "page",
-        linksIn(job.sharedUrl ?? "", pastedText),
+        linksIn(sharedUrl, pastedText),
       ],
     );
     const uploads: { imageId: string; url: string }[] = [];
@@ -227,11 +228,14 @@ export async function reissueUploads(deps: Deps, jobId: string): Promise<Reissue
   }
   const at = deps.clock.now();
   return deps.db.tx(async (tx): Promise<ReissueResult> => {
-    // Under the job's lock, so two requests at once start one attempt each, one after the other.
+    // Under the job's lock, so two requests at once start one attempt each, one after the other,
+    // and with its timeout applied again, since the URLs took time to make.
+    await expireUploads(tx, at, jobId);
     const { rows: locked } = await tx.query<{ state: string }>(
       "select state from {{schema}}.jobs where id = $1 for update",
       [jobId],
     );
+    if (locked[0]?.state === "upload_failed") return { ok: false, reason: "upload-failed" };
     if (locked[0]?.state !== "uploading") return { ok: false, reason: "not-uploading" };
     await endAttempt(tx, jobId, "failed", at);
     await startAttempt(

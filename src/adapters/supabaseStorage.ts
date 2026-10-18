@@ -76,7 +76,9 @@ export function createSupabaseStorage(opts: {
       assertStoragePath(path);
       const { data, error } = await bucket().info(path);
       if (error) return notFound(error) ? null : fail("stat", error.message);
-      return data ? { size: data.size ?? 0 } : null;
+      if (!data) return null;
+      if (typeof data.size !== "number") return fail("stat", "storage gave no size");
+      return { size: data.size };
     },
     async list(prefix) {
       assertStoragePath(prefix);

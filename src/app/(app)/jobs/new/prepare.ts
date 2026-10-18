@@ -58,6 +58,21 @@ export async function prepareImage(file: File): Promise<Prepared> {
   }
 }
 
+/**
+ * Draws the image on white, as a screenshot is: text drawn on transparent
+ * pixels shows the same on the page's dark background as to the model.
+ */
+function paint(
+  context: OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D,
+  bitmap: ImageBitmap,
+  width: number,
+  height: number,
+) {
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(bitmap, 0, 0, width, height);
+}
+
 async function draw(
   bitmap: ImageBitmap,
   width: number,
@@ -69,7 +84,7 @@ async function draw(
     const canvas = new OffscreenCanvas(width, height);
     const context = canvas.getContext("2d");
     if (!context) throw new Error("No canvas of this size.");
-    context.drawImage(bitmap, 0, 0, width, height);
+    paint(context, bitmap, width, height);
     return canvas.convertToBlob(encoding);
   }
   const canvas = document.createElement("canvas");
@@ -77,7 +92,7 @@ async function draw(
   canvas.height = height;
   const context = canvas.getContext("2d");
   if (!context) throw new Error("No canvas of this size.");
-  context.drawImage(bitmap, 0, 0, width, height);
+  paint(context, bitmap, width, height);
   return new Promise((resolve, reject) =>
     canvas.toBlob(
       (blob) => (blob ? resolve(blob) : reject(new Error("The image could not be encoded."))),

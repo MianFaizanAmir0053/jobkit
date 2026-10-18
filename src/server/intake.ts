@@ -40,8 +40,8 @@ const newJobBody = z.object({
   clientElapsedMs: z.number().int().nonnegative(),
   /** Where the job came from (intake spec, "Upload path", step 2). */
   inputKind: z.enum(["page", "share"]).default("page"),
-  /** A share's url field, kept as a reference and never fetched. */
-  sharedUrl: z.string().max(2_000).default(""),
+  /** A share's url field, kept as a reference and never fetched; one past a link's length is not kept. */
+  sharedUrl: z.string().default(""),
 });
 
 /** POST /api/jobs: creates the job and hands back an upload URL per image; a paste-only job starts at once. */

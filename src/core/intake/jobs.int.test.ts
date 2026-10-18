@@ -557,3 +557,74 @@ describe("the monthly spend cap", () => {
     expect(rows).toEqual([{ n: 0 }]);
   });
 });
+
+describe("the upload timeout and a shared link", () => {
+  it("ends a job's open attempt as failed when its upload times out", async () => {
+    const started = await startJob(deps(), {
+      images: [image(1)],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    if (!started.ok) throw new Error(started.message);
+    clock.advance(15 * 60_000 + 1);
+
+    expect(await confirmUploads(deps(), started.jobId)).toEqual({
+      ok: false,
+      reason: "upload-failed",
+    });
+
+    expect(await attempts(started.jobId)).toEqual([
+      expect.objectContaining({
+        outcome: "failed",
+        ended_at: new Date(clock.now().getTime() - 1),
+      }),
+    ]);
+  });
+
+  it("keeps a job whose shared link is past the limit or holds a NUL, keeping only the links that fit", async () => {
+    const started = await startJob(deps(), {
+      images: [],
+      pastedText: "A post: https://jobs.example.com/1",
+      sharedUrl: `https://lnkd.in/${"x".repeat(2_100)}`,
+      clientElapsedMs: 0,
+      inputKind: "share",
+    });
+    if (!started.ok) throw new Error(started.message);
+    const nul = await startJob(deps(), {
+      images: [],
+      pastedText: "Another post",
+      sharedUrl: `https://lnkd.in/a${String.fromCharCode(0)}b`,
+      clientElapsedMs: 0,
+      inputKind: "share",
+    });
+    if (!nul.ok) throw new Error(nul.message);
+
+    const { rows } = await db.query<{ post_links: string[] }>(
+      "select post_links from {{schema}}.jobs where id = any($1) order by received_at, id",
+      [[started.jobId, nul.jobId]],
+    );
+    expect(rows.map((row) => row.post_links).sort()).toEqual(
+      [["https://jobs.example.com/1"], ["https://lnkd.in/ab"]].sort(),
+    );
+  });
+
+  it("drops the characters that show nothing and only hide text, keeping the marks Urdu needs", async () => {
+    const at = (...codes: number[]) => String.fromCodePoint(...codes);
+    // Tag characters spell hidden words; overrides and isolates turn text around on screen.
+    const hidden = at(0xe0049, 0xe0067, 0xe006e) + at(0x202e) + at(0x2066) + at(0x2069);
+    // The right-to-left mark and the zero-width non-joiner are part of written Urdu.
+    const urdu = `${at(0x0645, 0x06cc, 0x200c, 0x06ba)}${at(0x200f)}`;
+    const started = await startJob(deps(), {
+      images: [],
+      pastedText: `We're hiring${hidden}. Apply at jobs@example.com ${urdu}`,
+      clientElapsedMs: 0,
+    });
+    if (!started.ok) throw new Error(started.message);
+
+    const { rows } = await db.query<{ pasted_text: string }>(
+      "select pasted_text from {{schema}}.jobs where id = $1",
+      [started.jobId],
+    );
+    expect(rows).toEqual([{ pasted_text: `We're hiring. Apply at jobs@example.com ${urdu}` }]);
+  });
+});

@@ -100,8 +100,10 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
       const file = fileFor(path);
       try {
         await mkdir(dirname(file), { recursive: true });
-        await writeWhole(file, bytes, true);
+        await writeWhole(file, bytes, false);
       } catch (error) {
+        // A file already there stays, as on Supabase; the URL is used up.
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
         uploads.set(t, upload);
         throw error;
       }

@@ -279,12 +279,23 @@ export async function expireUploads(db: Db, now: Date, jobId?: string): Promise<
   let moved = 0;
   for (const row of rows) {
     const at = new Date(row.state_changed_at.getTime() + UPLOAD_TIMEOUT_MS);
-    const done = await moveJob(db, row.id, {
-      from: "uploading",
-      to: "upload_failed",
-      pending: null,
-      at,
-      ifChangedAt: row.state_changed_at,
+    const done = await db.tx(async (tx) => {
+      const failed = await moveJob(tx, row.id, {
+        from: "uploading",
+        to: "upload_failed",
+        pending: null,
+        at,
+        ifChangedAt: row.state_changed_at,
+      });
+      // Intake's log of the upload's attempt (intake spec, "Upload path") ends with it.
+      if (failed) {
+        await tx.query(
+          `update {{schema}}.upload_attempts set outcome = 'failed', ended_at = $2
+            where job_id = $1 and outcome is null`,
+          [row.id, at],
+        );
+      }
+      return failed;
     });
     if (done) moved += 1;
   }

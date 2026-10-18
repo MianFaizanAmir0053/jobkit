@@ -4,9 +4,8 @@
 -- fetched. Every upload attempt is logged with its outcome, for the Stats
 -- page's upload success (ledger spec, "Records"): a job's first attempt
 -- starts as it is created, and each request for fresh upload URLs ends the
--- attempt before it as failed and starts another. One the job leaves
--- uploading by another way (the upload timeout, Skip) stays open, and the
--- Stats page counts it failed.
+-- attempt before it as failed and starts another. The upload timeout, the
+-- only other way out of uploading, ends the open attempt as failed with it.
 
 alter table {{schema}}.jobs add column input_kind text check (input_kind in ('page', 'share'));
 alter table {{schema}}.jobs add column post_links text[] not null default '{}';

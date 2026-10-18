@@ -90,6 +90,16 @@ describe("local storage", () => {
     expect(await storage.acceptSignedUpload(token, bytes("y"))).toBe(false);
   });
 
+  it("never replaces a stored file through an upload URL, as Supabase's signed uploads never do", async () => {
+    const first = await storage.createSignedUploadUrl("jobs/j1/a.webp");
+    const second = await storage.createSignedUploadUrl("jobs/j1/a.webp");
+
+    expect(await storage.acceptSignedUpload(first.token, bytes("first"))).toBe(true);
+    expect(await storage.acceptSignedUpload(second.token, bytes("second, longer"))).toBe(false);
+
+    expect(await storage.stat("jobs/j1/a.webp")).toEqual({ size: 5 });
+  });
+
   it("lets only one of two uploads at the same moment use a token", async () => {
     const { token } = await storage.createSignedUploadUrl("jobs/j1/a.webp");
 

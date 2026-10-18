@@ -5,6 +5,8 @@ import { TOO_TALL } from "@/core/intake/encode";
 import type { Prepared } from "./prepare";
 import {
   BACKOFF_MS,
+  FORGET_AFTER_DEADLINE_MS,
+  keepsUpload,
   MESSAGES,
   type PendingUpload,
   resumeUpload,
@@ -47,15 +49,30 @@ function browser(
   const waits: number[] = [];
   // Uploads kept to resume after a reload, as IndexedDB keeps them in the browser.
   const kept = new Map<string, PendingUpload>();
+  // Locks held, as the browser's Web Locks hold them across tabs.
+  const held = new Set<string>();
   const deps: SubmitDeps = {
     pending: {
       save: async (upload) => {
         kept.set(upload.jobId, upload);
       },
       latest: async () => [...kept.values()].at(-1) ?? null,
+      get: async (jobId) => kept.get(jobId) ?? null,
       clear: async (jobId) => {
         kept.delete(jobId);
       },
+      clearUpTo: async (deadlineAt) => {
+        for (const [jobId, upload] of kept) if (upload.deadlineAt <= deadlineAt) kept.delete(jobId);
+      },
+    },
+    exclusive: async (name, run) => {
+      if (held.has(name)) return null;
+      held.add(name);
+      try {
+        return await run();
+      } finally {
+        held.delete(name);
+      }
     },
     wallNow: () => 1_000_000,
     prepare: async (file) => prepared[file.name]!,
@@ -78,6 +95,7 @@ function browser(
     statuses,
     waits,
     kept,
+    held,
     onStatus: (status: string) => statuses.push(status),
   };
 }
@@ -331,8 +349,8 @@ describe("submitJob", () => {
       "fresh",
       "uploaded",
     ]);
-    // Kept, so opening New job again tries once more while the server still waits for it.
-    expect([...fake.kept.keys()]).toEqual(["job-9"]);
+    // Forgotten, since the page says to press Start again: no later visit finishes it.
+    expect(fake.kept.size).toBe(0);
   });
 
   it("asks for fresh URLs for the screenshots that did not arrive, uploads only those, then confirms", async () => {
@@ -411,6 +429,35 @@ describe("submitJob", () => {
     expect(fake.calls[0]!.body).toMatchObject({ clientElapsedMs: 4_500 });
   });
 
+  it("leaves an upload kept from before for New job to finish when the owner starts another job", async () => {
+    const fake = browser({}, server("job-24", 0));
+    await fake.deps.pending.save({
+      jobId: "job-old",
+      deadlineAt: 1_000_000 + 60_000,
+      images: [{ imageId: "image-0", blob: new Blob(["old"]) }],
+    });
+
+    await submitJob(fake.deps, { files: [], text: "A post" }, fake.onStatus);
+
+    // The page said "jobkit tries again when you open New job", so it does.
+    expect([...fake.kept.keys()]).toEqual(["job-old"]);
+  });
+
+  it("forgets an upload whose start went wrong after the job was created, since the page says to press Start again", async () => {
+    const happy = server("job-25", 1);
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.method === "PUT" ? new Response(null, { status: 503 }) : happy(call),
+    );
+    fake.deps.wait = async () => {
+      throw new Error("a timer that fails");
+    };
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: false, message: MESSAGES.wentWrong },
+    );
+    expect(fake.kept.size).toBe(0);
+  });
+
   it("sends how the job came in and a shared link with its metadata", async () => {
     const fake = browser({}, server("job-22", 0));
 
@@ -469,18 +516,20 @@ describe("submitJob", () => {
 
   it("tells a signed-out owner to sign in, and says when the job is gone", async () => {
     const happy = server("job-12", 1);
-    const answers: [Response, string][] = [
-      [json({ error: "unauthorised" }, 401), MESSAGES.signIn],
-      [json({ error: "forbidden" }, 403), MESSAGES.notAllowed],
-      [json({ error: "not-found" }, 404), MESSAGES.notFound],
+    const answers: [Response, string, number][] = [
+      // The job exists, and New job finishes it once the owner is signed in again.
+      [json({ error: "unauthorised" }, 401), MESSAGES.signInToFinish, 1],
+      [json({ error: "forbidden" }, 403), MESSAGES.notAllowedToFinish, 1],
+      [json({ error: "not-found" }, 404), MESSAGES.notFound, 0],
     ];
-    for (const [answer, message] of answers) {
+    for (const [answer, message, kept] of answers) {
       const fake = browser({ "a.png": screenshot(1) }, (call) =>
         call.url.endsWith("/uploaded") ? answer : happy(call),
       );
       expect(
         await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus),
       ).toEqual({ ok: false, message });
+      expect(fake.kept.size).toBe(kept);
     }
   });
   it("says the job may have started when the answer to creating it cannot be read", async () => {
@@ -504,9 +553,14 @@ describe("submitJob", () => {
   });
 
   it("starts no upload once the server's 15 minutes are nearly up", async () => {
+    const happy = server("job-14", 2);
     const fake = browser(
       { "a.png": screenshot(1), "b.png": screenshot(2) },
-      server("job-14", 2),
+      // The confirmation asked for at the deadline finds the second screenshot missing.
+      (call) =>
+        call.url.endsWith("/uploaded")
+          ? json({ error: "missing", missing: ["image-1"] }, 409)
+          : happy(call),
       // The tap, the request, the uploads' start, the first upload, then past the deadline.
       [0, 0, 0, 1_000, UPLOAD_DEADLINE_MS + 1],
     );
@@ -552,10 +606,8 @@ describe("submitJob", () => {
         ],
         MESSAGES.confirmLost,
       ],
-      [
-        [new Error("dropped"), json({ error: "unauthorised" }, 401)],
-        `${MESSAGES.signIn} ${MESSAGES.checkJobs}`,
-      ],
+      // Kept, so New job asks the server how the job stands once the owner signs in again.
+      [[new Error("dropped"), json({ error: "unauthorised" }, 401)], MESSAGES.signInToFinish],
       [
         [new Response(null, { status: 500 }), json({ error: "not-found" }, 404)],
         `${MESSAGES.notFound} ${MESSAGES.checkJobs}`,
@@ -569,6 +621,129 @@ describe("submitJob", () => {
         await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus),
       ).toEqual({ ok: false, message });
     }
+  });
+
+  it("asks for no fresh URLs once the page's deadline has passed, saying the upload is too slow", async () => {
+    const happy = server("job-26", 1);
+    const fake = browser(
+      { "a.png": screenshot(1) },
+      (call) =>
+        call.url.endsWith("/uploaded")
+          ? json({ error: "missing", missing: ["image-0"] }, 409)
+          : happy(call),
+      // The tap, the request, the upload's start and its deadline check, then past the deadline.
+      [0, 0, 0, 0, UPLOAD_DEADLINE_MS + 1],
+    );
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: false, message: MESSAGES.tooSlow },
+    );
+    // Fresh URLs would log an upload attempt that never runs.
+    expect(fake.calls.map((call) => call.url.split("/").pop())).toEqual([
+      "jobs",
+      "token-0",
+      "uploaded",
+    ]);
+    expect(fake.kept.size).toBe(0);
+  });
+
+  it("asks for the confirmation again after a rate limit or a timeout, as after a server error", async () => {
+    const happy = server("job-27", 1);
+    const confirms: Response[] = [
+      new Response(null, { status: 429 }),
+      new Response(null, { status: 408 }),
+      json({ queued: true }, 202),
+    ];
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.url.endsWith("/uploaded") ? confirms.shift()! : happy(call),
+    );
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: true, jobId: "job-27" },
+    );
+    expect(fake.waits).toEqual([...BACKOFF_MS]);
+  });
+
+  it("keeps the upload when an answer to the confirmation says nothing of what arrived", async () => {
+    const happy = server("job-28", 1);
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.url.endsWith("/uploaded") ? new Response(null, { status: 400 }) : happy(call),
+    );
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: false, message: MESSAGES.confirmLost },
+    );
+    expect(fake.kept.size).toBe(1);
+  });
+
+  it("asks for the confirmation once the deadline passes during an upload, opening a job whose files all arrived", async () => {
+    const happy = server("job-29", 1);
+    const fake = browser(
+      { "a.png": screenshot(1) },
+      // The upload's bytes arrive, but its answer is lost; the second attempt would be too late.
+      (call) => (call.method === "PUT" ? new Error("answer lost") : happy(call)),
+      // The tap, the request, then each attempt's deadline check: the first in time, the second not.
+      [0, 0, 0, 0, UPLOAD_DEADLINE_MS + 1],
+    );
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: true, jobId: "job-29" },
+    );
+    expect(fake.calls.map((call) => call.url.split("/").pop())).toEqual([
+      "jobs",
+      "token-0",
+      "uploaded",
+    ]);
+  });
+
+  it("stops uploading once the wall clock passes the deadline, though the page's own clock stood still, as on a phone asleep", async () => {
+    const happy = server("job-31", 1);
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.url.endsWith("/uploaded")
+        ? json({ error: "missing", missing: ["image-0"] }, 409)
+        : happy(call),
+    );
+    const walls = [1_000_000, 1_000_000 + UPLOAD_DEADLINE_MS + 1];
+    fake.deps.wallNow = () => walls.shift() ?? 1_000_000 + UPLOAD_DEADLINE_MS + 1;
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: false, message: MESSAGES.tooSlow },
+    );
+    expect(fake.calls.filter((call) => call.method === "PUT")).toEqual([]);
+  });
+
+  it("says the upload cannot be checked later when the browser could not keep it", async () => {
+    const happy = server("job-32", 1);
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.url.endsWith("/uploaded") ? new Error("dropped") : happy(call),
+    );
+    fake.deps.pending.save = async () => {
+      throw new Error("quota exceeded");
+    };
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: false, message: MESSAGES.unkept },
+    );
+  });
+
+  it("tells the form which outcomes keep an upload for New job to finish, and only those", () => {
+    for (const message of [
+      MESSAGES.confirmLost,
+      MESSAGES.notResumed,
+      MESSAGES.signInToFinish,
+      MESSAGES.notAllowedToFinish,
+    ]) {
+      expect(keepsUpload({ ok: false, message })).toBe(true);
+    }
+    for (const message of [
+      MESSAGES.createLost,
+      MESSAGES.notArrived,
+      MESSAGES.unkept,
+      `${MESSAGES.notFound} ${MESSAGES.checkJobs}`,
+    ]) {
+      expect(keepsUpload({ ok: false, message })).toBe(false);
+    }
+    expect(keepsUpload({ ok: true, jobId: "job-1" })).toBe(false);
   });
 
   it("says the job may have started when the answer to creating it has no upload list", async () => {
@@ -646,15 +821,154 @@ describe("resumeUpload", () => {
     expect(fake.kept.size).toBe(1);
   });
 
-  it("forgets an upload past the server's 15 minutes without asking", async () => {
+  it("asks for the confirmation of a job past the page's deadline, never for fresh URLs, and uploads nothing more", async () => {
+    const answers: [Response, unknown][] = [
+      // Every file arrived before the deadline: the confirmation queues the job.
+      [json({ queued: true }, 202), { ok: true, jobId: "job-30" }],
+      // A confirmation reached the server before, though its answer was lost: the job runs.
+      [json({ error: "not-uploading" }, 409), { ok: true, jobId: "job-30" }],
+      [json({ error: "upload-failed" }, 409), { ok: false, message: MESSAGES.uploadTimedOut }],
+      [
+        json({ error: "missing", missing: ["image-1"] }, 409),
+        { ok: false, message: MESSAGES.tooSlow },
+      ],
+    ];
+    for (const [answer, outcome] of answers) {
+      const fake = browser({}, () => answer);
+      await fake.deps.pending.save({ ...pending(new Blob(["b"])), deadlineAt: 1_000_000 - 1 });
+
+      expect(await resumeUpload(fake.deps, fake.onStatus)).toEqual(outcome);
+      // Fresh URLs would log an upload attempt that never runs.
+      expect(fake.calls.map((call) => call.url.split("/").pop())).toEqual(["uploaded"]);
+      expect(fake.kept.size).toBe(0);
+    }
+  });
+
+  it("forgets every kept upload without asking once even the newest is a minute past the server's 15 minutes", async () => {
     const fake = browser({}, () => new Error("no request"));
-    await fake.deps.pending.save({ ...pending(new Blob(["b"])), deadlineAt: 1_000_000 - 1 });
+    const long = 1_000_000 - FORGET_AFTER_DEADLINE_MS - 1;
+    await fake.deps.pending.save({
+      ...pending(new Blob(["a"])),
+      jobId: "job-40",
+      deadlineAt: long - 5,
+    });
+    await fake.deps.pending.save({
+      ...pending(new Blob(["b"])),
+      jobId: "job-41",
+      deadlineAt: long,
+    });
+
+    expect(await resumeUpload(fake.deps, fake.onStatus)).toBeNull();
+    expect(fake.calls).toEqual([]);
+    expect(fake.kept.size).toBe(0);
+    expect(fake.statuses).toEqual([]);
+  });
+
+  it("keeps an upload whose finish went wrong, to try again on the next visit", async () => {
+    const fake = browser({}, () => new Response(null, { status: 503 }));
+    fake.deps.wait = async () => {
+      throw new Error("a timer that fails");
+    };
+    await fake.deps.pending.save(pending(new Blob(["b"])));
 
     expect(await resumeUpload(fake.deps, fake.onStatus)).toEqual({
       ok: false,
-      message: MESSAGES.uploadTimedOut,
+      message: MESSAGES.notResumed,
     });
+    expect(fake.kept.size).toBe(1);
+  });
+
+  it("finishes nothing that another tab forgot after this one read it", async () => {
+    const fake = browser({}, () => new Error("no request"));
+    await fake.deps.pending.save(pending(new Blob(["b"])));
+    // Another tab forgets the upload between this tab's read and its lock.
+    fake.deps.pending.latest = async () => {
+      const upload = fake.kept.get("job-30") ?? null;
+      fake.kept.delete("job-30");
+      return upload;
+    };
+
+    expect(await resumeUpload(fake.deps, fake.onStatus)).toBeNull();
     expect(fake.calls).toEqual([]);
-    expect(fake.kept.size).toBe(0);
+  });
+
+  it("forgets only uploads as old as the one it found long past, never one kept since", async () => {
+    const fake = browser({}, () => new Error("no request"));
+    const long = 1_000_000 - FORGET_AFTER_DEADLINE_MS - 1;
+    const old = { ...pending(new Blob(["a"])), jobId: "job-42", deadlineAt: long };
+    await fake.deps.pending.save(old);
+    // Another tab starts a job and keeps its upload between this tab's read and its clearing.
+    fake.deps.pending.latest = async () => {
+      await fake.deps.pending.save({ ...pending(new Blob(["b"])), jobId: "job-43" });
+      return old;
+    };
+
+    expect(await resumeUpload(fake.deps, fake.onStatus)).toBeNull();
+    expect([...fake.kept.keys()]).toEqual(["job-43"]);
+  });
+
+  it("keeps the upload of a device no longer approved, and says it finishes once approved again", async () => {
+    const fake = browser({}, () => json({ error: "forbidden" }, 403));
+    await fake.deps.pending.save(pending(new Blob(["b"])));
+
+    expect(await resumeUpload(fake.deps, fake.onStatus)).toEqual({
+      ok: false,
+      message: MESSAGES.notAllowedToFinish,
+    });
+    expect(fake.kept.size).toBe(1);
+  });
+
+  it("keeps the upload of a signed-out owner, and says it finishes once they sign in again", async () => {
+    const fake = browser({}, () => json({ error: "unauthorised" }, 401));
+    await fake.deps.pending.save(pending(new Blob(["b"])));
+
+    expect(await resumeUpload(fake.deps, fake.onStatus)).toEqual({
+      ok: false,
+      message: MESSAGES.signInToFinish,
+    });
+    expect(fake.kept.size).toBe(1);
+  });
+
+  it("leaves an upload another tab is finishing to that tab", async () => {
+    const fake = browser({}, () => new Error("no request"));
+    await fake.deps.pending.save(pending(new Blob(["b"])));
+    fake.held.add("jobkit-upload-job-30");
+
+    expect(await resumeUpload(fake.deps, fake.onStatus)).toBe("elsewhere");
+    expect(fake.calls).toEqual([]);
+    expect(fake.kept.size).toBe(1);
+  });
+
+  it("asks for the confirmation when the deadline passes while it waits to ask for fresh URLs again", async () => {
+    const answers: Response[] = [new Response(null, { status: 503 }), json({ queued: true }, 202)];
+    const fake = browser({}, () => answers.shift()!, [0, 0, 600]);
+    await fake.deps.pending.save({ ...pending(new Blob(["b"])), deadlineAt: 1_000_000 + 500 });
+
+    expect(await resumeUpload(fake.deps, fake.onStatus)).toEqual({ ok: true, jobId: "job-30" });
+    expect(fake.calls.map((call) => call.url.split("/").pop())).toEqual([
+      "upload-urls",
+      "uploaded",
+    ]);
+  });
+
+  it("asks for fresh URLs again while the connection or the server fails, three times at most", async () => {
+    const answers: (Response | Error)[] = [
+      new Error("dropped"),
+      new Response(null, { status: 503 }),
+      json({ uploads: [] }),
+    ];
+    const fake = browser({}, (call) =>
+      call.url.endsWith("/upload-urls") ? answers.shift()! : json({ queued: true }, 202),
+    );
+    await fake.deps.pending.save(pending(new Blob(["b"])));
+
+    expect(await resumeUpload(fake.deps, fake.onStatus)).toEqual({ ok: true, jobId: "job-30" });
+    expect(fake.calls.map((call) => call.url.split("/").pop())).toEqual([
+      "upload-urls",
+      "upload-urls",
+      "upload-urls",
+      "uploaded",
+    ]);
+    expect(fake.waits).toEqual([...BACKOFF_MS]);
   });
 });
