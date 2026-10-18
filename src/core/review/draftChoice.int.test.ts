@@ -17,6 +17,7 @@ import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 import { createTestDb } from "@/server/db/testDb";
 
+import { flagKey } from "./decisions";
 import { backToDrafts, draftWithGemini, pickDraft } from "./draftChoice";
 import { type JobView, jobView, listJobViews } from "./jobView";
 import { recordReview } from "./kitReview";
@@ -156,7 +157,8 @@ describe("pickDraft", () => {
     expect(kinds(first)).toEqual(["contact", "flag"]);
     const decide = { db, clock, dns: mail };
     await recordReview(decide, id, { kind: "retype", value: "jobs@example.com" });
-    await recordReview(decide, id, { kind: "check_flag", flag: "F1" });
+    const flag = flagKey(first.kitParts!.flags[0]!);
+    await recordReview(decide, id, { kind: "check_flag", flag });
     expect(kinds(await view(id))).toEqual([]);
 
     const picked = await pickDraft({ db, clock }, id, "T-ai-features", { kit: first.kitKey! });
@@ -175,7 +177,7 @@ describe("pickDraft", () => {
     await pickDraft({ db, clock }, id, "T-full-stack", { kit: other.kitKey! });
     const again = await view(id);
     expect(again.kitKey).toBe(first.kitKey);
-    expect(again.review!.decisions.flagsChecked).toEqual(["F1"]);
+    expect(again.review!.decisions.flagsChecked).toEqual([flag]);
     expect(kinds(again)).toEqual([]);
   });
 
@@ -407,7 +409,8 @@ describe("the kit's drafts over time", () => {
   it("brings back a draft's own decisions when the page falls back to it", async () => {
     const id = await readyKit(POST, { templates: true, record: askingForADegree });
     const first = await view(id);
-    await recordReview({ db, clock, dns: mail }, id, { kind: "check_flag", flag: "F1" });
+    const flag = flagKey(first.kitParts!.flags[0]!);
+    await recordReview({ db, clock, dns: mail }, id, { kind: "check_flag", flag });
     await pickDraft({ db, clock }, id, "T-ai-features", { kit: first.kitKey! });
     // The pick names a draft the kit no longer offers: the page shows the first again.
     await db.query("update {{schema}}.kit_reviews set picked_draft = 'gemini' where job_id = $1", [
@@ -416,7 +419,7 @@ describe("the kit's drafts over time", () => {
 
     const back = await view(id);
     expect(back.picked).toBe("T-full-stack");
-    expect(back.review!.decisions.flagsChecked).toEqual(["F1"]);
+    expect(back.review!.decisions.flagsChecked).toEqual([flag]);
   });
 
   it("keeps the key of a kit drafted before the templates, so decisions made on it still count", async () => {

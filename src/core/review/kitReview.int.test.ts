@@ -101,20 +101,54 @@ describe("recordReview", () => {
     expect(view.handoff).toEqual({ to: "jobs@example.com", typed: true });
   });
 
-  it('clears each of validate\'s flags with "I checked this", and only a flag the kit has', async () => {
+  it("reads a decision kept by a flag's place, from before flags were named, as that flag's", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
       draft: CITING_NOTHING,
     });
     const view = (await jobView({ db, clock }, id))!;
     const place = view.kitParts!.flags.findIndex((each) => each.kind === "invalid_citation");
+    // As the page kept it before: the flag's place among drafting's, from 1.
+    await db.query(
+      `insert into {{schema}}.kit_reviews (job_id, role_id, decisions, gate, updated_at)
+       values ($1, $2, $3::jsonb, '[]'::jsonb, $4)
+       on conflict (job_id, role_id) do update set decisions = excluded.decisions`,
+      [
+        id,
+        view.role!.id,
+        storedDecisions(view.kitKey!, { ...NO_DECISIONS, flagsChecked: [`F${place + 1}`] }),
+        clock.now(),
+      ],
+    );
+
+    const read = (await jobView({ db, clock }, id))!;
+
+    expect(read.review!.decisions.flagsChecked).toEqual([flagKey(view.kitParts!.flags[place]!)]);
+    expect(
+      read.review!.gate.some(
+        (reason) => reason.kind === "flag" && reason.flag.kind === "invalid_citation",
+      ),
+    ).toBe(false);
+  });
+
+  it('clears each of validate\'s flags with "I checked this", and only a flag the kit has', async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      draft: CITING_NOTHING,
+    });
+    const view = (await jobView({ db, clock }, id))!;
+    const citation = view.kitParts!.flags.find((each) => each.kind === "invalid_citation")!;
     const open = (gate: readonly GateReason[]) =>
       gate.some((reason) => reason.kind === "flag" && reason.flag.kind === "invalid_citation");
     expect(open(view.review!.gate)).toBe(true);
 
-    const checked = await recordReview(deps(), id, { kind: "check_flag", flag: flagKey(place) });
+    const checked = await recordReview(deps(), id, {
+      kind: "check_flag",
+      flag: flagKey(citation),
+    });
 
     expect(checked.ok && open(checked.gate)).toBe(false);
-    expect(await recordReview(deps(), id, { kind: "check_flag", flag: "F99" })).toEqual({
+    expect(
+      await recordReview(deps(), id, { kind: "check_flag", flag: "over_limit@body~00000000" }),
+    ).toEqual({
       ok: false,
       reason: "not-in-kit",
     });
@@ -409,7 +443,7 @@ describe("recordReview", () => {
       { kind: "attach", id: "A1", ticked: true },
       { kind: "continue_anyway" },
       { kind: "retype", value: "other@example.com" },
-      { kind: "check_flag", flag: "F1" },
+      { kind: "check_flag", flag: "over_limit@body~00000000" },
       { kind: "meets", requirementId: "R1", ticked: true },
     ] as const) {
       expect(await recordReview(deps(), id, action), action.kind).toEqual({

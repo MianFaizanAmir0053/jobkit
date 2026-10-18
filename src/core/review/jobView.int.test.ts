@@ -55,8 +55,8 @@ async function cleared(id: string, typed = "jobs@example.com"): Promise<void> {
   for (const reason of view.review?.gate ?? []) {
     if (reason.kind === "judge") await decide({ kind: "check", blockId: reason.blockId });
   }
-  for (const [place] of (view.kitParts?.flags ?? []).entries()) {
-    await decide({ kind: "check_flag", flag: flagKey(place) });
+  for (const flag of view.kitParts?.flags ?? []) {
+    await decide({ kind: "check_flag", flag: flagKey(flag) });
   }
   for (const attachment of view.kitParts?.attachments ?? []) {
     await decide({ kind: "attach", id: attachment.id, ticked: true });

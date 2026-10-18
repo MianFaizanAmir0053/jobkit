@@ -42,7 +42,7 @@ export interface AddressLookup {
 export interface ReviewDecisions {
   /** Sentences marked "I checked this", by block ID. */
   checked: string[];
-  /** validate's flags marked "I checked this", by their place among the kit's (flagKey). */
+  /** validate's flags marked "I checked this", by what each found (flagKey). */
   flagsChecked: string[];
   retyped: TypedContact | null;
   /** Required attachments the owner will attach in Gmail, by their place in the post's list ("A1"). */
@@ -88,12 +88,15 @@ export const decisionsSchema = z.object({
   meets: z.array(z.string()).default([]),
 });
 
+/** A flag's name (flagKey): its kind, its place, and eight hex digits of its words. */
+const FLAG_KEY = /^[a-z_]{1,40}@[^@~\s]{1,40}~[0-9a-f]{8}$/;
+
 /** One decision, as the page posts it. A typed contact fits RFC 5321's 254 characters with room. */
 export const reviewActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("check"), blockId: z.string().min(1).max(20) }),
   z.strictObject({ kind: z.literal("uncheck"), blockId: z.string().min(1).max(20) }),
-  z.strictObject({ kind: z.literal("check_flag"), flag: z.string().regex(/^F\d{1,4}$/) }),
-  z.strictObject({ kind: z.literal("uncheck_flag"), flag: z.string().regex(/^F\d{1,4}$/) }),
+  z.strictObject({ kind: z.literal("check_flag"), flag: z.string().regex(FLAG_KEY) }),
+  z.strictObject({ kind: z.literal("uncheck_flag"), flag: z.string().regex(FLAG_KEY) }),
   z.strictObject({ kind: z.literal("retype"), value: z.string().max(320) }),
   z.strictObject({
     kind: z.literal("attach"),
@@ -111,13 +114,42 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
 export type ReviewAction = z.infer<typeof reviewActionSchema>;
 
 /**
- * A flag's name among the kit's: its place in validate's list ("F1"), so
- * two flags of one kind at one place are told apart, and a long place
- * never makes a name too long. Decisions count only for the kit they were
- * made on, so a place names one flag.
+ * A flag's name among the kit's, by what it found: its kind, its place, and
+ * a short hash of its words ("over_limit@body~1a2b3c4d"), so it keeps its
+ * name when validate runs again after an edit, and two at one place, as two
+ * lines aimed at AI the email repeats, are told apart. A finding whose
+ * words change is a new flag, which an earlier "I checked this" did not see.
  */
-export function flagKey(index: number): string {
-  return `F${index + 1}`;
+export function flagKey(flag: Pick<KitFlag, "kind" | "at" | "message">): string {
+  return `${flag.kind}@${flag.at}~${fnv1a(flag.message)}`;
+}
+
+/** FNV-1a over a string's UTF-16 code units, as eight hex digits: short, and the same in the browser. */
+function fnv1a(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * Decisions kept when flags were named by their place among drafting's
+ * ("F2", the second of the kit's flags as drafting kept them), named as
+ * now, by what that flag found; a place the kit has no flag at is dropped.
+ */
+export function withFlagNames(
+  decisions: ReviewDecisions,
+  flags: readonly KitFlag[],
+): ReviewDecisions {
+  const named = decisions.flagsChecked.flatMap((key) => {
+    const place = /^F(\d{1,4})$/.exec(key);
+    if (!place) return [key];
+    const flag = flags[Number(place[1]) - 1];
+    return flag ? [flagKey(flag)] : [];
+  });
+  return { ...decisions, flagsChecked: [...new Set(named)] };
 }
 
 /**
@@ -266,21 +298,18 @@ export function needsNewWords(
   const meets = new Set(decisions.meets);
   const musts = new Set(parts.mustHaves ?? []);
   return parts.flags.some(
-    (flag, place) =>
+    (flag) =>
       NEEDS_NEW_WORDS.has(flag.kind) ||
       // A must-have checked by an owner who did not say they meet it: the email must not claim it,
       // and needs a line saying so.
-      (isMeetable(flag) &&
-        musts.has(flag.at) &&
-        checked.has(flagKey(place)) &&
-        !meets.has(flag.at)),
+      (isMeetable(flag) && musts.has(flag.at) && checked.has(flagKey(flag)) && !meets.has(flag.at)),
   );
 }
 
 /**
  * What Approve & send marks "I checked this" on, of what the gate now
  * holds: the separate check's sentences ("sentence:S2"), then validate's
- * flags ("flag:F1"), but those only new words resolve and those only the
+ * flags ("flag:" and its name), but those only new words resolve and those only the
  * owner can answer. The confirmation lists them and the press names them,
  * so a press never marks what its page did not list, as when a decision
  * was taken back on the other device after the page was drawn.
@@ -295,13 +324,13 @@ export function approvable(parts: KitParts, decisions: ReviewDecisions): string[
         isBlocking(verdict) && blocks.has(verdict.blockId) && !checked.has(verdict.blockId),
     )
     .map((verdict) => `sentence:${verdict.blockId}`);
-  const flags = parts.flags.flatMap((flag, place) => {
-    const key = flagKey(place);
+  const flags = parts.flags.flatMap((flag) => {
+    const key = flagKey(flag);
     return flagsChecked.has(key) || NEEDS_NEW_WORDS.has(flag.kind) || isMeetable(flag)
       ? []
       : [`flag:${key}`];
   });
-  return [...new Set(sentences), ...flags];
+  return [...new Set([...sentences, ...flags])];
 }
 
 /**
@@ -317,8 +346,8 @@ export function approveAll(parts: KitParts, decisions: ReviewDecisions): ReviewD
     ...decisions,
     checked: held.reduce(withOne, decisions.checked),
     flagsChecked: parts.flags
-      .flatMap((flag, place) =>
-        NEEDS_NEW_WORDS.has(flag.kind) || isMeetable(flag) ? [] : [flagKey(place)],
+      .flatMap((flag) =>
+        NEEDS_NEW_WORDS.has(flag.kind) || isMeetable(flag) ? [] : [flagKey(flag)],
       )
       .reduce(withOne, decisions.flagsChecked),
   };
@@ -359,8 +388,7 @@ export function gateInputOf(parts: KitParts, decisions: ReviewDecisions): GateIn
     sending: parts.sending,
     skipped: parts.skipped,
     flags: parts.flags.filter(
-      (flag, place) =>
-        !flagsChecked.has(flagKey(place)) && !(isMeetable(flag) && meets.has(flag.at)),
+      (flag) => !flagsChecked.has(flagKey(flag)) && !(isMeetable(flag) && meets.has(flag.at)),
     ),
     verdicts: parts.verdicts.filter((verdict) => blocks.has(verdict.blockId)),
     checked: decisions.checked.filter((id) => blocks.has(id)),

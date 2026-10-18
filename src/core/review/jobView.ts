@@ -4,6 +4,7 @@ import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { bodyWords } from "@/core/drafting/kit";
 import type { TemplatesOutput } from "@/core/drafting/templatesStage";
+import type { KitFlag } from "@/core/drafting/validate";
 import { mustHaveCoverage, templateVerdicts, visibleRole } from "@/core/drafting/templateDrafts";
 import { isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
 import { type Agreement, agreement, type ContactKind } from "@/core/extraction/addressRead";
@@ -40,6 +41,7 @@ import {
   type KitParts,
   NO_DECISIONS,
   type ReviewDecisions,
+  withFlagNames,
 } from "./decisions";
 import {
   anySent,
@@ -319,7 +321,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     candidates.find((candidate) => candidate.choice.id === picked) ?? candidates[0] ?? null;
   const hasKit = Boolean(chosen && role && extraction);
   const kitKey = hasKit ? chosen!.kitKey : null;
-  const decisions = kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey) : null;
+  const decisions =
+    kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey, chosen!.draft.flags) : null;
   const latest = role ? await latestSend(deps.db, id, role.id) : null;
   const now = deps.clock.now();
   const sentByJobkit = role ? await anySent(deps.db, id, role.id) : false;
@@ -752,6 +755,7 @@ export async function decisionsOf(
   jobId: string,
   roleId: string,
   kitKey: string,
+  flags: readonly KitFlag[],
 ): Promise<ReviewDecisions> {
   const { rows } = await db.query<{ decisions: unknown; draft_checks: unknown }>(
     "select decisions, draft_checks from {{schema}}.kit_reviews where job_id = $1 and role_id = $2",
@@ -761,13 +765,16 @@ export async function decisionsOf(
   if (parsed.success && parsed.data.kit === kitKey) {
     const { checked, flagsChecked, retyped, attached, continueAnyway, lookups, meets } =
       parsed.data;
-    return { checked, flagsChecked, retyped, attached, continueAnyway, lookups, meets };
+    return withFlagNames(
+      { checked, flagsChecked, retyped, attached, continueAnyway, lookups, meets },
+      flags,
+    );
   }
   // A draft the owner moved away from keeps its sentence and flag decisions aside, by its key, as
   // when the page falls back to it: those count again (draftChoice.ts).
   const aside = draftChecksSchema.safeParse(rows[0]?.draft_checks);
   const kept = aside.success ? aside.data[kitKey] : undefined;
-  return kept ? { ...NO_DECISIONS, ...kept } : NO_DECISIONS;
+  return kept ? withFlagNames({ ...NO_DECISIONS, ...kept }, flags) : NO_DECISIONS;
 }
 
 /** Each draft's sentence and flag decisions, kept aside by its kit key while another is the kit. */

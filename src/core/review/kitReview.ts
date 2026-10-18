@@ -64,7 +64,7 @@ function fits(action: ReviewAction, parts: KitParts): boolean {
       return parts.blocks.includes(action.blockId);
     case "check_flag":
     case "uncheck_flag":
-      return parts.flags.some((_, place) => flagKey(place) === action.flag);
+      return parts.flags.some((flag) => flagKey(flag) === action.flag);
     case "retype":
       return parts.contact?.needsRetype === true;
     case "attach":

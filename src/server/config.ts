@@ -17,7 +17,9 @@ type Env = Readonly<Record<string, string | undefined>>;
 
 export function readAppConfig(env: Env): AppConfig {
   if (onVercelDeployment(env) && env.JOBKIT_ENV !== "production") {
-    throw new Error(`This is a Vercel ${env.VERCEL_ENV} deployment, so JOBKIT_ENV must be production`);
+    throw new Error(
+      `This is a Vercel ${env.VERCEL_ENV} deployment, so JOBKIT_ENV must be production`,
+    );
   }
   const production = env.JOBKIT_ENV === "production";
   const appOrigin = env.APP_ORIGIN || (production ? "" : "http://localhost:3000");

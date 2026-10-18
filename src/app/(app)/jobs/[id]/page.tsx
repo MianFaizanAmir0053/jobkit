@@ -599,10 +599,8 @@ function KitPanel({
   };
   // The separate check's findings, a sentence it never weighed included.
   const judged = parts.verdicts.filter(isBlocking);
-  // validate's flags, most serious first, each with its place among the kit's.
-  const flags = [...draft.flags.entries()].sort(
-    ([, a], [, b]) => flagRank(a.kind) - flagRank(b.kind),
-  );
+  // validate's flags, most serious first; each named by what it found (flagKey).
+  const flags = [...draft.flags].sort((a, b) => flagRank(a.kind) - flagRank(b.kind));
   // What the post asks of applicants, each line marked as drafting dealt with it.
   const checklist = checklistOf(view.extraction!.record, role, draft);
   // Each requirement with its verdict, its cited facts, and the owner's tick where only they can.
@@ -917,8 +915,8 @@ function KitPanel({
       {(flags.length > 0 || judged.length > 0) && (
         <Panel title="Check these before you send">
           {flags.some(
-            ([place, flag]) =>
-              FIXED_IN_GMAIL.has(flag.kind) || (meetable.has(flagKey(place)) && musts.has(flag.at)),
+            (flag) =>
+              FIXED_IN_GMAIL.has(flag.kind) || (meetable.has(flagKey(flag)) && musts.has(flag.at)),
           ) && (
             <p className="text-sm text-muted-foreground">
               {byEmail
@@ -962,8 +960,8 @@ function KitPanel({
                 )}
               </li>
             ))}
-            {flags.map(([place, flag]) => {
-              const key = flagKey(place);
+            {flags.map((flag) => {
+              const key = flagKey(flag);
               const about = aboutFlag(flag);
               // A requirement only the owner can confirm: for one they do not meet, the email must
               // not claim it, so it is fixed where they send it.

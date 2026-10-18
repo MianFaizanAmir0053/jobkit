@@ -4,6 +4,7 @@ import type { FitRow } from "@/core/drafting/kit";
 import { ONLY_YOU_CAN_CONFIRM, type KitFlag } from "@/core/drafting/validate";
 import type { Role } from "@/core/extraction/record";
 
+import { flagKey } from "./decisions";
 import { fitTableOf } from "./fitTable";
 
 /* The fit table: review spec, "Job page", item 4. */
@@ -84,7 +85,7 @@ describe("fitTableOf", () => {
       { fit: [fit("R1", "met", ["F-node"]), fit("R2", "met")], flags },
     );
 
-    // Each flag named by its place among the kit's flags, as the review decisions name flags; a met
+    // Each flag named by what it found, as the review decisions name flags; a met
     // verdict its facts do not bear out counts as partial, as the fit check counts it.
     expect(
       rows.map(({ id, counted, why, flag, tick }) => ({ id, counted, why, flag, tick })),
@@ -93,15 +94,15 @@ describe("fitTableOf", () => {
         id: "R1",
         counted: "partial",
         why: "Marked as met, but no cited fact shows every skill named.",
-        flag: "F2",
+        flag: flagKey(flags[1]!),
         tick: false,
       },
-      { id: "R2", counted: "met", why: ONLY_YOU_CAN_CONFIRM, flag: "F3", tick: true },
+      { id: "R2", counted: "met", why: ONLY_YOU_CAN_CONFIRM, flag: flagKey(flags[2]!), tick: true },
       {
         id: "R3",
         counted: null,
         why: "The draft did not weigh this requirement.",
-        flag: "F4",
+        flag: flagKey(flags[3]!),
         tick: false,
       },
     ]);

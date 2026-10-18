@@ -231,10 +231,10 @@ describe("scheduleSend", () => {
       reason: "words",
     });
     // "I will fix it in Gmail" on each: Open in Gmail opens, Approve & send still does not send.
-    for (const [place] of shown.kitParts!.flags.entries()) {
+    for (const flag of shown.kitParts!.flags) {
       await recordReview({ db, clock, dns: offlineDns() }, id, {
         kind: "check_flag",
-        flag: flagKey(place),
+        flag: flagKey(flag),
       });
     }
     expect(kinds(await view(id))).toEqual([]);

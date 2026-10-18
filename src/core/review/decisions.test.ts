@@ -15,6 +15,7 @@ import {
   NO_DECISIONS,
   reviewActionSchema,
   type ReviewDecisions,
+  withFlagNames,
 } from "./decisions";
 
 /* The owner's decisions on a kit, which the outbound gate reads: review AC1 and AC4. */
@@ -24,6 +25,8 @@ const FLAG = {
   at: "R2",
   message: "Only you can confirm you meet this requirement.",
 };
+/** FLAG's name, as the page and the decisions give it. */
+const F = flagKey(FLAG);
 
 const PARTS: KitParts = {
   blocks: ["S1", "S2", "S3"],
@@ -55,7 +58,7 @@ describe("decide", () => {
     for (const action of [
       { kind: "check", blockId: "S2" },
       { kind: "check", blockId: "S2" },
-      { kind: "check_flag", flag: "F1" },
+      { kind: "check_flag", flag: F },
       { kind: "attach", id: "A2", ticked: true },
       { kind: "continue_anyway" },
     ] as const) {
@@ -65,7 +68,7 @@ describe("decide", () => {
 
     expect(decisions).toEqual({
       checked: ["S2"],
-      flagsChecked: ["F1"],
+      flagsChecked: [F],
       retyped: { value: "jobs@example.com", checks: [] },
       attached: ["A2"],
       continueAnyway: true,
@@ -73,7 +76,7 @@ describe("decide", () => {
       meets: [],
     });
     expect(decide(decisions, { kind: "uncheck", blockId: "S2" }).checked).toEqual([]);
-    expect(decide(decisions, { kind: "uncheck_flag", flag: "F1" }).flagsChecked).toEqual([]);
+    expect(decide(decisions, { kind: "uncheck_flag", flag: F }).flagsChecked).toEqual([]);
     expect(decide(decisions, { kind: "attach", id: "A2", ticked: false }).attached).toEqual([]);
     expect(decide(decisions, { kind: "retype", value: "  " }).retyped).toBeNull();
   });
@@ -101,12 +104,30 @@ describe("decide", () => {
     ).toBe(false);
   });
 
-  it("names a flag by its place among the kit's, so two alike are told apart", () => {
-    expect(flagKey(0)).toBe("F1");
-    expect(reviewActionSchema.safeParse({ kind: "check_flag", flag: "F12" }).success).toBe(true);
-    expect(
-      reviewActionSchema.safeParse({ kind: "check_flag", flag: "fit_unverified:R2" }).success,
-    ).toBe(false);
+  it("names a flag by what it found, so it keeps its name when validate runs again", () => {
+    const over = { kind: "over_limit" as const, at: "body", message: "Too long." };
+
+    expect(flagKey({ ...over })).toBe(flagKey(over));
+    expect(flagKey(over)).toMatch(/^over_limit@body~[0-9a-f]{8}$/);
+    // Two at one place, as two lines aimed at AI, differ by what they found.
+    const banana = {
+      kind: "ai_instruction_followed" as const,
+      at: "kit",
+      message: "The email repeats banana.",
+    };
+    expect(flagKey(banana)).not.toBe(flagKey({ ...banana, message: "The email repeats kiwi." }));
+    expect(reviewActionSchema.safeParse({ kind: "check_flag", flag: flagKey(over) }).success).toBe(
+      true,
+    );
+    // A place among the kit's flags, as decisions named them before, is no name now.
+    expect(reviewActionSchema.safeParse({ kind: "check_flag", flag: "F12" }).success).toBe(false);
+  });
+
+  it("names a decision kept by a flag's place among drafting's as what that flag found", () => {
+    const over = { kind: "over_limit" as const, at: "body", message: "Too long." };
+    const kept = { ...NO_DECISIONS, flagsChecked: ["F2", "F9", F] };
+
+    expect(withFlagNames(kept, [FLAG, over]).flagsChecked).toEqual([flagKey(over), F]);
   });
 
   it("keeps the first checks found for each address typed, so a lookup that fails later changes nothing", () => {
@@ -137,7 +158,7 @@ describe("gateInputOf", () => {
     const decided = [
       { kind: "continue_anyway" },
       { kind: "check", blockId: "S2" },
-      { kind: "check_flag", flag: "F1" },
+      { kind: "check_flag", flag: F },
       { kind: "attach", id: "A2", ticked: true },
     ] as const;
     const decisions = decide(
@@ -190,7 +211,7 @@ describe("gateInputOf", () => {
   it("forgets decisions the kit no longer has a place for", () => {
     const decisions: ReviewDecisions = {
       checked: ["S9"],
-      flagsChecked: ["F9"],
+      flagsChecked: ["over_limit@body~00000000"],
       retyped: null,
       attached: ["A9"],
       continueAnyway: false,
@@ -217,7 +238,7 @@ describe("approveAll", () => {
     expect(
       reasons(decide(NO_DECISIONS, { kind: "meets", requirementId: "R2", ticked: true })),
     ).toEqual([]);
-    expect(reasons(decide(NO_DECISIONS, { kind: "check_flag", flag: "F1" }))).toEqual([]);
+    expect(reasons(decide(NO_DECISIONS, { kind: "check_flag", flag: F }))).toEqual([]);
     // Another requirement's word clears nothing here.
     expect(
       reasons(decide(NO_DECISIONS, { kind: "meets", requirementId: "R9", ticked: true })),
@@ -225,13 +246,15 @@ describe("approveAll", () => {
   });
 
   it('marks "I checked this" on every flagged sentence and flag, and no other decision', () => {
-    const parts: KitParts = {
-      ...PARTS,
-      flags: [{ kind: "over_limit", at: "body", message: "The email runs past the limit." }],
+    const over = {
+      kind: "over_limit" as const,
+      at: "body",
+      message: "The email runs past the limit.",
     };
+    const parts: KitParts = { ...PARTS, flags: [over] };
     const approved = approveAll(parts, decide(NO_DECISIONS, { kind: "check", blockId: "S2" }));
 
-    expect(approved).toEqual({ ...NO_DECISIONS, checked: ["S2"], flagsChecked: ["F1"] });
+    expect(approved).toEqual({ ...NO_DECISIONS, checked: ["S2"], flagsChecked: [flagKey(over)] });
     // The hard stops still hold the kit: the scam warning, the possible repeat, the contact, the
     // attachment.
     expect(canHandOff(gateInputOf(parts, approved)).map((reason) => reason.kind)).toEqual([
@@ -250,7 +273,7 @@ describe("approveAll", () => {
   });
 
   it("asks for new words when the owner checked a must-have only they can confirm without saying they meet it", () => {
-    const checked = decide(NO_DECISIONS, { kind: "check_flag", flag: "F1" });
+    const checked = decide(NO_DECISIONS, { kind: "check_flag", flag: F });
 
     expect(needsNewWords(PARTS, NO_DECISIONS)).toBe(false);
     expect(needsNewWords(PARTS, checked)).toBe(true);
@@ -272,13 +295,18 @@ describe("approveAll", () => {
       ],
     };
 
-    // S2 is overstated; FLAG (F1) is the owner's to answer and needs_your_line (F3) new words.
-    expect(approvable(parts, NO_DECISIONS)).toEqual(["sentence:S2", "flag:F2", "flag:F4"]);
+    const [, over, , keyword] = parts.flags.map(flagKey);
+    // S2 is overstated; FLAG is the owner's to answer and needs_your_line new words.
+    expect(approvable(parts, NO_DECISIONS)).toEqual([
+      "sentence:S2",
+      `flag:${over}`,
+      `flag:${keyword}`,
+    ]);
     const some = decide(decide(NO_DECISIONS, { kind: "check", blockId: "S2" }), {
       kind: "check_flag",
-      flag: "F4",
+      flag: keyword!,
     });
-    expect(approvable(parts, some)).toEqual(["flag:F2"]);
+    expect(approvable(parts, some)).toEqual([`flag:${over}`]);
   });
 
   it("reads decisions kept before the fit tick as saying the owner meets nothing", () => {
@@ -316,7 +344,9 @@ describe("approveAll", () => {
     };
 
     // FLAG, the second, is a requirement only the owner can confirm: left to them too.
-    expect(approveAll(parts, NO_DECISIONS).flagsChecked).toEqual(["F6"]);
+    expect(approveAll(parts, NO_DECISIONS).flagsChecked).toEqual([
+      flagKey(words("keyword_missing")),
+    ]);
     expect(needsNewWords(parts, NO_DECISIONS)).toBe(true);
     expect(needsNewWords({ flags: [FLAG, words("keyword_missing")] })).toBe(false);
   });

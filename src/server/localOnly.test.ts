@@ -62,7 +62,9 @@ describe("assertLocalOnly", () => {
         { ANTHROPIC_API_KEY: secret, DATABASE_URL: "postgresql://u@db.example:5432/x" },
         "The dev server",
       ),
-    ).toThrow(/^The dev server refuses to start: DATABASE_URL points at another machine; ANTHROPIC_API_KEY is set\./);
+    ).toThrow(
+      /^The dev server refuses to start: DATABASE_URL points at another machine; ANTHROPIC_API_KEY is set\./,
+    );
     expect(() => assertLocalOnly({ ANTHROPIC_API_KEY: secret }, "The dev server")).not.toThrow(
       new RegExp(secret),
     );
@@ -98,7 +100,9 @@ describe("onThisMachine", () => {
   });
 
   it("looks at the host Postgres takes from the query too, which wins over the URL's own", () => {
-    expect(onThisMachine("postgres://u@localhost:5432/postgres?host=pooler.supabase.example")).toBe(false);
+    expect(onThisMachine("postgres://u@localhost:5432/postgres?host=pooler.supabase.example")).toBe(
+      false,
+    );
     expect(onThisMachine("postgres://u@localhost:5432/postgres?hostaddr=10.0.0.5")).toBe(false);
   });
 

@@ -7,7 +7,10 @@ describe("testRoutesAllowed", () => {
     expect(testRoutesAllowed({ NODE_ENV: "development" }, "test")).toBe(true);
     // `vercel env pull` writes these into a local file; that is still the laptop.
     expect(
-      testRoutesAllowed({ NODE_ENV: "development", VERCEL: "1", VERCEL_ENV: "development" }, "test"),
+      testRoutesAllowed(
+        { NODE_ENV: "development", VERCEL: "1", VERCEL_ENV: "development" },
+        "test",
+      ),
     ).toBe(true);
   });
 

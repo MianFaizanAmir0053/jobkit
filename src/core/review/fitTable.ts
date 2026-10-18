@@ -9,8 +9,8 @@ import { flagKey, isMeetable } from "./decisions";
  * role's requirements with the verdict the draft gave it and the one the
  * fit check counts, the facts it cited and its note, or none when the
  * draft did not weigh it; why validate flagged the row, if it did, with
- * that flag's key, its place among the kit's flags as the review decisions
- * name it; and whether the row takes the owner's "I meet this
+ * that flag's name, as the review decisions name it; and whether the row
+ * takes the owner's "I meet this
  * requirement", for one only they can confirm they meet, which clears that
  * flag as its "I checked this" does.
  */
@@ -58,7 +58,7 @@ export function fitTableOf(role: Role, draft: Pick<DraftOutput, "fit" | "flags">
       factIds: row?.factIds ?? [],
       note: row?.note ?? "",
       why: flag?.message ?? null,
-      flag: flag ? flagKey(place) : null,
+      flag: flag ? flagKey(flag) : null,
       tick,
     };
   });
