@@ -6,7 +6,7 @@ import { listJobs, requireSession, viewerTimeZone } from "@/server/dal";
 
 import { ActionButton } from "./[id]/ActionButton";
 import { JobsRefresher } from "./JobsRefresher";
-import { formatTime, ROUTE_LABELS, STATE_WORDS } from "./words";
+import { formatTime, oneLine, ROUTE_LABELS, STATE_WORDS } from "./words";
 
 export const metadata: Metadata = { title: "Jobs · jobkit" };
 
@@ -44,19 +44,22 @@ export default async function JobsPage() {
       ) : (
         <ul className="mt-4 divide-y divide-border">
           {jobs.map((job) => {
-            const name = [job.title, job.company].filter(Boolean).join(" · ") || "A job post";
+            const name =
+              oneLine([job.title, job.company].filter(Boolean).join(" · ")) || "A job post";
+            // The job as a confirmation and a label name it: a post never read has no title.
+            const who = `${name}, ${formatTime(job.receivedAt, timeZone)}`;
             const skip = (
               <ActionButton
                 url={`/api/jobs/${job.id}/skip`}
                 label="Skip"
                 variant="outline"
-                ariaLabel={`Skip ${name}`}
+                ariaLabel={`Skip ${who}`}
                 body={{
                   state: job.state,
                   since: job.stateChangedAt.toISOString(),
                   uncertain: null,
                 }}
-                confirmText={`Skip "${name}"? It closes for good.`}
+                confirmText={`Skip "${who}"? It closes for good.`}
               />
             );
             // Skipped from its page, which warns of the send or offers the drafts first.
@@ -88,7 +91,9 @@ export default async function JobsPage() {
                       <ActionButton
                         url={`/api/jobs/${job.id}/retry`}
                         label="Retry"
-                        ariaLabel={`Retry ${name}`}
+                        ariaLabel={`Retry ${who}`}
+                        // The page offers going back to the drafts, or a warning, first.
+                        variant={fromPage === null ? "default" : "outline"}
                       />
                       {fromPage === null && skip}
                     </div>
@@ -99,6 +104,7 @@ export default async function JobsPage() {
                           <Link
                             href={`/jobs/${job.id}`}
                             className={`${buttonVariants({ variant: "outline" })} min-h-11`}
+                            aria-label={`Open ${who}`}
                           >
                             Open the job
                           </Link>
@@ -112,7 +118,7 @@ export default async function JobsPage() {
                     <Link
                       href={`/jobs/new?again=${job.id}`}
                       className={`${buttonVariants()} min-h-11`}
-                      aria-label={`Upload again: ${name}`}
+                      aria-label={`Upload again: ${who}`}
                     >
                       Upload again
                     </Link>

@@ -130,6 +130,14 @@ export async function anySent(db: Db, jobId: string, roleId: string): Promise<bo
  * The role's latest send that may have gone, as it now stands, whatever came
  * after it: the page keeps warning about it until the kit is sent.
  */
+/**
+ * The condition, on a kit_sends row, of a send that may have gone: one that
+ * says so, or one left sending past STUCK_MS before the time `stuckBefore`
+ * names, which is now less STUCK_MS.
+ */
+export const uncertainWhere = (stuckBefore: string) =>
+  `(status = 'unknown' or (status = 'sending' and updated_at < ${stuckBefore}))`;
+
 export async function uncertainSend(
   db: Db,
   jobId: string,
@@ -138,8 +146,7 @@ export async function uncertainSend(
 ): Promise<KitSend | null> {
   const { rows } = await db.query<SendRow>(
     `select ${SEND_COLUMNS} from {{schema}}.kit_sends
-      where job_id = $1 and role_id = $2
-        and (status = 'unknown' or (status = 'sending' and updated_at < $3))
+      where job_id = $1 and role_id = $2 and ${uncertainWhere("$3")}
       order by created_at desc
       limit 1`,
     [jobId, roleId, new Date(now.getTime() - STUCK_MS)],

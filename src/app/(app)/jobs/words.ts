@@ -112,3 +112,16 @@ export const ROUTE_LABELS: Readonly<Record<Role["route"]["kind"], string>> = {
   other: "Another way",
   unknown: "No route given",
 };
+
+/**
+ * A name a post gave, put on one line of at most `max` characters, for a
+ * confirmation or a label: the post's author writes it, so no line break,
+ * control character or length of theirs pushes the question out of view.
+ */
+export function oneLine(text: string, max = 80): string {
+  const line = text
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return line.length > max ? `${line.slice(0, max - 1).trimEnd()}…` : line;
+}

@@ -330,6 +330,41 @@ describe("the job page's routes", () => {
     ).toBe(409);
   });
 
+  it("skip an upload that ran out of time though nothing read it since, as the page showed it failed", async () => {
+    const cookie = await signedIn();
+    const started = await startJob(
+      { db, clock, storage },
+      {
+        images: [
+          {
+            contentType: "image/webp",
+            bytes: 1_000,
+            width: 1080,
+            height: 2400,
+            sha256: "a".repeat(64),
+          },
+        ],
+        pastedText: "",
+        clientElapsedMs: 0,
+      },
+    );
+    if (!started.ok) throw new Error(started.message);
+    const began = (await loadJob(db, started.jobId))!.stateChangedAt;
+    clock.advance(15 * 60_000 + 1);
+    // The page showed it failed as of its deadline; the database has not been told yet.
+    const shown = JSON.stringify({
+      state: "upload_failed",
+      since: new Date(began.getTime() + 15 * 60_000).toISOString(),
+      uncertain: null,
+    });
+
+    expect(
+      (await skip(post(`/api/jobs/${started.jobId}/skip`, shown, cookie), deps(), started.jobId))
+        .status,
+    ).toBe(200);
+    expect(await stateOf(started.jobId)).toBe("closed");
+  });
+
   it("read a post again after a no-role stop, once", async () => {
     const cookie = await signedIn();
     const id = await settled([answer({ ...fixture("S01-email-simple"), roles: [] })]);

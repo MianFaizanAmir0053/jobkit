@@ -48,6 +48,7 @@ import {
   latestSend,
   STUCK_MS,
   uncertainSend,
+  uncertainWhere,
 } from "./kitSends";
 
 /**
@@ -932,10 +933,11 @@ export async function listJobViews(
             array(select a.role_id from {{schema}}.applications as a
                    where a.job_id = j.id and a.status = 'bounced') as bounced_roles,
             array(select k.role_id from {{schema}}.kit_sends as k
-                   where k.job_id = j.id
-                     and (k.status = 'unknown' or (k.status = 'sending' and k.updated_at < $2)))
-              as uncertain_roles,
-            coalesce((select jsonb_array_length(coalesce(t.output -> 'drafts', '[]'::jsonb)) > 0
+                   where k.job_id = j.id and ${uncertainWhere("$2")}) as uncertain_roles,
+            coalesce((select case jsonb_typeof(t.output -> 'drafts')
+                               when 'array' then jsonb_array_length(t.output -> 'drafts') > 0
+                               else false
+                             end
                         from {{schema}}.job_stage_runs as t
                        where t.job_id = j.id and t.stage = 'templates'
                          and t.outcome in ('ok', 'reused')

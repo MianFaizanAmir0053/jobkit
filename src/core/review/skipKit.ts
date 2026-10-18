@@ -119,7 +119,7 @@ export async function closeSkipped(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
-  shown: { state: string; since?: Date; uncertain: string | null },
+  shown: { state: string; since: Date; uncertain: string | null },
 ): Promise<
   { ok: true } | { ok: false; reason: "not-found" | "not-skippable" | "not-waiting" | "uncertain" }
 > {

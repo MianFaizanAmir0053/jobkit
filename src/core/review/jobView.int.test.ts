@@ -1002,12 +1002,14 @@ describe("skipKit", () => {
       [id],
     );
 
+    const since = (await loadJob(db, id))!.stateChangedAt;
+
     expect(
-      await closeSkipped({ db, clock }, id, null, { state: "failed", uncertain: null }),
+      await closeSkipped({ db, clock }, id, null, { state: "failed", since, uncertain: null }),
     ).toEqual({ ok: false, reason: "uncertain" });
     expect((await loadJob(db, id))!.state).toBe("failed");
     expect(
-      await closeSkipped({ db, clock }, id, null, { state: "failed", uncertain: stuck }),
+      await closeSkipped({ db, clock }, id, null, { state: "failed", since, uncertain: stuck }),
     ).toEqual({ ok: true });
     expect((await loadJob(db, id))!.state).toBe("closed");
     const skipped = (await jobView({ db, clock }, id))!.application!;
@@ -1171,6 +1173,27 @@ describe("listJobViews", () => {
       },
     ]);
   });
+  it("counts a send left sending past its time as one that may have gone, as the job page does", async () => {
+    await seedSample();
+    const stuck = await pasted();
+    await run(stuck, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    const sentAt = new Date(clock.now().getTime() - STUCK_MS - 1);
+    await db.query(
+      `insert into {{schema}}.kit_sends
+         (job_id, role_id, kit, to_address, status, send_at, created_at, updated_at)
+       values ($1, 'P1', 'K', 'jobs@example.com', 'sending', $2, $2, $2)`,
+      [stuck, sentAt],
+    );
+    await db.query(
+      "update {{schema}}.jobs set state = 'failed', pending_stage = 'draft', failed_stage = 'draft' where id = $1",
+      [stuck],
+    );
+
+    const item = (await listJobViews({ db, clock })).find((job) => job.id === stuck)!;
+    expect(item.uncertain).toBe(true);
+    expect((await jobView({ db, clock }, stuck))!.uncertain).not.toBeNull();
+  });
+
   it("names each job's route, a failed job's reason, and whether a send of its kit may have gone", async () => {
     await seedSample();
     // Reads the post, then fails to draft: the fake model has no draft to give.

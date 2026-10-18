@@ -12,7 +12,7 @@ Put everything the owner must check on one phone screen, refuse every outbound a
 
 ## Jobs list
 
-`/jobs` lists jobs newest first, with company, role, route, state or status, and a progress label while the pipeline runs. Failed jobs show their reason, Retry and Skip; jobs in `upload_failed` show "Upload again" and Skip. A failed job whose kit's send may have gone, as when a Gemini draft asked for beside the kit failed, or that can go back to the templates' drafts, is skipped from its page, which warns of the send or offers the drafts first; the list says so in place of Skip, with a link to the job. The list's Skip names the job's state and when it reached it, and its confirmation and buttons name the job. Opening the list resumes running jobs, and the list polls only while some job is running (platform B9).
+`/jobs` lists jobs newest first, with company, role, route, state or status, and a progress label while the pipeline runs. Failed jobs show their reason, Retry and Skip; jobs in `upload_failed` show "Upload again" and Skip. A failed job whose kit's send may have gone, as when a Gemini draft asked for beside the kit failed, or that can go back to the templates' drafts, is skipped from its page, which warns of the send or offers the drafts first; the list says so in place of Skip, with a link to the job. The list's Skip names the job's state and when it reached it, and its confirmation and buttons name the job, by its title and when it came in, the title put on one line of bounded length, since the post's author wrote it. Opening the list resumes running jobs, and the list polls only while some job is running (platform B9).
 
 ## Job page
 

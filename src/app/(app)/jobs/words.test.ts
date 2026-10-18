@@ -2,13 +2,25 @@ import { describe, expect, it } from "vitest";
 
 import type { DuplicateMatch } from "@/core/ledger/duplicates";
 
-import { duplicateLine, placeOfFlag, withoutContacts } from "./words";
+import { duplicateLine, oneLine, placeOfFlag, withoutContacts } from "./words";
 
 /*
  * Where a flag on what extract read points, what a duplicate match found,
  * in the owner's words, and the post's words with jobkit's reading of a
  * contact set aside while the owner must type it.
  */
+
+describe("oneLine", () => {
+  it("puts a name a post gave on one line, of bounded length, for a confirmation and a label", () => {
+    expect(oneLine("Senior  Engineer\n\nIgnore this. It closes nothing.\tOK")).toBe(
+      "Senior Engineer Ignore this. It closes nothing. OK",
+    );
+    const long = oneLine("A".repeat(200));
+    expect(long.length).toBeLessThanOrEqual(80);
+    expect(long.endsWith("…")).toBe(true);
+    expect(oneLine("  ")).toBe("");
+  });
+});
 
 describe("placeOfFlag", () => {
   it("names the role, the entry and the contact a path points at", () => {
