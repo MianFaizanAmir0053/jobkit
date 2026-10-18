@@ -16,6 +16,7 @@ import {
 import { jobView } from "@/core/review/jobView";
 import { applyAgainForJob, recordReview } from "@/core/review/kitReview";
 import { markBounced, takeBackBounced } from "@/core/review/markBounced";
+import { markSubmitted, takeBackSubmitted } from "@/core/review/markSubmitted";
 import { markSent, takeBackSent } from "@/core/review/markSent";
 import { closeSkipped, skipKit, takeBackSkip } from "@/core/review/skipKit";
 import { isUuid } from "@/lib/uuid";
@@ -381,12 +382,15 @@ const takeBackBody = z.union([
   z
     .object({ bouncedAt: z.iso.datetime() })
     .transform((shown) => ({ kind: "bounced" as const, ...shown })),
+  z
+    .object({ submittedAt: z.iso.datetime() })
+    .transform((shown) => ({ kind: "submitted" as const, ...shown })),
 ]);
 
 /**
  * POST /api/jobs/<id>/take-back: takes back a mistaken Mark sent, or a skip
- * of a ready kit, opening the kit again, or a Mark bounced, the email sent
- * again as it was; each the one the page showed.
+ * of a ready kit, or a Mark submitted, opening the kit again, or a Mark
+ * bounced, the email sent again as it was; each the one the page showed.
  */
 export async function takeBack(
   request: NextRequest,
@@ -412,9 +416,42 @@ export async function takeBack(
       ? await takeBackSent(deps, jobId, actor.session.id, new Date(shown.sentAt))
       : shown.kind === "skipped"
         ? await takeBackSkip(deps, jobId, actor.session.id, new Date(shown.skippedAt))
-        : await takeBackBounced(deps, jobId, actor.session.id, new Date(shown.bouncedAt));
+        : shown.kind === "submitted"
+          ? await takeBackSubmitted(deps, jobId, actor.session.id, new Date(shown.submittedAt))
+          : await takeBackBounced(deps, jobId, actor.session.id, new Date(shown.bouncedAt));
   if (!taken.ok) return refusal(taken.reason === "not-found" ? 404 : 409, taken.reason);
   return ok();
+}
+
+/** The kit the page showed as the owner submitted it. */
+const submittedBody = z.object({ kit: kitShown });
+
+/**
+ * POST /api/jobs/<id>/submitted: Mark submitted, after the owner sent the
+ * application through the post's form, or as a message, with the kit's
+ * words; refused for an email kit, and when the page showed another kit.
+ */
+export async function submitted(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return refusal(413, "too-large");
+  let json: unknown = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    // Not JSON: refused below.
+  }
+  const parsed = submittedBody.safeParse(json);
+  if (!parsed.success) return refusal(400, "invalid");
+  const marked = await markSubmitted(deps, jobId, actor.session.id, parsed.data.kit);
+  if (!marked.ok) return refusal(marked.reason === "not-found" ? 404 : 409, marked.reason);
+  return ok(200, { ok: true, changed: marked.changed });
 }
 
 /** The Mark sent the page showed, by its time. */

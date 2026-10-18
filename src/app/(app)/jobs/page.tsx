@@ -75,11 +75,13 @@ export default async function JobsPage() {
                   <span className="text-sm text-muted-foreground">
                     {job.bounced
                       ? "Bounced"
-                      : job.sent
-                        ? "Sent"
-                        : job.skipped
-                          ? "Skipped"
-                          : STATE_WORDS[job.state]}{" "}
+                      : job.submitted
+                        ? "Submitted"
+                        : job.sent
+                          ? "Sent"
+                          : job.skipped
+                            ? "Skipped"
+                            : STATE_WORDS[job.state]}{" "}
                     {job.route && `· ${ROUTE_LABELS[job.route]} `}·{" "}
                     {formatTime(job.receivedAt, timeZone)}
                   </span>

@@ -20,8 +20,10 @@ import type { AddressCheck } from "./addressChecks";
  */
 
 export interface GateInput {
-  /** Whether the owner marked the kit sent. */
+  /** Whether the owner marked the kit sent, or submitted. */
   sent: boolean;
+  /** Whether it went as a form or a message the owner marked submitted, not as an email. */
+  submitted?: boolean;
   /** Whether jobkit is sending the kit from the owner's Gmail: counting down to it, or sending. */
   sending: boolean;
   /** Whether the owner skipped the job, its kit ready (ledger spec, "Statuses"). */
@@ -128,7 +130,9 @@ export function canHandOff(input: GateInput): GateReason[] {
     return [
       {
         kind: "sent",
-        message: "This email was sent, so nothing goes out from this page again.",
+        message: input.submitted
+          ? "This application was submitted, so nothing goes out from this page again."
+          : "This email was sent, so nothing goes out from this page again.",
       },
     ];
   }

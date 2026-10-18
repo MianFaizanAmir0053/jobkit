@@ -37,6 +37,7 @@ import {
   applyAgainRoute,
   backToDrafts,
   bounced,
+  submitted,
   draftAnyway,
   gate,
   geminiDraft,
@@ -763,6 +764,37 @@ describe("the job page's routes", () => {
     expect((await jobView({ db, clock }, ready))!.application?.status).toBe("sent");
   });
 
+  it("mark a form submitted by the kit the page showed, and take it back", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S17-form-ai-question")), answer(DRAFT)]);
+    await clearedOnPage(ready, cookie);
+    const kit = await kitOf(ready);
+
+    for (const body of ["", "{}", JSON.stringify({ kit: "" })]) {
+      expect(
+        (await submitted(post(`/api/jobs/${ready}/submitted`, body, cookie), deps(), ready)).status,
+      ).toBe(400);
+    }
+    const response = await submitted(
+      post(`/api/jobs/${ready}/submitted`, JSON.stringify({ kit }), cookie),
+      deps(),
+      ready,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, changed: true });
+    const view = (await jobView({ db, clock }, ready))!;
+    expect(view.application?.status).toBe("submitted");
+    const submittedAt = view.application!.submittedAt!.toISOString();
+    const taken = await takeBack(
+      post(`/api/jobs/${ready}/take-back`, JSON.stringify({ submittedAt }), cookie),
+      deps(),
+      ready,
+    );
+    expect(taken.status).toBe(200);
+    expect((await jobView({ db, clock }, ready))!.application?.status).toBe("kit_ready");
+  });
+
   it("apply again on the matches the banner showed, and on no others", async () => {
     await seedSample();
     const cookie = await signedIn();
@@ -877,6 +909,7 @@ describe("the job page's routes", () => {
       geminiDraft,
       backToDrafts,
       bounced,
+      submitted,
     ] as const;
 
     for (const action of actions) {

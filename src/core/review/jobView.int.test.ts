@@ -35,6 +35,7 @@ import { applyAgainForJob, recordReview } from "./kitReview";
 import { trackApplications, skippedForJob } from "./applications";
 import { STUCK_MS } from "./kitSends";
 import { markBounced, takeBackBounced } from "./markBounced";
+import { markSubmitted, takeBackSubmitted } from "./markSubmitted";
 import { markSent, markSentByJobkit, takeBackSent } from "./markSent";
 import { scheduleSend } from "./send";
 import { closeSkipped, skipKit, takeBackSkip } from "./skipKit";
@@ -538,6 +539,7 @@ describe("markSent", () => {
       sentAt: clock.now(),
       skippedAt: null,
       bouncedAt: null,
+      submittedAt: null,
     });
     // The Gmail answer is the outcome's, once: a "Yes" is a factual edit (ledger spec).
     const outcomes = await db.query<{
@@ -729,6 +731,7 @@ describe("skipKit", () => {
       sentAt: null,
       skippedAt: clock.now(),
       bouncedAt: null,
+      submittedAt: null,
     });
     expect(view.review?.gate.map((reason) => reason.kind)).toEqual(["skipped"]);
     expect((await statusChanges(id)).at(-1)).toEqual({
@@ -785,6 +788,7 @@ describe("skipKit", () => {
       sentAt: null,
       skippedAt: null,
       bouncedAt: null,
+      submittedAt: null,
     });
     expect(view.review?.gate).toEqual([]);
     expect((await statusChanges(id)).slice(-4)).toEqual([
@@ -1064,6 +1068,7 @@ describe("markBounced", () => {
       sentAt,
       skippedAt: null,
       bouncedAt: clock.now(),
+      submittedAt: null,
     });
     // It went, and came back: nothing goes out from the page again.
     expect(view.went).toBe(true);
@@ -1088,6 +1093,7 @@ describe("markBounced", () => {
       sentAt,
       skippedAt: null,
       bouncedAt: null,
+      submittedAt: null,
     });
     expect(await takeBackBounced({ db, clock }, id, null, bouncedAt)).toEqual({
       ok: false,
@@ -1147,6 +1153,88 @@ describe("markBounced", () => {
     expect((await jobView({ db, clock }, id))!.application?.status).toBe("sent");
     expect(
       await markBounced({ db, clock }, "33333333-3333-4333-8333-333333333333", null, sentAt),
+    ).toEqual({ ok: false, reason: "not-found" });
+  });
+});
+
+describe("markSubmitted", () => {
+  /** A ready kit for a post that asks for a form or a message, its gate cleared, and what the page shows. */
+  async function readyFor(post: string): Promise<{ id: string; kit: string }> {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture(post)), answer(DRAFT)]);
+    await cleared(id);
+    return { id, kit: (await jobView({ db, clock }, id))!.kitKey! };
+  }
+
+  it("marks a form or message kit submitted once, the kit then held as gone", async () => {
+    for (const post of ["S17-form-ai-question", "S16-linkedin-dm"]) {
+      const { id, kit } = await readyFor(post);
+      clock.advance(60_000);
+
+      expect(await markSubmitted({ db, clock }, id, null, kit)).toEqual({
+        ok: true,
+        changed: true,
+      });
+      expect(await markSubmitted({ db, clock }, id, null, kit)).toEqual({
+        ok: true,
+        changed: false,
+      });
+
+      const view = (await jobView({ db, clock }, id))!;
+      expect(view.application).toMatchObject({ status: "submitted", submittedAt: clock.now() });
+      expect(view.went).toBe(true);
+      expect(view.review?.gate.map((reason) => reason.kind)).toEqual(["sent"]);
+      expect(view.review?.gate[0]!.message).toMatch(/submitted/);
+    }
+  });
+
+  it("takes back the Mark submitted the page showed, opening the kit again, and never a later one", async () => {
+    const { id, kit } = await readyFor("S17-form-ai-question");
+    await markSubmitted({ db, clock }, id, null, kit);
+    const submittedAt = (await jobView({ db, clock }, id))!.application!.submittedAt!;
+    clock.advance(60_000);
+
+    expect(await takeBackSubmitted({ db, clock }, id, null, submittedAt)).toEqual({ ok: true });
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.application?.status).toBe("kit_ready");
+    expect(view.review?.gate).toEqual([]);
+    expect(await takeBackSubmitted({ db, clock }, id, null, submittedAt)).toEqual({
+      ok: false,
+      reason: "not-submitted",
+    });
+    // Submitted again: a late tap from the page that showed the first changes nothing.
+    await markSubmitted({ db, clock }, id, null, kit);
+    expect(await takeBackSubmitted({ db, clock }, id, null, submittedAt)).toEqual({
+      ok: false,
+      reason: "not-submitted",
+    });
+  });
+
+  it("refuses an email kit, a kit the page did not show, and one the gate holds", async () => {
+    await seedSample();
+    const email = await pasted();
+    await run(email, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await cleared(email);
+    const emailKit = (await jobView({ db, clock }, email))!.kitKey!;
+    expect(await markSubmitted({ db, clock }, email, null, emailKit)).toEqual({
+      ok: false,
+      reason: "not-form-or-message",
+    });
+
+    const { id, kit } = await readyFor("S17-form-ai-question");
+    expect(await markSubmitted({ db, clock }, id, null, "another kit")).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+    // Held: the owner skipped it, so nothing could have gone from the page.
+    await skipKit({ db, clock }, id, null, { kit, uncertain: null });
+    expect(await markSubmitted({ db, clock }, id, null, kit)).toEqual({
+      ok: false,
+      reason: "held",
+    });
+    expect(
+      await markSubmitted({ db, clock }, "33333333-3333-4333-8333-333333333333", null, kit),
     ).toEqual({ ok: false, reason: "not-found" });
   });
 });
@@ -1288,6 +1376,18 @@ describe("listJobViews", () => {
       sent: false,
       skipped: true,
     });
+  });
+
+  it("shows a form the owner marked submitted as submitted", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S17-form-ai-question")), answer(DRAFT)]);
+    await cleared(id);
+    await markSubmitted({ db, clock }, id, null, (await jobView({ db, clock }, id))!.kitKey!);
+
+    expect(await listJobViews({ db, clock })).toEqual([
+      expect.objectContaining({ id, sent: true, submitted: true, bounced: false }),
+    ]);
   });
 
   it("shows a sent email the owner marked bounced as bounced", async () => {

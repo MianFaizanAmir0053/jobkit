@@ -134,11 +134,13 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
         <p className="mt-1 text-sm text-muted-foreground">
           {view.application?.status === "bounced"
             ? "Bounced"
-            : view.went
-              ? "Sent"
-              : ready && view.application?.status === "skipped"
-                ? "Skipped"
-                : STATE_WORDS[view.state]}{" "}
+            : view.application?.status === "submitted"
+              ? "Submitted"
+              : view.went
+                ? "Sent"
+                : ready && view.application?.status === "skipped"
+                  ? "Skipped"
+                  : STATE_WORDS[view.state]}{" "}
           · started {formatTime(view.receivedAt, timeZone)}
         </p>
       </div>
@@ -176,6 +178,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
             {view.went && (
               <div className="flex flex-col gap-2 text-sm">
                 <Bounce view={view} timeZone={timeZone} />
+                <Submitted view={view} timeZone={timeZone} />
               </div>
             )}
           </Panel>
@@ -974,8 +977,12 @@ function KitPanel({
         )}
       </Panel>
 
-      <Panel title={skipped ? "Not applying" : "After you send it"}>
-        {sent ? (
+      <Panel title={skipped ? "Not applying" : byEmail ? "After you send it" : "After you apply"}>
+        {sent && view.application?.status === "submitted" ? (
+          <div className="flex flex-col gap-2 text-sm">
+            <Submitted view={view} timeZone={timeZone} />
+          </div>
+        ) : sent ? (
           <div className="flex flex-col gap-2 text-sm">
             <p>
               {send?.status === "sent"
@@ -1015,11 +1022,29 @@ function KitPanel({
               Mark sent appears once nothing holds the email back.
             </p>
           )
+        ) : role.route.kind === "unknown" || role.route.kind === "other" ? (
+          <p className="text-sm text-muted-foreground">
+            Choosing how to apply, and recording it once sent, comes with the kit-type pick.
+          </p>
+        ) : open ? (
+          <div className="flex flex-col gap-2 text-sm">
+            <p className="text-muted-foreground">
+              Once you have applied {ROUTE_WORDS[role.route.kind]}, using the text above, mark it
+              submitted.
+            </p>
+            <div>
+              <ActionButton
+                url={`/api/jobs/${view.id}/submitted`}
+                label="Mark submitted"
+                body={{ kit: kitKey }}
+                gateOf={view.id}
+                confirmText="Did you send the application? Mark it submitted: you can take it back."
+              />
+            </div>
+          </div>
         ) : (
           <p className="text-sm text-muted-foreground">
-            {role.route.kind === "unknown" || role.route.kind === "other"
-              ? "Choosing how to apply, and recording it once sent, comes with the kit-type pick."
-              : "Recording an application sent another way comes with form and message kits."}
+            Mark submitted appears once nothing holds the application back.
           </p>
         )}
       </Panel>
@@ -1136,6 +1161,33 @@ function Bounce({ view, timeZone }: { view: JobView; timeZone: string }) {
         confirmText="Did this email come back undelivered? Mark it bounced: you can take it back."
       />
     </div>
+  );
+}
+
+/**
+ * A form or message the owner marked submitted (review spec, "Handoffs"):
+ * when, with "Take back Mark submitted", by the tap it shows.
+ */
+function Submitted({ view, timeZone }: { view: JobView; timeZone: string }) {
+  const application = view.application;
+  if (application?.status !== "submitted") return null;
+  const at = application.submittedAt;
+  return (
+    <>
+      <p>{at ? `Marked submitted on ${formatTime(at, timeZone)}.` : "Marked submitted."}</p>
+      {at && (
+        <div>
+          <ActionButton
+            url={`/api/jobs/${view.id}/take-back`}
+            label="Take back Mark submitted"
+            variant="outline"
+            body={{ submittedAt: at.toISOString() }}
+            gateOf={view.id}
+            confirmText="Take back Mark submitted? Do this only if you did not send it: the kit opens again."
+          />
+        </div>
+      )}
+    </>
   );
 }
 

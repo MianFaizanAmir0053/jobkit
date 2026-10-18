@@ -135,13 +135,14 @@ export interface JobView {
   addressChecks: AddressCheck[] | null;
   /**
    * The chosen role's application: its status, and when it was sent,
-   * skipped or bounced, which Take back and Mark bounced name.
+   * skipped, bounced or submitted, which Take back and Mark bounced name.
    */
   application: {
     status: ApplicationStatus;
     sentAt: Date | null;
     skippedAt: Date | null;
     bouncedAt: Date | null;
+    submittedAt: Date | null;
   } | null;
   /**
    * Whether the chosen role's kit went: the ledger says it was sent,
@@ -321,6 +322,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
           sent: went,
           sending: latest !== null && isLive(latest, now),
           skipped: application?.status === "skipped",
+          submitted: application?.status === "submitted",
         })
       : null;
   return {
@@ -368,6 +370,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       sentAt: application.sentAt,
       skippedAt: application.skippedAt,
       bouncedAt: application.bouncedAt,
+      submittedAt: application.submittedAt,
     },
     went,
     duplicates,
@@ -634,6 +637,7 @@ function kitPartsOf(parts: {
   addressChecks: AddressCheck[] | null;
   duplicates: JobView["duplicates"];
   sent: boolean;
+  submitted: boolean;
   sending: boolean;
   skipped: boolean;
 }): KitParts {
@@ -653,6 +657,7 @@ function kitPartsOf(parts: {
     ),
     duplicates: duplicateParts(parts.duplicates),
     sent: parts.sent,
+    submitted: parts.submitted,
     sending: parts.sending,
     skipped: parts.skipped,
   };
@@ -803,6 +808,7 @@ async function applicationOf(
   sentAt: Date | null;
   skippedAt: Date | null;
   bouncedAt: Date | null;
+  submittedAt: Date | null;
 } | null> {
   const { rows } = await db.query<{
     id: string;
@@ -810,8 +816,9 @@ async function applicationOf(
     sent_at: Date | null;
     skipped_at: Date | null;
     bounced_at: Date | null;
+    submitted_at: Date | null;
   }>(
-    `select id, status, sent_at, skipped_at, bounced_at from {{schema}}.applications
+    `select id, status, sent_at, skipped_at, bounced_at, submitted_at from {{schema}}.applications
       where job_id = $1 and role_id = $2`,
     [jobId, roleId],
   );
@@ -823,6 +830,7 @@ async function applicationOf(
         sentAt: row.sent_at,
         skippedAt: row.skipped_at,
         bouncedAt: row.bounced_at,
+        submittedAt: row.submitted_at,
       }
     : null;
 }
@@ -893,6 +901,8 @@ export interface JobListItem {
   sent: boolean;
   /** Whether the owner marked the chosen role's sent email bounced, as the job page says. */
   bounced: boolean;
+  /** Whether the owner marked the chosen role's form or message submitted, as the job page says. */
+  submitted: boolean;
   /**
    * Whether the owner skipped the chosen role's ready kit, which stays ready to take the skip
    * back; a job a skip closed reads as closed, as its page does.
@@ -926,6 +936,7 @@ export async function listJobViews(
     sent_roles: string[];
     skipped_roles: string[];
     bounced_roles: string[];
+    submitted_roles: string[];
   }>(
     `select j.id, j.state, j.state_changed_at, j.pending_stage, j.received_at, j.chosen_role,
             j.chosen_role_output, j.failure, x.output, x.output_hash,
@@ -938,6 +949,8 @@ export async function listJobViews(
                    where a.job_id = j.id and a.status = 'skipped') as skipped_roles,
             array(select a.role_id from {{schema}}.applications as a
                    where a.job_id = j.id and a.status = 'bounced') as bounced_roles,
+            array(select a.role_id from {{schema}}.applications as a
+                   where a.job_id = j.id and a.status = 'submitted') as submitted_roles,
             array(select k.role_id from {{schema}}.kit_sends as k
                    where k.job_id = j.id and ${uncertainWhere("$2")}) as uncertain_roles,
             coalesce((select case jsonb_typeof(t.output -> 'drafts')
@@ -985,6 +998,7 @@ export async function listJobViews(
         row.template_drafts,
       sent: role !== undefined && row.sent_roles.includes(role.id),
       bounced: role !== undefined && row.bounced_roles.includes(role.id),
+      submitted: role !== undefined && row.submitted_roles.includes(role.id),
       skipped:
         row.state === "kit_ready" &&
         role !== undefined &&

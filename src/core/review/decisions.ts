@@ -192,6 +192,8 @@ export interface KitParts {
   duplicates: readonly { reason: string; covered: boolean }[];
   /** Whether the owner marked the kit sent. */
   sent: boolean;
+  /** Whether it went as a form or a message the owner marked submitted. */
+  submitted?: boolean;
   /** Whether jobkit is sending the kit from the owner's Gmail (decisions A20). */
   sending: boolean;
   /** Whether the owner skipped the job, its kit ready (ledger spec, "Statuses"). */
@@ -266,6 +268,7 @@ export function gateInputOf(parts: KitParts, decisions: ReviewDecisions): GateIn
   const attached = new Set(decisions.attached);
   return {
     sent: parts.sent,
+    submitted: parts.submitted,
     sending: parts.sending,
     skipped: parts.skipped,
     flags: parts.flags.filter((_, place) => !flagsChecked.has(flagKey(place))),
