@@ -21,15 +21,15 @@ import { CopyButton } from "./CopyButton";
  * The kit's outbound controls (review spec, "The outbound gate"): Open in
  * Gmail and the copy buttons. The page draws them open only when its gate
  * is, and they open only while the server agrees on what the page shows:
- * the kit, its gate, the address it goes to and whether the owner skipped
- * the job, asked when they are drawn and again as polling.ts says. The
+ * the kit, its gate, the address it goes to and the status of the role's
+ * application, asked when they are drawn and again as polling.ts says. The
  * answer is forgotten the moment the page is hidden, while a decision from
  * this tab is in flight, and when a decision is made in another tab of this
  * browser, so a page drawn before the gate closed or the address was typed
  * again, brought back by Back or left open in a tab, waits for a new answer;
  * open on the other device, it learns within one check, 15 seconds at most.
- * One that no longer agrees is drawn again, a skip or its taking back
- * included, though the gate stays closed throughout. Clicking never waits
+ * One that no longer agrees is drawn again, a skip or a bounce, or the
+ * taking back of either, included, though the gate stays closed throughout. Clicking never waits
  * for the server: the handoff happens inside the click.
  */
 export function Outbound({
@@ -37,7 +37,7 @@ export function Outbound({
   kit,
   open,
   to,
-  skipped,
+  status,
   email,
   gmailHref,
   subject,
@@ -50,8 +50,8 @@ export function Outbound({
   open: boolean;
   /** The address or number the page shows the kit going to; null for a route with none. */
   to: string | null;
-  /** Whether the page shows the job skipped. */
-  skipped: boolean;
+  /** The status of the role's application the page shows; null before there is one. */
+  status: string | null;
   /** Whether the kit is an email: Gmail's control shows, held or not. */
   email: boolean;
   /** Gmail's compose link, for an email kit whose gate is open; null otherwise. */
@@ -60,7 +60,7 @@ export function Outbound({
   body: string;
 }) {
   const router = useRouter();
-  const shown = `${kit}\n${String(open)}\n${to ?? ""}\n${String(skipped)}`;
+  const shown = `${kit}\n${String(open)}\n${to ?? ""}\n${status ?? ""}`;
   // What the server last agreed the page shows; nothing until it answers.
   const [confirmed, setConfirmed] = useState<string | null>(null);
   const [unreachable, setUnreachable] = useState(false);
@@ -72,7 +72,7 @@ export function Outbound({
         () => readGate(jobId),
         (answer) => {
           setUnreachable(answer === null);
-          if (confirms(answer, { kit, open, to, skipped })) {
+          if (confirms(answer, { kit, open, to, status })) {
             setConfirmed(shown);
           } else {
             setConfirmed(null);
@@ -92,7 +92,7 @@ export function Outbound({
           },
         },
       ),
-    [jobId, kit, open, to, skipped, shown, router],
+    [jobId, kit, open, to, status, shown, router],
   );
 
   const enabled = open && confirmed === shown && !held;

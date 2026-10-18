@@ -32,6 +32,7 @@ describe("duplicateLine", () => {
     role: "Frontend Developer",
     at: new Date("2026-10-13T21:10:00Z"),
     applied: true,
+    bounced: false,
     key: "application:1:company-role",
     ...overrides,
   });
@@ -43,6 +44,12 @@ describe("duplicateLine", () => {
     });
     expect(duplicateLine(match({ source: "manual-run" }), "Asia/Karachi").when).toBe(
       "a manual run, 14 Oct 2026, 02:10",
+    );
+  });
+
+  it("says an earlier email that bounced was sent and bounced", () => {
+    expect(duplicateLine(match({ bounced: true }), "Asia/Karachi").when).toBe(
+      "sent with jobkit and bounced, 14 Oct 2026, 02:10",
     );
   });
 

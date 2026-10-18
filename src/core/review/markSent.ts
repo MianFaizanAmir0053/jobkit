@@ -187,18 +187,13 @@ async function unskipped(
   applicationId: string,
   sessionId: string | null,
 ): Promise<void> {
-  const { rows } = await deps.db.query<{ status: string; status_changed_at: Date }>(
-    "select status, status_changed_at from {{schema}}.applications where id = $1",
+  const { rows } = await deps.db.query<{ status: string; skipped_at: Date | null }>(
+    "select status, skipped_at from {{schema}}.applications where id = $1",
     [applicationId],
   );
   const row = rows[0];
-  if (row?.status === "skipped") {
-    await undoStatus(
-      deps,
-      applicationId,
-      { status: "skipped", at: row.status_changed_at },
-      sessionId,
-    );
+  if (row?.status === "skipped" && row.skipped_at) {
+    await undoStatus(deps, applicationId, { status: "skipped", at: row.skipped_at }, sessionId);
   }
 }
 
@@ -221,13 +216,15 @@ export async function takeBackSent(
   return deps.db.tx(async (tx) => {
     const at = { ...deps, db: tx };
     await lockReview(at, jobId, role.id);
-    const { rows } = await tx.query<{ id: string; status: string; status_changed_at: Date }>(
-      `select id, status, status_changed_at from {{schema}}.applications
+    const { rows } = await tx.query<{ id: string; status: string; sent_at: Date | null }>(
+      `select id, status, sent_at from {{schema}}.applications
         where job_id = $1 and role_id = $2`,
       [jobId, role.id],
     );
     const application = rows[0];
-    if (application?.status !== "sent") return { ok: false as const, reason: "not-sent" as const };
+    if (application?.status !== "sent" || !application.sent_at) {
+      return { ok: false as const, reason: "not-sent" as const };
+    }
     const byJobkit = await tx.query(
       `select 1 from {{schema}}.kit_sends
         where job_id = $1 and role_id = $2 and status = 'sent' limit 1`,
@@ -239,7 +236,7 @@ export async function takeBackSent(
     const undone = await undoStatus(
       at,
       application.id,
-      { status: "sent", at: shownSentAt ?? application.status_changed_at },
+      { status: "sent", at: shownSentAt ?? application.sent_at },
       sessionId,
     );
     if (!undone.ok || !undone.changed) return { ok: false as const, reason: "not-sent" as const };

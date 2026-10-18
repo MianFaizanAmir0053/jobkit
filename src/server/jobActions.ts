@@ -15,6 +15,7 @@ import {
 } from "@/core/review/draftChoice";
 import { jobView } from "@/core/review/jobView";
 import { applyAgainForJob, recordReview } from "@/core/review/kitReview";
+import { markBounced, takeBackBounced } from "@/core/review/markBounced";
 import { markSent, takeBackSent } from "@/core/review/markSent";
 import { closeSkipped, skipKit, takeBackSkip } from "@/core/review/skipKit";
 import { isUuid } from "@/lib/uuid";
@@ -364,13 +365,21 @@ export async function applyAgainRoute(
 
 /** The Mark sent or the skip the page showed, by its time. */
 const takeBackBody = z.union([
-  z.object({ sentAt: z.iso.datetime() }),
-  z.object({ skippedAt: z.iso.datetime() }),
+  z
+    .object({ sentAt: z.iso.datetime() })
+    .transform((shown) => ({ kind: "sent" as const, ...shown })),
+  z
+    .object({ skippedAt: z.iso.datetime() })
+    .transform((shown) => ({ kind: "skipped" as const, ...shown })),
+  z
+    .object({ bouncedAt: z.iso.datetime() })
+    .transform((shown) => ({ kind: "bounced" as const, ...shown })),
 ]);
 
 /**
  * POST /api/jobs/<id>/take-back: takes back a mistaken Mark sent, or a skip
- * of a ready kit, the one the page showed, opening the kit again.
+ * of a ready kit, opening the kit again, or a Mark bounced, the email sent
+ * again as it was; each the one the page showed.
  */
 export async function takeBack(
   request: NextRequest,
@@ -390,21 +399,54 @@ export async function takeBack(
   }
   const parsed = takeBackBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
+  const shown = parsed.data;
   const taken =
-    "sentAt" in parsed.data
-      ? await takeBackSent(deps, jobId, actor.session.id, new Date(parsed.data.sentAt))
-      : await takeBackSkip(deps, jobId, actor.session.id, new Date(parsed.data.skippedAt));
+    shown.kind === "sent"
+      ? await takeBackSent(deps, jobId, actor.session.id, new Date(shown.sentAt))
+      : shown.kind === "skipped"
+        ? await takeBackSkip(deps, jobId, actor.session.id, new Date(shown.skippedAt))
+        : await takeBackBounced(deps, jobId, actor.session.id, new Date(shown.bouncedAt));
   if (!taken.ok) return refusal(taken.reason === "not-found" ? 404 : 409, taken.reason);
   return ok();
 }
 
+/** The Mark sent the page showed, by its time. */
+const bouncedBody = z.object({ sentAt: z.iso.datetime() });
+
+/**
+ * POST /api/jobs/<id>/bounced: Mark bounced, on a sent email that came back
+ * undelivered, by the Mark sent the page showed; refused for another.
+ */
+export async function bounced(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return refusal(413, "too-large");
+  let json: unknown = null;
+  try {
+    json = JSON.parse(new TextDecoder().decode(body));
+  } catch {
+    // Not JSON: refused below.
+  }
+  const parsed = bouncedBody.safeParse(json);
+  if (!parsed.success) return refusal(400, "invalid");
+  const marked = await markBounced(deps, jobId, actor.session.id, new Date(parsed.data.sentAt));
+  if (!marked.ok) return refusal(marked.reason === "not-found" ? 404 : 409, marked.reason);
+  return ok(200, { ok: true, changed: marked.changed });
+}
+
 /**
  * GET /api/jobs/<id>/gate: the kit as it stands, whether its gate is open,
- * the address or number it goes to and whether the owner skipped the job,
- * so a page drawn earlier, in another tab or on the other device, opens its
- * outbound controls only while the server agrees on all four, and one
- * drawn before a skip or its taking back is drawn again (review spec, "The
- * outbound gate").
+ * the address or number it goes to and the status of the role's
+ * application, so a page drawn earlier, in another tab or on the other
+ * device, opens its outbound controls only while the server agrees on all
+ * four, and one drawn before a skip or a bounce, or the taking back of
+ * either, is drawn again (review spec, "The outbound gate").
  */
 export async function gate(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
   const actor = await sessionForRead(request, deps);
@@ -416,7 +458,7 @@ export async function gate(request: NextRequest, deps: Deps, jobId: string): Pro
     kit: view.kitKey,
     open: view.review !== null && view.review.gate.length === 0,
     to: view.handoff?.to ?? null,
-    skipped: view.application?.status === "skipped",
+    status: view.application?.status ?? null,
   });
 }
 

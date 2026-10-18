@@ -217,10 +217,11 @@ export async function changeStatus(
  * Takes back a mistaken tap from the job's menu (ledger spec, "Statuses"):
  * the application goes back to the status the tap found it in, the tap's
  * time is cleared, and an audit row records the change. `last` is the
- * change the menu showed, its status and time, so a second tap, or a late
- * one after the owner has tapped again, changes nothing. It is one
- * conditional update; times come from the app's clock in whole
- * milliseconds, so they compare exactly.
+ * tap the menu showed, its status and the time it made it, which a later
+ * tap taken back leaves as it was, as a Mark sent after its bounce is taken
+ * back; a second tap, or a late one after the owner tapped it again,
+ * changes nothing. It is one conditional update; times come from the app's
+ * clock in whole milliseconds, so they compare exactly.
  */
 export async function undoStatus(
   deps: Deps,
@@ -237,7 +238,7 @@ export async function undoStatus(
         tx,
         `update {{schema}}.applications
             set status = $2, status_changed_at = $5, ${TIME_COLUMN[tapped]} = null
-          where id = $1 and status = $3 and status_changed_at = $4
+          where id = $1 and status = $3 and ${TIME_COLUMN[tapped]} = $4
             and ($3 <> 'skipped' or exists (
                   select 1 from {{schema}}.jobs as j
                    where j.id = applications.job_id and j.state = 'kit_ready'))

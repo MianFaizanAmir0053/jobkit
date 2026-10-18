@@ -118,8 +118,16 @@ export interface JobView {
   contact: { kind: ContactKind; agreement: Agreement } | null;
   /** The email address's checks; null before they ran, or for another route. */
   addressChecks: AddressCheck[] | null;
-  /** The chosen role's application: its status, and when it was sent or skipped, which Take back names. */
-  application: { status: ApplicationStatus; sentAt: Date | null; skippedAt: Date | null } | null;
+  /**
+   * The chosen role's application: its status, and when it was sent,
+   * skipped or bounced, which Take back and Mark bounced name.
+   */
+  application: {
+    status: ApplicationStatus;
+    sentAt: Date | null;
+    skippedAt: Date | null;
+    bouncedAt: Date | null;
+  } | null;
   /**
    * Whether the chosen role's kit went: the ledger says it was sent,
    * submitted or bounced, or Gmail took a send of jobkit's, though the
@@ -341,6 +349,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       status: application.status,
       sentAt: application.sentAt,
       skippedAt: application.skippedAt,
+      bouncedAt: application.bouncedAt,
     },
     went,
     duplicates,
@@ -775,20 +784,28 @@ async function applicationOf(
   status: ApplicationStatus;
   sentAt: Date | null;
   skippedAt: Date | null;
+  bouncedAt: Date | null;
 } | null> {
   const { rows } = await db.query<{
     id: string;
     status: ApplicationStatus;
     sent_at: Date | null;
     skipped_at: Date | null;
+    bounced_at: Date | null;
   }>(
-    `select id, status, sent_at, skipped_at from {{schema}}.applications
+    `select id, status, sent_at, skipped_at, bounced_at from {{schema}}.applications
       where job_id = $1 and role_id = $2`,
     [jobId, roleId],
   );
   const row = rows[0];
   return row
-    ? { id: row.id, status: row.status, sentAt: row.sent_at, skippedAt: row.skipped_at }
+    ? {
+        id: row.id,
+        status: row.status,
+        sentAt: row.sent_at,
+        skippedAt: row.skipped_at,
+        bouncedAt: row.bounced_at,
+      }
     : null;
 }
 
@@ -838,6 +855,8 @@ export interface JobListItem {
    * or bounced in the ledger, or taken by Gmail from jobkit.
    */
   sent: boolean;
+  /** Whether the owner marked the chosen role's sent email bounced, as the job page says. */
+  bounced: boolean;
   /**
    * Whether the owner skipped the chosen role's ready kit, which stays ready to take the skip
    * back; a job a skip closed reads as closed, as its page does.
@@ -865,6 +884,7 @@ export async function listJobViews(
     output_hash: string | null;
     sent_roles: string[];
     skipped_roles: string[];
+    bounced_roles: string[];
   }>(
     `select j.id, j.state, j.received_at, j.chosen_role, j.chosen_role_output,
             x.output, x.output_hash,
@@ -874,7 +894,9 @@ export async function listJobViews(
                   select k.role_id from {{schema}}.kit_sends as k
                    where k.job_id = j.id and k.status = 'sent') as sent_roles,
             array(select a.role_id from {{schema}}.applications as a
-                   where a.job_id = j.id and a.status = 'skipped') as skipped_roles
+                   where a.job_id = j.id and a.status = 'skipped') as skipped_roles,
+            array(select a.role_id from {{schema}}.applications as a
+                   where a.job_id = j.id and a.status = 'bounced') as bounced_roles
        from {{schema}}.jobs as j
        left join lateral (
          select output, output_hash from {{schema}}.job_stage_runs as r
@@ -901,6 +923,7 @@ export async function listJobViews(
       company: extraction?.record.company.name ?? "",
       title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : ""),
       sent: role !== undefined && row.sent_roles.includes(role.id),
+      bounced: role !== undefined && row.bounced_roles.includes(role.id),
       skipped:
         row.state === "kit_ready" &&
         role !== undefined &&

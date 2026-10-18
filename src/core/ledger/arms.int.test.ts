@@ -45,9 +45,13 @@ describe("drawArm", () => {
   });
 
   it("gives draws made at the same moment different places in the sequence", async () => {
-    const draws = await Promise.all(Array.from({ length: 10 }, () => drawArm({ db, random: fixed(7) })));
+    const draws = await Promise.all(
+      Array.from({ length: 10 }, () => drawArm({ db, random: fixed(7) })),
+    );
 
-    expect(new Set(draws.map((draw) => draw.index))).toEqual(new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]));
+    expect(new Set(draws.map((draw) => draw.index))).toEqual(
+      new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+    );
   });
 });
 

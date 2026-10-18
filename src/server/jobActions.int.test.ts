@@ -36,6 +36,7 @@ import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 import {
   applyAgainRoute,
   backToDrafts,
+  bounced,
   draftAnyway,
   gate,
   geminiDraft,
@@ -430,7 +431,7 @@ describe("the job page's routes", () => {
       kit: await kitOf(ready),
       open: false,
       to: "",
-      skipped: false,
+      status: null,
     });
     await clearedOnPage(ready, cookie);
 
@@ -440,7 +441,7 @@ describe("the job page's routes", () => {
       kit: await kitOf(ready),
       open: true,
       to: "jobs@example.com",
-      skipped: false,
+      status: null,
     });
     expect((await gate(get(`/api/jobs/${ready}/gate`), deps(), ready)).status).toBe(401);
   });
@@ -527,7 +528,7 @@ describe("the job page's routes", () => {
     expect(view.review?.gate.map((reason) => reason.kind)).toEqual(["skipped"]);
     // A page drawn before the skip, on another device or in another tab, learns of it.
     const answered = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
-    expect(await answered.json()).toMatchObject({ open: false, skipped: true });
+    expect(await answered.json()).toMatchObject({ open: false, status: "skipped" });
     // Taken back by the skip the page showed; a body naming none is refused.
     const skippedAt = view.application!.skippedAt!.toISOString();
     expect(
@@ -542,7 +543,7 @@ describe("the job page's routes", () => {
     expect((await jobView({ db, clock }, ready))!.application?.status).toBe("kit_ready");
     // The other device's page learns of that too.
     const reopened = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
-    expect(await reopened.json()).toMatchObject({ skipped: false });
+    expect(await reopened.json()).toMatchObject({ status: "kit_ready" });
     // A late tap from a page that showed that skip changes nothing.
     const late = await takeBack(
       post(`/api/jobs/${ready}/take-back`, JSON.stringify({ skippedAt }), cookie),
@@ -658,6 +659,62 @@ describe("the job page's routes", () => {
     expect((await jobView({ db, clock }, ready))!.application?.status).toBe("skipped");
   });
 
+  it("mark a sent email bounced by the Mark sent the page showed, and take the bounce back", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await clearedOnPage(ready, cookie);
+    const marked = JSON.stringify({
+      changedInGmail: false,
+      kit: await kitOf(ready),
+      to: "jobs@example.com",
+    });
+    expect(
+      (await sent(post(`/api/jobs/${ready}/sent`, marked, cookie), deps(), ready)).status,
+    ).toBe(200);
+    const sentAt = (await jobView({ db, clock }, ready))!.application!.sentAt!.toISOString();
+    clock.advance(60_000);
+
+    for (const body of ["", "{}", JSON.stringify({ sentAt: "yesterday" })]) {
+      expect(
+        (await bounced(post(`/api/jobs/${ready}/bounced`, body, cookie), deps(), ready)).status,
+      ).toBe(400);
+    }
+    const response = await bounced(
+      post(`/api/jobs/${ready}/bounced`, JSON.stringify({ sentAt }), cookie),
+      deps(),
+      ready,
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, changed: true });
+    const view = (await jobView({ db, clock }, ready))!;
+    expect(view.application?.status).toBe("bounced");
+    // The other device's page learns of it at its next gate check.
+    const answered = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
+    expect(await answered.json()).toMatchObject({ open: false, status: "bounced" });
+    // A page that showed another Mark sent is refused.
+    const stale = await bounced(
+      post(
+        `/api/jobs/${ready}/bounced`,
+        JSON.stringify({ sentAt: new Date(0).toISOString() }),
+        cookie,
+      ),
+      deps(),
+      ready,
+    );
+    expect(stale.status).toBe(409);
+    expect(await stale.json()).toEqual({ error: "changed" });
+    // Taken back by the bounce the page showed.
+    const bouncedAt = view.application!.bouncedAt!.toISOString();
+    const taken = await takeBack(
+      post(`/api/jobs/${ready}/take-back`, JSON.stringify({ bouncedAt }), cookie),
+      deps(),
+      ready,
+    );
+    expect(taken.status).toBe(200);
+    expect((await jobView({ db, clock }, ready))!.application?.status).toBe("sent");
+  });
+
   it("apply again on the matches the banner showed, and on no others", async () => {
     await seedSample();
     const cookie = await signedIn();
@@ -737,6 +794,7 @@ describe("the job page's routes", () => {
       pick,
       geminiDraft,
       backToDrafts,
+      bounced,
     ] as const;
 
     for (const action of actions) {

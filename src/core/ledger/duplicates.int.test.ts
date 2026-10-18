@@ -119,8 +119,23 @@ describe("duplicatesOf", () => {
         role: "Front-End Developer",
         at: expect.any(Date),
         applied: true,
+        bounced: false,
         key: expect.stringMatching(/^application:[0-9a-f-]{36}:company-role$/),
       },
+    ]);
+  });
+
+  it("says an earlier application whose email bounced went out, and bounced", async () => {
+    await earlier("bounced");
+    const id = await newShare({ address: null, requirements: [] });
+
+    expect(await duplicatesOf(db, id)).toEqual([
+      expect.objectContaining({
+        reason: "company-role",
+        source: "application",
+        applied: true,
+        bounced: true,
+      }),
     ]);
   });
 
@@ -183,6 +198,7 @@ describe("duplicatesOf", () => {
         role: "Frontend Developer",
         at: clock.now(),
         applied: true,
+        bounced: false,
         key: expect.stringMatching(/^manual-run:[0-9a-f-]{36}:company-role$/),
       },
       {
@@ -192,6 +208,7 @@ describe("duplicatesOf", () => {
         role: "Front End Developer",
         at: new Date("2026-05-04T00:00:00Z"),
         applied: true,
+        bounced: false,
         key: expect.stringMatching(/^earlier:[0-9a-f-]{36}:company-role$/),
       },
     ]);

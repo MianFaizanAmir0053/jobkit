@@ -65,7 +65,11 @@ export function duplicateLine(
   const what = `${DUPLICATE_WORDS[match.reason]}: ${match.company || "a company it did not name"}, ${match.role || "a role it did not name"}`;
   switch (match.source) {
     case "application": {
-      const how = match.applied ? "applied with jobkit" : "drafted with jobkit and never sent";
+      const how = match.bounced
+        ? "sent with jobkit and bounced"
+        : match.applied
+          ? "applied with jobkit"
+          : "drafted with jobkit and never sent";
       return { what, when: `${how}, ${formatTime(match.at, timeZone)}` };
     }
     case "manual-run":

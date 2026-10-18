@@ -28,7 +28,11 @@ export function trustGateState(outcomes: readonly KitOutcome[]): TrustGate {
   for (const outcome of outcomes) {
     if (outcome.kind !== "email" || outcome.skipped) continue;
     if (outcome.factualEdit) {
-      state = { unlocked: false, cleanStreak: 0, needed: state.unlocked ? UNLOCK_AGAIN : state.needed };
+      state = {
+        unlocked: false,
+        cleanStreak: 0,
+        needed: state.unlocked ? UNLOCK_AGAIN : state.needed,
+      };
       continue;
     }
     const cleanStreak = state.cleanStreak + 1;

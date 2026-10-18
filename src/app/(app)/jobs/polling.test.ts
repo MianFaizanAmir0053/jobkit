@@ -196,7 +196,7 @@ describe("watchGate", () => {
       kit: "K",
       open: true,
       to: "jobs@example.com",
-      skipped: false,
+      status: null,
     }));
     const answers: unknown[] = [];
 
@@ -213,9 +213,9 @@ describe("watchGate", () => {
 
     expect(read).toHaveBeenCalledTimes(3);
     expect(answers).toEqual([
-      { kit: "K", open: true, to: "jobs@example.com", skipped: false },
-      { kit: "K", open: true, to: "jobs@example.com", skipped: false },
-      { kit: "K", open: true, to: "jobs@example.com", skipped: false },
+      { kit: "K", open: true, to: "jobs@example.com", status: null },
+      { kit: "K", open: true, to: "jobs@example.com", status: null },
+      { kit: "K", open: true, to: "jobs@example.com", status: null },
     ]);
     stop();
   });
@@ -231,7 +231,7 @@ describe("watchGate", () => {
     show();
     expect(read).toHaveBeenCalledTimes(1);
     stop();
-    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", skipped: false });
+    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", status: null });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(settle).not.toHaveBeenCalled();
@@ -243,7 +243,7 @@ describe("watchGate", () => {
       kit: "K",
       open: true,
       to: "jobs@example.com",
-      skipped: false,
+      status: null,
     }));
     const forget = vi.fn();
 
@@ -267,16 +267,16 @@ describe("watchGate", () => {
     const stop = watchGate(read, settle, page, { forget: () => undefined });
     await vi.advanceTimersByTimeAsync(0);
     hide();
-    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", skipped: false });
+    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", status: null });
     await vi.advanceTimersByTimeAsync(0);
     expect(settle).not.toHaveBeenCalled();
     show();
     await vi.advanceTimersByTimeAsync(0);
-    pending[1]!({ kit: "K", open: false, to: "jobs@example.com", skipped: false });
+    pending[1]!({ kit: "K", open: false, to: "jobs@example.com", status: null });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(settle.mock.calls).toEqual([
-      [{ kit: "K", open: false, to: "jobs@example.com", skipped: false }],
+      [{ kit: "K", open: false, to: "jobs@example.com", status: null }],
     ]);
     stop();
   });
@@ -299,14 +299,14 @@ describe("watchGate", () => {
     nudge();
     expect(forget).toHaveBeenCalledTimes(1);
     // The answer to the ask made before the change says nothing of the gate now: it is asked again.
-    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", skipped: false });
+    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", status: null });
     await vi.advanceTimersByTimeAsync(0);
     expect(settle).not.toHaveBeenCalled();
     expect(read).toHaveBeenCalledTimes(2);
-    pending[1]!({ kit: "K", open: true, to: "careers@example.com", skipped: false });
+    pending[1]!({ kit: "K", open: true, to: "careers@example.com", status: null });
     await vi.advanceTimersByTimeAsync(0);
     expect(settle.mock.calls).toEqual([
-      [{ kit: "K", open: true, to: "careers@example.com", skipped: false }],
+      [{ kit: "K", open: true, to: "careers@example.com", status: null }],
     ]);
     hide();
     nudge();
@@ -319,17 +319,24 @@ describe("watchGate", () => {
 });
 
 describe("confirms", () => {
-  it("takes the server's answer as the page's only for the same kit, gate, address and skip", () => {
-    const shown = { kit: "K", open: true, to: "jobs@example.com", skipped: false };
+  it("takes the server's answer as the page's only for the same kit, gate, address and status", () => {
+    const shown = { kit: "K", open: true, to: "jobs@example.com", status: "kit_ready" };
 
     expect(confirms(shown, shown)).toBe(true);
     expect(confirms({ ...shown, to: "careers@example.com" }, shown)).toBe(false);
     expect(confirms({ ...shown, kit: "L" }, shown)).toBe(false);
     expect(confirms({ ...shown, open: false }, shown)).toBe(false);
-    // Skipped since, or taken back since: the page shows the other, even with the gate closed.
-    expect(confirms({ ...shown, open: false, skipped: true }, { ...shown, open: false })).toBe(
+    // Skipped or bounced since, or taken back since: the page shows another, the gate closed
+    // throughout.
+    expect(confirms({ ...shown, open: false, status: "skipped" }, { ...shown, open: false })).toBe(
       false,
     );
+    expect(
+      confirms(
+        { ...shown, open: false, status: "bounced" },
+        { ...shown, open: false, status: "sent" },
+      ),
+    ).toBe(false);
     expect(confirms(null, shown)).toBe(false);
   });
 });

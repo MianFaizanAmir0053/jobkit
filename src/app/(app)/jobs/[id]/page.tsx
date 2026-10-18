@@ -121,11 +121,13 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
           {heading}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {view.went
-            ? "Sent"
-            : ready && view.application?.status === "skipped"
-              ? "Skipped"
-              : STATE_WORDS[view.state]}{" "}
+          {view.application?.status === "bounced"
+            ? "Bounced"
+            : view.went
+              ? "Sent"
+              : ready && view.application?.status === "skipped"
+                ? "Skipped"
+                : STATE_WORDS[view.state]}{" "}
           · started {formatTime(view.receivedAt, timeZone)}
         </p>
       </div>
@@ -159,6 +161,11 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
               job.
             </p>
             {view.role && !view.went && <KitSkip view={view} kit={null} timeZone={timeZone} />}
+            {view.went && (
+              <div className="flex flex-col gap-2 text-sm">
+                <Bounce view={view} timeZone={timeZone} />
+              </div>
+            )}
           </Panel>
         )
       )}
@@ -896,7 +903,7 @@ function KitPanel({
           kit={kitKey}
           open={open}
           to={view.handoff?.to ?? null}
-          skipped={skipped}
+          status={view.application?.status ?? null}
           email={byEmail}
           gmailHref={
             open && byEmail && to !== ""
@@ -942,6 +949,7 @@ function KitPanel({
                   />
                 </div>
               )}
+            <Bounce view={view} timeZone={timeZone} />
           </div>
         ) : skipped ? (
           <KitSkip view={view} kit={kitKey} timeZone={timeZone} />
@@ -1031,6 +1039,50 @@ function KitSkip({ view, kit, timeZone }: { view: JobView; kit: string | null; t
           }
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Mark bounced on a sent email (review spec, "Handoffs"), by the Mark sent
+ * the page shows; once bounced, when, with "Take back Mark bounced", by the
+ * bounce it shows.
+ */
+function Bounce({ view, timeZone }: { view: JobView; timeZone: string }) {
+  const application = view.application;
+  if (application?.status === "bounced") {
+    return (
+      <>
+        <p>
+          {application.bouncedAt
+            ? `You marked it bounced on ${formatTime(application.bouncedAt, timeZone)}.`
+            : "You marked it bounced."}
+        </p>
+        {application.bouncedAt && (
+          <div>
+            <ActionButton
+              url={`/api/jobs/${view.id}/take-back`}
+              label="Take back Mark bounced"
+              variant="outline"
+              body={{ bouncedAt: application.bouncedAt.toISOString() }}
+              gateOf={view.id}
+            />
+          </div>
+        )}
+      </>
+    );
+  }
+  if (application?.status !== "sent" || !application.sentAt) return null;
+  return (
+    <div>
+      <ActionButton
+        url={`/api/jobs/${view.id}/bounced`}
+        label="Mark bounced"
+        variant="outline"
+        body={{ sentAt: application.sentAt.toISOString() }}
+        gateOf={view.id}
+        confirmText="Did this email come back undelivered? Mark it bounced: you can take it back."
+      />
     </div>
   );
 }

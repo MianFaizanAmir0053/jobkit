@@ -23,7 +23,10 @@ export function armAt(seed: Uint8Array, index: number): Arm {
  * created at once get different places. The first draw stores a fresh
  * seed; every later one keeps it.
  */
-export async function drawArm(deps: { db: Db; random: Random }): Promise<{ arm: Arm; index: number }> {
+export async function drawArm(deps: {
+  db: Db;
+  random: Random;
+}): Promise<{ arm: Arm; index: number }> {
   const { rows } = await deps.db.query<{ seed: Uint8Array; index: number }>(
     `insert into {{schema}}.arm_sequence as sequence (id, seed, next_index) values (1, $1, 1)
      on conflict (id) do update set next_index = sequence.next_index + 1

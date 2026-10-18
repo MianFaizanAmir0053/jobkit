@@ -27,6 +27,8 @@ export interface DuplicateMatch {
    * hand, or made before jobkit. False for a kit that was never sent.
    */
   applied: boolean;
+  /** Whether the earlier application's email went and bounced. */
+  bounced: boolean;
   /**
    * The match itself: the earlier row, the reason, and for an earlier kit
    * whether it was sent. The banner sends the keys it showed back with the
@@ -67,6 +69,7 @@ type ApplicationRow = {
   kit_ready_at: Date;
   sent_at: Date | null;
   submitted_at: Date | null;
+  bounced_at: Date | null;
 };
 
 function samePost(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
@@ -92,7 +95,8 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
   // or never sent. Open ones are still being read, and test jobs are not
   // applications.
   const applications = await db.query<ApplicationRow>(
-    `select id, company, role, address, post_fingerprint, kit_ready_at, sent_at, submitted_at
+    `select id, company, role, address, post_fingerprint, kit_ready_at, sent_at, submitted_at,
+            bounced_at
        from {{schema}}.applications
       where kit_ready_at is not null and job_kind = 'real'
         and ($1::uuid is null or id <> $1)
@@ -108,6 +112,7 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
       role: row.role,
       at: appliedAt ?? row.kit_ready_at,
       applied: appliedAt !== null,
+      bounced: row.bounced_at !== null,
     };
     if (sameCompanyRole(row.company, row.role)) {
       add({ ...earlier, reason: appliedAt ? "company-role" : "drafted" }, row.id);
@@ -132,6 +137,7 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
           role: run.role,
           at: run.stopped_at,
           applied: true,
+          bounced: false,
         },
         run.id,
       );
@@ -155,6 +161,7 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
       role: row.role,
       at: new Date(`${row.applied_on}T00:00:00Z`),
       applied: true,
+      bounced: false,
     };
     if (sameCompanyRole(row.company, row.role)) add({ ...earlier, reason: "company-role" }, row.id);
     if (atAddress(row.address)) add({ ...earlier, reason: "address" }, row.id);

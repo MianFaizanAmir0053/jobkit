@@ -443,6 +443,29 @@ describe("undoStatus", () => {
     }
   });
 
+  it("takes back a Mark sent by its own time, though its bounce was taken back since", async () => {
+    const id = await walked(["kit_ready", "sent"]);
+    const sent = await lastChange(id);
+    clock.advance(60_000);
+    await changeStatus(deps(), id, "bounced", null);
+    clock.advance(60_000);
+    expect(await undoStatus(deps(), id, await lastChange(id), null)).toMatchObject({
+      status: "sent",
+    });
+    clock.advance(60_000);
+
+    expect(await undoStatus(deps(), id, sent, null)).toEqual({
+      ok: true,
+      changed: true,
+      status: "kit_ready",
+    });
+    expect(await stamps(id)).toMatchObject({
+      status: "kit_ready",
+      sent_at: null,
+      bounced_at: null,
+    });
+  });
+
   it("takes back Mark submitted and Mark bounced, one tap at a time", async () => {
     const submitted = await walked(["kit_ready", "submitted"], { route: "form" });
     const bounced = await walked(["kit_ready", "sent", "bounced"], { jobId: OTHER_JOB });
@@ -455,9 +478,11 @@ describe("undoStatus", () => {
     });
     expect(await stamps(bounced)).toMatchObject({ sent_at: expect.any(Date), bounced_at: null });
     clock.advance(60_000);
-    expect(await undoStatus(deps(), bounced, await lastChange(bounced), null)).toMatchObject({
-      status: "kit_ready",
-    });
+    // The Mark sent is named by its own time, which taking back the bounce left as it was.
+    const { sent_at: sentAt } = await stamps(bounced);
+    expect(
+      await undoStatus(deps(), bounced, { status: "sent", at: sentAt as Date }, null),
+    ).toMatchObject({ status: "kit_ready" });
   });
 
   it("records a double tap once", async () => {

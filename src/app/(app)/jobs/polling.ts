@@ -154,22 +154,22 @@ export const GATE_CHECK_MS = 15_000;
 
 /**
  * What the server says of a kit's gate: the kit as it stands, whether
- * nothing holds it, the address or number it goes to, and whether the owner
- * skipped the job.
+ * nothing holds it, the address or number it goes to, and the status of
+ * the role's application, null before there is one.
  */
 export interface GateAnswer {
   kit: string | null;
   open: boolean;
   to: string | null;
-  skipped: boolean;
+  status: string | null;
 }
 
 /**
  * Whether the server's answer is the page's: the same kit, the same gate,
- * the same address and the same skip, so a page showing an address the
+ * the same address and the same status, so a page showing an address the
  * owner has since typed again elsewhere is never taken as confirmed, and a
- * page drawn before a skip, or before one was taken back, is drawn again
- * though the gate stays closed.
+ * page drawn before a skip or a bounce, or before either was taken back,
+ * is drawn again though the gate stays closed.
  */
 export function confirms(answer: GateAnswer | null, shown: GateAnswer): boolean {
   return (
@@ -177,7 +177,7 @@ export function confirms(answer: GateAnswer | null, shown: GateAnswer): boolean 
     answer.kit === shown.kit &&
     answer.open === shown.open &&
     answer.to === shown.to &&
-    answer.skipped === shown.skipped
+    answer.status === shown.status
   );
 }
 

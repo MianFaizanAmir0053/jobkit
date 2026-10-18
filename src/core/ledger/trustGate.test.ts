@@ -4,7 +4,8 @@ import { type KitOutcome, trustGateState } from "./trustGate";
 
 const clean: KitOutcome = { kind: "email", skipped: false, factualEdit: false };
 const edited: KitOutcome = { kind: "email", skipped: false, factualEdit: true };
-const times = (n: number, outcome: KitOutcome): KitOutcome[] => Array.from({ length: n }, () => outcome);
+const times = (n: number, outcome: KitOutcome): KitOutcome[] =>
+  Array.from({ length: n }, () => outcome);
 
 describe("trustGateState", () => {
   it("starts locked, needing ten clean email outcomes", () => {
@@ -12,8 +13,16 @@ describe("trustGateState", () => {
   });
 
   it("unlocks after ten clean outcomes in a row, and not before", () => {
-    expect(trustGateState(times(9, clean))).toEqual({ unlocked: false, cleanStreak: 9, needed: 10 });
-    expect(trustGateState(times(10, clean))).toEqual({ unlocked: true, cleanStreak: 10, needed: 10 });
+    expect(trustGateState(times(9, clean))).toEqual({
+      unlocked: false,
+      cleanStreak: 9,
+      needed: 10,
+    });
+    expect(trustGateState(times(10, clean))).toEqual({
+      unlocked: true,
+      cleanStreak: 10,
+      needed: 10,
+    });
   });
 
   it("starts the count again after a factual edit before it unlocks", () => {

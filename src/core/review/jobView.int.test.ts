@@ -34,7 +34,8 @@ import { jobView, listJobViews } from "./jobView";
 import { applyAgainForJob, recordReview } from "./kitReview";
 import { trackApplications, skippedForJob } from "./applications";
 import { STUCK_MS } from "./kitSends";
-import { markSent, markSentByJobkit } from "./markSent";
+import { markBounced, takeBackBounced } from "./markBounced";
+import { markSent, markSentByJobkit, takeBackSent } from "./markSent";
 import { scheduleSend } from "./send";
 import { closeSkipped, skipKit, takeBackSkip } from "./skipKit";
 
@@ -533,6 +534,7 @@ describe("markSent", () => {
       status: "sent",
       sentAt: clock.now(),
       skippedAt: null,
+      bouncedAt: null,
     });
     // The Gmail answer is the outcome's, once: a "Yes" is a factual edit (ledger spec).
     const outcomes = await db.query<{
@@ -719,7 +721,12 @@ describe("skipKit", () => {
     const view = (await jobView({ db, clock }, id))!;
     expect(view).toMatchObject({ state: "kit_ready", role: { id: "P1" } });
     expect(view.draft).not.toBeNull();
-    expect(view.application).toEqual({ status: "skipped", sentAt: null, skippedAt: clock.now() });
+    expect(view.application).toEqual({
+      status: "skipped",
+      sentAt: null,
+      skippedAt: clock.now(),
+      bouncedAt: null,
+    });
     expect(view.review?.gate.map((reason) => reason.kind)).toEqual(["skipped"]);
     expect((await statusChanges(id)).at(-1)).toEqual({
       from_status: "kit_ready",
@@ -770,7 +777,12 @@ describe("skipKit", () => {
     });
 
     const view = (await jobView({ db, clock }, id))!;
-    expect(view.application).toEqual({ status: "kit_ready", sentAt: null, skippedAt: null });
+    expect(view.application).toEqual({
+      status: "kit_ready",
+      sentAt: null,
+      skippedAt: null,
+      bouncedAt: null,
+    });
     expect(view.review?.gate).toEqual([]);
     expect((await statusChanges(id)).slice(-4)).toEqual([
       { from_status: "kit_ready", to_status: "skipped" },
@@ -1020,6 +1032,107 @@ describe("skipKit", () => {
   });
 });
 
+describe("markBounced", () => {
+  /** A ready kit the owner marked sent after sending it from Gmail, and when, as the page shows it. */
+  async function sentKit(): Promise<{ id: string; sentAt: Date }> {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await cleared(id);
+    await markSent({ db, clock }, id, null, { changedInGmail: false });
+    return { id, sentAt: (await jobView({ db, clock }, id))!.application!.sentAt! };
+  }
+
+  it("marks a sent email bounced, once, the kit still held as sent", async () => {
+    const { id, sentAt } = await sentKit();
+    clock.advance(60_000);
+
+    expect(await markBounced({ db, clock }, id, null, sentAt)).toEqual({ ok: true, changed: true });
+    expect(await markBounced({ db, clock }, id, null, sentAt)).toEqual({
+      ok: true,
+      changed: false,
+    });
+
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.application).toEqual({
+      status: "bounced",
+      sentAt,
+      skippedAt: null,
+      bouncedAt: clock.now(),
+    });
+    // It went, and came back: nothing goes out from the page again.
+    expect(view.went).toBe(true);
+    expect(view.review?.gate.map((reason) => reason.kind)).toEqual(["sent"]);
+    // Its Mark sent is taken back only once the bounce is.
+    expect(await takeBackSent({ db, clock }, id, null, sentAt)).toEqual({
+      ok: false,
+      reason: "not-sent",
+    });
+  });
+
+  it("takes back the bounce the page showed, the email sent as it was, and never a later bounce", async () => {
+    const { id, sentAt } = await sentKit();
+    clock.advance(60_000);
+    await markBounced({ db, clock }, id, null, sentAt);
+    const bouncedAt = (await jobView({ db, clock }, id))!.application!.bouncedAt!;
+    clock.advance(60_000);
+
+    expect(await takeBackBounced({ db, clock }, id, null, bouncedAt)).toEqual({ ok: true });
+    expect((await jobView({ db, clock }, id))!.application).toEqual({
+      status: "sent",
+      sentAt,
+      skippedAt: null,
+      bouncedAt: null,
+    });
+    expect(await takeBackBounced({ db, clock }, id, null, bouncedAt)).toEqual({
+      ok: false,
+      reason: "not-bounced",
+    });
+    // Marked bounced again: a late tap from the page that showed the first bounce changes nothing.
+    await markBounced({ db, clock }, id, null, sentAt);
+    expect(await takeBackBounced({ db, clock }, id, null, bouncedAt)).toEqual({
+      ok: false,
+      reason: "not-bounced",
+    });
+    expect((await jobView({ db, clock }, id))!.application?.status).toBe("bounced");
+  });
+
+  it("takes back a Mark sent whose bounce was taken back, by the Mark sent the page shows", async () => {
+    const { id, sentAt } = await sentKit();
+    clock.advance(60_000);
+    await markBounced({ db, clock }, id, null, sentAt);
+    const bouncedAt = (await jobView({ db, clock }, id))!.application!.bouncedAt!;
+    clock.advance(60_000);
+    expect(await takeBackBounced({ db, clock }, id, null, bouncedAt)).toEqual({ ok: true });
+    clock.advance(60_000);
+
+    expect((await jobView({ db, clock }, id))!.application?.sentAt).toEqual(sentAt);
+    expect(await takeBackSent({ db, clock }, id, null, sentAt)).toEqual({ ok: true });
+    expect((await jobView({ db, clock }, id))!.application?.status).toBe("kit_ready");
+  });
+
+  it("refuses a bounce of an email not sent, or from a page that showed another Mark sent", async () => {
+    const { id, sentAt } = await sentKit();
+    clock.advance(60_000);
+    // The owner took the Mark sent back, then marked it sent again, since that page was drawn.
+    expect(await takeBackSent({ db, clock }, id, null, sentAt)).toEqual({ ok: true });
+    expect(await markBounced({ db, clock }, id, null, sentAt)).toEqual({
+      ok: false,
+      reason: "not-sent",
+    });
+    await markSent({ db, clock }, id, null, { changedInGmail: false });
+
+    expect(await markBounced({ db, clock }, id, null, sentAt)).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+    expect((await jobView({ db, clock }, id))!.application?.status).toBe("sent");
+    expect(
+      await markBounced({ db, clock }, "33333333-3333-4333-8333-333333333333", null, sentAt),
+    ).toEqual({ ok: false, reason: "not-found" });
+  });
+});
+
 describe("listJobViews", () => {
   it("lists jobs newest first, with what extract read of each", async () => {
     const older = await pasted();
@@ -1093,6 +1206,20 @@ describe("listJobViews", () => {
       sent: false,
       skipped: true,
     });
+  });
+
+  it("shows a sent email the owner marked bounced as bounced", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await cleared(id);
+    await markSent({ db, clock }, id, null, { changedInGmail: false });
+    const sentAt = (await jobView({ db, clock }, id))!.application!.sentAt!;
+    await markBounced({ db, clock }, id, null, sentAt);
+
+    expect(await listJobViews({ db, clock })).toEqual([
+      expect.objectContaining({ id, sent: true, bounced: true, skipped: false }),
+    ]);
   });
 
   it("shows a job a skip closed as closed, though its application was skipped with it", async () => {
