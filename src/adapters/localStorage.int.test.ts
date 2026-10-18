@@ -134,6 +134,12 @@ describe("local storage", () => {
     expect(storage.resolveSignedRead(token, Date.now() + 61_000)).toBeNull();
   });
 
+  it("signs no read URL for a file that is not there, as Supabase Storage finds the object first", async () => {
+    await expect(storage.createSignedReadUrl("jobs/j1/missing.webp", 60)).rejects.toThrow(
+      /not in storage/,
+    );
+  });
+
   it.each([
     "../escape.txt",
     "jobs/../../x",

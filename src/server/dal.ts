@@ -133,22 +133,23 @@ export const profileForViewer = cache(
 );
 
 /**
- * The CV "Approve & send" attaches, as the recruiter sees its name: the one
- * of the profile version the email was written with; null when that version,
- * or its CV in storage, is gone.
- */
-/**
  * The post's crop and screenshots for the job page, signed for 60 seconds
  * (review spec, "Contact panel"), each time the page is drawn.
  */
 export async function postImagesForViewer(
   jobId: string,
-  wanted: { cropPath: string | null; screenshots: boolean },
+  wanted: { cropPath: string | null; screenshots: boolean; first: number | null },
 ): Promise<PostImages> {
   await requireSession();
   const { db, storage } = await getContainer();
   return postImages({ db, storage }, jobId, wanted);
 }
+
+/**
+ * The CV "Approve & send" attaches, as the recruiter sees its name: the one
+ * of the profile version the email was written with; null when that version,
+ * or its CV in storage, is gone.
+ */
 
 export const kitCvForViewer = cache(async (versionId: string): Promise<string | null> => {
   await requireSession();

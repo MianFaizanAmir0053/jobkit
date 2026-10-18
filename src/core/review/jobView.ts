@@ -26,6 +26,7 @@ import { kindOf, type JobState, type StageName, type StateKind } from "@/core/pl
 import { stageOutput } from "@/core/platform/runner";
 import type { Clock, Db } from "@/core/ports";
 import { getProfileVersion } from "@/core/profile/profile";
+import { mapBox } from "@/core/shared/tileGeometry";
 import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 
@@ -131,6 +132,12 @@ export interface JobView {
    * another contact); null before it ran, or for a role with no contact.
    */
   contact: { kind: ContactKind; agreement: Agreement; cropPath: string | null } | null;
+  /**
+   * The place of the post's screenshot the contact's box lies on, which the
+   * page shows first when the owner types the contact from the screenshots;
+   * null when it lies on none.
+   */
+  contactScreenshot: number | null;
   /** The email address's checks; null before they ran, or for another route. */
   addressChecks: AddressCheck[] | null;
   /**
@@ -291,10 +298,17 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const hasKit = Boolean(chosen && role && extraction);
   const kitKey = hasKit ? chosen!.kitKey : null;
   const decisions = kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey) : null;
+  // A job from screenshots shows the contact's crop beside it; with none to show, the owner types
+  // the contact from the screenshots, however the reads settled (review spec, "Contact panel").
+  const cropless =
+    settled?.agreement.ok === true &&
+    settled.cropPath === null &&
+    (await hasScreenshots(deps.db, id));
   // An address or number the owner typed stands once it passes, even where the kit would no
   // longer ask for one, as after an update that reads the post's as agreed: never the post's.
   const needsRetype = role
-    ? needsRetypeOf(role, settled, addressChecks) || typedPasses(role, decisions ?? NO_DECISIONS)
+    ? needsRetypeOf(role, settled, addressChecks, cropless) ||
+      typedPasses(role, decisions ?? NO_DECISIONS)
     : false;
   const handoff = hasKit && role ? handoffOf(role, needsRetype, decisions ?? NO_DECISIONS) : null;
   // A kit that ran before its application opened with it is weighed against every earlier one
@@ -364,6 +378,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       candidates.some((candidate) => candidate.choice.source === "template"),
     judge: geminiCurrent && judge?.checked ? judge : null,
     contact: settled,
+    contactScreenshot:
+      role && extraction ? (mapBox(role.route.box, extraction.tiles)?.image ?? null) : null,
     addressChecks,
     application: application && {
       status: application.status,
@@ -567,20 +583,32 @@ function verdictsOf(
 /**
  * Whether the owner must type an email or WhatsApp contact in place of the
  * post's: when the post gave none, when it fails the strict check, when its
- * second read did not agree or never ran, or when one of its address's
- * checks holds it. The address the owner types is checked on its own.
+ * second read did not agree or never ran, when one of its address's checks
+ * holds it, or when the job came with screenshots but has no crop of it to
+ * show. The address the owner types is checked on its own.
  */
 function needsRetypeOf(
   role: Role,
   settled: JobView["contact"],
   addressChecks: AddressCheck[] | null,
+  cropless: boolean,
 ): boolean {
   const { kind, address } = role.route;
   if (kind !== "email" && kind !== "whatsapp") return false;
   const given = address.trim();
   const passes = kind === "email" ? isStrictAddress(given) : normaliseWhatsAppNumber(given).ok;
   const held = (addressChecks ?? []).some((check) => check.blocking);
-  return given === "" || !passes || settled?.agreement.ok !== true || held;
+  return given === "" || !passes || settled?.agreement.ok !== true || held || cropless;
+}
+
+/** Whether the job came with screenshots of the post, rather than pasted text alone. */
+async function hasScreenshots(db: Db, jobId: string): Promise<boolean> {
+  const { rows } = await db.query<{ found: boolean }>(
+    `select exists (select 1 from {{schema}}.job_images
+                    where job_id = $1 and purpose = 'post') as found`,
+    [jobId],
+  );
+  return rows[0]?.found === true;
 }
 
 /** Whether the owner typed an email address or number for the role that passes the strict check. */

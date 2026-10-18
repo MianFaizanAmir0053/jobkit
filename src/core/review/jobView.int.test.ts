@@ -372,12 +372,13 @@ describe("jobView", () => {
     };
     const id = await pasted("Northwind Analytics is hiring. Apply to jobs@example.com.");
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], beside);
-    // As if the role, or its contact, had changed since the read.
+    // As if the role, or its contact, had changed since the read, which made a crop.
     await db.query(
       `update {{schema}}.job_stage_runs
-          set output = jsonb_set(output, '{contact}', '"someone@else.example"')
+          set output = jsonb_set(jsonb_set(output, '{contact}', '"someone@else.example"'),
+                                 '{cropPath}', to_jsonb($2::text))
         where job_id = $1 and stage = 'address_read'`,
-      [id],
+      [id, `jobs/${id}/crops/a.png`],
     );
 
     // Nor is its crop shown for this one.
@@ -386,6 +387,68 @@ describe("jobView", () => {
       agreement: { ok: false, reason: "no_second_read" },
       cropPath: null,
     });
+  });
+
+  it("asks for the contact typed from the screenshots when a job from them has no crop of it", async () => {
+    await seedSample();
+    const stages = pipeline();
+    const beside: Pipeline = {
+      ...stages,
+      draft: { ...stages.draft, alongside: () => ["address_read", "address_checks"] },
+      address_read: addressReadStage({ db, storage, random, models: models() }),
+      address_checks: addressChecksStage({ db, dns: offlineDns() }),
+    };
+    const id = await pasted("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], beside);
+    const agreed = (await jobView({ db, clock }, id))!;
+    expect(agreed.contact).toMatchObject({ agreement: { ok: true }, cropPath: null });
+    expect(agreed.kitParts?.contact?.needsRetype).toBe(false);
+
+    // The job has a screenshot of the post too, but no crop of the contact: as when its box
+    // mapped to none and the text settled it, or the crop could not be stored.
+    await db.query(
+      `insert into {{schema}}.job_images
+         (id, job_id, position, purpose, storage_path, content_type, width, height, bytes, sha256,
+          tile_count, created_at, purge_after)
+       values (gen_random_uuid(), $1, 0, 'post', $2, 'image/webp', 1080, 2400, 3, $3, 2, now(),
+               now() + interval '30 days')`,
+      [id, `jobs/${id}/0.webp`, "0".repeat(64)],
+    );
+    const cropless = (await jobView({ db, clock }, id))!;
+    expect(cropless.kitParts?.contact?.needsRetype).toBe(true);
+    expect(cropless.handoff).toEqual({ to: "", typed: true });
+
+    // With a crop of it to show beside it, the reads' agreement stands.
+    await db.query(
+      `update {{schema}}.job_stage_runs set output = jsonb_set(output, '{cropPath}', to_jsonb($2::text))
+        where job_id = $1 and stage = 'address_read'`,
+      [id, `jobs/${id}/crops/a.png`],
+    );
+    expect((await jobView({ db, clock }, id))!.kitParts?.contact?.needsRetype).toBe(false);
+  });
+
+  it("names the screenshot the contact's box lies on", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    expect((await jobView({ db, clock }, id))!.contactScreenshot).toBeNull();
+
+    // As a post of two screenshots, each one tile, with the contact on the second.
+    await db.query(
+      `update {{schema}}.job_stage_runs
+          set output = jsonb_set(jsonb_set(output, '{tiles}', $2::jsonb),
+                                 '{record,roles,0,route,box}', $3::jsonb)
+        where job_id = $1 and stage = 'extract'`,
+      [
+        id,
+        JSON.stringify([
+          { image: 0, top: 0, width: 1080, height: 1800 },
+          { image: 1, top: 0, width: 1080, height: 1800 },
+        ]),
+        JSON.stringify({ tile: 2, x1: 100, y1: 900, x2: 700, y2: 960 }),
+      ],
+    );
+    expect((await jobView({ db, clock }, id))!.contactScreenshot).toBe(1);
   });
 
   it("has no second read for a job whose read never ran", async () => {

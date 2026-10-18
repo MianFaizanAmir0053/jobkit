@@ -56,28 +56,82 @@ async function screenshot(position: number): Promise<string> {
 const tokenOf = (url: string) => new URL(url).pathname.split("/").pop()!;
 
 describe("postImages", () => {
-  it("signs the crop and the post's screenshots, in their order, for 60 seconds", async () => {
+  /** Where each signed URL leads, in the order given. */
+  const pathsOf = (urls: readonly string[]) =>
+    urls.map((url) => storage.resolveSignedRead(tokenOf(url), Date.now()));
+
+  it("signs the crop for 60 seconds, and no screenshot while it shows unless asked", async () => {
+    await screenshot(0);
+    await storage.put(CROP, new Uint8Array([4]), "image/png");
+
+    const images = await postImages({ db, storage }, JOB, { cropPath: CROP, screenshots: false });
+
+    expect(IMAGE_URL_SECONDS).toBe(60);
+    expect(storage.resolveSignedRead(tokenOf(images.crop!), Date.now())).toBe(CROP);
+    expect(storage.resolveSignedRead(tokenOf(images.crop!), Date.now() + 61_000)).toBeNull();
+    expect(images.screenshots).toEqual([]);
+  });
+
+  it("signs the post's screenshots in their order, each with its row, place and size", async () => {
     const second = await screenshot(1);
     const first = await screenshot(0);
     await storage.put(CROP, new Uint8Array([4]), "image/png");
 
     const images = await postImages({ db, storage }, JOB, { cropPath: CROP, screenshots: true });
 
-    expect(IMAGE_URL_SECONDS).toBe(60);
-    expect(storage.resolveSignedRead(tokenOf(images.crop!), Date.now())).toBe(CROP);
-    expect(storage.resolveSignedRead(tokenOf(images.crop!), Date.now() + 61_000)).toBeNull();
+    expect(pathsOf(images.screenshots.map((shot) => shot.url))).toEqual([first, second]);
     expect(
-      images.screenshots.map((url) => storage.resolveSignedRead(tokenOf(url), Date.now())),
-    ).toEqual([first, second]);
+      images.screenshots.map(({ position, width, height }) => ({ position, width, height })),
+    ).toEqual([
+      { position: 0, width: 1080, height: 2400 },
+      { position: 1, width: 1080, height: 2400 },
+    ]);
+    expect(new Set(images.screenshots.map((shot) => shot.id)).size).toBe(2);
   });
 
-  it("signs no screenshot unless the page shows them, and no crop it does not have", async () => {
-    await screenshot(0);
+  it("puts first the screenshot the contact was read on", async () => {
+    const paths = [await screenshot(0), await screenshot(1), await screenshot(2)];
 
-    expect(await postImages({ db, storage }, JOB, { cropPath: null, screenshots: false })).toEqual({
-      crop: null,
-      screenshots: [],
+    const images = await postImages({ db, storage }, JOB, {
+      cropPath: null,
+      screenshots: true,
+      first: 2,
     });
+
+    expect(pathsOf(images.screenshots.map((shot) => shot.url))).toEqual([
+      paths[2],
+      paths[0],
+      paths[1],
+    ]);
+  });
+
+  it("shows the screenshots when there is no crop to show: none made, or one storage cannot sign", async () => {
+    const path = await screenshot(0);
+    const shown = async (cropPath: string | null) => {
+      const images = await postImages({ db, storage }, JOB, { cropPath, screenshots: false });
+      return { crop: images.crop, screenshots: pathsOf(images.screenshots.map((s) => s.url)) };
+    };
+
+    expect(await shown(null)).toEqual({ crop: null, screenshots: [path] });
+    // Recorded, but no longer in storage, as after a purge.
+    expect(await shown(CROP)).toEqual({ crop: null, screenshots: [path] });
+  });
+
+  it("signs no crop but one of this job's", async () => {
+    for (const path of [
+      "jobs/66666666-6666-4666-8666-666666666666/crops/a.png",
+      "profile/cv.pdf",
+      `jobs/${JOB}/0.webp`,
+    ]) {
+      await storage.put(path, new Uint8Array([4]), "image/png");
+
+      expect(
+        (await postImages({ db, storage }, JOB, { cropPath: path, screenshots: false })).crop,
+      ).toBeNull();
+    }
+  });
+
+  it("signs nothing for a job that is not one", async () => {
     expect(
       await postImages({ db, storage }, "not-a-uuid", { cropPath: CROP, screenshots: true }),
     ).toEqual({ crop: null, screenshots: [] });

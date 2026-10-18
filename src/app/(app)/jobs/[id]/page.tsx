@@ -33,6 +33,7 @@ import { ApproveSend } from "./ApproveSend";
 import { JobPoller } from "./JobPoller";
 import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
+import { PostImage } from "./PostImage";
 import { AttachTick, RetypeField } from "./Review";
 
 export const metadata: Metadata = { title: "Job · jobkit" };
@@ -114,6 +115,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
       ? await postImagesForViewer(view.id, {
           cropPath: view.contact?.cropPath ?? null,
           screenshots: view.kitParts.contact.needsRetype,
+          first: view.contactScreenshot,
         })
       : null;
   const now = await requestTime();
@@ -620,6 +622,14 @@ function KitPanel({
           ? "Approve & send marks the sentences and flags above as checked, but the other reasons listed need you first."
           : null;
   const needsRetype = parts.contact?.needsRetype ?? false;
+  // The reads agree, but a job from screenshots has no crop of the contact to show beside it.
+  const cropless =
+    needsRetype &&
+    view.contact?.agreement.ok === true &&
+    !images?.crop &&
+    (images?.screenshots.length ?? 0) > 0;
+  // The screenshot the contact was read on comes first, when the box lies on one.
+  const readOnFirst = images?.screenshots[0]?.position === view.contactScreenshot;
   // Where the kit goes: the post's contact, or the one typed in its place once it passes.
   const to = view.handoff?.to ?? "";
   const typedChecks = needsRetype && to !== "" ? (decisions.retyped?.checks ?? []) : [];
@@ -671,6 +681,13 @@ function KitPanel({
                 The post asks you to apply by email, but jobkit found no address in it. Find it in
                 the post.
               </span>
+            ) : cropless ? (
+              // Nor is it shown with no crop beside it to check it against.
+              <span className="text-destructive">
+                jobkit has no cut-out of the {noun} to show beside its reading
+                {isStrictAddress(address) ? "" : ", and it is not a whole address"}, so type it
+                yourself from the post&apos;s screenshots below.
+              </span>
             ) : (
               // jobkit's own reading is not shown while it is unconfirmed, so it is never copied.
               <span className="text-destructive">
@@ -678,30 +695,30 @@ function KitPanel({
                 {isStrictAddress(address) ? "" : ", and it is not a whole address"}.
               </span>
             )}
+            {!byEmail && cropless && (
+              <p className="mt-1 text-destructive">
+                jobkit has no cut-out of the {noun} to show beside its reading, so type it yourself
+                from the post&apos;s screenshots below.
+              </p>
+            )}
             {disputed && <p className="mt-1 text-destructive">{disputed}</p>}
             {images?.crop && (
-              // A signed URL that lasts 60 seconds, which Next's image loader would outlive.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={images.crop}
-                alt={`The ${noun} in the post's screenshot, enlarged`}
-                className="mt-2 h-auto max-w-full rounded border border-border"
-              />
-            )}
-            {needsRetype && images && images.screenshots.length > 0 && (
-              <div className="mt-2 flex flex-col gap-2">
-                <p className="text-muted-foreground">
-                  The post&apos;s screenshots, to type the {noun} from. Zoom in to read it.
-                </p>
-                {images.screenshots.map((url, i) => (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    key={url}
-                    src={url}
-                    alt={`Screenshot ${i + 1} of the post`}
-                    className="h-auto w-full rounded border border-border"
+              <div className="mt-2 flex flex-col gap-1">
+                {needsRetype && (
+                  <p className="text-muted-foreground">
+                    jobkit&apos;s cut-out of the post where it read the {noun}, enlarged. It may
+                    show the wrong spot: type what the post itself says.
+                  </p>
+                )}
+                {/* Tall enough to read: a long one scrolls sideways rather than shrinking. */}
+                <div className="overflow-x-auto">
+                  <PostImage
+                    key={view.contact?.cropPath}
+                    src={images.crop}
+                    alt={`The ${noun} in the post's screenshot, enlarged`}
+                    className="h-24 w-auto max-w-none rounded border border-border"
                   />
-                ))}
+                </div>
               </div>
             )}
             {needsRetype &&
@@ -746,6 +763,34 @@ function KitPanel({
               <p className="mt-1 text-muted-foreground">Read a second time: it matches.</p>
             )}
           </dd>
+          {images && images.screenshots.length > 0 && (
+            // The panel's whole width, below the field the contact is typed in.
+            <dd className="col-span-2 flex min-w-0 flex-col gap-2">
+              <p className="text-muted-foreground">
+                {needsRetype ? (
+                  <>
+                    The post&apos;s screenshots, to type the {noun} from
+                    {readOnFirst && ", the one jobkit read it on first"}. Zoom in to read it.
+                  </>
+                ) : (
+                  <>
+                    jobkit cannot show its cut-out of the {noun} just now, so here are the
+                    post&apos;s screenshots to check it against.
+                  </>
+                )}
+              </p>
+              {images.screenshots.map((shot) => (
+                <PostImage
+                  key={shot.id}
+                  src={shot.url}
+                  width={shot.width}
+                  height={shot.height}
+                  alt={`Screenshot ${shot.position + 1} of the post`}
+                  className="h-auto w-full rounded border border-border"
+                />
+              ))}
+            </dd>
+          )}
           <dt className="text-muted-foreground">Subject</dt>
           <dd className="min-w-0 [overflow-wrap:anywhere]">{kit.subject}</dd>
         </dl>

@@ -83,8 +83,13 @@ export function createLocalStorage(opts: { root: string; origin: string }): Loca
       uploads.set(t, { path, expiresAtMs: Date.now() + UPLOAD_LIFETIME_MS });
       return { url: `${opts.origin}/api/dev/storage/upload/${t}`, token: t };
     },
+    // Like Supabase Storage, which finds the object before it signs: a file that is not there has no URL.
     async createSignedReadUrl(path, expiresInSeconds) {
-      fileFor(path);
+      const there = await stat(fileFor(path)).then(
+        (s) => s.isFile(),
+        () => false,
+      );
+      if (!there) throw new Error(`${path} is not in storage`);
       const t = token();
       reads.set(t, { path, expiresAtMs: Date.now() + expiresInSeconds * 1000 });
       return `${opts.origin}/api/dev/storage/read/${t}`;
