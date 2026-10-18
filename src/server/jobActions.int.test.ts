@@ -188,9 +188,14 @@ async function settled(steps: readonly FakeStep[], templates = false): Promise<s
 
 const stateOf = async (id: string) => (await loadJob(db, id))?.state;
 
-/** The Skip of a page waiting on the owner: the state it showed, and the send it warned may have gone. */
-const closing = (state: string, uncertain: string | null = null) =>
-  JSON.stringify({ state, uncertain });
+/**
+ * The Skip of a page waiting on the owner, as it shows the job now: its
+ * state, when it reached it, and the send the page warned may have gone.
+ */
+async function closing(id: string, uncertain: string | null = null): Promise<string> {
+  const job = (await loadJob(db, id))!;
+  return JSON.stringify({ state: job.state, since: job.stateChangedAt.toISOString(), uncertain });
+}
 
 /** The database, failing every write into this table, as on a dropped connection. */
 const failingOn = (inner: Db, table: string): Db => ({
@@ -308,20 +313,20 @@ describe("the job page's routes", () => {
     expect(
       (
         await skip(
-          post(`/api/jobs/${picking}/skip`, closing("needs_role_pick"), cookie),
+          post(`/api/jobs/${picking}/skip`, await closing(picking), cookie),
           deps(),
           picking,
         )
       ).status,
     ).toBe(200);
+    const shown = await closing(stopped);
     expect(
-      (await skip(post(`/api/jobs/${stopped}/skip`, closing("stopped"), cookie), deps(), stopped))
-        .status,
+      (await skip(post(`/api/jobs/${stopped}/skip`, shown, cookie), deps(), stopped)).status,
     ).toBe(200);
     expect([await stateOf(picking), await stateOf(stopped)]).toEqual(["closed", "closed"]);
+    // A second tap from the page that showed it stopped.
     expect(
-      (await skip(post(`/api/jobs/${stopped}/skip`, closing("stopped"), cookie), deps(), stopped))
-        .status,
+      (await skip(post(`/api/jobs/${stopped}/skip`, shown, cookie), deps(), stopped)).status,
     ).toBe(409);
   });
 
@@ -366,7 +371,7 @@ describe("the job page's routes", () => {
     expect(
       (
         await skip(
-          post(`/api/jobs/${skipped}/skip`, closing("needs_eligibility_decision"), cookie),
+          post(`/api/jobs/${skipped}/skip`, await closing(skipped), cookie),
           deps(),
           skipped,
         )
@@ -489,22 +494,12 @@ describe("the job page's routes", () => {
     const failing = { ...deps(), db: failingOn(db, "status_changes") };
 
     await expect(
-      skip(
-        post(`/api/jobs/${id}/skip`, closing("needs_eligibility_decision"), cookie),
-        failing,
-        id,
-      ),
+      skip(post(`/api/jobs/${id}/skip`, await closing(id), cookie), failing, id),
     ).rejects.toThrow("connection lost");
     expect(await stateOf(id)).toBe("needs_eligibility_decision");
 
     expect(
-      (
-        await skip(
-          post(`/api/jobs/${id}/skip`, closing("needs_eligibility_decision"), cookie),
-          deps(),
-          id,
-        )
-      ).status,
+      (await skip(post(`/api/jobs/${id}/skip`, await closing(id), cookie), deps(), id)).status,
     ).toBe(200);
     expect(await stateOf(id)).toBe("closed");
     const { rows } = await db.query<{ status: string }>(
@@ -567,7 +562,7 @@ describe("the job page's routes", () => {
     expect(late.status).toBe(409);
     expect(await stateOf(stopped)).toBe("stopped");
     // A stopped page's Skip, arriving after the job moved on to a ready kit, or showing none.
-    const stale = closing("stopped");
+    const stale = await closing(stopped);
     expect((await skip(post(`/api/jobs/${ready}/skip`, stale, cookie), deps(), ready)).status).toBe(
       409,
     );
@@ -583,6 +578,7 @@ describe("the job page's routes", () => {
     // A Skip that names no send, a state that is none, or no kit, is not read.
     for (const body of [
       JSON.stringify({ state: "stopped" }),
+      JSON.stringify({ state: "stopped", uncertain: null }),
       JSON.stringify({ state: "nonsense", uncertain: null }),
       JSON.stringify({ kit: "", uncertain: null }),
       JSON.stringify({ kit: "K", uncertain: "not-a-send" }),
@@ -591,6 +587,17 @@ describe("the job page's routes", () => {
         (await skip(post(`/api/jobs/${stopped}/skip`, body, cookie), deps(), stopped)).status,
       ).toBe(400);
     }
+    // A Skip naming the job's state but an earlier time in it, as from a page drawn before a
+    // retry that stopped again: the page is stale.
+    const earlier = JSON.stringify({
+      state: "stopped",
+      since: new Date(0).toISOString(),
+      uncertain: null,
+    });
+    expect(
+      (await skip(post(`/api/jobs/${stopped}/skip`, earlier, cookie), deps(), stopped)).status,
+    ).toBe(409);
+    expect(await stateOf(stopped)).toBe("stopped");
     // The stopped page's own Skip closes its job, as before.
     expect(
       (await skip(post(`/api/jobs/${stopped}/skip`, stale, cookie), deps(), stopped)).status,
@@ -625,7 +632,7 @@ describe("the job page's routes", () => {
       [ready],
     );
     const closingUnwarned = await skip(
-      post(`/api/jobs/${ready}/skip`, closing("failed"), cookie),
+      post(`/api/jobs/${ready}/skip`, await closing(ready), cookie),
       deps(),
       ready,
     );
@@ -633,8 +640,13 @@ describe("the job page's routes", () => {
     expect(await closingUnwarned.json()).toEqual({ error: "uncertain" });
     expect(await stateOf(ready)).toBe("failed");
     expect(
-      (await skip(post(`/api/jobs/${ready}/skip`, closing("failed", stuck), cookie), deps(), ready))
-        .status,
+      (
+        await skip(
+          post(`/api/jobs/${ready}/skip`, await closing(ready, stuck), cookie),
+          deps(),
+          ready,
+        )
+      ).status,
     ).toBe(200);
     expect(await stateOf(ready)).toBe("closed");
   });

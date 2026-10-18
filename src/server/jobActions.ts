@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { confirmPost, draftAnyway as draftAnywayCore, pickRole } from "@/core/extraction/owner";
-import { loadJob, retryJob } from "@/core/platform/jobs";
+import { jobStatus, retryJob } from "@/core/platform/jobs";
 import { JOB_STATES } from "@/core/platform/jobStates";
 import type { RunnerDeps } from "@/core/platform/runner";
 import type { Dns } from "@/core/ports";
@@ -69,7 +69,7 @@ const kitShown = z.string().min(1).max(100);
 /**
  * What the page showed as the owner pressed Skip: on a ready kit, the kit
  * (null when the page could not read one), on any other page the job's
- * state, and the send it warned may have gone. A Skip that arrives after
+ * state and when the job reached it, and the send it warned may have gone. A Skip that arrives after
  * the job moved on is refused rather than taken for another: a kit's Skip,
  * which can be taken back, never closes a job, and a closing Skip never
  * becomes a kit's. So is one from a page that says neither, from before
@@ -80,7 +80,7 @@ const skipBody = z.union([
     .object({ kit: kitShown.nullable(), uncertain: z.uuid().nullable() })
     .transform((shown) => ({ kind: "kit" as const, ...shown })),
   z
-    .object({ state: z.enum(JOB_STATES), uncertain: z.uuid().nullable() })
+    .object({ state: z.enum(JOB_STATES), since: z.iso.datetime(), uncertain: z.uuid().nullable() })
     .transform((shown) => ({ kind: "state" as const, ...shown })),
   z
     .object({})
@@ -110,7 +110,8 @@ export async function skip(request: NextRequest, deps: Deps, jobId: string): Pro
   const parsed = skipBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
   const shown = parsed.data;
-  const job = await loadJob(deps.db, jobId);
+  // As a status read sees it, the upload timeout applied, as the list showing it applied it.
+  const job = await jobStatus(deps, jobId);
   if (!job) return refusal(404, "not-found");
   if (shown.kind === "kit") {
     const skippedKit = await skipKit(deps, jobId, actor.session.id, {
@@ -122,13 +123,19 @@ export async function skip(request: NextRequest, deps: Deps, jobId: string): Pro
     }
     return ok();
   }
-  // The job closes only from the state the page showed, as the move reads the job again; a page
-  // that showed nothing is drawn again.
-  if (shown.kind === "none" || job.state === "kit_ready" || shown.state !== job.state) {
+  // The job closes only as the page showed it, in that state since that time, as the move reads
+  // the job again; a page that showed nothing is drawn again.
+  if (
+    shown.kind === "none" ||
+    job.state === "kit_ready" ||
+    shown.state !== job.state ||
+    new Date(shown.since).getTime() !== job.stateChangedAt.getTime()
+  ) {
     return refusal(409, "changed");
   }
   const closed = await closeSkipped(deps, jobId, actor.session.id, {
     state: shown.state,
+    since: new Date(shown.since),
     uncertain: shown.uncertain,
   });
   if (!closed.ok) return refusal(closed.reason === "not-found" ? 404 : 409, closed.reason);

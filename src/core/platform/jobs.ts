@@ -244,19 +244,24 @@ const SKIPPABLE: ReadonlySet<JobState> = new Set([
 /**
  * Skip closes a job that failed, whose upload failed, that extraction
  * stopped, or that waits on an eligibility or kit-type decision. Given the
- * state the owner's page showed, it closes the job only from that state, as
- * it reads the job to move it: a job that moved on since is not closed for
- * a page about another state.
+ * state the owner's page showed, and when the job reached it, it closes the
+ * job only as the page showed it, as it reads the job to move it: a job
+ * that moved on since, or left that state and came back to it, as after a
+ * retry that failed again, is not closed for a page about the earlier one.
  */
 export async function skipJob(
   deps: { db: Db; clock: Clock },
   id: string,
   shownState?: string,
+  shownSince?: Date,
 ): Promise<Outcome<"not-found" | "not-skippable">> {
   const job = await loadJob(deps.db, id);
   if (!job) return { ok: false, reason: "not-found" };
   if (!SKIPPABLE.has(job.state)) return { ok: false, reason: "not-skippable" };
-  if (shownState !== undefined && job.state !== shownState) {
+  if (
+    (shownState !== undefined && job.state !== shownState) ||
+    (shownSince !== undefined && job.stateChangedAt.getTime() !== shownSince.getTime())
+  ) {
     return { ok: false, reason: "not-skippable" };
   }
   const moved = await moveJob(deps.db, id, {

@@ -122,10 +122,15 @@ export async function pickRole(
 export async function skipRolePick(
   deps: Deps,
   jobId: string,
+  /** When the page showed the job reached the role pick: a pick reached again since is another. */
+  shownSince?: Date,
 ): Promise<Outcome<"not-found" | "not-waiting">> {
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
   if (job.state !== "needs_role_pick") return { ok: false, reason: "not-waiting" };
+  if (shownSince !== undefined && job.stateChangedAt.getTime() !== shownSince.getTime()) {
+    return { ok: false, reason: "not-waiting" };
+  }
   const moved = await moveJob(deps.db, jobId, {
     from: "needs_role_pick",
     to: "closed",

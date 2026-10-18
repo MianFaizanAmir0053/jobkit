@@ -29,6 +29,7 @@ export function ActionButton({
   confirmText,
   variant = "default",
   gateOf,
+  ariaLabel,
 }: {
   url: string;
   label: string;
@@ -37,6 +38,8 @@ export function ActionButton({
   variant?: "default" | "outline" | "destructive";
   /** The job whose kit's gate the answer can change. */
   gateOf?: string;
+  /** What a screen reader says for the button, where its label alone does not name its job. */
+  ariaLabel?: string;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -67,7 +70,13 @@ export function ActionButton({
 
   return (
     <span className="inline-flex flex-col gap-1">
-      <Button variant={variant} className="min-h-11" disabled={busy} onClick={() => void act()}>
+      <Button
+        variant={variant}
+        className="min-h-11"
+        disabled={busy}
+        aria-label={ariaLabel}
+        onClick={() => void act()}
+      >
         {label}
       </Button>
       {error && (

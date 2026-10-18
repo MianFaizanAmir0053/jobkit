@@ -18,7 +18,7 @@ import { sha256Hex } from "@/lib/encoding";
 import { createTestDb } from "@/server/db/testDb";
 
 import { backToDrafts, draftWithGemini, pickDraft } from "./draftChoice";
-import { type JobView, jobView } from "./jobView";
+import { type JobView, jobView, listJobViews } from "./jobView";
 import { recordReview } from "./kitReview";
 import { markSent } from "./markSent";
 import { scheduleSend } from "./send";
@@ -293,6 +293,17 @@ describe("draftWithGemini", () => {
 });
 
 describe("backToDrafts", () => {
+  it("tells the jobs list that a job whose Gemini draft failed still has the templates' drafts", async () => {
+    const id = await readyKit(POST, { templates: true });
+    await ask(id);
+    await runKit(bed(), id, [refusal()], { templates: true });
+
+    expect((await listJobViews({ db, clock })).find((job) => job.id === id)).toMatchObject({
+      state: "failed",
+      backToDrafts: true,
+    });
+  });
+
   it("makes the kit ready again with the templates' drafts when the Gemini draft fails", async () => {
     const id = await readyKit(POST, { templates: true });
     expect(await backToDrafts({ db, clock }, id)).toEqual({ ok: false, reason: "not-failed" });

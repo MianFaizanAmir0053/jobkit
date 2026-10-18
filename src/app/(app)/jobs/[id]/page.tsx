@@ -198,7 +198,11 @@ function StatePanel({ view }: { view: JobView }) {
       url={`${base}/skip`}
       label="Skip"
       variant="outline"
-      body={{ state: view.state, uncertain: uncertain?.id ?? null }}
+      body={{
+        state: view.state,
+        since: view.stateChangedAt.toISOString(),
+        uncertain: uncertain?.id ?? null,
+      }}
       confirmText={
         uncertain
           ? "A send of this email may have gone: check your Gmail Sent folder first. Skip this job anyway? It closes for good, and the skip cannot be taken back."

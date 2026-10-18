@@ -226,6 +226,19 @@ describe("chosenRole", () => {
 });
 
 describe("skipRolePick", () => {
+  it("closes a role pick only from the page that showed it waiting since then", async () => {
+    const id = await extracted(fixture("S07-two-roles"));
+    expect(await skipRolePick({ db, clock }, id, new Date(0))).toEqual({
+      ok: false,
+      reason: "not-waiting",
+    });
+    const { rows } = await db.query<{ state_changed_at: Date }>(
+      "select state_changed_at from {{schema}}.jobs where id = $1",
+      [id],
+    );
+    expect(await skipRolePick({ db, clock }, id, rows[0]!.state_changed_at)).toEqual({ ok: true });
+  });
+
   it("closes a job waiting for a role pick, and nothing else", async () => {
     const id = await extracted(fixture("S07-two-roles"));
     expect(await skipRolePick({ db, clock }, id)).toEqual({ ok: true });

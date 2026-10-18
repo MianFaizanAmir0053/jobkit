@@ -107,7 +107,8 @@ async function skipping(
 
 /**
  * Skip on a page waiting on the owner (platform spec B9): closes the job
- * from the state the page showed, the role pick's included, and skips its
+ * from the state the page showed, as it showed it, by when the job reached
+ * it, the role pick's included, and skips its
  * application, if a role was ever chosen (ledger spec, "Statuses"), in one
  * transaction, so a skip cut short leaves both as they were and can be
  * tried again. A job whose kit's send may have gone, as when a Gemini draft
@@ -118,7 +119,7 @@ export async function closeSkipped(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
-  shown: { state: string; uncertain: string | null },
+  shown: { state: string; since?: Date; uncertain: string | null },
 ): Promise<
   { ok: true } | { ok: false; reason: "not-found" | "not-skippable" | "not-waiting" | "uncertain" }
 > {
@@ -132,8 +133,8 @@ export async function closeSkipped(
     }
     const moved =
       shown.state === "needs_role_pick"
-        ? await skipRolePick(at, jobId)
-        : await skipJob(at, jobId, shown.state);
+        ? await skipRolePick(at, jobId, shown.since)
+        : await skipJob(at, jobId, shown.state, shown.since);
     if (moved.ok) await skippedForJob(at, jobId, sessionId);
     return moved;
   });

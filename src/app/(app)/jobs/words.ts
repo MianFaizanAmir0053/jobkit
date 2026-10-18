@@ -1,3 +1,4 @@
+import type { Role } from "@/core/extraction/record";
 import type { DuplicateMatch } from "@/core/ledger/duplicates";
 import type { JobState } from "@/core/platform/jobStates";
 
@@ -100,7 +101,7 @@ export function placeOfFlag(path: string): string {
 }
 
 /** How a job's chosen role applies, as the jobs list names it. */
-export const ROUTE_LABELS: Readonly<Record<string, string>> = {
+export const ROUTE_LABELS: Readonly<Record<Role["route"]["kind"], string>> = {
   email: "Email",
   ats_form: "Application form",
   easy_apply: "Easy Apply",

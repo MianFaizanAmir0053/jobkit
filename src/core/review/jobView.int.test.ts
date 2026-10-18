@@ -1197,9 +1197,12 @@ describe("listJobViews", () => {
 
     expect(item(failed)).toMatchObject({
       state: "failed",
+      stateChangedAt: (await loadJob(db, failed))!.stateChangedAt,
       route: "email",
       failure: expect.any(String),
       uncertain: false,
+      // No template fitted, so there are no drafts to go back to.
+      backToDrafts: false,
     });
     expect(item(failed).failure).not.toBe("");
     // A post with several roles names no route until one is picked; it has not failed.

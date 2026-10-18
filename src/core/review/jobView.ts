@@ -40,7 +40,15 @@ import {
   NO_DECISIONS,
   type ReviewDecisions,
 } from "./decisions";
-import { anySent, asShown, isLive, type KitSend, latestSend, uncertainSend } from "./kitSends";
+import {
+  anySent,
+  asShown,
+  isLive,
+  type KitSend,
+  latestSend,
+  STUCK_MS,
+  uncertainSend,
+} from "./kitSends";
 
 /**
  * What the job page and the jobs list show (review spec, as far as the thin
@@ -81,6 +89,8 @@ export interface DraftChoice {
 export interface JobView {
   id: string;
   state: JobState;
+  /** When the job reached its state, which a Skip names, so a stale page's Skip is refused. */
+  stateChangedAt: Date;
   kind: StateKind;
   receivedAt: Date;
   failure: { stage: StageName | null; reason: string; detail: string | null } | null;
@@ -309,6 +319,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   return {
     id,
     state: job.state,
+    stateChangedAt: job.stateChangedAt,
     kind: kindOf(job.state),
     receivedAt: job.receivedAt,
     failure: await failureOf(deps.db, job),
@@ -852,8 +863,16 @@ export interface JobListItem {
   title: string;
   /** How the chosen role applies; null before a role is chosen. */
   route: Role["route"]["kind"] | null;
+  /** When the job reached its state, which a Skip from the list names. */
+  stateChangedAt: Date;
   /** Why a failed job failed, in the words its page shows; null for any other. */
   failure: string | null;
+  /**
+   * Whether a failed job can go back to the templates' drafts, as when a
+   * Gemini draft asked for beside them failed: its Skip waits for its page,
+   * which offers that first.
+   */
+  backToDrafts: boolean;
   /**
    * Whether a send of a failed job's kit may have gone, as when a Gemini
    * draft asked for beside the kit failed: its Skip waits for its page,
@@ -891,14 +910,18 @@ export async function listJobViews(
     chosen_role: string | null;
     chosen_role_output: string | null;
     failure: string | null;
+    state_changed_at: Date;
+    pending_stage: string | null;
+    uncertain_roles: string[];
+    template_drafts: boolean;
     output: unknown;
     output_hash: string | null;
     sent_roles: string[];
     skipped_roles: string[];
     bounced_roles: string[];
   }>(
-    `select j.id, j.state, j.received_at, j.chosen_role, j.chosen_role_output, j.failure,
-            x.output, x.output_hash,
+    `select j.id, j.state, j.state_changed_at, j.pending_stage, j.received_at, j.chosen_role,
+            j.chosen_role_output, j.failure, x.output, x.output_hash,
             array(select a.role_id from {{schema}}.applications as a
                    where a.job_id = j.id and a.status in ('sent', 'submitted', 'bounced')
                   union
@@ -907,7 +930,16 @@ export async function listJobViews(
             array(select a.role_id from {{schema}}.applications as a
                    where a.job_id = j.id and a.status = 'skipped') as skipped_roles,
             array(select a.role_id from {{schema}}.applications as a
-                   where a.job_id = j.id and a.status = 'bounced') as bounced_roles
+                   where a.job_id = j.id and a.status = 'bounced') as bounced_roles,
+            array(select k.role_id from {{schema}}.kit_sends as k
+                   where k.job_id = j.id
+                     and (k.status = 'unknown' or (k.status = 'sending' and k.updated_at < $2)))
+              as uncertain_roles,
+            coalesce((select jsonb_array_length(coalesce(t.output -> 'drafts', '[]'::jsonb)) > 0
+                        from {{schema}}.job_stage_runs as t
+                       where t.job_id = j.id and t.stage = 'templates'
+                         and t.outcome in ('ok', 'reused')
+                       order by t.id desc limit 1), false) as template_drafts
        from {{schema}}.jobs as j
        left join lateral (
          select output, output_hash from {{schema}}.job_stage_runs as r
@@ -916,39 +948,40 @@ export async function listJobViews(
        ) as x on true
       order by j.received_at desc
       limit $1`,
-    [limit],
+    // A send left sending this long before now may have gone, as `uncertainSend` reads it.
+    [limit, new Date(deps.clock.now().getTime() - STUCK_MS)],
   );
-  const now = deps.clock.now();
-  return Promise.all(
-    rows.map(async (row): Promise<JobListItem> => {
-      const extraction = readExtractOutput(row.output);
-      const roles = extraction?.record.roles ?? [];
-      const picked =
-        row.chosen_role !== null && row.chosen_role_output === row.output_hash
-          ? roles.find((role) => role.id === row.chosen_role)
-          : undefined;
-      const role = picked ?? (roles.length === 1 ? roles[0] : undefined);
-      return {
-        id: row.id,
-        state: row.state,
-        kind: kindOf(row.state),
-        receivedAt: row.received_at,
-        company: extraction?.record.company.name ?? "",
-        title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : ""),
-        route: role?.route.kind ?? null,
-        failure: row.state === "failed" ? (row.failure ?? "This step failed.") : null,
-        uncertain:
-          row.state === "failed" &&
-          role !== undefined &&
-          (await uncertainSend(db, row.id, role.id, now)) !== null,
-        sent: role !== undefined && row.sent_roles.includes(role.id),
-        bounced: role !== undefined && row.bounced_roles.includes(role.id),
-        skipped:
-          row.state === "kit_ready" &&
-          role !== undefined &&
-          row.skipped_roles.includes(role.id) &&
-          !row.sent_roles.includes(role.id),
-      };
-    }),
-  );
+  return rows.map((row): JobListItem => {
+    const extraction = readExtractOutput(row.output);
+    const roles = extraction?.record.roles ?? [];
+    const picked =
+      row.chosen_role !== null && row.chosen_role_output === row.output_hash
+        ? roles.find((role) => role.id === row.chosen_role)
+        : undefined;
+    const role = picked ?? (roles.length === 1 ? roles[0] : undefined);
+    return {
+      id: row.id,
+      state: row.state,
+      kind: kindOf(row.state),
+      receivedAt: row.received_at,
+      company: extraction?.record.company.name ?? "",
+      title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : ""),
+      stateChangedAt: row.state_changed_at,
+      route: role?.route.kind ?? null,
+      failure: row.state === "failed" ? (row.failure ?? "This step failed.") : null,
+      uncertain:
+        row.state === "failed" && role !== undefined && row.uncertain_roles.includes(role.id),
+      backToDrafts:
+        row.state === "failed" &&
+        (row.pending_stage === "draft" || row.pending_stage === "judge") &&
+        row.template_drafts,
+      sent: role !== undefined && row.sent_roles.includes(role.id),
+      bounced: role !== undefined && row.bounced_roles.includes(role.id),
+      skipped:
+        row.state === "kit_ready" &&
+        role !== undefined &&
+        row.skipped_roles.includes(role.id) &&
+        !row.sent_roles.includes(role.id),
+    };
+  });
 }

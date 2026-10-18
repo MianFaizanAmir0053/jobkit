@@ -357,7 +357,13 @@ describe("skipJob", () => {
       reason: "not-skippable",
     });
     expect(await loadJob(db, stopped)).toMatchObject({ state: "stopped" });
-    expect(await skipJob({ db, clock }, stopped, "stopped")).toEqual({ ok: true });
+    // A page drawn at an earlier time in the same state, as before a retry that stopped again.
+    expect(await skipJob({ db, clock }, stopped, "stopped", new Date(0))).toEqual({
+      ok: false,
+      reason: "not-skippable",
+    });
+    const { stateChangedAt } = (await loadJob(db, stopped))!;
+    expect(await skipJob({ db, clock }, stopped, "stopped", stateChangedAt)).toEqual({ ok: true });
   });
 });
 
