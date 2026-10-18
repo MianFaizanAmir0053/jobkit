@@ -17,7 +17,7 @@ import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 import { createTestDb } from "@/server/db/testDb";
 
-import { flagKey } from "./decisions";
+import { approvalsKey, flagKey } from "./decisions";
 import { backToDrafts, draftWithGemini, pickDraft } from "./draftChoice";
 import { type JobView, jobView, listJobViews } from "./jobView";
 import { recordReview } from "./kitReview";
@@ -276,6 +276,8 @@ describe("pickDraft", () => {
       kit: shown.kitKey!,
       to: shown.handoff!.to,
       uncertain: null,
+      approved: approvalsKey(shown.kitParts!, shown.review!.decisions),
+      words: shown.wordsKey!,
       sessionId: null,
     });
     expect(scheduled.ok).toBe(true);

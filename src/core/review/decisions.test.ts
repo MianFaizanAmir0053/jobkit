@@ -7,6 +7,7 @@ import {
   approvalsKey,
   approveAll,
   approvable,
+  cleanSentence,
   decide,
   decisionsSchema,
   flagKey,
@@ -153,6 +154,38 @@ describe("decide", () => {
     // Changed: confirmed anew; and a sentence the owner added is no edit of a drafted one.
     expect(decisions.confirmed).toEqual([]);
     expect(decisions.edits).toEqual({});
+  });
+
+  it("changes nothing for an edit to the words a sentence has, or an undo of a sentence never changed", () => {
+    const onS2 = flagKey({ kind: "sensitive_topic_drafted", at: "S2", message: "Check this." });
+    const checked = decide(NO_DECISIONS, { kind: "check_flag", flag: onS2 });
+    expect(decide(checked, { kind: "revert", blockId: "S2" })).toEqual(checked);
+
+    let edited = decide(checked, { kind: "edit", blockId: "S3", text: "Mine." });
+    edited = decide(edited, { kind: "confirm", blockId: "S3" });
+    expect(decide(edited, { kind: "edit", blockId: "S3", text: " Mine. " })).toEqual(edited);
+
+    let added = decide(NO_DECISIONS, { kind: "add", after: "", text: "Ours." });
+    added = decide(added, { kind: "confirm", blockId: "N1" });
+    expect(decide(added, { kind: "edit", blockId: "N1", text: "Ours." })).toEqual(added);
+  });
+
+  it("takes the owner's words as one line of what can be seen, so nothing hidden slips past the checks", () => {
+    const soft = String.fromCharCode(0xad);
+    const nul = String.fromCharCode(0);
+    const lone = String.fromCharCode(0xd800);
+    const parsed = reviewActionSchema.parse({
+      kind: "edit",
+      blockId: "S1",
+      text: ` My  sa${soft}lary\nexpectation${nul}${lone} is open. `,
+    });
+
+    expect(parsed).toMatchObject({ text: "My salary expectation is open." });
+    expect(cleanSentence(" a\tb ")).toBe("a b");
+    // Nothing that can be seen: refused.
+    expect(
+      reviewActionSchema.safeParse({ kind: "add", after: "", text: `${soft}${nul}` }).success,
+    ).toBe(false);
   });
 
   it("deletes a drafted sentence with its edit and checks, until the owner takes the deletion back", () => {

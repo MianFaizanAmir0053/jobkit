@@ -109,6 +109,7 @@ async function pressedOn(id: string) {
     to: view.handoff!.to,
     uncertain: view.uncertain?.id ?? null,
     approved: approvalsKey(view.kitParts!, view.review!.decisions),
+    words: view.wordsKey!,
   };
 }
 
@@ -208,6 +209,19 @@ describe("POST /api/jobs/<id>/send", () => {
     await drain();
 
     expect(gmail.sent).toHaveLength(1);
+  });
+
+  it("refuses as changed a press from a page that named no words", async () => {
+    const cookie = await signedIn();
+    await connectGmail();
+    const id = await readyKit({ db, clock, storage }, POST);
+    const pressed: Record<string, unknown> = { ...(await pressedOn(id)) };
+    delete pressed.words;
+
+    const response = await send(post(`/api/jobs/${id}/send`, pressed, cookie), deps(), id);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "changed" });
   });
 
   it("refuses as changed a press from a page that listed its marks rather than giving their key", async () => {

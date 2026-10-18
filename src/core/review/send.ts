@@ -93,11 +93,10 @@ export interface Pressed {
   kit: string;
   to: string;
   uncertain: string | null;
-  /**
-   * The key of the sentences and flags the confirmation listed, which the
-   * press marks (approvalsKey); the route refuses a press that gives none.
-   */
-  approved?: string;
+  /** The key of the sentences and flags the confirmation listed, which the press marks (approvalsKey). */
+  approved: string;
+  /** The email's words as the page showed them (wordsKey): jobkit sends only those. */
+  words: string;
   sessionId: string | null;
 }
 
@@ -109,7 +108,7 @@ export async function scheduleSend(
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   return deps.db.tx(async (tx): Promise<ScheduleOutcome> => {
     const at = { db: tx, clock: deps.clock };
-    const locked = await lockedKit(at, jobId, { kit: pressed.kit });
+    const locked = await lockedKit(at, jobId, { kit: pressed.kit, words: pressed.words });
     if (!("view" in locked)) return locked;
     const { view } = locked;
     const roleId = view.role!.id;
@@ -122,10 +121,7 @@ export async function scheduleSend(
     if (needsNewWords(view.kitParts, before)) return { ok: false, reason: "words" };
     // The press marks only what its confirmation listed: one drawn before a decision was made or
     // taken back, here or on the other device, is refused, and the page is drawn again.
-    if (
-      pressed.approved !== undefined &&
-      pressed.approved !== approvalsKey(view.kitParts, before)
-    ) {
+    if (pressed.approved !== approvalsKey(view.kitParts, before)) {
       return { ok: false, reason: "changed" };
     }
     const decisions = approveAll(view.kitParts, before);

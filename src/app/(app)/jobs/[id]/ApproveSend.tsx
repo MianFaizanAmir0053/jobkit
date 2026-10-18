@@ -76,6 +76,7 @@ const keyOf = (send: { id: string; status: string } | null) =>
 export function ApproveSend({
   jobId,
   kit,
+  words,
   to,
   subject,
   gmail,
@@ -90,6 +91,8 @@ export function ApproveSend({
   jobId: string;
   /** The kit the page shows. */
   kit: string;
+  /** The email's words as the page shows them (wordsKey): jobkit sends only those. */
+  words: string;
   /** The address the page shows the email going to; empty until there is one. */
   to: string;
   subject: string;
@@ -225,7 +228,7 @@ export function ApproveSend({
       const response = await fetch(`/api/jobs/${jobId}/send`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kit, to, uncertain: uncertainId, approved }),
+        body: JSON.stringify({ kit, to, uncertain: uncertainId, approved, words }),
         signal: AbortSignal.timeout(ANSWER_MS),
       });
       if (!response.ok) {

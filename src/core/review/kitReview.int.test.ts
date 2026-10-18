@@ -265,6 +265,82 @@ describe("recordReview", () => {
     expect(await missing()).toBe(true);
   });
 
+  it("refuses a decision from a page that showed other words, as one drawn before an edit on the other device", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    const shown = (await jobView({ db, clock }, id))!;
+    await recordReview(deps(), id, {
+      kind: "edit",
+      blockId: "S1",
+      text: "I have built production React applications for nine years.",
+    });
+
+    // The page drawn before shows the drafted words: neither its Confirm nor its check of S1 counts.
+    const made = { kit: shown.kitKey!, words: shown.wordsKey! };
+    expect(await recordReview(deps(), id, { kind: "confirm", blockId: "S1" }, made)).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+    expect(await recordReview(deps(), id, { kind: "check", blockId: "S1" }, made)).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+    const now = (await jobView({ db, clock }, id))!;
+    const confirmed = await recordReview(
+      deps(),
+      id,
+      { kind: "confirm", blockId: "S1" },
+      { kit: now.kitKey!, words: now.wordsKey! },
+    );
+    expect(confirmed.ok).toBe(true);
+  });
+
+  it("forgets a check on a flag the email no longer has, so the flag never comes back checked", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    // The only claim deleted: the email says nothing about the owner, which they check.
+    await recordReview(deps(), id, { kind: "delete", blockId: "S1" });
+    const flag = (await jobView({ db, clock }, id))!.kitParts!.flags.find(
+      (each) => each.kind === "no_claims",
+    )!;
+    await recordReview(deps(), id, { kind: "check_flag", flag: flagKey(flag) });
+
+    // The sentence back, and the flag gone: its check goes too.
+    await recordReview(deps(), id, { kind: "revert", blockId: "S1" });
+    expect((await jobView({ db, clock }, id))!.review!.decisions.flagsChecked).toEqual([]);
+    const again = await recordReview(deps(), id, { kind: "delete", blockId: "S1" });
+    expect(
+      again.ok &&
+        again.gate.some((reason) => reason.kind === "flag" && reason.flag.kind === "no_claims"),
+    ).toBe(true);
+  });
+
+  it("records an edit of a sentence about the post as factual only when it changes the company's or the role's name", async () => {
+    const outcome = async (text: string) => {
+      // Each job alone, so neither is the other's duplicate.
+      await resetKitBed({ db, clock, storage });
+      const id = await readyKit(`${text} Apply to jobs@example.com.`, { templates: true });
+      const opener = (await jobView({ db, clock }, id))!.kit!.blocks.find(
+        (block) => block.class === "post",
+      )!;
+      await recordReview(deps(), id, { kind: "edit", blockId: opener.id, text });
+      await recordReview(deps(), id, { kind: "confirm", blockId: opener.id });
+      expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+        ok: true,
+      });
+      const { rows } = await db.query<{ factual_edit: boolean }>(
+        "select factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+        [id],
+      );
+      return rows[0]!.factual_edit;
+    };
+
+    expect(
+      await outcome(
+        "I am applying for the Senior Full-Stack Engineer role at Northwind Analytics.",
+      ),
+    ).toBe(false);
+    expect(await outcome("I am applying for the engineering role at Northwind.")).toBe(true);
+  });
+
   it("runs validate again on the email as the owner edited it", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
     const block = (await jobView({ db, clock }, id))!.draft!.kit.blocks[0]!;

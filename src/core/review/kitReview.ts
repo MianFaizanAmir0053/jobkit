@@ -11,6 +11,7 @@ import type { AddressChecksOutput } from "./addressChecksStage";
 import { applicationIdOf, contactForLedger, kitReadyForJob } from "./applications";
 import type { GateReason } from "./canHandOff";
 import {
+  cleanSentence,
   decide,
   emailKey,
   flagKey,
@@ -56,6 +57,8 @@ type Refusal = { ok: false; reason: "not-found" | "not-ready" | "sent" | "skippe
 /** The kit the page showed, which a decision names, and the session whose tap it is. */
 export interface DecisionMade {
   kit?: string;
+  /** The email's words as the page showed them (wordsKey): a decision on others is refused. */
+  words?: string;
   sessionId?: string | null;
 }
 
@@ -137,6 +140,10 @@ export async function lockedKit(
     return { ok: false, reason: "not-ready" };
   }
   if (made.kit !== undefined && made.kit !== kitKey) return { ok: false, reason: "changed" };
+  // A page showing other words than the email has, as one drawn before an edit on the other device.
+  if (made.words !== undefined && made.words !== view.wordsKey) {
+    return { ok: false, reason: "changed" };
+  }
   if (kitParts.sent) return { ok: false, reason: "sent" };
   if (kitParts.skipped) return { ok: false, reason: "skipped" };
   return { view: { ...view, kitParts, kitKey } };
@@ -158,11 +165,17 @@ export async function keep(
   const now = await jobView(deps, jobId);
   // Under the row's lock the kit stays ready: losing it here undoes the decision, never keeps it.
   if (!now?.review) throw new Error(`The kit of job ${jobId} was gone as its decision was kept.`);
+  // A check on a flag the email no longer has is forgotten, so the flag never comes back, after
+  // another edit, already checked for words no one checked. The gate never read it.
+  const names = new Set((now.kitParts?.flags ?? []).map(flagKey));
+  const kept = now.review.decisions;
+  const current = { ...kept, flagsChecked: kept.flagsChecked.filter((name) => names.has(name)) };
   await deps.db.query(
-    "update {{schema}}.kit_reviews set gate = $3::jsonb where job_id = $1 and role_id = $2",
-    [jobId, roleId, JSON.stringify(now.review.gate)],
+    `update {{schema}}.kit_reviews set decisions = $3::jsonb, gate = $4::jsonb
+      where job_id = $1 and role_id = $2`,
+    [jobId, roleId, storedDecisions(kitKey, current), JSON.stringify(now.review.gate)],
   );
-  return { ok: true, decisions: now.review.decisions, gate: now.review.gate };
+  return { ok: true, decisions: current, gate: now.review.gate };
 }
 
 /**
@@ -226,7 +239,9 @@ export async function recordReview(
       (block) => action.kind === "edit" && block.id === action.blockId,
     );
     const taken: ReviewAction =
-      action.kind === "edit" && drafted !== undefined && action.text.trim() === drafted.text
+      action.kind === "edit" &&
+      drafted !== undefined &&
+      cleanSentence(action.text) === cleanSentence(drafted.text)
         ? { kind: "revert", blockId: action.blockId }
         : action;
     const decisions = decide(before, taken, checks);

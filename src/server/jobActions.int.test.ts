@@ -151,13 +151,15 @@ async function clearedOnPage(id: string, cookie: string): Promise<void> {
     if (reason.kind === "judge") actions.push({ kind: "check", blockId: reason.blockId });
   }
   for (const action of actions) {
-    const body = JSON.stringify({ action, kit: view.kitKey });
+    const body = JSON.stringify({ action, kit: view.kitKey, words: view.wordsKey });
     await review(post(`/api/jobs/${id}/review`, body, cookie), deps(), id);
   }
 }
 
 /** The kit as the job page shows it, which every decision names. */
 const kitOf = async (id: string) => (await jobView({ db, clock }, id))!.kitKey!;
+/** The words the page shows, which each of its decisions names. */
+const wordsOf = async (id: string) => (await jobView({ db, clock }, id))!.wordsKey!;
 
 function get(path: string, cookie?: string): NextRequest {
   const headers: Record<string, string> = {};
@@ -497,25 +499,39 @@ describe("the job page's routes", () => {
     const cookie = await signedIn();
     const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
     const kit = await kitOf(ready);
-    const typed = JSON.stringify({ action: { kind: "retype", value: "jobs@example.com" }, kit });
+    const words = await wordsOf(ready);
+    const typed = JSON.stringify({
+      action: { kind: "retype", value: "jobs@example.com" },
+      kit,
+      words,
+    });
 
     const response = await review(post(`/api/jobs/${ready}/review`, typed, cookie), deps(), ready);
 
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ gate: expect.any(Array) });
     // A page drawn on another kit: the owner must look again.
-    const stale = JSON.stringify({ action: { kind: "check", blockId: "S1" }, kit: "another kit" });
+    const stale = JSON.stringify({
+      action: { kind: "check", blockId: "S1" },
+      kit: "another kit",
+      words,
+    });
     expect(
       (await review(post(`/api/jobs/${ready}/review`, stale, cookie), deps(), ready)).status,
     ).toBe(409);
-    const nowhere = JSON.stringify({ action: { kind: "check", blockId: "S9" }, kit });
+    const nowhere = JSON.stringify({ action: { kind: "check", blockId: "S9" }, kit, words });
     expect(
       (await review(post(`/api/jobs/${ready}/review`, nowhere, cookie), deps(), ready)).status,
     ).toBe(409);
     // A page drawn before flags were named posts a flag's place: drawn again, as for a stale page.
-    const placed = JSON.stringify({ action: { kind: "check_flag", flag: "F1" }, kit });
+    const placed = JSON.stringify({ action: { kind: "check_flag", flag: "F1" }, kit, words });
     const old = await review(post(`/api/jobs/${ready}/review`, placed, cookie), deps(), ready);
     expect(old.status).toBe(409);
+    // A page from before decisions named the words it showed: drawn again.
+    const wordless = JSON.stringify({ action: { kind: "check", blockId: "S1" }, kit });
+    expect(
+      (await review(post(`/api/jobs/${ready}/review`, wordless, cookie), deps(), ready)).status,
+    ).toBe(409);
     expect(
       (
         await review(

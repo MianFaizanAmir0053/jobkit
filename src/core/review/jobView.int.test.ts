@@ -28,7 +28,7 @@ import { validateProfile } from "@/core/profile/validate";
 import { createTestDb } from "@/server/db/testDb";
 
 import { addressChecksStage } from "./addressChecksStage";
-import { flagKey } from "./decisions";
+import { approvalsKey, flagKey } from "./decisions";
 import { draftWithGemini, pickDraft } from "./draftChoice";
 import { jobView, listJobViews } from "./jobView";
 import { applyAgainForJob, recordReview } from "./kitReview";
@@ -920,6 +920,8 @@ describe("skipKit", () => {
         kit: view.kitKey!,
         to: view.handoff!.to,
         uncertain: null,
+        approved: approvalsKey(view.kitParts!, view.review!.decisions),
+        words: view.wordsKey!,
         sessionId: null,
       }),
     ).toEqual({ ok: false, reason: "skipped" });

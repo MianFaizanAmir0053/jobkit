@@ -90,6 +90,7 @@ const pressed = (shown: JobView, sessionId: string | null = null) => ({
   to: shown.handoff!.to,
   uncertain: shown.uncertain?.id ?? null,
   approved: approvalsKey(shown.kitParts!, shown.review!.decisions),
+  words: shown.wordsKey!,
   sessionId,
 });
 
@@ -153,6 +154,21 @@ describe("scheduleSend", () => {
     const shown = await view(id);
     // The owner checks the sentence on the other device after this page was drawn.
     await recordReview({ db, clock, dns: offlineDns() }, id, { kind: "check", blockId: "S1" });
+
+    expect(await scheduleSend({ db, clock }, id, pressed(shown))).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+    expect((await scheduleSend({ db, clock }, id, pressed(await view(id)))).ok).toBe(true);
+  });
+
+  it("refuses a press from a page that showed other words, as one drawn before an edit on the other device", async () => {
+    const id = await readyKit(POST);
+    const shown = await view(id);
+    const decide = (action: Parameters<typeof recordReview>[2]) =>
+      recordReview({ db, clock, dns: offlineDns() }, id, action);
+    await decide({ kind: "add", after: "S1", text: "I lead code reviews for a team of four." });
+    await decide({ kind: "confirm", blockId: "N1" });
 
     expect(await scheduleSend({ db, clock }, id, pressed(shown))).toEqual({
       ok: false,

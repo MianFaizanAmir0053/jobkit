@@ -128,6 +128,27 @@ export const MAX_SENTENCE = 1500;
 export const MAX_ADDED = 30;
 
 /**
+ * The owner's words as one line of what can be seen: each run of white
+ * space one space, and no control or format character (a soft hyphen, a
+ * zero-width space) nor half of a broken pair, which would hide a word from
+ * the checks, end a line in the middle of the email, or fail to be stored.
+ */
+export function cleanSentence(text: string): string {
+  return text
+    .replace(/\s+/gu, " ")
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}]/gu, "")
+    .replace(/ {2,}/g, " ")
+    .trim();
+}
+
+/** A sentence in the owner's words, as the page posts it: cleaned, never empty, as long as a sentence runs. */
+const sentenceText = z
+  .string()
+  .max(MAX_SENTENCE * 4)
+  .transform(cleanSentence)
+  .pipe(z.string().min(1).max(MAX_SENTENCE));
+
+/**
  * A flag's name (flagKey): its kind, its place, and eight hex digits of its
  * words; or its place among the kit's flags ("F2"), as a page drawn before
  * flags were named posts it, which no flag has now: the decision is refused
@@ -157,7 +178,7 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("edit"),
     blockId: z.string().min(1).max(20),
-    text: z.string().trim().min(1).max(MAX_SENTENCE),
+    text: sentenceText,
   }),
   z.strictObject({ kind: z.literal("revert"), blockId: z.string().min(1).max(20) }),
   z.strictObject({ kind: z.literal("confirm"), blockId: z.string().min(1).max(20) }),
@@ -165,7 +186,7 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("add"),
     after: z.string().max(20),
-    text: z.string().trim().min(1).max(MAX_SENTENCE),
+    text: sentenceText,
   }),
   z.strictObject({ kind: z.literal("delete"), blockId: z.string().min(1).max(20) }),
   // A sentence of the owner's as the line about a must-have, or as none ("").
@@ -312,7 +333,12 @@ export function decide(
     // New words for a sentence, the owner's or drafting's again: confirmed and checked anew, but the
     // separate check's verdict, which weighed the drafted words and stands aside meanwhile.
     case "edit": {
-      const text = action.text.trim();
+      const text = cleanSentence(action.text);
+      const sentence = decisions.added.find((each) => each.id === action.blockId);
+      // The words it has already: nothing more.
+      if (sentence ? sentence.text === text : decisions.edits[action.blockId] === text) {
+        return decisions;
+      }
       const anew = {
         ...decisions,
         confirmed: without(decisions.confirmed, action.blockId),
@@ -328,7 +354,11 @@ export function decide(
         : { ...anew, edits: { ...decisions.edits, [action.blockId]: text } };
     }
     // Drafting's words again, for a sentence edited or deleted: they answer nothing the owner marked.
+    // One with drafting's words already is left as it is, its checks with it.
     case "revert":
+      if (!isEdited(decisions, action.blockId) && !isDeleted(decisions, action.blockId)) {
+        return decisions;
+      }
       return {
         ...decisions,
         edits: withoutKey(decisions.edits, action.blockId),
@@ -343,7 +373,11 @@ export function decide(
         0,
         ...decisions.added.map((each) => Number(/^N(\d+)$/.exec(each.id)?.[1] ?? 0)),
       );
-      const sentence = { id: `N${highest + 1}`, after: action.after, text: action.text.trim() };
+      const sentence = {
+        id: `N${highest + 1}`,
+        after: action.after,
+        text: cleanSentence(action.text),
+      };
       return { ...decisions, added: [...decisions.added, sentence] };
     }
     case "delete": {

@@ -1,3 +1,4 @@
+import type { KitBlock } from "@/core/drafting/kit";
 import { chosenRole } from "@/core/extraction/owner";
 import { sameAddress } from "@/core/ledger/normalise";
 import { changeStatus, setAddress, undoStatus } from "@/core/ledger/statuses";
@@ -168,8 +169,15 @@ async function marking(
           ...edited.map((block) => `sentence:${block.id}`),
           ...added.map((sentence) => `sentence:${sentence.id}`),
         ];
-        const factual =
-          address || added.length > 0 || edited.some((block) => FACTUAL_CLASSES.has(block.class));
+        // A sentence about the post is a factual edit when the company's or the role's name changes
+        // with it, deleted or reworded; a claim or a gap line is, however it changes.
+        const names = [view.extraction!.record.company.name, role.title].filter((name) => name);
+        const factualChange = (block: KitBlock) => {
+          if (block.class !== "post") return FACTUAL_CLASSES.has(block.class);
+          const now = deleted.includes(block.id) ? "" : (edits[block.id] ?? block.text);
+          return names.some((name) => block.text.includes(name) !== now.includes(name));
+        };
+        const factual = address || added.length > 0 || edited.some(factualChange);
         await tx.query(
           `insert into {{schema}}.draft_outcomes
            (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at,

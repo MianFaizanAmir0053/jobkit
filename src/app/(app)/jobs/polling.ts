@@ -79,13 +79,13 @@ export function pollJob(
   let polling = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const schedule = () => {
+  function schedule() {
     if (stopped) return;
     clearTimeout(timer);
     const delay = page.now() - since < JOB_POLL.fastForMs ? JOB_POLL.fastMs : JOB_POLL.slowMs;
     timer = setTimeout(() => void tick(), delay);
-  };
-  const tick = async () => {
+  }
+  async function tick() {
     if (stopped || polling) return;
     polling = true;
     try {
@@ -98,7 +98,7 @@ export function pollJob(
       polling = false;
       schedule();
     }
-  };
+  }
   const stopShown = page.onShown(() => {
     if (stopped || polling) return;
     clearTimeout(timer);

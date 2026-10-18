@@ -111,16 +111,22 @@ async function deliverWhenDue(
 }
 
 /**
- * The kit, the address, the send that may have gone, and the key of the
- * sentences and flags the confirmation listed (approvalsKey), as the page
- * showed them at the press; a page from before it gave the key, which gave
- * none or listed them, is refused as changed, and drawn again.
+ * The kit, the address, the send that may have gone, the key of the
+ * sentences and flags the confirmation listed (approvalsKey), and the
+ * email's words (wordsKey), as the page showed them at the press. A page
+ * from before it gave both keys is refused as changed, and drawn again; one
+ * that listed its marks past the body's limit is refused as too large, and
+ * drawn again all the same.
  */
 const sendBody = z.object({
   kit: z.string().min(1).max(100),
   to: z.string().max(400),
   uncertain: z.uuid().nullable(),
   approved: z.union([z.string().regex(/^[0-9a-f]{8}$/), z.array(z.unknown())]).optional(),
+  words: z
+    .string()
+    .regex(/^[0-9a-f]{8}$/)
+    .optional(),
 });
 
 /**
@@ -139,14 +145,15 @@ export async function send(
   if (!isUuid(jobId)) return refusal(404, "not-found");
   const body = await bodyOf(request, sendBody);
   if (!body.ok) return body.response;
-  const { approved } = body.data;
-  if (typeof approved !== "string") return refusal(409, "changed");
+  const { approved, words } = body.data;
+  if (typeof approved !== "string" || words === undefined) return refusal(409, "changed");
   const connection = await gmailConnection(deps.db);
   if (!connection) return refusal(409, "gmail-not-connected");
   if (connection.refusedAt) return refusal(409, "gmail-refused");
   const scheduled = await scheduleSend(deps, jobId, {
     ...body.data,
     approved,
+    words,
     sessionId: actor.session.id,
   });
   if (!scheduled.ok) {

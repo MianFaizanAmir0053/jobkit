@@ -458,7 +458,11 @@ function ScamPanel({ view }: { view: JobView }) {
               label="Continue anyway"
               variant="destructive"
               confirmText="This post shows signs of a scam. Continue with it anyway?"
-              body={{ action: { kind: "continue_anyway" }, kit: view.kitKey }}
+              body={{
+                action: { kind: "continue_anyway" },
+                kit: view.kitKey,
+                words: view.wordsKey,
+              }}
             />
           )
         ))}
@@ -590,6 +594,8 @@ function KitPanel({
   const role = view.role!;
   const parts = view.kitParts!;
   const kitKey = view.kitKey!;
+  // The email's words as this page shows them, which each of its decisions and Send names.
+  const words = view.wordsKey!;
   // The email as it stands, with the owner's edits: what every handoff sends.
   const kit = view.kit ?? draft.kit;
   const body = emailBody(kit);
@@ -701,8 +707,15 @@ function KitPanel({
       return `${reason?.message ?? "The separate check holds this sentence."} — "${blockText.get(mark.blockId) ?? ""}"`;
     }
     const about = aboutFlag(mark.flag);
+    // Its place too, so a flag on the subject and one on the greeting read apart.
+    const place =
+      mark.flag.at === "subject"
+        ? " (the subject)"
+        : mark.flag.at === "greeting"
+          ? " (the greeting)"
+          : "";
     return withoutContacts(
-      about ? `${mark.flag.message} — "${about}"` : mark.flag.message,
+      about ? `${mark.flag.message} — "${about}"` : `${mark.flag.message}${place}`,
       typing(view),
     );
   });
@@ -738,7 +751,7 @@ function KitPanel({
   const reviewUrl = `/api/jobs/${view.id}/review`;
   const goes = role.route.kind === "whatsapp" ? "the message goes to" : "the email goes to";
   const cv = role.required_attachments.filter((attachment) => attachment.is_cv);
-  const decision = (action: object) => ({ action, kit: kitKey });
+  const decision = (action: object) => ({ action, kit: kitKey, words });
 
   return (
     <div className="flex flex-col gap-4">
@@ -865,6 +878,7 @@ function KitPanel({
               <RetypeField
                 jobId={view.id}
                 kit={kitKey}
+                words={words}
                 kind={parts.contact.kind}
                 value={decisions.retyped?.value ?? null}
               />
@@ -989,6 +1003,7 @@ function KitPanel({
                       key={`${kitKey}:${block.id}`}
                       jobId={view.id}
                       kit={kitKey}
+                      words={words}
                       blockId={block.id}
                       text={block.text}
                       maxLength={MAX_SENTENCE}
@@ -1047,6 +1062,7 @@ function KitPanel({
                         key={`${kitKey}:${block.id}:${decisions.answers[block.id] ?? ""}`}
                         jobId={view.id}
                         kit={kitKey}
+                        words={words}
                         blockId={block.id}
                         value={decisions.answers[block.id] ?? ""}
                         options={lineFor}
@@ -1063,6 +1079,7 @@ function KitPanel({
                 key={kitKey}
                 jobId={view.id}
                 kit={kitKey}
+                words={words}
                 sentences={kit.blocks.map((block) => ({ id: block.id, text: block.text }))}
                 maxLength={MAX_SENTENCE}
                 full={decisions.added.length >= MAX_ADDED}
@@ -1251,6 +1268,7 @@ function KitPanel({
               key={attachment.id}
               jobId={view.id}
               kit={kitKey}
+              words={words}
               id={attachment.id}
               name={withoutContacts(attachment.name, typing(view))}
               ticked={decisions.attached.includes(attachment.id)}
@@ -1336,6 +1354,7 @@ function KitPanel({
                   <FitTick
                     jobId={view.id}
                     kit={kitKey}
+                    words={words}
                     requirementId={row.id}
                     requirement={requirement}
                     ticked={met}
@@ -1404,9 +1423,12 @@ function KitPanel({
         {byEmail && !sent && !skipped && (
           <>
             <ApproveSend
-              key={shown ? `${shown.id}-${shown.status}` : "none"}
+              // Drawn anew when the server's word changes what it would send, so an open
+              // confirmation never changes under the owner's eyes.
+              key={`${shown ? `${shown.id}-${shown.status}` : "none"}:${approved}:${words}:${to}`}
               jobId={view.id}
               kit={kitKey}
+              words={words}
               to={to}
               subject={kit.subject}
               gmail={gmail}

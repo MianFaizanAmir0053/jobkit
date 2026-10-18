@@ -213,7 +213,15 @@ export async function draftAnyway(
   return ok(202);
 }
 
-const reviewBody = z.object({ action: reviewActionSchema, kit: kitShown });
+/** The email's words as the page showed them (wordsKey). */
+const wordsShown = z.string().regex(/^[0-9a-f]{8}$/);
+
+const reviewBody = z.object({
+  action: reviewActionSchema,
+  kit: kitShown,
+  // Optional only so a page from before decisions named it is drawn again, not told it failed.
+  words: wordsShown.optional(),
+});
 
 /**
  * POST /api/jobs/<id>/review: one of the owner's decisions on a ready kit,
@@ -239,8 +247,10 @@ export async function review(
   }
   const parsed = reviewBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
+  if (parsed.data.words === undefined) return refusal(409, "changed");
   const outcome = await recordReview(deps, jobId, parsed.data.action, {
     kit: parsed.data.kit,
+    words: parsed.data.words,
     sessionId: actor.session.id,
   });
   if (!outcome.ok) return refusal(outcome.reason === "not-found" ? 404 : 409, outcome.reason);

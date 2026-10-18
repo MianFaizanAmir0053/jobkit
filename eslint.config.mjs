@@ -6,9 +6,10 @@ const eslintConfig = defineConfig([
   ...nextVitals,
   ...nextTs,
   {
-    // No test draws a page or a component, so a value read before it is
-    // declared, as in a callback run at once, would throw only when one is.
-    files: ["src/app/**/*.tsx"],
+    // No test draws a page or a component, and some of the modules beside
+    // them have none, so a value read before it is declared, as in a
+    // callback run at once, would throw only in the browser.
+    files: ["src/app/**/*.{ts,tsx}", "src/components/**/*.{ts,tsx}"],
     rules: {
       "@typescript-eslint/no-use-before-define": [
         "error",
