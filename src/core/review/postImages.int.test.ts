@@ -64,7 +64,10 @@ describe("postImages", () => {
     await screenshot(0);
     await storage.put(CROP, new Uint8Array([4]), "image/png");
 
-    const images = await postImages({ db, storage }, JOB, { cropPath: CROP, screenshots: false });
+    const images = await postImages({ db, storage }, JOB, {
+      cropPath: CROP,
+      screenshots: "without-crop",
+    });
 
     expect(IMAGE_URL_SECONDS).toBe(60);
     expect(storage.resolveSignedRead(tokenOf(images.crop!), Date.now())).toBe(CROP);
@@ -77,7 +80,10 @@ describe("postImages", () => {
     const first = await screenshot(0);
     await storage.put(CROP, new Uint8Array([4]), "image/png");
 
-    const images = await postImages({ db, storage }, JOB, { cropPath: CROP, screenshots: true });
+    const images = await postImages({ db, storage }, JOB, {
+      cropPath: CROP,
+      screenshots: "always",
+    });
 
     expect(pathsOf(images.screenshots.map((shot) => shot.url))).toEqual([first, second]);
     expect(
@@ -94,7 +100,7 @@ describe("postImages", () => {
 
     const images = await postImages({ db, storage }, JOB, {
       cropPath: null,
-      screenshots: true,
+      screenshots: "always",
       first: 2,
     });
 
@@ -108,13 +114,35 @@ describe("postImages", () => {
   it("shows the screenshots when there is no crop to show: none made, or one storage cannot sign", async () => {
     const path = await screenshot(0);
     const shown = async (cropPath: string | null) => {
-      const images = await postImages({ db, storage }, JOB, { cropPath, screenshots: false });
+      const images = await postImages({ db, storage }, JOB, {
+        cropPath,
+        screenshots: "without-crop",
+      });
       return { crop: images.crop, screenshots: pathsOf(images.screenshots.map((s) => s.url)) };
     };
 
     expect(await shown(null)).toEqual({ crop: null, screenshots: [path] });
     // Recorded, but no longer in storage, as after a purge.
     expect(await shown(CROP)).toEqual({ crop: null, screenshots: [path] });
+  });
+
+  it("signs no screenshot once the kit has gone, crop or none", async () => {
+    await screenshot(0);
+
+    expect(
+      await postImages({ db, storage }, JOB, { cropPath: null, screenshots: "never" }),
+    ).toEqual({ crop: null, screenshots: [] });
+  });
+
+  it("signs the crop for a job named in capitals", async () => {
+    await storage.put(CROP, new Uint8Array([4]), "image/png");
+
+    const images = await postImages({ db, storage }, JOB.toUpperCase(), {
+      cropPath: CROP,
+      screenshots: "without-crop",
+    });
+
+    expect(storage.resolveSignedRead(tokenOf(images.crop!), Date.now())).toBe(CROP);
   });
 
   it("signs no crop but one of this job's", async () => {
@@ -126,14 +154,15 @@ describe("postImages", () => {
       await storage.put(path, new Uint8Array([4]), "image/png");
 
       expect(
-        (await postImages({ db, storage }, JOB, { cropPath: path, screenshots: false })).crop,
+        (await postImages({ db, storage }, JOB, { cropPath: path, screenshots: "without-crop" }))
+          .crop,
       ).toBeNull();
     }
   });
 
   it("signs nothing for a job that is not one", async () => {
     expect(
-      await postImages({ db, storage }, "not-a-uuid", { cropPath: CROP, screenshots: true }),
+      await postImages({ db, storage }, "not-a-uuid", { cropPath: CROP, screenshots: "always" }),
     ).toEqual({ crop: null, screenshots: [] });
   });
 });

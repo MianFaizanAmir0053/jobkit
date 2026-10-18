@@ -51,6 +51,7 @@ import {
   uncertainSend,
   uncertainWhere,
 } from "./kitSends";
+import type { ImagesWanted } from "./postImages";
 
 /**
  * What the job page and the jobs list show (review spec, as far as the thin
@@ -138,6 +139,14 @@ export interface JobView {
    * null when it lies on none.
    */
   contactScreenshot: number | null;
+  /**
+   * Whether the contact's box lies on a screenshot but its second read has
+   * no crop of it to show, on a kit that has not gone: the owner then types
+   * the contact from the screenshots (review spec, "Contact panel").
+   */
+  noCrop: boolean;
+  /** Which of the post's images the kit's page shows; null for a kit with no contact panel. */
+  images: ImagesWanted | null;
   /** The email address's checks; null before they ran, or for another route. */
   addressChecks: AddressCheck[] | null;
   /**
@@ -298,16 +307,28 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const hasKit = Boolean(chosen && role && extraction);
   const kitKey = hasKit ? chosen!.kitKey : null;
   const decisions = kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey) : null;
-  // A job from screenshots shows the contact's crop beside it; with none to show, the owner types
-  // the contact from the screenshots, however the reads settled (review spec, "Contact panel").
-  const cropless =
+  const latest = role ? await latestSend(deps.db, id, role.id) : null;
+  const now = deps.clock.now();
+  const sentByJobkit = role ? await anySent(deps.db, id, role.id) : false;
+  // jobkit sent it, though the ledger may not have recorded it: it went.
+  const went = Boolean(application && WENT.has(application.status)) || sentByJobkit;
+  const gone = went || application?.status === "skipped";
+  // The screenshot the contact's box lies on, from the post's reading, which a purge leaves.
+  const contactScreenshot =
+    role && extraction ? (mapBox(role.route.box, extraction.tiles)?.image ?? null) : null;
+  // A contact read from a screenshot shows its crop beside it; with none to show, the owner types
+  // it from the screenshots, however the reads settled (review spec, "Contact panel"). One settled
+  // from the pasted text, its box on no screenshot, was read as written. A kit that went, or was
+  // skipped, keeps the address it had.
+  const noCrop =
+    !gone &&
+    contactScreenshot !== null &&
     settled?.agreement.ok === true &&
-    settled.cropPath === null &&
-    (await hasScreenshots(deps.db, id));
+    settled.cropPath === null;
   // An address or number the owner typed stands once it passes, even where the kit would no
   // longer ask for one, as after an update that reads the post's as agreed: never the post's.
   const needsRetype = role
-    ? needsRetypeOf(role, settled, addressChecks, cropless) ||
+    ? needsRetypeOf(role, settled, addressChecks, noCrop) ||
       typedPasses(role, decisions ?? NO_DECISIONS)
     : false;
   const handoff = hasKit && role ? handoffOf(role, needsRetype, decisions ?? NO_DECISIONS) : null;
@@ -318,11 +339,6 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     : ready && role && extraction
       ? await unopenedDuplicates(deps.db, role, extraction, handoff)
       : [];
-  const latest = role ? await latestSend(deps.db, id, role.id) : null;
-  const now = deps.clock.now();
-  const sentByJobkit = role ? await anySent(deps.db, id, role.id) : false;
-  // jobkit sent it, though the ledger may not have recorded it: it went.
-  const went = Boolean(application && WENT.has(application.status)) || sentByJobkit;
   const kitParts =
     chosen && role && extraction
       ? kitPartsOf({
@@ -378,8 +394,16 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       candidates.some((candidate) => candidate.choice.source === "template"),
     judge: geminiCurrent && judge?.checked ? judge : null,
     contact: settled,
-    contactScreenshot:
-      role && extraction ? (mapBox(role.route.box, extraction.tiles)?.image ?? null) : null,
+    contactScreenshot,
+    noCrop,
+    images:
+      ready && kitKey && kitParts?.contact
+        ? {
+            cropPath: settled?.cropPath ?? null,
+            screenshots: gone ? "never" : needsRetype ? "always" : "without-crop",
+            first: contactScreenshot,
+          }
+        : null,
     addressChecks,
     application: application && {
       status: application.status,
@@ -584,31 +608,21 @@ function verdictsOf(
  * Whether the owner must type an email or WhatsApp contact in place of the
  * post's: when the post gave none, when it fails the strict check, when its
  * second read did not agree or never ran, when one of its address's checks
- * holds it, or when the job came with screenshots but has no crop of it to
+ * holds it, or when it was read from a screenshot but has no crop of it to
  * show. The address the owner types is checked on its own.
  */
 function needsRetypeOf(
   role: Role,
   settled: JobView["contact"],
   addressChecks: AddressCheck[] | null,
-  cropless: boolean,
+  noCrop: boolean,
 ): boolean {
   const { kind, address } = role.route;
   if (kind !== "email" && kind !== "whatsapp") return false;
   const given = address.trim();
   const passes = kind === "email" ? isStrictAddress(given) : normaliseWhatsAppNumber(given).ok;
   const held = (addressChecks ?? []).some((check) => check.blocking);
-  return given === "" || !passes || settled?.agreement.ok !== true || held || cropless;
-}
-
-/** Whether the job came with screenshots of the post, rather than pasted text alone. */
-async function hasScreenshots(db: Db, jobId: string): Promise<boolean> {
-  const { rows } = await db.query<{ found: boolean }>(
-    `select exists (select 1 from {{schema}}.job_images
-                    where job_id = $1 and purpose = 'post') as found`,
-    [jobId],
-  );
-  return rows[0]?.found === true;
+  return given === "" || !passes || settled?.agreement.ok !== true || held || noCrop;
 }
 
 /** Whether the owner typed an email address or number for the role that passes the strict check. */

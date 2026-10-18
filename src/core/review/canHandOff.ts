@@ -40,8 +40,10 @@ export interface GateInput {
   attachments: readonly { name: string; ticked: boolean }[];
   /**
    * An email or WhatsApp route's contact: whether the owner must retype it,
-   * because the second read disputed it or the post gave none, and what
-   * they typed. Null for any other route.
+   * as the job view decides (the post gave none, it fails the strict check,
+   * the second read did not confirm it, an address check holds it, or it
+   * was read from a screenshot with no crop to show), and what they typed.
+   * Null for any other route.
    */
   contact: { kind: "email" | "whatsapp"; needsRetype: boolean; retyped: string | null } | null;
   /** The checks of the address that goes out: the post's, or the one the owner typed. */

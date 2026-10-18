@@ -389,8 +389,8 @@ describe("jobView", () => {
     });
   });
 
-  it("asks for the contact typed from the screenshots when a job from them has no crop of it", async () => {
-    await seedSample();
+  /** A kit whose contact the second read confirmed from the pasted text, its checks passed. */
+  async function agreedKit(): Promise<string> {
     const stages = pipeline();
     const beside: Pipeline = {
       ...stages,
@@ -400,23 +400,46 @@ describe("jobView", () => {
     };
     const id = await pasted("Northwind Analytics is hiring. Apply to jobs@example.com.");
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)], beside);
-    const agreed = (await jobView({ db, clock }, id))!;
-    expect(agreed.contact).toMatchObject({ agreement: { ok: true }, cropPath: null });
-    expect(agreed.kitParts?.contact?.needsRetype).toBe(false);
+    return id;
+  }
 
-    // The job has a screenshot of the post too, but no crop of the contact: as when its box
-    // mapped to none and the text settled it, or the crop could not be stored.
+  /** As a job from one screenshot of the post, one tile, with the contact's box where given. */
+  async function onScreenshot(
+    id: string,
+    box = { tile: 1, x1: 100, y1: 900, x2: 700, y2: 960 },
+  ): Promise<void> {
     await db.query(
       `insert into {{schema}}.job_images
          (id, job_id, position, purpose, storage_path, content_type, width, height, bytes, sha256,
           tile_count, created_at, purge_after)
-       values (gen_random_uuid(), $1, 0, 'post', $2, 'image/webp', 1080, 2400, 3, $3, 2, now(),
+       values (gen_random_uuid(), $1, 0, 'post', $2, 'image/webp', 1080, 2400, 3, $3, 1, now(),
                now() + interval '30 days')`,
       [id, `jobs/${id}/0.webp`, "0".repeat(64)],
     );
-    const cropless = (await jobView({ db, clock }, id))!;
-    expect(cropless.kitParts?.contact?.needsRetype).toBe(true);
-    expect(cropless.handoff).toEqual({ to: "", typed: true });
+    await db.query(
+      `update {{schema}}.job_stage_runs
+          set output = jsonb_set(jsonb_set(output, '{tiles}', $2::jsonb),
+                                 '{record,roles,0,route,box}', $3::jsonb)
+        where job_id = $1 and stage = 'extract'`,
+      [id, JSON.stringify([{ image: 0, top: 0, width: 1080, height: 2400 }]), JSON.stringify(box)],
+    );
+  }
+
+  it("asks for the contact typed from the screenshots when its box lies on one but there is no crop of it", async () => {
+    await seedSample();
+    const id = await agreedKit();
+    const agreed = (await jobView({ db, clock }, id))!;
+    expect(agreed.noCrop).toBe(false);
+    expect(agreed.kitParts?.contact?.needsRetype).toBe(false);
+    expect(agreed.images).toEqual({ cropPath: null, screenshots: "without-crop", first: null });
+
+    // The contact's box lies on a screenshot, but its crop could not be stored.
+    await onScreenshot(id);
+    const held = (await jobView({ db, clock }, id))!;
+    expect(held.noCrop).toBe(true);
+    expect(held.kitParts?.contact?.needsRetype).toBe(true);
+    expect(held.handoff).toEqual({ to: "", typed: true });
+    expect(held.images).toEqual({ cropPath: null, screenshots: "always", first: 0 });
 
     // With a crop of it to show beside it, the reads' agreement stands.
     await db.query(
@@ -424,7 +447,52 @@ describe("jobView", () => {
         where job_id = $1 and stage = 'address_read'`,
       [id, `jobs/${id}/crops/a.png`],
     );
-    expect((await jobView({ db, clock }, id))!.kitParts?.contact?.needsRetype).toBe(false);
+    const cropped = (await jobView({ db, clock }, id))!;
+    expect(cropped.noCrop).toBe(false);
+    expect(cropped.kitParts?.contact?.needsRetype).toBe(false);
+    expect(cropped.images).toEqual({
+      cropPath: `jobs/${id}/crops/a.png`,
+      screenshots: "without-crop",
+      first: 0,
+    });
+  });
+
+  it("asks nothing more of a job with screenshots whose contact the pasted text settled", async () => {
+    await seedSample();
+    const id = await agreedKit();
+    // A share of a screenshot and a caption: the contact's box lies on no screenshot.
+    await onScreenshot(id, { tile: -1, x1: -1, y1: -1, x2: -1, y2: -1 });
+
+    const view = (await jobView({ db, clock }, id))!;
+
+    expect(view.noCrop).toBe(false);
+    expect(view.kitParts?.contact?.needsRetype).toBe(false);
+    expect(view.handoff).toEqual({ to: "jobs@example.com", typed: false });
+  });
+
+  it("keeps the address of a kit that went, or was skipped, and shows no screenshots once it went", async () => {
+    await seedSample();
+    const sent = await agreedKit();
+    await cleared(sent);
+    await markSent({ db, clock }, sent, null, { changedInGmail: false });
+    // As after an update whose rule would ask for the contact typed.
+    await onScreenshot(sent);
+
+    const went = (await jobView({ db, clock }, sent))!;
+    expect(went.noCrop).toBe(false);
+    expect(went.handoff).toEqual({ to: "jobs@example.com", typed: false });
+    expect(went.images).toEqual({ cropPath: null, screenshots: "never", first: 0 });
+
+    const skipped = await agreedKit();
+    await onScreenshot(skipped);
+    const kit = (await jobView({ db, clock }, skipped))!.kitKey!;
+    await skipKit({ db, clock }, skipped, null, { kit, uncertain: null });
+    const view = (await jobView({ db, clock }, skipped))!;
+    expect(view.noCrop).toBe(false);
+    expect(view.images?.screenshots).toBe("never");
+    // Taken back, the kit asks for it again.
+    await takeBackSkip({ db, clock }, skipped, null, view.application!.skippedAt!);
+    expect((await jobView({ db, clock }, skipped))!.noCrop).toBe(true);
   });
 
   it("names the screenshot the contact's box lies on", async () => {

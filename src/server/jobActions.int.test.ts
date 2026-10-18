@@ -37,6 +37,7 @@ import {
   applyAgainRoute,
   backToDrafts,
   bounced,
+  images,
   submitted,
   draftAnyway,
   gate,
@@ -762,6 +763,25 @@ describe("the job page's routes", () => {
     );
     expect(taken.status).toBe(200);
     expect((await jobView({ db, clock }, ready))!.application?.status).toBe("sent");
+  });
+
+  it("signs the post's images afresh for a page whose image did not load", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    const withStorage = { ...deps(), storage };
+
+    const response = await images(get(`/api/jobs/${ready}/images`, cookie), withStorage, ready);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toMatch(/no-store/);
+    // A kit of pasted text alone, whose read never ran: no crop, no screenshot.
+    expect(await response.json()).toEqual({ crop: null, screenshots: [] });
+
+    expect((await images(get(`/api/jobs/${ready}/images`), withStorage, ready)).status).toBe(401);
+    const missing = "33333333-3333-4333-8333-333333333333";
+    expect(
+      (await images(get(`/api/jobs/${missing}/images`, cookie), withStorage, missing)).status,
+    ).toBe(404);
   });
 
   it("mark a form submitted by the kit the page showed, and take it back", async () => {

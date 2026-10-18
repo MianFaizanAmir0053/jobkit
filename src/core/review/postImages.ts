@@ -7,12 +7,26 @@ import { isUuid } from "@/lib/uuid";
  * no image is ever public or lasting. The crop of the contact the second
  * read looked at stands beside it; only a crop of this job's is signed. The
  * screenshots, the one the contact was read on first, show when the owner
- * must type the contact from them, and whenever there is no crop to show:
- * none was made, or storage cannot sign it, as one a purge removed. An
- * image storage cannot sign is left out rather than failing the page.
+ * must type the contact from them, and, until the kit has gone, whenever
+ * there is no crop to show: none was made, or storage cannot sign it, as
+ * one a purge removed. An image storage cannot sign is left out rather
+ * than failing the page.
  */
 
 export const IMAGE_URL_SECONDS = 60;
+
+/** Which of the post's images a kit's page shows (the job view decides). */
+export interface ImagesWanted {
+  /** The crop of the contact the second read made; null for none. */
+  cropPath: string | null;
+  /**
+   * The screenshots: always, as when the owner types the contact from them;
+   * only when there is no crop to show; or never, once the kit has gone.
+   */
+  screenshots: "always" | "without-crop" | "never";
+  /** The place of the screenshot the contact's box lies on, shown first; null for none. */
+  first?: number | null;
+}
 
 export interface PostScreenshot {
   /** The image's row: the same each time the page is drawn, though its URL is new. */
@@ -27,21 +41,25 @@ export interface PostScreenshot {
 export interface PostImages {
   /** The crop's URL; null when there is none to show. */
   crop: string | null;
-  /** The post's screenshots, the one the contact was read on first; none while the crop shows, unless asked for. */
+  /** The post's screenshots, the one the contact was read on first; none unless wanted. */
   screenshots: PostScreenshot[];
 }
 
 export async function postImages(
   deps: { db: Db; storage: Storage },
   jobId: string,
-  wanted: { cropPath: string | null; screenshots: boolean; first?: number | null },
+  wanted: ImagesWanted,
 ): Promise<PostImages> {
   if (!isUuid(jobId)) return { crop: null, screenshots: [] };
   const signed = (path: string) =>
     deps.storage.createSignedReadUrl(path, IMAGE_URL_SECONDS).catch(() => null);
-  const ours = wanted.cropPath?.startsWith(`jobs/${jobId}/crops/`) ? wanted.cropPath : null;
+  // The job's own crops, whatever case the job's ID was given in.
+  const folder = `jobs/${jobId.toLowerCase()}/crops/`;
+  const ours = wanted.cropPath?.startsWith(folder) ? wanted.cropPath : null;
   const crop = ours ? await signed(ours) : null;
-  if (crop && !wanted.screenshots) return { crop, screenshots: [] };
+  if (wanted.screenshots === "never" || (crop && wanted.screenshots === "without-crop")) {
+    return { crop, screenshots: [] };
+  }
   const { rows } = await deps.db.query<{
     id: string;
     storage_path: string;
@@ -54,21 +72,18 @@ export async function postImages(
     [jobId],
   );
   const first = wanted.first ?? null;
-  const screenshots: PostScreenshot[] = [];
-  for (const row of [
+  const ordered = [
     ...rows.filter((row) => row.position === first),
     ...rows.filter((row) => row.position !== first),
-  ]) {
-    const url = await signed(row.storage_path);
-    if (url) {
-      screenshots.push({
-        id: row.id,
-        url,
-        position: row.position,
-        width: row.width,
-        height: row.height,
-      });
-    }
-  }
-  return { crop, screenshots };
+  ];
+  const urls = await Promise.all(ordered.map((row) => signed(row.storage_path)));
+  return {
+    crop,
+    screenshots: ordered.flatMap((row, i) => {
+      const url = urls[i];
+      return url
+        ? [{ id: row.id, url, position: row.position, width: row.width, height: row.height }]
+        : [];
+    }),
+  };
 }

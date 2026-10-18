@@ -34,6 +34,7 @@ import { ApproveSend } from "./ApproveSend";
 import { JobPoller } from "./JobPoller";
 import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
+import { CROP_KEY } from "./imageUrls";
 import { PostImage } from "./PostImage";
 import { AttachTick, RetypeField } from "./Review";
 
@@ -111,14 +112,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
   const gmail = readable ? await gmailForViewer() : null;
   const cv = readable ? await kitCvForViewer(view.draft!.profileVersion) : null;
   // The contact's crop beside it, and the screenshots when the owner must type it from them.
-  const images =
-    readable && view.kitParts?.contact
-      ? await postImagesForViewer(view.id, {
-          cropPath: view.contact?.cropPath ?? null,
-          screenshots: view.kitParts.contact.needsRetype,
-          first: view.contactScreenshot,
-        })
-      : null;
+  const images = view.images ? await postImagesForViewer(view.id, view.images) : null;
   const now = await requestTime();
 
   return (
@@ -623,14 +617,12 @@ function KitPanel({
           ? "Approve & send marks the sentences and flags above as checked, but the other reasons listed need you first."
           : null;
   const needsRetype = parts.contact?.needsRetype ?? false;
-  // The reads agree, but a job from screenshots has no crop of the contact to show beside it.
-  const cropless =
-    needsRetype &&
-    view.contact?.agreement.ok === true &&
-    !images?.crop &&
-    (images?.screenshots.length ?? 0) > 0;
-  // The screenshot the contact was read on comes first, when the box lies on one.
-  const readOnFirst = images?.screenshots[0]?.position === view.contactScreenshot;
+  // The post's screenshots the page could sign: the one the contact was read on first, when its
+  // box lies on one; the rest open on a tap, so a phone fetches them only then.
+  const shots = images?.screenshots ?? [];
+  const readOnFirst = shots[0] !== undefined && shots[0].position === view.contactScreenshot;
+  // Where to type the contact from, when the reads agree but there is no crop of it to show.
+  const typeFrom = shots.length > 0 ? "the post's screenshots below" : "the post";
   // Where the kit goes: the post's contact, or the one typed in its place once it passes.
   const to = view.handoff?.to ?? "";
   const typedChecks = needsRetype && to !== "" ? (decisions.retyped?.checks ?? []) : [];
@@ -691,12 +683,12 @@ function KitPanel({
                 The post asks you to apply by email, but jobkit found no address in it. Find it in
                 the post.
               </span>
-            ) : cropless ? (
+            ) : view.noCrop ? (
               // Nor is it shown with no crop beside it to check it against.
               <span className="text-destructive">
                 jobkit has no cut-out of the {noun} to show beside its reading
                 {isStrictAddress(address) ? "" : ", and it is not a whole address"}, so type it
-                yourself from the post&apos;s screenshots below.
+                yourself from {typeFrom}.
               </span>
             ) : (
               // jobkit's own reading is not shown while it is unconfirmed, so it is never copied.
@@ -705,10 +697,10 @@ function KitPanel({
                 {isStrictAddress(address) ? "" : ", and it is not a whole address"}.
               </span>
             )}
-            {!byEmail && cropless && (
+            {!byEmail && view.noCrop && (
               <p className="mt-1 text-destructive">
                 jobkit has no cut-out of the {noun} to show beside its reading, so type it yourself
-                from the post&apos;s screenshots below.
+                from {typeFrom}.
               </p>
             )}
             {disputed && <p className="mt-1 text-destructive">{disputed}</p>}
@@ -721,9 +713,16 @@ function KitPanel({
                   </p>
                 )}
                 {/* Tall enough to read: a long one scrolls sideways rather than shrinking. */}
-                <div className="overflow-x-auto">
+                <div
+                  className="overflow-x-auto"
+                  tabIndex={0}
+                  role="region"
+                  aria-label={`The ${noun}'s cut-out, scrolling sideways`}
+                >
                   <PostImage
                     key={view.contact?.cropPath}
+                    jobId={view.id}
+                    imageKey={CROP_KEY}
                     src={images.crop}
                     alt={`The ${noun} in the post's screenshot, enlarged`}
                     className="h-24 w-auto max-w-none rounded border border-border"
@@ -774,7 +773,7 @@ function KitPanel({
               <p className="mt-1 text-muted-foreground">Read a second time: it matches.</p>
             )}
           </dd>
-          {images && images.screenshots.length > 0 && (
+          {shots.length > 0 && (
             // The panel's whole width, below the field the contact is typed in.
             <dd className="col-span-2 flex min-w-0 flex-col gap-2">
               <p className="text-muted-foreground">
@@ -790,16 +789,38 @@ function KitPanel({
                   </>
                 )}
               </p>
-              {images.screenshots.map((shot) => (
-                <PostImage
-                  key={shot.id}
-                  src={shot.url}
-                  width={shot.width}
-                  height={shot.height}
-                  alt={`Screenshot ${shot.position + 1} of the post`}
-                  className="h-auto w-full rounded border border-border"
-                />
-              ))}
+              <PostImage
+                key={shots[0]!.id}
+                jobId={view.id}
+                imageKey={shots[0]!.id}
+                src={shots[0]!.url}
+                width={shots[0]!.width}
+                height={shots[0]!.height}
+                alt={`Screenshot ${shots[0]!.position + 1} of the post`}
+                className="h-auto w-full rounded border border-border"
+              />
+              {shots.length > 1 && (
+                <details>
+                  <summary className="min-h-11 cursor-pointer py-2">
+                    Show the other {shots.length - 1} screenshot{shots.length > 2 ? "s" : ""}
+                  </summary>
+                  <div className="flex flex-col gap-2">
+                    {shots.slice(1).map((shot) => (
+                      <PostImage
+                        key={shot.id}
+                        jobId={view.id}
+                        imageKey={shot.id}
+                        src={shot.url}
+                        width={shot.width}
+                        height={shot.height}
+                        loading="lazy"
+                        alt={`Screenshot ${shot.position + 1} of the post`}
+                        className="h-auto w-full rounded border border-border"
+                      />
+                    ))}
+                  </div>
+                </details>
+              )}
             </dd>
           )}
           <dt className="text-muted-foreground">Subject</dt>

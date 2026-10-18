@@ -5,7 +5,7 @@ import { confirmPost, draftAnyway as draftAnywayCore, pickRole } from "@/core/ex
 import { jobStatus, retryJob } from "@/core/platform/jobs";
 import { JOB_STATES } from "@/core/platform/jobStates";
 import type { RunnerDeps } from "@/core/platform/runner";
-import type { Dns } from "@/core/ports";
+import type { Dns, Storage } from "@/core/ports";
 import { openForJob } from "@/core/review/applications";
 import { reviewActionSchema } from "@/core/review/decisions";
 import {
@@ -18,6 +18,7 @@ import { applyAgainForJob, recordReview } from "@/core/review/kitReview";
 import { markBounced, takeBackBounced } from "@/core/review/markBounced";
 import { markSubmitted, takeBackSubmitted } from "@/core/review/markSubmitted";
 import { markSent, takeBackSent } from "@/core/review/markSent";
+import { postImages } from "@/core/review/postImages";
 import { closeSkipped, skipKit, takeBackSkip } from "@/core/review/skipKit";
 import { isUuid } from "@/lib/uuid";
 import type { AppConfig } from "@/server/config";
@@ -505,6 +506,28 @@ export async function gate(request: NextRequest, deps: Deps, jobId: string): Pro
     to: view.handoff?.to ?? null,
     status: view.application?.status ?? null,
   });
+}
+
+/**
+ * GET /api/jobs/<id>/images: the post's images the job page shows, signed
+ * afresh for 60 seconds, for a page one of whose images did not load
+ * (review spec, "Contact panel"). The page asks here rather than drawing
+ * itself again, which on a failing connection reloads it whole.
+ */
+export async function images(
+  request: NextRequest,
+  deps: Deps & { storage: Storage },
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForRead(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const view = await jobView(deps, jobId);
+  if (!view) return refusal(404, "not-found");
+  return ok(
+    200,
+    view.images ? await postImages(deps, jobId, view.images) : { crop: null, screenshots: [] },
+  );
 }
 
 /** The answer to "Did you change anything in Gmail?", and the kit and address the page showed. */
