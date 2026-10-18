@@ -22,6 +22,8 @@ import type { AddressCheck } from "./addressChecks";
 export interface GateInput {
   /** Whether the owner marked the kit sent, or submitted. */
   sent: boolean;
+  /** Whether the kit goes by email, through Gmail; a form or message is sent where the owner applies. */
+  byEmail?: boolean;
   /** Whether it went as a form or a message the owner marked submitted, not as an email. */
   submitted?: boolean;
   /** Whether jobkit is sending the kit from the owner's Gmail: counting down to it, or sending. */
@@ -217,7 +219,7 @@ export function canHandOff(input: GateInput): GateReason[] {
       reasons.push({
         kind: "attachment",
         name: attachment.name,
-        message: `The post asks for ${attachment.name || "a file it does not name"}: tick it to say you will attach it in Gmail.`,
+        message: `The post asks for ${attachment.name || "a file it does not name"}: tick it to say you will attach it ${input.byEmail === false ? "where you apply" : "in Gmail"}.`,
       });
     }
   }

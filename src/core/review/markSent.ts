@@ -5,7 +5,7 @@ import { loadJob } from "@/core/platform/jobs";
 import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
-import { applicationIdOf, openForJob } from "./applications";
+import { applicationIdOf, kitRouteOf, openForJob } from "./applications";
 import { NO_DECISIONS } from "./decisions";
 import { jobView, storedDecisions } from "./jobView";
 
@@ -96,6 +96,9 @@ export function markSentByJobkit(
 /** Who marks the kit sent: the owner, from the page they saw, or jobkit, which sent it to `to`. */
 type Marker = { by: "owner"; shown: SentFrom } | { by: "jobkit"; to: string };
 
+/** A Mark sent the status machine refused after the checks: its writes are rolled back. */
+class SendRefused extends Error {}
+
 async function marking(
   deps: { db: Db; clock: Clock },
   jobId: string,
@@ -108,47 +111,52 @@ async function marking(
   if (job.state !== "kit_ready") return { ok: false, reason: "not-ready" };
   const role = await chosenRole(deps.db, jobId);
   if (!role) return { ok: false, reason: "not-ready" };
-  // Sending another way is Mark submitted, which comes with form and message kits.
-  if (role.route.kind !== "email") return { ok: false, reason: "not-email" };
-  return deps.db.tx(async (tx): Promise<MarkSent> => {
-    const at = { ...deps, db: tx };
-    await lockReview(at, jobId, role.id);
-    const view = await jobView(at, jobId);
-    if (view?.state !== "kit_ready" || !view.review) return { ok: false, reason: "not-ready" };
-    const shownTo = view.handoff?.to ?? "";
-    if (marker.by === "owner") {
-      const { shown } = marker;
-      if (
-        (shown.kit !== undefined && shown.kit !== view.kitKey) ||
-        (shown.to !== undefined && shown.to !== shownTo)
-      ) {
-        return { ok: false, reason: "changed" };
+  // Sending another way is Mark submitted, for form and message kits.
+  if ((await kitRouteOf(deps.db, jobId, role)) !== "email")
+    return { ok: false, reason: "not-email" };
+  try {
+    return await deps.db.tx(async (tx): Promise<MarkSent> => {
+      const at = { ...deps, db: tx };
+      await lockReview(at, jobId, role.id);
+      const view = await jobView(at, jobId);
+      if (view?.state !== "kit_ready" || !view.review) return { ok: false, reason: "not-ready" };
+      const shownTo = view.handoff?.to ?? "";
+      if (marker.by === "owner") {
+        const { shown } = marker;
+        if (
+          (shown.kit !== undefined && shown.kit !== view.kitKey) ||
+          (shown.to !== undefined && shown.to !== shownTo)
+        ) {
+          return { ok: false, reason: "changed" };
+        }
+        // A second tap on a kit already sent changes nothing; any other open reason holds it.
+        const held = view.review.gate.filter((reason) => reason.kind !== "sent");
+        if (held.length > 0) return { ok: false, reason: "held" };
       }
-      // A second tap on a kit already sent changes nothing; any other open reason holds it.
-      const held = view.review.gate.filter((reason) => reason.kind !== "sent");
-      if (held.length > 0) return { ok: false, reason: "held" };
-    }
-    // The address the email went to: the one jobkit sent it to, or the one the page showed.
-    const to = marker.by === "jobkit" ? marker.to : shownTo;
-    const typed =
-      marker.by === "jobkit" ? !sameAddress(to, role.route.address) : Boolean(view.handoff?.typed);
-    const applicationId =
-      (await applicationIdOf(tx, jobId, role.id)) ?? (await openForJob(at, jobId, sessionId));
-    if (!applicationId) return { ok: false, reason: "not-ready" };
-    // jobkit's own move, under no session's tap: the email went, whatever the owner tapped since.
-    if (marker.by === "jobkit") await unskipped(at, applicationId, null);
-    // The address the email went to: the owner's, when the kit needed them to type one in place of
-    // the post's, or the one jobkit sent it to, whatever the owner typed since.
-    if ((typed || marker.by === "jobkit") && to !== "") await setAddress(at, applicationId, to);
-    // Already kit_ready, or sent, after an earlier tap: the next move decides.
-    await changeStatus(at, applicationId, "kit_ready", sessionId);
-    const sent = await changeStatus(at, applicationId, "sent", sessionId);
-    if (!sent.ok) return { ok: false, reason: "refused" };
-    if (sent.changed) {
-      // Until the editor exists, the one field the owner changes in jobkit is the address.
-      const changed = typed && !sameAddress(to, role.route.address) ? ["address"] : [];
-      await tx.query(
-        `insert into {{schema}}.draft_outcomes
+      // The address the email went to: the one jobkit sent it to, or the one the page showed.
+      const to = marker.by === "jobkit" ? marker.to : shownTo;
+      const typed =
+        marker.by === "jobkit"
+          ? !sameAddress(to, role.route.address)
+          : Boolean(view.handoff?.typed);
+      const applicationId =
+        (await applicationIdOf(tx, jobId, role.id)) ?? (await openForJob(at, jobId, sessionId));
+      if (!applicationId) return { ok: false, reason: "not-ready" };
+      // jobkit's own move, under no session's tap: the email went, whatever the owner tapped since.
+      if (marker.by === "jobkit") await unskipped(at, applicationId, null);
+      // The address the email went to: the post's, the owner's typed in its place, or the one jobkit
+      // sent it to, whatever the owner typed since.
+      if (to !== "") await setAddress(at, applicationId, to);
+      // Already kit_ready, or sent, after an earlier tap: the next move decides.
+      await changeStatus(at, applicationId, "kit_ready", sessionId);
+      const sent = await changeStatus(at, applicationId, "sent", sessionId);
+      // Unreached after the checks above; were it reached, nothing of the tap would be kept.
+      if (!sent.ok) throw new SendRefused();
+      if (sent.changed) {
+        // Until the editor exists, the one field the owner changes in jobkit is the address.
+        const changed = typed && !sameAddress(to, role.route.address) ? ["address"] : [];
+        await tx.query(
+          `insert into {{schema}}.draft_outcomes
            (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at,
             draft)
          values ($1, $2, 'email', $3, $4, $5, $6, $7)
@@ -158,21 +166,25 @@ async function marking(
                factual_edit = excluded.factual_edit,
                recorded_at = excluded.recorded_at,
                draft = excluded.draft`,
-        [
-          applicationId,
-          jobId,
-          changed,
-          answer.changedInGmail,
-          answer.changedInGmail || changed.length > 0,
-          deps.clock.now(),
-          // Which draft went (decisions A22): Gemini's, or a template's, the owner's own words.
-          view.picked,
-        ],
-      );
-    }
-    await keepGate(at, jobId, role.id);
-    return { ok: true, changed: sent.changed };
-  });
+          [
+            applicationId,
+            jobId,
+            changed,
+            answer.changedInGmail,
+            answer.changedInGmail || changed.length > 0,
+            deps.clock.now(),
+            // Which draft went (decisions A22): Gemini's, or a template's, the owner's own words.
+            view.picked,
+          ],
+        );
+      }
+      await keepGate(at, jobId, role.id);
+      return { ok: true, changed: sent.changed };
+    });
+  } catch (error) {
+    if (error instanceof SendRefused) return { ok: false, reason: "refused" };
+    throw error;
+  }
 }
 
 /**
@@ -202,18 +214,16 @@ async function unskipped(
  * goes back to kit_ready, its outcome with it, and the kit opens again. The
  * page names the Mark sent it showed, by its time, so a late tap from a
  * page drawn before the owner marked it sent again changes nothing. An
- * email jobkit sent is not taken back: it went (decisions A20). Nor is a
- * kit the page can no longer read: it could not be marked sent again, and
- * an email that went would read as one never sent.
+ * email jobkit sent is not taken back: it went (decisions A20). One on a
+ * kit the page can no longer read is taken back too, as the ledger allows;
+ * that kit cannot be marked sent again, so its page does not offer it.
  */
 export async function takeBackSent(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
   shownSentAt?: Date,
-): Promise<
-  { ok: true } | { ok: false; reason: "not-found" | "not-sent" | "sent-by-jobkit" | "unreadable" }
-> {
+): Promise<{ ok: true } | { ok: false; reason: "not-found" | "not-sent" | "sent-by-jobkit" }> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   const role = await chosenRole(deps.db, jobId);
   if (!role) return { ok: false, reason: "not-found" };
@@ -237,8 +247,6 @@ export async function takeBackSent(
     if (byJobkit.rows.length > 0) {
       return { ok: false as const, reason: "sent-by-jobkit" as const };
     }
-    const view = await jobView(at, jobId);
-    if (!view?.review || !view.kitKey) return { ok: false as const, reason: "unreadable" as const };
     const undone = await undoStatus(
       at,
       application.id,

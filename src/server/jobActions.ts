@@ -424,8 +424,12 @@ export async function takeBack(
   return ok();
 }
 
-/** The kit, and the WhatsApp number ("" for none), the page showed as the owner applied. */
-const submittedBody = z.object({ kit: kitShown, to: z.string().max(400) });
+/**
+ * The kit, and the WhatsApp number ("" for none), the page showed as the
+ * owner applied; a page drawn before it named the number is refused as
+ * changed, not as invalid.
+ */
+const submittedBody = z.object({ kit: kitShown, to: z.string().max(400).optional() });
 
 /**
  * POST /api/jobs/<id>/submitted: Mark submitted, after the owner sent the
@@ -451,7 +455,10 @@ export async function submitted(
   }
   const parsed = submittedBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
-  const marked = await markSubmitted(deps, jobId, actor.session.id, parsed.data);
+  const marked = await markSubmitted(deps, jobId, actor.session.id, {
+    kit: parsed.data.kit,
+    to: parsed.data.to ?? null,
+  });
   if (!marked.ok) return refusal(marked.reason === "not-found" ? 404 : 409, marked.reason);
   return ok(200, { ok: true, changed: marked.changed });
 }

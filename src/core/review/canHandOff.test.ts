@@ -50,6 +50,15 @@ describe("canHandOff", () => {
     expect(canHandOff(CLEAR)).toEqual([]);
   });
 
+  it("asks for a file to be attached in Gmail for an email, and where the owner applies otherwise", () => {
+    const attachments = [{ name: "Portfolio", ticked: false }];
+
+    expect(canHandOff({ ...CLEAR, attachments })[0]!.message).toMatch(/in Gmail/);
+    expect(canHandOff({ ...CLEAR, attachments, byEmail: false })[0]!.message).toMatch(
+      /where you apply/,
+    );
+  });
+
   it.each<[string, Partial<GateInput>, Partial<GateInput>]>([
     ["an unresolved flag from validate", { flags: [FLAG] }, { flags: [] }],
     [

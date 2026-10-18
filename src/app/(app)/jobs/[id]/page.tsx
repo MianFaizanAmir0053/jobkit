@@ -9,7 +9,6 @@ import { type BlockVerdict, isBlocking, NEVER_WEIGHED } from "@/core/drafting/ve
 import type { AgreementProblem } from "@/core/extraction/addressRead";
 import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
-import { routeOf } from "@/core/review/applications";
 import { flagRank, judgeMessage } from "@/core/review/canHandOff";
 import { flagKey, NEEDS_NEW_WORDS, needsNewWords, NO_DECISIONS } from "@/core/review/decisions";
 import { gmailComposeUrl } from "@/core/review/gmail";
@@ -168,8 +167,8 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
         ready && (
           <Panel title="This kit cannot be read">
             <p className="text-sm">
-              jobkit can no longer read this kit, as after an update. Send the post again as a new
-              job.
+              jobkit can no longer read this kit, as after an update.
+              {!view.went && " Send the post again as a new job."}
             </p>
             {view.role && !view.went && <KitSkip view={view} kit={null} timeZone={timeZone} />}
             {view.went && (
@@ -547,7 +546,9 @@ function KitPanel({
   const kitKey = view.kitKey!;
   const kit = draft.kit;
   const body = emailBody(kit);
-  const byEmail = role.route.kind === "email";
+  // An email kit goes through Gmail; a form or message is sent where the owner applies.
+  const byEmail = view.kitRoute === "email";
+  const where = byEmail ? "in Gmail" : "where you apply";
   const address = role.route.address.trim();
   const blockText = new Map(kit.blocks.map((block) => [block.id, block.text]));
   const requirementText = new Map(role.requirements.map((entry) => [entry.id, entry.text]));
@@ -835,9 +836,9 @@ function KitPanel({
         <Panel title="Check these before you send">
           {flags.some(([, flag]) => FIXED_IN_GMAIL.has(flag.kind)) && (
             <p className="text-sm text-muted-foreground">
-              Some of these need the email&apos;s words changed, which jobkit cannot do yet: change
-              them in Gmail before you send, and answer Yes when jobkit asks whether you changed
-              anything.
+              {byEmail
+                ? "Some of these need the email's words changed, which jobkit cannot do yet: change them in Gmail before you send, and answer Yes when jobkit asks whether you changed anything."
+                : "Some of these need the words changed, which jobkit cannot do yet: change them where you apply, before you send."}
             </p>
           )}
           <ul className="flex flex-col gap-2 text-sm [overflow-wrap:anywhere]">
@@ -887,7 +888,7 @@ function KitPanel({
                       {flagsChecked.has(key) ? (
                         <>
                           <span className="text-muted-foreground">
-                            {inGmail ? "You will fix it in Gmail." : "You checked this."}
+                            {inGmail ? `You will fix it ${where}.` : "You checked this."}
                           </span>
                           <ActionButton
                             url={reviewUrl}
@@ -901,7 +902,7 @@ function KitPanel({
                         <ActionButton
                           url={reviewUrl}
                           gateOf={view.id}
-                          label={inGmail ? "I will fix it in Gmail" : "I checked this"}
+                          label={inGmail ? `I will fix it ${where}` : "I checked this"}
                           variant="outline"
                           body={decision({ kind: "check_flag", flag: key })}
                         />
@@ -926,7 +927,7 @@ function KitPanel({
           )}
           {cv.length > 0 && (
             <p className="text-sm [overflow-wrap:anywhere]">
-              Attach your CV in Gmail. The post asks for:{" "}
+              Attach your CV {where}. The post asks for:{" "}
               {cv.map((attachment) => attachment.name || "a CV").join("; ")}.
             </p>
           )}
@@ -938,6 +939,7 @@ function KitPanel({
               id={attachment.id}
               name={attachment.name}
               ticked={decisions.attached.includes(attachment.id)}
+              where={where}
               disabled={locked}
             />
           ))}
@@ -1105,7 +1107,7 @@ function KitPanel({
               Mark sent appears once nothing holds the email back.
             </p>
           )
-        ) : routeOf(role.route.kind) === null ? (
+        ) : view.kitRoute === null ? (
           <p className="text-sm text-muted-foreground">
             Choosing how to apply, and recording it once sent, comes with the kit-type pick.
           </p>

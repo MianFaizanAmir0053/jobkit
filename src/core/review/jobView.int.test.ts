@@ -18,7 +18,7 @@ import { extractStage } from "@/core/extraction/extract";
 import { confirmPost, pickRole, skipRolePick } from "@/core/extraction/owner";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
-import { undoStatus } from "@/core/ledger/statuses";
+import { setRoute, undoStatus } from "@/core/ledger/statuses";
 import type { ModelCallDeps } from "@/core/platform/models";
 import { loadJob, moveJob, skipJob } from "@/core/platform/jobs";
 import { claimJob, type Pipeline, runJob } from "@/core/platform/runner";
@@ -639,7 +639,7 @@ describe("a post's scam signs", () => {
 });
 
 describe("markSent", () => {
-  it("does not take back a Mark sent on a kit it can no longer read, which it could not mark again", async () => {
+  it("takes back a Mark sent on a kit it can no longer read, as the ledger allows", async () => {
     await seedSample();
     const id = await pasted();
     await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
@@ -652,11 +652,8 @@ describe("markSent", () => {
       [id],
     );
 
-    expect(await takeBackSent({ db, clock }, id, null, sentAt)).toEqual({
-      ok: false,
-      reason: "unreadable",
-    });
-    expect((await jobView({ db, clock }, id))!.application?.status).toBe("sent");
+    expect(await takeBackSent({ db, clock }, id, null, sentAt)).toEqual({ ok: true });
+    expect((await jobView({ db, clock }, id))!.application?.status).toBe("kit_ready");
   });
 
   it("records the application as sent once, with the role's address and the email route", async () => {
@@ -1458,34 +1455,6 @@ describe("markSubmitted", () => {
     expect(rows).toEqual([{ address: "+1 202 555 0199", status: "submitted" }]);
   });
 
-  it("keeps nothing of a Mark submitted the ledger refuses", async () => {
-    await seedSample();
-    const id = await pasted();
-    await run(
-      id,
-      [answer(fixture("S06-number-without-country-code")), answer(DRAFT)],
-      trackApplications(pipeline(), { db, clock }),
-    );
-    await cleared(id, "+1 202 555 0143");
-    const kit = (await jobView({ db, clock }, id))!.kitKey!;
-    // As if the ledger kept another route for the application than the role's, and no number.
-    await db.query(
-      "update {{schema}}.applications set route = 'email', address = null where job_id = $1",
-      [id],
-    );
-
-    expect(await markSubmitted({ db, clock }, id, null, { kit, to: "+1 202 555 0143" })).toEqual({
-      ok: false,
-      reason: "refused",
-    });
-    // Not even the number the owner typed, which the refused tap recorded before the ledger refused.
-    const { rows } = await db.query<{ address: string | null; status: string }>(
-      "select address, status from {{schema}}.applications where job_id = $1",
-      [id],
-    );
-    expect(rows).toEqual([{ address: null, status: "kit_ready" }]);
-  });
-
   it("refuses a kit whose route waits for the owner to name it", async () => {
     for (const post of ["S18-no-route", "S19-walk-in"]) {
       const { id, kit } = await readyFor(post);
@@ -1498,6 +1467,8 @@ describe("markSubmitted", () => {
   });
 
   it("records two taps at once as one", async () => {
+    // PGlite runs one transaction at a time: this shows the second tap changes nothing, not the
+    // review row's lock, which Postgres holds between two at once.
     const { id, kit } = await readyFor("S16-linkedin-dm");
 
     const both = await Promise.all([
@@ -1509,7 +1480,7 @@ describe("markSubmitted", () => {
     expect(both).toContainEqual({ ok: true, changed: false });
   });
 
-  it("does not take back a Mark submitted on a kit it can no longer read, which it could not mark again", async () => {
+  it("takes back a Mark submitted on a kit it can no longer read, as the ledger allows", async () => {
     const { id, kit } = await readyFor("S17-form-ai-question");
     await markSubmitted({ db, clock }, id, null, { kit, to: "" });
     const submittedAt = (await jobView({ db, clock }, id))!.application!.submittedAt!;
@@ -1519,11 +1490,78 @@ describe("markSubmitted", () => {
       [id],
     );
 
-    expect(await takeBackSubmitted({ db, clock }, id, null, submittedAt)).toEqual({
+    expect(await takeBackSubmitted({ db, clock }, id, null, submittedAt)).toEqual({ ok: true });
+    expect((await jobView({ db, clock }, id))!.application?.status).toBe("kit_ready");
+  });
+
+  it("marks submitted a kit whose route the owner picked as a form", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(
+      id,
+      [answer(fixture("S18-no-route")), answer(DRAFT)],
+      trackApplications(pipeline(), { db, clock }),
+    );
+    await cleared(id);
+    const kit = (await jobView({ db, clock }, id))!.kitKey!;
+    expect((await jobView({ db, clock }, id))!.kitRoute).toBeNull();
+    expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
       ok: false,
-      reason: "unreadable",
+      reason: "not-form-or-message",
     });
-    expect((await jobView({ db, clock }, id))!.application?.status).toBe("submitted");
+
+    // As the owner's kit-type pick will record it.
+    const { rows } = await db.query<{ id: string }>(
+      "select id from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    await setRoute({ db }, rows[0]!.id, "form");
+
+    expect((await jobView({ db, clock }, id))!.kitRoute).toBe("form");
+    expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
+      ok: true,
+      changed: true,
+    });
+  });
+
+  it("records the post's own WhatsApp number, confirmed by its second read, as the one the message went to", async () => {
+    await seedSample();
+    const record = fixture("S05-whatsapp-local-number");
+    record.roles[0]!.route.address = "+92 300 1234567";
+    const stages = pipeline();
+    const beside: Pipeline = {
+      ...stages,
+      draft: { ...stages.draft, alongside: () => ["address_read"] },
+      address_read: addressReadStage({ db, storage, random, models: models() }),
+    };
+    const id = await pasted("We're hiring. Send your CV on WhatsApp: +92 300 1234567.");
+    await run(id, [answer(record), answer(DRAFT)], trackApplications(beside, { db, clock }));
+    await cleared(id);
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.handoff).toEqual({ to: "+92 300 1234567", typed: false });
+    // As a number the owner typed before, which the ledger kept.
+    await db.query("update {{schema}}.applications set address = $2 where job_id = $1", [
+      id,
+      "+1 202 555 0100",
+    ]);
+
+    expect(
+      await markSubmitted({ db, clock }, id, null, { kit: view.kitKey!, to: "+92 300 1234567" }),
+    ).toEqual({ ok: true, changed: true });
+    const { rows } = await db.query<{ address: string | null }>(
+      "select address from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ address: "+92 300 1234567" }]);
+  });
+
+  it("refuses a page that named no number, as one drawn before Mark submitted named it", async () => {
+    const { id, kit } = await readyFor("S17-form-ai-question");
+
+    expect(await markSubmitted({ db, clock }, id, null, { kit, to: null })).toEqual({
+      ok: false,
+      reason: "changed",
+    });
   });
 });
 

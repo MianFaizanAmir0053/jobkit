@@ -89,7 +89,8 @@ export function RetypeField({
 
 /**
  * A required attachment other than the CV: the owner ticks it to say they
- * will attach it in Gmail, which opens before anything can be attached.
+ * will attach it where they send the kit, in Gmail, which opens before
+ * anything can be attached, or where they apply.
  */
 export function AttachTick({
   jobId,
@@ -97,6 +98,7 @@ export function AttachTick({
   id,
   name,
   ticked,
+  where,
   disabled = false,
 }: {
   jobId: string;
@@ -104,6 +106,8 @@ export function AttachTick({
   id: string;
   name: string;
   ticked: boolean;
+  /** Where the owner attaches it: "in Gmail", or "where you apply". */
+  where: string;
   disabled?: boolean;
 }) {
   const router = useRouter();
@@ -126,7 +130,7 @@ export function AttachTick({
         disabled={busy || disabled}
         onChange={(event) => void toggle(event.currentTarget.checked)}
       />
-      I will attach {name || "the file the post asks for"} in Gmail
+      I will attach {name || "the file the post asks for"} {where}
       {error && (
         <span role="alert" className="text-destructive">
           {error}

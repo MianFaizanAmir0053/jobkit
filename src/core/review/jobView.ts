@@ -20,7 +20,7 @@ import { chosenRole, draftedAnyway } from "@/core/extraction/owner";
 import type { Role } from "@/core/extraction/record";
 import { type DuplicateMatch, duplicateGate, findDuplicates } from "@/core/ledger/duplicates";
 import { postFingerprint } from "@/core/ledger/normalise";
-import type { ApplicationStatus } from "@/core/ledger/statuses";
+import type { ApplicationStatus, Route } from "@/core/ledger/statuses";
 import { expireUploads, type Job, jobStatus } from "@/core/platform/jobs";
 import { kindOf, type JobState, type StageName, type StateKind } from "@/core/platform/jobStates";
 import { stageOutput } from "@/core/platform/runner";
@@ -32,7 +32,7 @@ import { sha256Hex } from "@/lib/encoding";
 
 import type { AddressCheck } from "./addressChecks";
 import type { AddressChecksOutput } from "./addressChecksStage";
-import { contactForLedger } from "./applications";
+import { contactForLedger, routeOf } from "./applications";
 import { canHandOff, type GateReason } from "./canHandOff";
 import {
   decisionsSchema,
@@ -160,6 +160,12 @@ export interface JobView {
     bouncedAt: Date | null;
     submittedAt: Date | null;
   } | null;
+  /**
+   * The kind of kit the chosen role takes: the one its application records,
+   * as the owner's pick of a kit type will set it, else its route's; null
+   * while the owner must name it.
+   */
+  kitRoute: Route | null;
   /**
    * Whether the chosen role's kit went: the ledger says it was sent,
    * submitted or bounced, or Gmail took a send of jobkit's, though the
@@ -313,6 +319,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   // jobkit sent it, though the ledger may not have recorded it: it went.
   const went = Boolean(application && WENT.has(application.status)) || sentByJobkit;
   const gone = went || application?.status === "skipped";
+  // As kitRouteOf decides, so the page offers what Mark sent and Mark submitted accept.
+  const kitRoute = application ? application.route : role ? routeOf(role.route.kind) : null;
   // The screenshot the contact's box lies on, from the post's reading, which a purge leaves.
   const contactScreenshot =
     role && extraction ? (mapBox(role.route.box, extraction.tiles)?.image ?? null) : null;
@@ -350,6 +358,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
           addressChecks,
           duplicates,
           sent: went,
+          byEmail: kitRoute === "email",
           sending: latest !== null && isLive(latest, now),
           skipped: application?.status === "skipped",
           submitted: application?.status === "submitted",
@@ -412,6 +421,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       bouncedAt: application.bouncedAt,
       submittedAt: application.submittedAt,
     },
+    kitRoute,
     went,
     duplicates,
     kitParts,
@@ -679,6 +689,7 @@ function kitPartsOf(parts: {
   addressChecks: AddressCheck[] | null;
   duplicates: JobView["duplicates"];
   sent: boolean;
+  byEmail: boolean;
   submitted: boolean;
   sending: boolean;
   skipped: boolean;
@@ -699,6 +710,7 @@ function kitPartsOf(parts: {
     ),
     duplicates: duplicateParts(parts.duplicates),
     sent: parts.sent,
+    byEmail: parts.byEmail,
     submitted: parts.submitted,
     sending: parts.sending,
     skipped: parts.skipped,
@@ -851,6 +863,7 @@ async function applicationOf(
   skippedAt: Date | null;
   bouncedAt: Date | null;
   submittedAt: Date | null;
+  route: Route | null;
 } | null> {
   const { rows } = await db.query<{
     id: string;
@@ -859,8 +872,9 @@ async function applicationOf(
     skipped_at: Date | null;
     bounced_at: Date | null;
     submitted_at: Date | null;
+    route: Route | null;
   }>(
-    `select id, status, sent_at, skipped_at, bounced_at, submitted_at from {{schema}}.applications
+    `select id, status, sent_at, skipped_at, bounced_at, submitted_at, route from {{schema}}.applications
       where job_id = $1 and role_id = $2`,
     [jobId, roleId],
   );
@@ -873,6 +887,7 @@ async function applicationOf(
         skippedAt: row.skipped_at,
         bouncedAt: row.bounced_at,
         submittedAt: row.submitted_at,
+        route: row.route,
       }
     : null;
 }

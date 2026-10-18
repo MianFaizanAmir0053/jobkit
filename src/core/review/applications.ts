@@ -35,6 +35,22 @@ export function routeOf(kind: Role["route"]["kind"]): Route | null {
 }
 
 /**
+ * The kind of kit the job's chosen role takes: the one its application
+ * records, as the owner's pick of a kit type will set it, none while the
+ * owner must name it; for a kit from before applications opened with their
+ * jobs, its route's, as its application will open with. The job page, Mark
+ * sent and Mark submitted decide by it, as the ledger does.
+ */
+export async function kitRouteOf(db: Db, jobId: string, role: Role): Promise<Route | null> {
+  const { rows } = await db.query<{ route: Route | null }>(
+    "select route from {{schema}}.applications where job_id = $1 and role_id = $2",
+    [jobId, role.id],
+  );
+  const application = rows[0];
+  return application ? application.route : routeOf(role.route.kind);
+}
+
+/**
  * A contact as the ledger keeps it, for the duplicate check: an email
  * address that passes the strict check, or a WhatsApp number that
  * normalises; none for anything else.

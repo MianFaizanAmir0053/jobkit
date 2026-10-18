@@ -91,9 +91,9 @@ async function skipping(
   const applicationId =
     (await applicationIdOf(tx, jobId, roleId)) ?? (await openForJob(at, jobId, sessionId));
   if (!applicationId) return { ok: false, reason: "not-ready" };
-  // The address the owner typed in place of the post's, which duplicate checks then use, as
-  // Mark sent keeps it.
-  if (view.handoff?.typed && view.handoff.to !== "") {
+  // The address the kit goes to, which duplicate checks then use, as Mark sent keeps it: the
+  // post's, or the one the owner typed in its place.
+  if (view.handoff && view.handoff.to !== "") {
     await setAddress(at, applicationId, view.handoff.to);
   }
   // Already kit_ready, or skipped after an earlier tap: the next move decides.
