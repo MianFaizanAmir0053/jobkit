@@ -10,7 +10,8 @@ import { type DecisionMade, keep, lockedKit } from "./kitReview";
 /**
  * The owner's choices among a kit's drafts (decisions A21, with amendment
  * A22). Picking a draft makes it the kit. What the owner marked on its
- * sentences and flags counts for that draft alone: it is kept aside when
+ * sentences and flags, and their edits of its sentences, count for that
+ * draft alone: they are kept aside when
  * they pick another, by the draft's kit key, and comes back when they pick
  * it again. What they decided on the post (a typed address, an attachment's
  * tick, a requirement they say they meet, "Continue anyway") goes with the
@@ -67,10 +68,20 @@ export async function pickDraft(
     if (!picked?.kitKey) throw new Error(`The draft picked for job ${jobId} made no kit.`);
     const decisions = view.review?.decisions ?? NO_DECISIONS;
     const aside = await draftChecksOf(tx, jobId, roleId);
-    const back = aside[picked.kitKey] ?? { checked: [], flagsChecked: [] };
+    const back = aside[picked.kitKey] ?? {
+      checked: [],
+      flagsChecked: [],
+      edits: {},
+      confirmed: [],
+    };
     const kept: DraftChecks = {
       ...Object.fromEntries(Object.entries(aside).filter(([kit]) => kit !== picked.kitKey)),
-      [view.kitKey]: { checked: decisions.checked, flagsChecked: decisions.flagsChecked },
+      [view.kitKey]: {
+        checked: decisions.checked,
+        flagsChecked: decisions.flagsChecked,
+        edits: decisions.edits,
+        confirmed: decisions.confirmed,
+      },
     };
     await tx.query(
       `update {{schema}}.kit_reviews set draft_checks = $3::jsonb

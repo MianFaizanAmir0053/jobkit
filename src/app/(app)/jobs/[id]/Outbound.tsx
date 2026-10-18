@@ -38,6 +38,7 @@ export function Outbound({
   open,
   to,
   status,
+  words,
   email,
   gmailHref,
   subject,
@@ -52,6 +53,8 @@ export function Outbound({
   to: string | null;
   /** The status of the role's application the page shows; null before there is one. */
   status: string | null;
+  /** The email's words as the page shows them, as a short key. */
+  words: string | null;
   /** Whether the kit is an email: Gmail's control shows, held or not. */
   email: boolean;
   /** Gmail's compose link, for an email kit whose gate is open; null otherwise. */
@@ -60,7 +63,7 @@ export function Outbound({
   body: string;
 }) {
   const router = useRouter();
-  const shown = `${kit}\n${String(open)}\n${to ?? ""}\n${status ?? ""}`;
+  const shown = `${kit}\n${String(open)}\n${to ?? ""}\n${status ?? ""}\n${words ?? ""}`;
   // What the server last agreed the page shows; nothing until it answers.
   const [confirmed, setConfirmed] = useState<string | null>(null);
   const [unreachable, setUnreachable] = useState(false);
@@ -72,7 +75,7 @@ export function Outbound({
         () => readGate(jobId),
         (answer) => {
           setUnreachable(answer === null);
-          if (confirms(answer, { kit, open, to, status })) {
+          if (confirms(answer, { kit, open, to, status, words })) {
             setConfirmed(shown);
           } else {
             setConfirmed(null);
@@ -92,7 +95,7 @@ export function Outbound({
           },
         },
       ),
-    [jobId, kit, open, to, status, shown, router],
+    [jobId, kit, open, to, status, words, shown, router],
   );
 
   const enabled = open && confirmed === shown && !held;

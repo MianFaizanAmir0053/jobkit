@@ -55,6 +55,10 @@ export interface ReviewDecisions {
    * by ID: a decision on the post, which goes with a draft pick.
    */
   meets: string[];
+  /** The owner's words for each sentence they edited, by block ID; kept with the draft. */
+  edits: Record<string, string>;
+  /** The edited sentences the owner confirmed say only what is true, by block ID. */
+  confirmed: string[];
 }
 
 export const NO_DECISIONS: ReviewDecisions = {
@@ -65,6 +69,8 @@ export const NO_DECISIONS: ReviewDecisions = {
   continueAnyway: false,
   lookups: [],
   meets: [],
+  edits: {},
+  confirmed: [],
 };
 
 const addressCheckSchema = z.object({
@@ -86,7 +92,13 @@ export const decisionsSchema = z.object({
   ),
   // Kept from before the fit tick: none.
   meets: z.array(z.string()).default([]),
+  // Kept from before the block editor: none.
+  edits: z.record(z.string(), z.string()).default({}),
+  confirmed: z.array(z.string()).default([]),
 });
+
+/** The most characters an edited sentence holds. */
+export const MAX_SENTENCE = 1500;
 
 /** A flag's name (flagKey): its kind, its place, and eight hex digits of its words. */
 const FLAG_KEY = /^[a-z_]{1,40}@[^@~\s]{1,40}~[0-9a-f]{8}$/;
@@ -109,6 +121,14 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
     requirementId: z.string().regex(/^R\d{1,4}$/),
     ticked: z.boolean(),
   }),
+  // A sentence in the owner's words: its new text, never empty, as long as a sentence runs.
+  z.strictObject({
+    kind: z.literal("edit"),
+    blockId: z.string().min(1).max(20),
+    text: z.string().trim().min(1).max(MAX_SENTENCE),
+  }),
+  z.strictObject({ kind: z.literal("revert"), blockId: z.string().min(1).max(20) }),
+  z.strictObject({ kind: z.literal("confirm"), blockId: z.string().min(1).max(20) }),
 ]);
 
 export type ReviewAction = z.infer<typeof reviewActionSchema>;
@@ -121,11 +141,11 @@ export type ReviewAction = z.infer<typeof reviewActionSchema>;
  * words change is a new flag, which an earlier "I checked this" did not see.
  */
 export function flagKey(flag: Pick<KitFlag, "kind" | "at" | "message">): string {
-  return `${flag.kind}@${flag.at}~${fnv1a(flag.message)}`;
+  return `${flag.kind}@${flag.at}~${shortHash(flag.message)}`;
 }
 
 /** FNV-1a over a string's UTF-16 code units, as eight hex digits: short, and the same in the browser. */
-function fnv1a(text: string): string {
+export function shortHash(text: string): string {
   let hash = 0x811c9dc5;
   for (let i = 0; i < text.length; i++) {
     hash ^= text.charCodeAt(i);
@@ -232,7 +252,29 @@ export function decide(
           ? withOne(decisions.meets, action.requirementId)
           : without(decisions.meets, action.requirementId),
       };
+    // An edit needs the owner's confirmation again, as new words.
+    case "edit":
+      return {
+        ...decisions,
+        edits: { ...decisions.edits, [action.blockId]: action.text.trim() },
+        confirmed: without(decisions.confirmed, action.blockId),
+      };
+    case "revert":
+      return {
+        ...decisions,
+        edits: Object.fromEntries(
+          Object.entries(decisions.edits).filter(([blockId]) => blockId !== action.blockId),
+        ),
+        confirmed: without(decisions.confirmed, action.blockId),
+      };
+    case "confirm":
+      return { ...decisions, confirmed: withOne(decisions.confirmed, action.blockId) };
   }
+}
+
+/** Whether the owner edited a sentence: their words replace it, and its verdict with them. */
+export function isEdited(decisions: Pick<ReviewDecisions, "edits">, blockId: string): boolean {
+  return Object.hasOwn(decisions.edits, blockId);
 }
 
 /** What the gate reads from a kit, besides the owner's decisions. */
@@ -321,7 +363,10 @@ export function approvable(parts: KitParts, decisions: ReviewDecisions): string[
   const sentences = parts.verdicts
     .filter(
       (verdict) =>
-        isBlocking(verdict) && blocks.has(verdict.blockId) && !checked.has(verdict.blockId),
+        isBlocking(verdict) &&
+        blocks.has(verdict.blockId) &&
+        !checked.has(verdict.blockId) &&
+        !isEdited(decisions, verdict.blockId),
     )
     .map((verdict) => `sentence:${verdict.blockId}`);
   const flags = parts.flags.flatMap((flag) => {
@@ -341,7 +386,9 @@ export function approvable(parts: KitParts, decisions: ReviewDecisions): string[
  * the hard stops hold the kit until the owner acts on each.
  */
 export function approveAll(parts: KitParts, decisions: ReviewDecisions): ReviewDecisions {
-  const held = parts.verdicts.filter(isBlocking).map((verdict) => verdict.blockId);
+  const held = parts.verdicts
+    .filter((verdict) => isBlocking(verdict) && !isEdited(decisions, verdict.blockId))
+    .map((verdict) => verdict.blockId);
   return {
     ...decisions,
     checked: held.reduce(withOne, decisions.checked),
@@ -390,10 +437,14 @@ export function gateInputOf(parts: KitParts, decisions: ReviewDecisions): GateIn
     flags: parts.flags.filter(
       (flag) => !flagsChecked.has(flagKey(flag)) && !(isMeetable(flag) && meets.has(flag.at)),
     ),
-    verdicts: parts.verdicts.filter((verdict) => blocks.has(verdict.blockId)),
+    // A verdict on words the owner replaced holds nothing: their edit holds it until confirmed.
+    verdicts: parts.verdicts.filter(
+      (verdict) => blocks.has(verdict.blockId) && !isEdited(decisions, verdict.blockId),
+    ),
     checked: decisions.checked.filter((id) => blocks.has(id)),
-    // Confirming a changed sentence comes with the block editor (Task 29).
-    unconfirmed: [],
+    unconfirmed: parts.blocks.filter(
+      (id) => isEdited(decisions, id) && !decisions.confirmed.includes(id),
+    ),
     attachments: parts.attachments.map(({ id, name }) => ({ name, ticked: attached.has(id) })),
     contact: parts.contact && { ...parts.contact, retyped: decisions.retyped?.value ?? null },
     addressChecks: checksOfAddressOut(parts, decisions.retyped),

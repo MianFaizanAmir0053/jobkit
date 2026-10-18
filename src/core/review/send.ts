@@ -359,10 +359,12 @@ async function emailOf(
   if (!profile) return { problem: NOT_SENT.noProfile };
   const cv = await within(deps.storage.get(profile.cv.path), CV_READ_MS, "Reading your CV");
   if (!cv) return { problem: NOT_SENT.noCv };
-  const body = [emailBody(draft.kit), profile.signature.trim()].filter(Boolean).join("\n");
+  // The email as it stands, with the owner's edits.
+  const kit = view.kit ?? draft.kit;
+  const body = [emailBody(kit), profile.signature.trim()].filter(Boolean).join("\n");
   return buildMime({
     to,
-    subject: draft.kit.subject,
+    subject: kit.subject,
     body,
     attachment: {
       filename: cvFileName(profile.owner.name),

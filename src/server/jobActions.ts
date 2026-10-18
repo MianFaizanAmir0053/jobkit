@@ -45,6 +45,7 @@ type Deps = RunnerDeps & {
 };
 
 const MAX_BODY_BYTES = 1024;
+const REVIEW_BODY_BYTES = 8192;
 
 const ok = (status = 200, body: object = { ok: true }) =>
   NextResponse.json(body, { status, headers: NO_STORE });
@@ -227,7 +228,8 @@ export async function review(
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
   if (!isUuid(jobId)) return refusal(404, "not-found");
-  const body = await readLimited(request, MAX_BODY_BYTES);
+  // An edited sentence, up to MAX_SENTENCE characters of up to four bytes each, with room.
+  const body = await readLimited(request, REVIEW_BODY_BYTES);
   if (body === "too-large") return refusal(413, "too-large");
   let json: unknown = null;
   try {
@@ -512,6 +514,7 @@ export async function gate(request: NextRequest, deps: Deps, jobId: string): Pro
     open: view.review !== null && view.review.gate.length === 0,
     to: view.handoff?.to ?? null,
     status: view.application?.status ?? null,
+    words: view.wordsKey,
   });
 }
 

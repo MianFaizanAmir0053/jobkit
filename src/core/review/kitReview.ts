@@ -14,6 +14,7 @@ import {
   decide,
   emailKey,
   flagKey,
+  isEdited,
   isMeetable,
   keptLookup,
   type KitParts,
@@ -57,8 +58,14 @@ export interface DecisionMade {
 }
 
 /** Whether the kit has a place for the decision. */
-function fits(action: ReviewAction, parts: KitParts): boolean {
+function fits(action: ReviewAction, parts: KitParts, decisions: ReviewDecisions): boolean {
   switch (action.kind) {
+    case "edit":
+    case "revert":
+      return parts.blocks.includes(action.blockId);
+    // Only an edited sentence is confirmed.
+    case "confirm":
+      return parts.blocks.includes(action.blockId) && isEdited(decisions, action.blockId);
     case "check":
     case "uncheck":
       return parts.blocks.includes(action.blockId);
@@ -193,8 +200,17 @@ export async function recordReview(
     const { view } = locked;
     // While jobkit sends the email, nothing changes what it sends (decisions A20).
     if (view.kitParts.sending) return { ok: false, reason: "sending" };
-    if (!fits(action, view.kitParts)) return { ok: false, reason: "not-in-kit" };
-    const decisions = decide(view.review?.decisions ?? NO_DECISIONS, action, checks);
+    const before = view.review?.decisions ?? NO_DECISIONS;
+    if (!fits(action, view.kitParts, before)) return { ok: false, reason: "not-in-kit" };
+    // Words written back as drafted are no edit.
+    const drafted = view.draft!.kit.blocks.find(
+      (block) => action.kind === "edit" && block.id === action.blockId,
+    );
+    const taken: ReviewAction =
+      action.kind === "edit" && drafted !== undefined && action.text.trim() === drafted.text
+        ? { kind: "revert", blockId: action.blockId }
+        : action;
+    const decisions = decide(before, taken, checks);
     if (action.kind === "retype" && view.kitParts.contact) {
       const contact = contactForLedger(view.kitParts.contact.kind, action.value);
       const applicationId = await applicationIdOf(tx, jobId, view.role!.id);

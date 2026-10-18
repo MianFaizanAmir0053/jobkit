@@ -162,11 +162,14 @@ export interface GateAnswer {
   open: boolean;
   to: string | null;
   status: string | null;
+  /** The email's words as a short key: an edit in another tab changes them. */
+  words: string | null;
 }
 
 /**
  * Whether the server's answer is the page's: the same kit, the same gate,
- * the same address and the same status, so a page showing an address the
+ * the same address, the same status and the same words, so a page drawn
+ * before an edit in another tab hands none of its words off, a page showing an address the
  * owner has since typed again elsewhere is never taken as confirmed, and a
  * page drawn before a skip or a bounce, or before either was taken back,
  * is drawn again though the gate stays closed.
@@ -177,7 +180,8 @@ export function confirms(answer: GateAnswer | null, shown: GateAnswer): boolean 
     answer.kit === shown.kit &&
     answer.open === shown.open &&
     answer.to === shown.to &&
-    answer.status === shown.status
+    answer.status === shown.status &&
+    answer.words === shown.words
   );
 }
 

@@ -407,6 +407,34 @@ describe("undoSend", () => {
 });
 
 describe("deliverSend", () => {
+  it("sends the email as the owner edited it, and records the edit as a factual one", async () => {
+    const id = await readyKit(POST);
+    const shown = await view(id);
+    const claim = shown.draft!.kit.blocks.find((block) => block.class === "claim")!;
+    const words = "I have built production React applications for four years.";
+    for (const action of [
+      { kind: "edit", blockId: claim.id, text: words },
+      { kind: "confirm", blockId: claim.id },
+    ] as const) {
+      expect(await recordReview({ db, clock, dns: offlineDns() }, id, action)).toMatchObject({
+        ok: true,
+      });
+    }
+    const send = await press(id);
+    clock.advance(UNDO_MS);
+
+    expect(await deliverSend(sendDeps(), id, send.id)).toMatchObject({ ok: true });
+
+    const message = partsOf(gmail.sent[0]!);
+    expect(message.text).toContain(words);
+    expect(message.text).not.toContain(claim.text);
+    const { rows } = await db.query(
+      "select changed, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ changed: [`sentence:${claim.id}`], factual_edit: true }]);
+  });
+
   it("sends the email with the signature and the CV, and marks it sent with Gmail's IDs", async () => {
     const id = await readyKit(POST);
     const kit = (await view(id)).draft!.kit;

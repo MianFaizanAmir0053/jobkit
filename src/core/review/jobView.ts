@@ -5,6 +5,7 @@ import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { bodyWords } from "@/core/drafting/kit";
 import type { TemplatesOutput } from "@/core/drafting/templatesStage";
 import type { KitFlag } from "@/core/drafting/validate";
+import type { EmailKit } from "@/core/drafting/kit";
 import { mustHaveCoverage, templateVerdicts, visibleRole } from "@/core/drafting/templateDrafts";
 import { isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
 import { type Agreement, agreement, type ContactKind } from "@/core/extraction/addressRead";
@@ -53,6 +54,7 @@ import {
   uncertainSend,
   uncertainWhere,
 } from "./kitSends";
+import { editedKit, flagsOfEdited, wordsKey } from "./edits";
 import type { ImagesWanted } from "./postImages";
 
 /**
@@ -115,6 +117,13 @@ export interface JobView {
   drafts: DraftChoice[];
   /** The draft the kit is: the one the owner picked, else the one jobkit recommends. */
   draft: DraftOutput | null;
+  /**
+   * The email as it stands: the draft's, with the owner's words for each
+   * sentence they edited; what every handoff sends. Null with no draft.
+   */
+  kit: EmailKit | null;
+  /** The email's words as a short key, which the gate's answer names; null with no draft. */
+  wordsKey: string | null;
   /** Its ID among `drafts`; null when there is none. */
   picked: string | null;
   /**
@@ -323,6 +332,20 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const kitKey = hasKit ? chosen!.kitKey : null;
   const decisions =
     kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey, chosen!.draft.flags) : null;
+  // The email as it stands, the owner's words in place of each sentence they edited; validate runs
+  // again on an edited one (drafting spec, "Owner edits"), and an unedited one keeps drafting's flags.
+  const edits = decisions?.edits ?? {};
+  const kit = chosen ? editedKit(chosen.draft.kit, edits) : null;
+  const flags =
+    chosen && role && extraction && kit && Object.keys(edits).length > 0
+      ? await flagsOfEdited(deps.db, {
+          draft: chosen.draft,
+          kit,
+          record: extraction.record,
+          role,
+          template: chosen.choice.source === "template",
+        })
+      : (chosen?.draft.flags ?? []);
   const latest = role ? await latestSend(deps.db, id, role.id) : null;
   const now = deps.clock.now();
   const sentByJobkit = role ? await anySent(deps.db, id, role.id) : false;
@@ -359,7 +382,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const kitParts =
     chosen && role && extraction
       ? kitPartsOf({
-          draft: chosen.draft,
+          draft: { ...chosen.draft, flags },
           verdicts: chosen.verdicts,
           role,
           extraction,
@@ -397,6 +420,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     draftedAnyway: await draftedAnyway(deps.db, id),
     drafts: candidates.map((candidate) => candidate.choice),
     draft: chosen?.draft ?? null,
+    kit,
+    wordsKey: kit ? wordsKey(kit) : null,
     picked: chosen?.choice.id ?? null,
     canDraftWithGemini:
       ready &&
@@ -763,12 +788,8 @@ export async function decisionsOf(
   );
   const parsed = storedDecisionsSchema.safeParse(rows[0]?.decisions);
   if (parsed.success && parsed.data.kit === kitKey) {
-    const { checked, flagsChecked, retyped, attached, continueAnyway, lookups, meets } =
-      parsed.data;
-    return withFlagNames(
-      { checked, flagsChecked, retyped, attached, continueAnyway, lookups, meets },
-      flags,
-    );
+    // The decisions alone, without the kit they name.
+    return withFlagNames(decisionsSchema.parse(parsed.data), flags);
   }
   // A draft the owner moved away from keeps its sentence and flag decisions aside, by its key, as
   // when the page falls back to it: those count again (draftChoice.ts).
@@ -780,7 +801,13 @@ export async function decisionsOf(
 /** Each draft's sentence and flag decisions, kept aside by its kit key while another is the kit. */
 export const draftChecksSchema = z.record(
   z.string(),
-  z.object({ checked: z.array(z.string()), flagsChecked: z.array(z.string()) }),
+  z.object({
+    checked: z.array(z.string()),
+    flagsChecked: z.array(z.string()),
+    // Kept from before the block editor: none.
+    edits: z.record(z.string(), z.string()).default({}),
+    confirmed: z.array(z.string()).default([]),
+  }),
 );
 export type DraftChecks = z.infer<typeof draftChecksSchema>;
 

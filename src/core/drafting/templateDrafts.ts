@@ -421,15 +421,7 @@ function draftFrom(
     subjectFormat: accepted.subjectFormat,
     markers: [],
   });
-  const flags = ownersToConfirm(
-    found,
-    visible.requirements.filter((requirement) => !isWeighable(requirement)),
-    new Set(
-      role.requirements
-        .filter((requirement) => !visible.requirements.some((each) => each.id === requirement.id))
-        .map((requirement) => requirement.id),
-    ),
-  );
+  const flags = templateFlags(found, record, role);
   // A template's ID is no word of the owner's: one in the email is a leak, as a fact's would be.
   const texts = [
     built.kit.subject,
@@ -455,6 +447,24 @@ function draftFrom(
     templateName: template.name,
     coverage: mustHaveCoverage(visible, built.fit, facts),
   };
+}
+
+/**
+ * validate's flags on a template's draft, with what only the owner can
+ * confirm in place of what code cannot weigh: as the templates first drew
+ * them, and as the review page draws them again on the owner's edits.
+ */
+export function templateFlags(found: readonly KitFlag[], record: JobRecord, role: Role): KitFlag[] {
+  const visible = visibleRole(record, role);
+  return ownersToConfirm(
+    found,
+    visible.requirements.filter((requirement) => !isWeighable(requirement)),
+    new Set(
+      role.requirements
+        .filter((requirement) => !visible.requirements.some((each) => each.id === requirement.id))
+        .map((requirement) => requirement.id),
+    ),
+  );
 }
 
 const ids = (facts: readonly Fact[]) => facts.map((fact) => fact.id);

@@ -74,6 +74,8 @@ describe("decide", () => {
       continueAnyway: true,
       lookups: [{ address: "jobs@example.com", version: ADDRESS_CHECKS_VERSION, checks: [] }],
       meets: [],
+      edits: {},
+      confirmed: [],
     });
     expect(decide(decisions, { kind: "uncheck", blockId: "S2" }).checked).toEqual([]);
     expect(decide(decisions, { kind: "uncheck_flag", flag: F }).flagsChecked).toEqual([]);
@@ -102,6 +104,30 @@ describe("decide", () => {
     expect(
       reviewActionSchema.safeParse({ kind: "meets", requirementId: "F1", ticked: true }).success,
     ).toBe(false);
+  });
+
+  it("keeps the owner's words for a sentence, which they confirm, and takes them back", () => {
+    let decisions = decide(NO_DECISIONS, {
+      kind: "edit",
+      blockId: "S2",
+      text: "  I built React apps for four years.  ",
+    });
+    expect(decisions.edits).toEqual({ S2: "I built React apps for four years." });
+    decisions = decide(decisions, { kind: "confirm", blockId: "S2" });
+    expect(decisions.confirmed).toEqual(["S2"]);
+    // Changed again: it needs confirming again.
+    decisions = decide(decisions, { kind: "edit", blockId: "S2", text: "Four years of React." });
+    expect(decisions.confirmed).toEqual([]);
+    expect(decide(decisions, { kind: "revert", blockId: "S2" })).toMatchObject({
+      edits: {},
+      confirmed: [],
+    });
+    expect(
+      reviewActionSchema.safeParse({ kind: "edit", blockId: "S1", text: "x".repeat(1501) }).success,
+    ).toBe(false);
+    expect(reviewActionSchema.safeParse({ kind: "edit", blockId: "S1", text: "   " }).success).toBe(
+      false,
+    );
   });
 
   it("names a flag by what it found, so it keeps its name when validate runs again", () => {
@@ -217,6 +243,8 @@ describe("gateInputOf", () => {
       continueAnyway: false,
       lookups: [],
       meets: ["R9"],
+      edits: { S9: "A sentence the kit no longer has." },
+      confirmed: ["S9"],
     };
 
     const input = gateInputOf({ ...PARTS, blocks: ["S1"] }, decisions);
@@ -226,6 +254,30 @@ describe("gateInputOf", () => {
     expect(input.attachments).toEqual([{ name: "Portfolio link", ticked: false }]);
     // A verdict on a sentence no longer in the kit holds nothing.
     expect(input.verdicts.map((verdict) => verdict.blockId)).toEqual(["S1"]);
+  });
+});
+
+describe("an edited sentence", () => {
+  it("holds the kit until the owner confirms it, in place of the separate check's verdict", () => {
+    const kinds = (decisions: ReviewDecisions) =>
+      canHandOff(gateInputOf(PARTS, decisions)).map((reason) => reason.kind);
+    expect(kinds(NO_DECISIONS)).toContain("judge");
+
+    const edited = decide(NO_DECISIONS, {
+      kind: "edit",
+      blockId: "S2",
+      text: "Four years of React.",
+    });
+
+    // S2's verdict was on the words the owner replaced: their edit holds it now, until confirmed.
+    expect(kinds(edited)).not.toContain("judge");
+    expect(kinds(edited)).toContain("unconfirmed_edit");
+    expect(kinds(decide(edited, { kind: "confirm", blockId: "S2" }))).not.toContain(
+      "unconfirmed_edit",
+    );
+    // Approve & send confirms no edit for the owner, nor checks the verdict it replaced.
+    expect(approvable(PARTS, edited)).not.toContain("sentence:S2");
+    expect(approveAll(PARTS, edited).checked).toEqual([]);
   });
 });
 

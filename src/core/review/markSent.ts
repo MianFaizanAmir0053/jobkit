@@ -6,6 +6,7 @@ import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
 import { applicationIdOf, kitRouteOf, openForJob } from "./applications";
+import { FACTUAL_CLASSES } from "./edits";
 import { NO_DECISIONS } from "./decisions";
 import { jobView, storedDecisions } from "./jobView";
 
@@ -154,8 +155,16 @@ async function marking(
       // jobkit's, inside its send's own transaction, keeps where its email went.
       if (!sent.ok) throw new SendRefused();
       if (sent.changed) {
-        // Until the editor exists, the one field the owner changes in jobkit is the address.
-        const changed = typed && !sameAddress(to, role.route.address) ? ["address"] : [];
+        // What the owner changed in jobkit: the address, and each sentence they edited; an edited
+        // claim, gap line or sentence about the post is a factual edit (ledger spec).
+        const edits = view.review.decisions.edits;
+        const edited = view.draft!.kit.blocks.filter((block) => Object.hasOwn(edits, block.id));
+        const address = typed && !sameAddress(to, role.route.address);
+        const changed = [
+          ...(address ? ["address"] : []),
+          ...edited.map((block) => `sentence:${block.id}`),
+        ];
+        const factual = address || edited.some((block) => FACTUAL_CLASSES.has(block.class));
         await tx.query(
           `insert into {{schema}}.draft_outcomes
            (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at,
@@ -172,7 +181,7 @@ async function marking(
             jobId,
             changed,
             answer.changedInGmail,
-            answer.changedInGmail || changed.length > 0,
+            answer.changedInGmail || factual,
             deps.clock.now(),
             // Which draft went (decisions A22): Gemini's, or a template's, the owner's own words.
             view.picked,

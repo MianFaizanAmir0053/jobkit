@@ -583,7 +583,8 @@ function KitPanel({
   const role = view.role!;
   const parts = view.kitParts!;
   const kitKey = view.kitKey!;
-  const kit = draft.kit;
+  // The email as it stands, with the owner's edits: what every handoff sends.
+  const kit = view.kit ?? draft.kit;
   const body = emailBody(kit);
   // An email kit goes through Gmail; a form or message is sent where the owner applies.
   const byEmail = view.kitRoute === "email";
@@ -600,11 +601,15 @@ function KitPanel({
   // The separate check's findings, a sentence it never weighed included.
   const judged = parts.verdicts.filter(isBlocking);
   // validate's flags, most serious first; each named by what it found (flagKey).
-  const flags = [...draft.flags].sort((a, b) => flagRank(a.kind) - flagRank(b.kind));
+  const flags = [...parts.flags].sort((a, b) => flagRank(a.kind) - flagRank(b.kind));
   // What the post asks of applicants, each line marked as drafting dealt with it.
-  const checklist = checklistOf(view.extraction!.record, role, draft);
+  const checklist = checklistOf(view.extraction!.record, role, {
+    ...draft,
+    kit,
+    flags: [...parts.flags],
+  });
   // Each requirement with its verdict, its cited facts, and the owner's tick where only they can.
-  const fitRows = fitTableOf(role, draft);
+  const fitRows = fitTableOf(role, { fit: draft.fit, flags: [...parts.flags] });
   // The flags "I meet this requirement" clears, each with its requirement.
   const meetable = new Map(
     fitRows.flatMap((row): [string, string][] =>
@@ -1258,6 +1263,7 @@ function KitPanel({
           open={open}
           to={view.handoff?.to ?? null}
           status={view.application?.status ?? null}
+          words={view.wordsKey}
           email={byEmail}
           gmailHref={
             open && byEmail && to !== ""

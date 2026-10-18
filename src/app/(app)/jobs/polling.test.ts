@@ -231,7 +231,7 @@ describe("watchGate", () => {
     show();
     expect(read).toHaveBeenCalledTimes(1);
     stop();
-    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", status: null });
+    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", status: null, words: null });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(settle).not.toHaveBeenCalled();
@@ -267,16 +267,16 @@ describe("watchGate", () => {
     const stop = watchGate(read, settle, page, { forget: () => undefined });
     await vi.advanceTimersByTimeAsync(0);
     hide();
-    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", status: null });
+    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", status: null, words: null });
     await vi.advanceTimersByTimeAsync(0);
     expect(settle).not.toHaveBeenCalled();
     show();
     await vi.advanceTimersByTimeAsync(0);
-    pending[1]!({ kit: "K", open: false, to: "jobs@example.com", status: null });
+    pending[1]!({ kit: "K", open: false, to: "jobs@example.com", status: null, words: null });
     await vi.advanceTimersByTimeAsync(0);
 
     expect(settle.mock.calls).toEqual([
-      [{ kit: "K", open: false, to: "jobs@example.com", status: null }],
+      [{ kit: "K", open: false, to: "jobs@example.com", status: null, words: null }],
     ]);
     stop();
   });
@@ -299,14 +299,14 @@ describe("watchGate", () => {
     nudge();
     expect(forget).toHaveBeenCalledTimes(1);
     // The answer to the ask made before the change says nothing of the gate now: it is asked again.
-    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", status: null });
+    pending[0]!({ kit: "K", open: true, to: "jobs@example.com", status: null, words: null });
     await vi.advanceTimersByTimeAsync(0);
     expect(settle).not.toHaveBeenCalled();
     expect(read).toHaveBeenCalledTimes(2);
-    pending[1]!({ kit: "K", open: true, to: "careers@example.com", status: null });
+    pending[1]!({ kit: "K", open: true, to: "careers@example.com", status: null, words: null });
     await vi.advanceTimersByTimeAsync(0);
     expect(settle.mock.calls).toEqual([
-      [{ kit: "K", open: true, to: "careers@example.com", status: null }],
+      [{ kit: "K", open: true, to: "careers@example.com", status: null, words: null }],
     ]);
     hide();
     nudge();
@@ -320,9 +320,17 @@ describe("watchGate", () => {
 
 describe("confirms", () => {
   it("takes the server's answer as the page's only for the same kit, gate, address and status", () => {
-    const shown = { kit: "K", open: true, to: "jobs@example.com", status: "kit_ready" };
+    const shown = {
+      kit: "K",
+      open: true,
+      to: "jobs@example.com",
+      status: "kit_ready",
+      words: "W",
+    };
 
     expect(confirms(shown, shown)).toBe(true);
+    // The owner edited a sentence in another tab: this page's words are not the kit's.
+    expect(confirms({ ...shown, words: "X" }, shown)).toBe(false);
     expect(confirms({ ...shown, to: "careers@example.com" }, shown)).toBe(false);
     expect(confirms({ ...shown, kit: "L" }, shown)).toBe(false);
     expect(confirms({ ...shown, open: false }, shown)).toBe(false);

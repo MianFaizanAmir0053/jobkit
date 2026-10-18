@@ -30,6 +30,7 @@ import { validateProfile } from "@/core/profile/validate";
 import { openForJob } from "@/core/review/applications";
 import { flagKey } from "@/core/review/decisions";
 import { jobView } from "@/core/review/jobView";
+import { recordReview } from "@/core/review/kitReview";
 import type { AppConfig } from "@/server/config";
 import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 
@@ -475,6 +476,7 @@ describe("the job page's routes", () => {
       open: false,
       to: "",
       status: null,
+      words: expect.any(String),
     });
     await clearedOnPage(ready, cookie);
 
@@ -485,6 +487,7 @@ describe("the job page's routes", () => {
       open: true,
       to: "jobs@example.com",
       status: null,
+      words: expect.any(String),
     });
     expect((await gate(get(`/api/jobs/${ready}/gate`), deps(), ready)).status).toBe(401);
   });
@@ -822,6 +825,25 @@ describe("the job page's routes", () => {
     );
     expect(taken.status).toBe(200);
     expect((await jobView({ db, clock }, ready))!.application?.status).toBe("kit_ready");
+  });
+
+  it("answers the gate with the email's words, which an edit changes", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    const first = await (await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready)).json();
+    expect(first.words).toEqual(expect.any(String));
+    const block = (await jobView({ db, clock }, ready))!.draft!.kit.blocks[0]!;
+
+    await recordReview({ db, clock, dns: offlineDns() }, ready, {
+      kind: "edit",
+      blockId: block.id,
+      text: "I have built production React applications for four years.",
+    });
+
+    const second = await (await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready)).json();
+    expect(second.words).not.toBe(first.words);
+    expect(second.kit).toBe(first.kit);
   });
 
   it("apply again on the matches the banner showed, and on no others", async () => {

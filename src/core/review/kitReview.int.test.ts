@@ -95,10 +95,63 @@ describe("recordReview", () => {
         continueAnyway: false,
         lookups: expect.any(Array),
         meets: [],
+        edits: {},
+        confirmed: [],
       },
       gate: typed.ok ? typed.gate : [],
     });
     expect(view.handoff).toEqual({ to: "jobs@example.com", typed: true });
+  });
+
+  it("keeps the owner's words for a sentence, holds them until confirmed, and takes them back", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    const block = (await jobView({ db, clock }, id))!.draft!.kit.blocks[0]!;
+    const words = "I have built production React applications for four years.";
+
+    const edited = await recordReview(deps(), id, { kind: "edit", blockId: block.id, text: words });
+
+    expect(edited.ok && edited.gate.map((reason) => reason.kind)).toContain("unconfirmed_edit");
+    const after = (await jobView({ db, clock }, id))!;
+    expect(after.kit!.blocks[0]!.text).toBe(words);
+    // The draft stays as drafted.
+    expect(after.draft!.kit.blocks[0]!.text).toBe(block.text);
+    const confirmed = await recordReview(deps(), id, { kind: "confirm", blockId: block.id });
+    expect(confirmed.ok && confirmed.gate.map((reason) => reason.kind)).not.toContain(
+      "unconfirmed_edit",
+    );
+    // Written back as drafted: no edit at all.
+    await recordReview(deps(), id, { kind: "edit", blockId: block.id, text: block.text });
+    expect((await jobView({ db, clock }, id))!.review!.decisions).toMatchObject({
+      edits: {},
+      confirmed: [],
+    });
+    // A sentence the kit has not, or a confirmation of no edit, is refused.
+    expect(await recordReview(deps(), id, { kind: "edit", blockId: "S99", text: "x" })).toEqual({
+      ok: false,
+      reason: "not-in-kit",
+    });
+    expect(await recordReview(deps(), id, { kind: "confirm", blockId: block.id })).toEqual({
+      ok: false,
+      reason: "not-in-kit",
+    });
+  });
+
+  it("runs validate again on the email as the owner edited it", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    const block = (await jobView({ db, clock }, id))!.draft!.kit.blocks[0]!;
+    const kinds = async () =>
+      (await jobView({ db, clock }, id))!.kitParts!.flags.map((flag) => flag.kind);
+    expect(await kinds()).not.toContain("over_limit");
+
+    await recordReview(deps(), id, {
+      kind: "edit",
+      blockId: block.id,
+      text: `${Array.from({ length: 200 }, () => "React").join(" ")}.`,
+    });
+    expect(await kinds()).toContain("over_limit");
+
+    await recordReview(deps(), id, { kind: "revert", blockId: block.id });
+    expect(await kinds()).not.toContain("over_limit");
   });
 
   it("reads a decision kept by a flag's place, from before flags were named, as that flag's", async () => {
