@@ -600,49 +600,43 @@ describe("uploadAgain", () => {
     expect(await loadJob(db, jobId)).toMatchObject({ state: "queued" });
   });
 
-  it("sends the same screenshots again from the start while their upload runs, as after an answer that was lost", async () => {
+  it("restarts an upload under way with the screenshots chosen again: the earlier one fails, and the new one has its own 15 minutes", async () => {
     const { jobId } = await failedUpload();
-    const fresh = [await webp(1080, 2400, 20), await webp(1080, 2400, 30)];
-    const first = await uploadAgain(
-      deps(),
-      jobId,
-      fresh.map((shot) => shot.meta),
-    );
+    const first = await uploadAgain(deps(), jobId, [image(3)]);
     if (!first.ok) throw new Error(JSON.stringify(first));
-    const began = (await loadJob(db, jobId))!.stateChangedAt;
-    // The first screenshot arrived; the page never learned its URLs, or lost the upload.
+    // One screenshot arrived before the answer was lost, or before the upload stalled.
     const stored = (await images(jobId))[0]!.storage_path;
-    await storage.put(stored, fresh[0]!.bytes, "image/webp");
+    await storage.put(stored, new Uint8Array(image(3).bytes), "image/webp");
     clock.advance(60_000);
+    const fresh = await webp(1080, 2400, 40);
 
-    const again = await uploadAgain(
-      deps(),
-      jobId,
-      fresh.map((shot) => shot.meta),
-    );
+    const again = await uploadAgain(deps(), jobId, [fresh.meta]);
+    if (!again.ok) throw new Error(JSON.stringify(again));
 
-    // The same rows, each with a fresh URL in order, and nothing stored to stand in the way.
-    expect(again).toEqual({
-      ok: true,
-      jobId,
-      uploads: first.uploads.map((upload) => ({
-        imageId: upload.imageId,
-        url: expect.any(String),
-      })),
-    });
+    // New rows under new paths, the earlier upload's file gone, and its 15 minutes started again.
+    expect(again.uploads.map((upload) => upload.imageId)).not.toContain(first.uploads[0]!.imageId);
     expect(await storage.stat(stored)).toBeNull();
-    // Within the same 15 minutes, as another attempt.
-    expect(await loadJob(db, jobId)).toMatchObject({ state: "uploading", stateChangedAt: began });
+    expect(await loadJob(db, jobId)).toMatchObject({
+      state: "uploading",
+      stateChangedAt: clock.now(),
+    });
     expect((await attempts(jobId)).map((attempt) => [attempt.files, attempt.outcome])).toEqual([
       [2, "failed"],
-      [2, "failed"],
-      [2, null],
+      [1, "failed"],
+      [1, null],
     ]);
-    // Other screenshots wait for the upload to run out of time.
-    expect(await uploadAgain(deps(), jobId, [image(9)])).toEqual({
-      ok: false,
-      reason: "not-failed",
-    });
+    // The ledger of the job's moves says the earlier upload failed before the new one began.
+    const { rows } = await db.query<{ from_state: string; to_state: string }>(
+      `select from_state, to_state from {{schema}}.job_state_changes
+        where job_id = $1 order by id`,
+      [jobId],
+    );
+    expect(rows.slice(-2)).toEqual(
+      expect.arrayContaining([
+        { from_state: "uploading", to_state: "upload_failed" },
+        { from_state: "upload_failed", to_state: "uploading" },
+      ]),
+    );
   });
 
   it("fails again a job uploaded again that runs out of its new 15 minutes", async () => {
@@ -656,14 +650,15 @@ describe("uploadAgain", () => {
     expect(await confirmUploads(deps(), jobId)).toEqual({ ok: false, reason: "upload-failed" });
   });
 
-  it("refuses a job whose upload has not failed, one that does not exist, and screenshots past the limits", async () => {
-    const uploading = await startJob(deps(), {
-      images: [image(1)],
-      pastedText: "",
+  it("refuses a job no longer waiting for its screenshots, one that does not exist, and screenshots past the limits", async () => {
+    // A paste-only job is queued at once: it waits for no screenshot.
+    const queued = await startJob(deps(), {
+      images: [],
+      pastedText: "a post",
       clientElapsedMs: 0,
     });
-    if (!uploading.ok) throw new Error(uploading.message);
-    expect(await uploadAgain(deps(), uploading.jobId, [image(2)])).toEqual({
+    if (!queued.ok) throw new Error(queued.message);
+    expect(await uploadAgain(deps(), queued.jobId, [image(2)])).toEqual({
       ok: false,
       reason: "not-failed",
     });

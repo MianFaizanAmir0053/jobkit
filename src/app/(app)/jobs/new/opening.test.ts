@@ -48,8 +48,8 @@ function page(
     sweepShares: async () => {
       events.push("sweep");
     },
-    finishKept: async (onStatus) => {
-      events.push("finish kept");
+    finishKept: async (onStatus, jobId) => {
+      events.push(jobId ? `finish kept ${jobId}` : "finish kept");
       if (setup.before && setup.before !== "elsewhere") {
         onStatus("Finishing the upload of a job started before…");
       }
@@ -209,14 +209,21 @@ describe("openPage", () => {
     expect(fake.events).not.toContain(`start ${SHARE_ID}`);
   });
 
-  it("leaves a share held for the tap where it is while the page uploads a job's screenshots again", async () => {
+  it("uploading a job's screenshots again, finishes that job's kept upload alone, and takes no share, held or in the address", async () => {
     const held = { ...share(), held: OPENING.fromAnotherSite };
-    const fake = page({ held });
-
-    expect(await openPage(fake.deps, { ...auto, again: true }, fake.ui)).toEqual({
-      kind: "nothing",
+    const fake = page({
+      held,
+      shareId: SHARE_ID,
+      kept: share(),
+      before: { ok: true, jobId: "job-1" },
     });
-    expect(fake.events.filter((event) => event.startsWith("hold"))).toEqual([]);
+
+    expect(await openPage(fake.deps, { ...auto, againOf: "job-1" }, fake.ui)).toEqual({
+      kind: "finished",
+      outcome: { ok: true, jobId: "job-1" },
+    });
+    expect(fake.events).toContain("finish kept job-1");
+    expect(fake.events.filter((event) => /^(hold|take|drop|keep)/.test(event))).toEqual([]);
   });
 
   it("says a share is gone, and finishes an upload kept from before without opening its job", async () => {

@@ -438,8 +438,14 @@ describe("POST /api/jobs/<id>/upload-again", () => {
         id,
       );
     const one = { images: [image(2, 1_000)] };
+    // A paste-only job is queued at once: it waits for no screenshot.
+    const paste = await newJob(
+      { images: [], pastedText: "A job post", clientElapsedMs: 0 },
+      cookie,
+    );
+    const { jobId: queued } = (await paste.json()) as { jobId: string };
 
-    const early = await ask(one, cookie);
+    const early = await ask(one, cookie, ORIGIN, queued);
     expect(early.status).toBe(409);
     expect(await early.json()).toEqual({ error: "not-failed" });
     clock.advance(15 * 60_000 + 1);

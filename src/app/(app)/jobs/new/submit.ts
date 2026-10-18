@@ -339,8 +339,12 @@ export async function submitJob(
 export async function resumeUpload(
   deps: SubmitDeps,
   onStatus: (status: string) => void,
+  jobId?: string,
 ): Promise<Submitted | "elsewhere" | null> {
-  const pending = await deps.pending.latest().catch(() => null);
+  // The page that uploads one job's screenshots again finishes that job's kept upload alone.
+  const pending = await (
+    jobId === undefined ? deps.pending.latest() : deps.pending.get(jobId)
+  ).catch(() => null);
   if (!pending) return null;
   if (deps.wallNow() > pending.deadlineAt + FORGET_AFTER_DEADLINE_MS) {
     // The newest is the one started last, so every other kept upload is older still; one another

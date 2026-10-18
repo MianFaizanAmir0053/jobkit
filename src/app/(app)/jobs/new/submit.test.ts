@@ -813,6 +813,21 @@ describe("submitJob", () => {
   });
 });
 
+describe("resumeUpload of one job", () => {
+  it("finishes only the kept upload of the job it is asked for, never another job's", async () => {
+    const fake = browser({}, server("job-9", 1));
+    fake.kept.set("job-8", {
+      jobId: "job-8",
+      deadlineAt: 2_000_000,
+      images: [{ imageId: "image-0", blob: new Blob(["x"]) }],
+    });
+
+    expect(await resumeUpload(fake.deps, fake.onStatus, "job-9")).toBeNull();
+    expect(fake.calls).toEqual([]);
+    expect(fake.kept.has("job-8")).toBe(true);
+  });
+});
+
 describe("resumeUpload", () => {
   const pending = (blob: Blob): PendingUpload => ({
     jobId: "job-30",

@@ -49,8 +49,8 @@ const pageDeps: OpeningDeps = {
   holdShare,
   heldShare,
   sweepShares,
-  finishKept: (onStatus) =>
-    resumeUpload(browserDeps, onStatus).catch(() => ({
+  finishKept: (onStatus, jobId) =>
+    resumeUpload(browserDeps, onStatus, jobId).catch(() => ({
       ok: false as const,
       message: MESSAGES.notResumed,
     })),
@@ -74,30 +74,47 @@ interface Follower {
   hold: (share: Share, how: { shown: boolean; stored: boolean }) => void;
 }
 
-/**
- * The page's opening run, kept outside the form: React runs an effect twice
- * in development, and the owner may leave New job and come back while it
- * runs. Every form on screen follows its steps and the share it holds, so
- * none offers Start while it runs; a share held for the tap stays in the
- * store too, for a visit after the run.
- */
-const opening: {
+/** An opening run, what it shows, and the forms on screen that follow it. */
+interface Opening {
   run: Promise<Opened> | null;
   status: string | null;
   held: { share: Share; how: { shown: boolean; stored: boolean } } | null;
   followers: Set<Follower>;
-} = { run: null, status: null, held: null, followers: new Set() };
+}
 
-const openingUi = {
-  status: (status: string) => {
-    opening.status = status;
-    for (const follower of opening.followers) follower.status(status);
-  },
-  hold: (share: Share, how: { shown: boolean; stored: boolean }) => {
-    opening.held = { share, how };
-    for (const follower of opening.followers) follower.hold(share, how);
-  },
-};
+/**
+ * The page's opening runs, kept outside the form, one for New job and one
+ * for each job whose screenshots it uploads again: React runs an effect
+ * twice in development, and the owner may leave the page and come back
+ * while one runs. Every form on screen follows its run's steps and the
+ * share it holds, so none offers Start while it runs; a share held for the
+ * tap stays in the store too, for a visit after the run. No run reaches a
+ * form of the other kind.
+ */
+const openings = new Map<string, Opening>();
+
+function openingFor(key: string): Opening {
+  let found = openings.get(key);
+  if (!found) {
+    found = { run: null, status: null, held: null, followers: new Set() };
+    openings.set(key, found);
+  }
+  return found;
+}
+
+/** What a run shows, passed on to every form that follows it. */
+function uiOf(opening: Opening) {
+  return {
+    status: (status: string) => {
+      opening.status = status;
+      for (const follower of opening.followers) follower.status(status);
+    },
+    hold: (share: Share, how: { shown: boolean; stored: boolean }) => {
+      opening.held = { share, how };
+      for (const follower of opening.followers) follower.hold(share, how);
+    },
+  };
+}
 
 /** A share the form holds: its screenshots, which the file input does not show, and its link. */
 interface Shared {
@@ -201,26 +218,23 @@ export function NewJobForm({
         setHeldAt(how.shown ? Date.now() : null);
       },
     };
-    let run: Promise<Opened>;
-    if (again === null) {
-      opening.followers.add(follower);
-      // A run going on since an earlier visit: this form follows it too.
-      if (opening.held) follower.hold(opening.held.share, opening.held.how);
-      if (opening.status !== null) follower.status(opening.status);
-      run = opening.run ??= openPage(pageDeps, { autoStart, capped }, openingUi).finally(() => {
-        opening.run = null;
-        opening.status = null;
-        opening.held = null;
-      });
-    } else {
-      // Uploading one job's screenshots again: a run of its own, which finishes an upload kept
-      // from before and takes no share, so nothing of New job's run, nor its share, reaches it.
-      run = openPage(
-        pageDeps,
-        { autoStart: false, capped, again: true },
-        { status: follower.status, hold: () => undefined },
-      );
-    }
+    // New job's run, or the run of the job whose screenshots this form uploads again, which
+    // finishes that job's kept upload alone and takes no share.
+    const opening = openingFor(again === null ? "new" : `again:${again}`);
+    opening.followers.add(follower);
+    // A run going on since an earlier visit, or the effect's first run in development: this form
+    // follows it too.
+    if (opening.held) follower.hold(opening.held.share, opening.held.how);
+    if (opening.status !== null) follower.status(opening.status);
+    const run = (opening.run ??= openPage(
+      pageDeps,
+      again === null ? { autoStart, capped } : { autoStart: false, capped, againOf: again },
+      uiOf(opening),
+    ).finally(() => {
+      opening.run = null;
+      opening.status = null;
+      opening.held = null;
+    }));
     void run
       .then((opened) => {
         if (left) return;

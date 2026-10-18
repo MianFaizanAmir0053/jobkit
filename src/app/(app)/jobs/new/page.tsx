@@ -3,8 +3,15 @@ import { headers } from "next/headers";
 
 import Link from "next/link";
 
-import { jobForViewer, newJobsAllowedForViewer, requireSession } from "@/server/dal";
+import {
+  jobForViewer,
+  newJobsAllowedForViewer,
+  requireSession,
+  viewerTimeZone,
+} from "@/server/dal";
 import { ownerSent } from "@/server/shareStart";
+
+import { formatTime } from "../words";
 
 import { NewJobForm } from "./NewJobForm";
 
@@ -48,6 +55,12 @@ export default async function NewJobPage(props: PageProps<"/jobs/new">) {
         <h1 id="new-job-heading" className="text-2xl font-semibold tracking-tight">
           Upload again
         </h1>
+        {job && (
+          // Which job: one whose upload failed has no reading of its post to name it by.
+          <p className="mt-1 text-sm text-muted-foreground">
+            The job started {formatTime(job.receivedAt, await viewerTimeZone())}.
+          </p>
+        )}
         {!job ? (
           <p className="mt-2">
             This job could not be found.{" "}
@@ -61,7 +74,7 @@ export default async function NewJobPage(props: PageProps<"/jobs/new">) {
             <p className="mt-2 text-muted-foreground">
               {failed
                 ? "Choose every screenshot of the post again: they replace all of this job's screenshots, and the job goes on once they all arrive."
-                : "This job's screenshots are on their way. If this browser kept them, jobkit finishes the upload now; to send them again, choose the same screenshots and press Start."}
+                : "This job's screenshots are on their way. If this browser kept them, jobkit finishes the upload now. To start the upload over, choose every screenshot again and press Start: the upload under way stops."}
             </p>
           )
         ) : (

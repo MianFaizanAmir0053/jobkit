@@ -43,7 +43,11 @@ export interface OpeningDeps {
   heldShare: () => Promise<Share | null>;
   sweepShares: () => Promise<void>;
   /** Finishes an upload kept from before; "elsewhere" when another tab is, null when none waits. */
-  finishKept: (onStatus: (status: string) => void) => Promise<Submitted | "elsewhere" | null>;
+  /** Finishes an upload kept from before: that job's alone, when one is named. */
+  finishKept: (
+    onStatus: (status: string) => void,
+    jobId?: string,
+  ) => Promise<Submitted | "elsewhere" | null>;
   start: (share: Share, onStatus: (status: string) => void) => Promise<Submitted>;
 }
 
@@ -72,24 +76,27 @@ export async function openPage(
   page: {
     autoStart: boolean;
     capped: boolean;
-    /** Whether the page uploads a failed job's screenshots again, which takes no share. */
-    again?: boolean;
+    /**
+     * The job whose screenshots the page uploads again: it finishes that
+     * job's kept upload alone, and takes no share, held or in the address.
+     */
+    againOf?: string;
   },
   ui: OpeningUi,
 ): Promise<Opened> {
   void deps.sweepShares().catch(() => undefined);
-  const id = deps.shareId();
+  const id = page.againOf ? null : deps.shareId();
   let share: Share | null = null;
   if (id) {
     share = await deps.takeShare(id).catch(() => null);
     deps.dropShareId();
   }
-  const before = await deps.finishKept(ui.status);
+  const before = await deps.finishKept(ui.status, page.againOf);
   const finished = before === "elsewhere" ? null : before;
   if (page.capped) return finished ? { kind: "finished", outcome: finished } : { kind: "nothing" };
   if (!id) {
     // A share waiting for the tap stays for New job; this page uploads one job's screenshots again.
-    const held = page.again ? null : await deps.heldShare().catch(() => null);
+    const held = page.againOf ? null : await deps.heldShare().catch(() => null);
     if (held?.held) {
       ui.hold(held, { shown: true, stored: true });
       return { kind: "held", reason: held.held, before: finished };
