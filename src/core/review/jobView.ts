@@ -825,15 +825,6 @@ export const draftChecksSchema = z.record(
     added: z.array(z.object({ id: z.string(), after: z.string(), text: z.string() })).default([]),
     deleted: z.array(z.string()).default([]),
     answers: z.record(z.string(), z.string()).default({}),
-    handoff: z
-      .object({
-        words: z.string(),
-        changed: z.array(z.string()),
-        factual: z.boolean(),
-        at: z.string(),
-      })
-      .nullable()
-      .default(null),
   }),
 );
 export type DraftChecks = z.infer<typeof draftChecksSchema>;

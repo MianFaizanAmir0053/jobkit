@@ -77,20 +77,39 @@ export interface ReviewDecisions {
    */
   declined: Declinable[];
   /**
-   * The email as the owner last handed it off from the page (Open in Gmail,
-   * a copy button): its words and what they changed, which Mark sent then
-   * records, whatever changed since; none before a handoff. Kept with the
-   * draft.
+   * The email as the owner last handed it off from the page, part by part,
+   * whichever draft the page shows since: Mark sent records it rather than
+   * the email as it stands then; none before a handoff. A decision on the
+   * job, which goes with a draft pick.
    */
   handoff: Handoff | null;
 }
 
-/** A handoff from the page: the email's words (wordsKey), what they changed, and when. */
-export interface Handoff {
+/**
+ * What one handoff gave the owner of the email: the draft its words were
+ * (the draft's ID; null for one kept before handoffs named it), its words
+ * (wordsKey), what they changed in jobkit, and when.
+ */
+export interface HandoffPart {
+  draft: string | null;
   words: string;
   changed: string[];
   factual: boolean;
   at: string;
+}
+
+/**
+ * A handoff from the page (Open in Gmail, a copy button): the address the
+ * page showed it going to ("" for none, as in one kept before addresses
+ * were), whether the owner typed it, and the subject and the body each as
+ * last handed off: Open in Gmail hands off both, Copy subject the subject,
+ * Copy email the body. A part not handed off yet is null.
+ */
+export interface Handoff {
+  to: string;
+  typed: boolean;
+  subject: HandoffPart | null;
+  body: HandoffPart | null;
 }
 
 /**
@@ -131,6 +150,14 @@ const addressCheckSchema = z.object({
   message: z.string(),
 });
 
+const handoffPartSchema = z.object({
+  draft: z.string().nullable(),
+  words: z.string(),
+  changed: z.array(z.string()),
+  factual: z.boolean(),
+  at: z.string(),
+});
+
 export const decisionsSchema = z.object({
   checked: z.array(z.string()),
   flagsChecked: z.array(z.string()),
@@ -155,12 +182,29 @@ export const decisionsSchema = z.object({
   declined: z.array(z.enum(DECLINABLE)).default([]),
   // Kept from before handoffs were recorded: none.
   handoff: z
-    .object({
-      words: z.string(),
-      changed: z.array(z.string()),
-      factual: z.boolean(),
-      at: z.string(),
-    })
+    .union([
+      z.object({
+        to: z.string(),
+        typed: z.boolean(),
+        subject: handoffPartSchema.nullable(),
+        body: handoffPartSchema.nullable(),
+      }),
+      // Kept as one whole email, before handoffs were kept part by part: its body, at the address
+      // Mark sent finds.
+      z
+        .object({
+          words: z.string(),
+          changed: z.array(z.string()),
+          factual: z.boolean(),
+          at: z.string(),
+        })
+        .transform((whole): Handoff => ({
+          to: "",
+          typed: false,
+          subject: null,
+          body: { draft: null, ...whole },
+        })),
+    ])
     .nullable()
     .default(null),
 });
@@ -206,12 +250,15 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("check_flag"), flag: z.string().regex(FLAG_NAME) }),
   z.strictObject({ kind: z.literal("uncheck_flag"), flag: z.string().regex(FLAG_NAME) }),
   // An address or number holds no control character nor half of a broken pair, which fails to be stored.
+  // Each decision that sets a value may name the value the page showed (`was`): one set since, on
+  // the other device, is then not replaced unseen.
   z.strictObject({
     kind: z.literal("retype"),
     value: z
       .string()
       .max(320)
       .refine((value) => !/[\p{Cc}\p{Cs}]/u.test(value.trim())),
+    was: z.string().max(320).optional(),
   }),
   z.strictObject({
     kind: z.literal("attach"),
@@ -244,12 +291,14 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("answers"),
     blockId: z.string().min(1).max(20),
     requirementId: z.union([z.literal(""), z.string().regex(/^R\d{1,4}$/)]),
+    was: z.union([z.literal(""), z.string().regex(/^R\d{1,4}$/)]).optional(),
   }),
   // One of the post's instructions declined, or the decline taken back.
   z.strictObject({
     kind: z.literal("decline"),
     instruction: z.enum(DECLINABLE),
     declined: z.boolean(),
+    was: z.boolean().optional(),
   }),
 ]);
 
@@ -338,12 +387,15 @@ const withOne = (list: readonly string[], item: string) =>
 /**
  * The decisions after one action; the same action twice changes nothing
  * more. A retype keeps the checks the caller made on the typed address, or
- * none.
+ * none. An edit of a line about must-haves (`lines`, the requirements the
+ * sentence answers as it stands) takes back the checks on them too: they
+ * weighed the email with the line's old words.
  */
 export function decide(
   decisions: ReviewDecisions,
   action: ReviewAction,
   typedChecks: AddressCheck[] | null = null,
+  lines: readonly string[] = [],
 ): ReviewDecisions {
   switch (action.kind) {
     case "check":
@@ -398,7 +450,10 @@ export function decide(
       const anew = {
         ...decisions,
         confirmed: without(decisions.confirmed, action.blockId),
-        flagsChecked: notAt(decisions.flagsChecked, action.blockId),
+        flagsChecked: lines.reduce(
+          (names, line) => notAt(names, line),
+          notAt(decisions.flagsChecked, action.blockId),
+        ),
       };
       return isAdded(decisions, action.blockId)
         ? {

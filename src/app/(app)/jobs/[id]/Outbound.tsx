@@ -109,19 +109,21 @@ export function Outbound({
   );
 
   const enabled = open && confirmed === shown && !held;
-  // Each handoff posts the words it handed off, right after the click, which Mark sent records;
-  // the handoff never waits for it (review spec, "The outbound gate").
-  // An email's alone: factual edits count for email handoffs only (ledger spec).
-  const handedOff = () => {
+  // A handoff jobkit could not record: Mark sent would record other words than went.
+  const [unrecorded, setUnrecorded] = useState(false);
+  // Each handoff posts the words and the parts it handed off, right after the click, which Mark
+  // sent records; the handoff never waits for it (review spec, "The outbound gate"). An email's
+  // alone: factual edits count for email handoffs only (ledger spec).
+  const handedOff = (parts: ("subject" | "body")[]) => () => {
     if (words === null || !email) return;
     void fetch(`/api/jobs/${jobId}/handoff`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ kit, words }),
+      body: JSON.stringify({ kit, words, parts }),
       keepalive: true,
-    }).catch(() => {
-      // Mark sent then records the email as it stands.
-    });
+    })
+      .then((response) => setUnrecorded(!response.ok))
+      .catch(() => setUnrecorded(true));
   };
   const waiting = !open
     ? ""
@@ -142,7 +144,7 @@ export function Outbound({
               target="_blank"
               rel="noopener noreferrer"
               className={`${buttonVariants()} min-h-11`}
-              onClick={handedOff}
+              onClick={handedOff(["subject", "body"])}
             >
               Open in Gmail
             </a>
@@ -162,7 +164,7 @@ export function Outbound({
               target="_blank"
               rel="noopener noreferrer"
               className={`${buttonVariants()} min-h-11`}
-              onClick={handedOff}
+              onClick={handedOff(["body"])}
             >
               Open WhatsApp
             </a>
@@ -180,19 +182,26 @@ export function Outbound({
             text={subject}
             label="Copy subject"
             disabled={!enabled}
-            onCopied={handedOff}
+            onCopied={handedOff(["subject"])}
           />
         )}
         <CopyButton
           text={body}
           label={noun === "email" ? "Copy email" : "Copy message"}
           disabled={!enabled}
-          onCopied={handedOff}
+          onCopied={handedOff(["body"])}
         />
       </div>
       <p role="status" className="min-h-5 text-sm text-muted-foreground">
         {waiting}
       </p>
+      {unrecorded && (
+        <p role="alert" className="text-sm font-medium">
+          jobkit could not record what you just handed off, as the email changed meanwhile or the
+          connection dropped. If you send it, answer Yes when jobkit asks whether you changed
+          anything, unless it reads as jobkit drafted it.
+        </p>
+      )}
     </div>
   );
 }

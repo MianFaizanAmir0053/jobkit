@@ -76,6 +76,8 @@ const WITH_GAP_LINE: DraftAnswer = {
   ],
 };
 
+/** The post sent with an address; its record carries a subject format, which drafting applies. */
+const POSTED = "Northwind Analytics is hiring. Apply to jobs@example.com.";
 /** A DNS where these domains take mail, and no other does. */
 const mailOnly = (domains: readonly string[]): Dns => ({
   async lookup(name, type) {
@@ -296,6 +298,107 @@ describe("recordReview", () => {
     expect(confirmed.ok).toBe(true);
   });
 
+  it("takes back the check on a must-have when its line is rewritten, which weighed the old words", async () => {
+    // Fluent German, a must-have only the owner can confirm, marked met by the drafter.
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      record: (record) => ({
+        ...record,
+        roles: record.roles.map((role) => ({
+          ...role,
+          requirements: [
+            ...role.requirements,
+            {
+              id: "R5",
+              text: "Fluent German",
+              priority: "must",
+              kind: "language",
+              skills: [],
+              depth: "any",
+              years: -1,
+            },
+          ],
+        })),
+      }),
+      draft: {
+        ...KIT_DRAFT,
+        fit: [...KIT_DRAFT.fit, { requirement_id: "R5", verdict: "met", fact_ids: [], note: "" }],
+      },
+      verdicts: [{ blockId: "S1", verdict: "supported", companyClaim: false, note: "" }],
+    });
+    const germanFlag = async () =>
+      flagKey(
+        (await jobView({ db, clock }, id))!.kitParts!.flags.find(
+          (flag) => flag.kind === "fit_unverified" && flag.at === "R5",
+        )!,
+      );
+    // The owner does not speak German: their line says so, confirmed, and the flag checked.
+    await recordReview(deps(), id, { kind: "add", after: "S1", text: "I do not speak German." });
+    await recordReview(deps(), id, { kind: "answers", blockId: "N1", requirementId: "R5" });
+    await recordReview(deps(), id, { kind: "confirm", blockId: "N1" });
+    await recordReview(deps(), id, { kind: "check_flag", flag: await germanFlag() });
+    expect(kinds((await jobView({ db, clock }, id))!.review!.gate)).toEqual([]);
+
+    await recordReview(deps(), id, { kind: "edit", blockId: "N1", text: "I am fluent in German." });
+    await recordReview(deps(), id, { kind: "confirm", blockId: "N1" });
+
+    const after = (await jobView({ db, clock }, id))!;
+    expect(after.review!.decisions.flagsChecked).not.toContain(await germanFlag());
+    expect(kinds(after.review!.gate)).toEqual(["flag"]);
+  });
+
+  it("refuses a choice from a page that showed another, though the words are the same", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply on our site.", {
+      record: askingForKubernetes,
+    });
+    await recordReview(deps(), id, {
+      kind: "add",
+      after: "S1",
+      text: "I have not run Kubernetes in production; I deploy containers with Docker.",
+    });
+    // The laptop marks the sentence as the line about R5 and types the address; the phone's page
+    // was drawn before, showing none of it.
+    await recordReview(deps(), id, {
+      kind: "answers",
+      blockId: "N1",
+      requirementId: "R5",
+      was: "",
+    });
+    await recordReview(deps(), id, { kind: "retype", value: "jobs@example.com", was: "" });
+    const shown = (await jobView({ db, clock }, id))!;
+    const made = { kit: shown.kitKey!, words: shown.wordsKey! };
+
+    expect(
+      await recordReview(
+        deps(),
+        id,
+        { kind: "answers", blockId: "N1", requirementId: "", was: "" },
+        made,
+      ),
+    ).toEqual({ ok: false, reason: "changed" });
+    expect(
+      await recordReview(deps(), id, { kind: "retype", value: "hr@example.com", was: "" }, made),
+    ).toEqual({ ok: false, reason: "changed" });
+    expect(
+      await recordReview(
+        deps(),
+        id,
+        { kind: "decline", instruction: "keyword", declined: false, was: true },
+        made,
+      ),
+    ).toEqual({ ok: false, reason: "changed" });
+    const after = (await jobView({ db, clock }, id))!.review!.decisions;
+    expect(after.answers).toEqual({ N1: "R5" });
+    expect(after.retyped?.value).toBe("jobs@example.com");
+    // Named as it stands, each is taken.
+    const changed = await recordReview(
+      deps(),
+      id,
+      { kind: "answers", blockId: "N1", requirementId: "", was: "R5" },
+      made,
+    );
+    expect(changed.ok).toBe(true);
+  });
+
   it("forgets a check on a flag the email no longer has, so the flag never comes back checked", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
     // The only claim says nothing: the email says nothing about the owner, which they check.
@@ -400,7 +503,8 @@ describe("recordReview", () => {
       instruction: "subject_format",
       declined: true,
     });
-    // Sent with the subject jobkit wrote in place of the post's: a factual edit (ledger spec).
+    // Sent with the subject jobkit wrote in place of the post's: changed, but no factual edit, as
+    // the default subject says nothing about the owner the post's format did not (ledger spec).
     expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
       ok: true,
     });
@@ -408,7 +512,7 @@ describe("recordReview", () => {
       "select changed, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
       [id],
     );
-    expect(rows).toEqual([{ changed: ["subject"], factual_edit: true }]);
+    expect(rows).toEqual([{ changed: ["subject"], factual_edit: false }]);
   });
 
   it("refuses to decline an instruction drafting did not apply", async () => {
@@ -460,6 +564,129 @@ describe("recordReview", () => {
         await recordReview(deps(), id, { kind: "confirm", blockId: "S1" });
       }),
     ).toEqual({ changed: [], factual_edit: false });
+  });
+
+  it("records each part as last handed off: a copy of the subject never stands for the body", async () => {
+    const outcome = async (steps: (id: string) => Promise<void>, text = POSTED) => {
+      await resetKitBed({ db, clock, storage });
+      const id = await readyKit(text, {
+        verdicts: [{ blockId: "S1", verdict: "supported", companyClaim: false, note: "" }],
+      });
+      await steps(id);
+      expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+        ok: true,
+      });
+      const { rows } = await db.query(
+        "select changed, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+        [id],
+      );
+      return rows[0];
+    };
+    const handedOff = async (id: string, parts?: ("subject" | "body")[]) => {
+      const shown = (await jobView({ db, clock }, id))!;
+      expect(
+        await recordHandoff({ db, clock }, id, {
+          kit: shown.kitKey!,
+          words: shown.wordsKey!,
+          ...(parts ? { parts } : {}),
+        }),
+      ).toEqual({ ok: true });
+    };
+    const words = "I have built production React applications for four years.";
+
+    // The edited body copied, the edit taken back, then the subject copied: the edited body went.
+    expect(
+      await outcome(async (id) => {
+        await recordReview(deps(), id, { kind: "edit", blockId: "S1", text: words });
+        await recordReview(deps(), id, { kind: "confirm", blockId: "S1" });
+        await handedOff(id, ["body"]);
+        await recordReview(deps(), id, { kind: "revert", blockId: "S1" });
+        await handedOff(id, ["subject"]);
+      }),
+    ).toEqual({ changed: ["sentence:S1"], factual_edit: true });
+    // The post's subject copied, its format then declined, then the body copied: the post's
+    // subject went. A declined format's default subject is no factual edit either way.
+    expect(
+      await outcome(async (id) => {
+        await handedOff(id, ["subject"]);
+        await recordReview(deps(), id, {
+          kind: "decline",
+          instruction: "subject_format",
+          declined: true,
+        });
+        await handedOff(id, ["body"]);
+      }),
+    ).toEqual({ changed: [], factual_edit: false });
+    expect(
+      await outcome(async (id) => {
+        await recordReview(deps(), id, {
+          kind: "decline",
+          instruction: "subject_format",
+          declined: true,
+        });
+        await handedOff(id);
+      }),
+    ).toEqual({ changed: ["subject"], factual_edit: false });
+  });
+
+  it("records the address last handed off, though another was typed since", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply on our site.", {
+      verdicts: [{ blockId: "S1", verdict: "supported", companyClaim: false, note: "" }],
+    });
+    await recordReview(deps(), id, { kind: "retype", value: "jobs@example.com" });
+    const shown = (await jobView({ db, clock }, id))!;
+    await recordHandoff({ db, clock }, id, { kit: shown.kitKey!, words: shown.wordsKey! });
+    await recordReview(deps(), id, { kind: "retype", value: "hr@example.org" });
+
+    expect(
+      await markSent({ db, clock }, id, null, { changedInGmail: false }, { to: "hr@example.org" }),
+    ).toMatchObject({ ok: true });
+
+    const { rows } = await db.query<{ address: string }>(
+      "select address from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows[0]?.address).toBe("jobs@example.com");
+  });
+
+  it("counts an edit of a sentence the separate check called a claim as factual, whatever the drafter called it", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      draft: {
+        ...KIT_DRAFT,
+        blocks: [
+          ...KIT_DRAFT.blocks,
+          {
+            id: "S2",
+            text: "Thank you for considering my application.",
+            paragraph_break: false,
+            class: "courtesy",
+            fact_ids: [],
+            fields: [],
+            gap: { requirement_id: "", known_line_id: "", template_id: "", related_fact_id: "" },
+          },
+        ],
+      },
+      verdicts: [
+        { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
+        { blockId: "S2", verdict: "supported", companyClaim: false, note: "" },
+      ],
+    });
+    await recordReview(deps(), id, {
+      kind: "edit",
+      blockId: "S2",
+      text: "Thank you for considering my application, and my ten years of Kubernetes.",
+    });
+    await recordReview(deps(), id, { kind: "confirm", blockId: "S2" });
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+
+    const { rows } = await db.query(
+      "select changed, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+      [id],
+    );
+    expect(rows[0]).toEqual({ changed: ["sentence:S2"], factual_edit: true });
   });
 
   it("refuses a handoff from a page that showed other words, or another kit", async () => {

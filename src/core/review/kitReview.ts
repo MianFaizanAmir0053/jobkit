@@ -1,3 +1,4 @@
+import { answersOf, type Kit } from "@/core/drafting/kit";
 import { isStrictAddress } from "@/core/extraction/contacts";
 import { chosenRole, currentExtraction } from "@/core/extraction/owner";
 import { applyAgain } from "@/core/ledger/duplicates";
@@ -120,6 +121,33 @@ function fits(action: ReviewAction, parts: KitParts, decisions: ReviewDecisions)
         !action.ticked ||
         parts.flags.some((flag) => isMeetable(flag) && flag.at === action.requirementId)
       );
+  }
+}
+
+/**
+ * Whether a decision that sets a value names the value the kit holds: the
+ * must-have a sentence of the owner's answers, the address or number they
+ * typed, whether an instruction is declined. One the page did not name (`was`)
+ * is taken as it comes. The words alone cannot tell a page drawn before such
+ * a choice was made on the other device, since none of these changes them.
+ */
+function showsAsItStands(action: ReviewAction, kit: Kit, decisions: ReviewDecisions): boolean {
+  switch (action.kind) {
+    case "answers": {
+      if (action.was === undefined) return true;
+      const block = kit.blocks.find((each) => each.id === action.blockId);
+      const line =
+        block?.owner && block.class === "gap" && block.gap ? block.gap.requirementId : "";
+      return action.was === line;
+    }
+    case "retype":
+      return action.was === undefined || action.was === (decisions.retyped?.value ?? "");
+    case "decline":
+      return (
+        action.was === undefined || action.was === decisions.declined.includes(action.instruction)
+      );
+    default:
+      return true;
   }
 }
 
@@ -251,6 +279,7 @@ export async function recordReview(
     const names = new Set(view.kitParts.flags.map(flagKey));
     const before = { ...kept, flagsChecked: kept.flagsChecked.filter((name) => names.has(name)) };
     if (!fits(action, view.kitParts, before)) return { ok: false, reason: "not-in-kit" };
+    if (!showsAsItStands(action, view.kit!, before)) return { ok: false, reason: "changed" };
     // Words written back as drafted are no edit.
     const drafted = view.draft!.kit.blocks.find(
       (block) => action.kind === "edit" && block.id === action.blockId,
@@ -261,7 +290,11 @@ export async function recordReview(
       cleanSentence(action.text) === cleanSentence(drafted.text)
         ? { kind: "revert", blockId: action.blockId }
         : action;
-    const decisions = decide(before, taken, checks);
+    // The must-haves an edited sentence answers as it stands: their checks weighed its old words.
+    const edited = view.kit!.blocks.find(
+      (block) => taken.kind === "edit" && block.id === taken.blockId,
+    );
+    const decisions = decide(before, taken, checks, edited ? answersOf(edited) : []);
     if (action.kind === "retype" && view.kitParts.contact) {
       const contact = contactForLedger(view.kitParts.contact.kind, action.value);
       const applicationId = await applicationIdOf(tx, jobId, view.role!.id);

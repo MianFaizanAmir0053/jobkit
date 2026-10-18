@@ -1,4 +1,5 @@
 import type { KitBlock } from "@/core/drafting/kit";
+import { NEVER_WEIGHED } from "@/core/drafting/verdict";
 import { chosenRole } from "@/core/extraction/owner";
 import { sameAddress } from "@/core/ledger/normalise";
 import { changeStatus, setAddress, undoStatus } from "@/core/ledger/statuses";
@@ -9,7 +10,7 @@ import { isUuid } from "@/lib/uuid";
 import { applicationIdOf, kitRouteOf, openForJob } from "./applications";
 import { keep, lockedKit, type ReviewOutcome } from "./kitReview";
 import { FACTUAL_CLASSES } from "./edits";
-import { NO_DECISIONS } from "./decisions";
+import { type Handoff, type HandoffPart, NO_DECISIONS } from "./decisions";
 import { type JobView, jobView, storedDecisions } from "./jobView";
 
 /**
@@ -105,56 +106,113 @@ type Marker = { by: "owner"; shown: SentFrom } | { by: "jobkit"; to: string };
  * format they declined), and each sentence they edited, deleted or added.
  * An edited or deleted claim or gap line is a factual edit, and so is a
  * sentence of their own; a sentence about the post is one when the
- * company's or the role's name changes with it.
+ * company's or the role's name changes with it. A sentence either the
+ * drafter or the separate check called a claim is one (drafting spec,
+ * "Stage judge"). The subject is no factual edit: the page has no subject
+ * editor, so it changes only to the default subject, which says nothing
+ * about the owner the post's format did not.
  */
 export function changesOf(
   view: JobView,
   to: string,
   typed: boolean,
 ): { changed: string[]; factual: boolean } {
+  const address = addressChanged(view, to, typed);
+  const { subject, body } = partsChanged(view);
+  return {
+    changed: [...(address ? ["address"] : []), ...subject, ...body.changed],
+    factual: address || body.factual,
+  };
+}
+
+/** Whether the owner typed an address in the post's place that differs from it; none while none is typed. */
+function addressChanged(view: JobView, to: string, typed: boolean): boolean {
+  return typed && to !== "" && !sameAddress(to, view.role!.route.address);
+}
+
+/** What the owner changed in the email's two parts: its subject, and its body's sentences. */
+function partsChanged(view: JobView): {
+  subject: string[];
+  body: { changed: string[]; factual: boolean };
+} {
   const role = view.role!;
   const { edits, added, deleted } = view.review!.decisions;
   const edited = view.draft!.kit.blocks.filter(
     (block) => Object.hasOwn(edits, block.id) || deleted.includes(block.id),
   );
-  // One typed in the post's place, and differing from it; none while none is typed.
-  const address = typed && to !== "" && !sameAddress(to, role.route.address);
   const [now, drafted] = [view.kit!, view.draft!.kit];
   const subject =
     now.kind === "email" && drafted.kind === "email" && now.subject !== drafted.subject;
-  const changed = [
-    ...(address ? ["address"] : []),
-    ...(subject ? ["subject"] : []),
-    ...edited.map((block) => `sentence:${block.id}`),
-    ...added.map((sentence) => `sentence:${sentence.id}`),
-  ];
   const names = [view.extraction!.record.company.name, role.title].filter((name) => name);
   // A sentence the owner made a gap line, as they marked it, is factual whatever drafting's was.
   const standing = new Map(view.kit!.blocks.map((block) => [block.id, block.class]));
+  // The sentences the separate check weighed as claims, whatever the drafter called them.
+  const judgedClaims = new Set(
+    (view.kitParts?.verdicts ?? [])
+      .filter((verdict) => verdict.verdict !== "not_a_claim" && verdict.note !== NEVER_WEIGHED)
+      .map((verdict) => verdict.blockId),
+  );
   const factualChange = (block: KitBlock) => {
-    if (standing.get(block.id) === "gap") return true;
+    if (standing.get(block.id) === "gap" || judgedClaims.has(block.id)) return true;
     if (block.class !== "post") return FACTUAL_CLASSES.has(block.class);
     const now = deleted.includes(block.id) ? "" : (edits[block.id] ?? block.text);
     return names.some((name) => block.text.includes(name) !== now.includes(name));
   };
   return {
-    changed,
-    factual: address || subject || added.length > 0 || edited.some(factualChange),
+    subject: subject ? ["subject"] : [],
+    body: {
+      changed: [
+        ...edited.map((block) => `sentence:${block.id}`),
+        ...added.map((sentence) => `sentence:${sentence.id}`),
+      ],
+      factual: added.length > 0 || edited.some(factualChange),
+    },
+  };
+}
+
+/** The parts of the email a handoff gives the owner: Open in Gmail both, a copy button one. */
+export type HandedOff = "subject" | "body";
+
+/**
+ * What Mark sent records from the owner's last handoffs (ledger spec,
+ * "Factual edits"): the address they last showed, and each part as last
+ * handed off, a part never handed off as it stands at the tap; the draft
+ * that went is the body's, then the subject's, then the one the page shows.
+ */
+function recordedFrom(
+  view: JobView,
+  handoff: Handoff,
+  shownTo: string,
+): { to: string; typed: boolean; changed: string[]; factual: boolean; draft: string | null } {
+  const [to, typed] =
+    handoff.to !== "" ? [handoff.to, handoff.typed] : [shownTo, Boolean(view.handoff?.typed)];
+  const address = addressChanged(view, to, typed);
+  const standing = partsChanged(view);
+  const subject = handoff.subject?.changed ?? standing.subject;
+  const body: Pick<HandoffPart, "changed" | "factual"> = handoff.body ?? standing.body;
+  return {
+    to,
+    typed,
+    changed: [...(address ? ["address"] : []), ...subject, ...body.changed],
+    factual: address || body.factual,
+    draft: handoff.body?.draft ?? handoff.subject?.draft ?? view.picked,
   };
 }
 
 /**
  * A handoff from the page (Open in Gmail, a copy button), posted right after
- * the click (review spec, "The outbound gate"): the words it handed off and
- * what they changed, kept with the kit, which Mark sent then records rather
- * than the email as it stands at its tap. Refused for a page that showed
- * another kit or other words, whose words the server cannot name, as for a
- * kit sent or skipped.
+ * the click (review spec, "The outbound gate"): the address the page showed
+ * and, for each part it handed off (Open in Gmail both, Copy subject the
+ * subject, Copy email the body), the draft, the words and what they
+ * changed, kept for the job whichever draft shows later, which Mark sent
+ * then records rather than the email as it stands at its tap. Refused for a
+ * page that showed another kit or other words, whose words the server
+ * cannot name, as for a kit sent or skipped, or one jobkit is sending.
  */
 export async function recordHandoff(
   deps: { db: Db; clock: Clock },
   jobId: string,
-  shown: { kit: string; words: string },
+  shown: { kit: string; words: string; parts?: readonly HandedOff[] },
 ): Promise<{ ok: true } | Extract<ReviewOutcome, { ok: false }>> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   return deps.db.tx(async (tx) => {
@@ -162,11 +220,25 @@ export async function recordHandoff(
     const locked = await lockedKit(at, jobId, shown);
     if (!("view" in locked)) return locked;
     const { view } = locked;
+    // While jobkit sends the email, no decision is kept, a handoff's included (decisions A20).
+    if (view.kitParts.sending) return { ok: false, reason: "sending" };
     const before = view.review?.decisions ?? NO_DECISIONS;
-    const handoff = {
+    const parts = shown.parts ?? ["subject", "body"];
+    const { subject, body } = partsChanged(view);
+    const part = (changed: string[], factual: boolean): HandoffPart => ({
+      draft: view.picked,
       words: shown.words,
-      ...changesOf(view, view.handoff?.to ?? "", Boolean(view.handoff?.typed)),
+      changed,
+      factual,
       at: deps.clock.now().toISOString(),
+    });
+    const handoff: Handoff = {
+      to: view.handoff?.to ?? "",
+      typed: Boolean(view.handoff?.typed),
+      subject: parts.includes("subject") ? part(subject, false) : (before.handoff?.subject ?? null),
+      body: parts.includes("body")
+        ? part(body.changed, body.factual)
+        : (before.handoff?.body ?? null),
     };
     const kept = await keep(at, jobId, view.role!.id, view.kitKey, { ...before, handoff });
     return kept.ok ? { ok: true as const } : kept;
@@ -198,6 +270,11 @@ async function marking(
       const view = await jobView(at, jobId);
       if (view?.state !== "kit_ready" || !view.review) return { ok: false, reason: "not-ready" };
       const shownTo = view.handoff?.to ?? "";
+      // The owner's tap records what they last handed off, which may be what went though they
+      // changed the email or picked another draft since; jobkit's send, what it sent.
+      const handoff = marker.by === "owner" ? view.review.decisions.handoff : null;
+      const recorded =
+        handoff && (handoff.subject || handoff.body) ? recordedFrom(view, handoff, shownTo) : null;
       if (marker.by === "owner") {
         const { shown } = marker;
         if (
@@ -210,12 +287,13 @@ async function marking(
         const held = view.review.gate.filter((reason) => reason.kind !== "sent");
         if (held.length > 0) return { ok: false, reason: "held" };
       }
-      // The address the email went to: the one jobkit sent it to, or the one the page showed.
-      const to = marker.by === "jobkit" ? marker.to : shownTo;
+      // The address the email went to: the one jobkit sent it to, the one last handed off, or the
+      // one the page shows.
+      const to = marker.by === "jobkit" ? marker.to : (recorded?.to ?? shownTo);
       const typed =
         marker.by === "jobkit"
           ? !sameAddress(to, role.route.address)
-          : Boolean(view.handoff?.typed);
+          : (recorded?.typed ?? Boolean(view.handoff?.typed));
       const applicationId =
         (await applicationIdOf(tx, jobId, role.id)) ?? (await openForJob(at, jobId, sessionId));
       if (!applicationId) return { ok: false, reason: "not-ready" };
@@ -231,10 +309,10 @@ async function marking(
       // jobkit's, inside its send's own transaction, keeps where its email went.
       if (!sent.ok) throw new SendRefused();
       if (sent.changed) {
-        // The owner's tap records what they changed in the words they last handed off, which may
-        // be what went though they changed the email since; jobkit's send, what it sent.
-        const handoff = marker.by === "owner" ? view.review.decisions.handoff : null;
-        const { changed, factual } = handoff ?? changesOf(view, to, typed);
+        const { changed, factual, draft } = recorded ?? {
+          ...changesOf(view, to, typed),
+          draft: view.picked,
+        };
         await tx.query(
           `insert into {{schema}}.draft_outcomes
            (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at,
@@ -254,7 +332,7 @@ async function marking(
             answer.changedInGmail || factual,
             deps.clock.now(),
             // Which draft went (decisions A22): Gemini's, or a template's, the owner's own words.
-            view.picked,
+            draft,
           ],
         );
       }

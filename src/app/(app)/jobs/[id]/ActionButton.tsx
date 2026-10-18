@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 
 import { gateChanged, holdOutbound } from "../polling";
 
-import { decided, wordsAfter } from "./wordsChain";
+import { decided, forget, wordsAfter } from "./wordsChain";
 
 /** A refused answer in plain words, by its HTTP status. */
 export function messageFor(status: number): string {
@@ -67,7 +67,11 @@ export function ActionButton({
         const answer = (await response.json().catch(() => null)) as { words?: unknown } | null;
         if (typeof answer?.words === "string") decided(gateOf, words, answer.words);
       }
-      if (!response.ok) setError(messageFor(response.status));
+      if (!response.ok) {
+        setError(messageFor(response.status));
+        // Refused: the page is drawn again with the words the server has, which the next one names.
+        if (gateOf) forget(gateOf);
+      }
       router.refresh();
     } catch {
       setError("The connection dropped. Try again.");

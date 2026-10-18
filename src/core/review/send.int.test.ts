@@ -21,7 +21,7 @@ import { approvalsKey, flagKey, NO_DECISIONS } from "./decisions";
 import { storedDecisions } from "./jobView";
 import { type JobView, jobView } from "./jobView";
 import { recordReview } from "./kitReview";
-import { markSent, takeBackSent } from "./markSent";
+import { markSent, recordHandoff, takeBackSent } from "./markSent";
 import {
   BEGIN_WITHIN_MS,
   deliverSend,
@@ -369,12 +369,16 @@ describe("scheduleSend", () => {
     expect(await scheduleSend({ db, clock }, id, pressed(shown))).toMatchObject({ ok: true });
   });
 
-  it("takes no decision while jobkit sends the email", async () => {
+  it("takes no decision while jobkit sends the email, a handoff's included", async () => {
     const id = await readyKit(POST);
     await press(id);
 
     expect(
       await recordReview({ db, clock, dns: offlineDns() }, id, { kind: "uncheck", blockId: "S1" }),
+    ).toEqual({ ok: false, reason: "sending" });
+    const shown = await view(id);
+    expect(
+      await recordHandoff({ db, clock }, id, { kit: shown.kitKey!, words: shown.wordsKey! }),
     ).toEqual({ ok: false, reason: "sending" });
   });
 });

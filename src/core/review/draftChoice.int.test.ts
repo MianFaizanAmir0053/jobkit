@@ -21,7 +21,7 @@ import { approvalsKey, flagKey } from "./decisions";
 import { backToDrafts, draftWithGemini, pickDraft } from "./draftChoice";
 import { type JobView, jobView, listJobViews } from "./jobView";
 import { recordReview } from "./kitReview";
-import { markSent } from "./markSent";
+import { markSent, recordHandoff } from "./markSent";
 import { scheduleSend } from "./send";
 import { KIT_DRAFT, type KitOptions, readyKit as kitFor, resetKitBed, runKit } from "./testKit";
 
@@ -147,6 +147,35 @@ describe("a kit the templates draft", () => {
 });
 
 describe("pickDraft", () => {
+  it("keeps the last handoff through a pick: Mark sent records the draft that went, and its changes", async () => {
+    const id = await readyKit(POST, { templates: true, dns: mail });
+    const first = await view(id);
+    const decide = { db, clock, dns: mail };
+    await recordReview(decide, id, {
+      kind: "add",
+      after: "S2",
+      text: "I also run Docker deployments for my own projects.",
+    });
+    await recordReview(decide, id, { kind: "confirm", blockId: "N1" });
+    const edited = await view(id);
+    expect(
+      await recordHandoff({ db, clock }, id, { kit: edited.kitKey!, words: edited.wordsKey! }),
+    ).toEqual({ ok: true });
+
+    // The other draft shown, untouched, and marked sent: the first, with its sentence, went.
+    await pickDraft({ db, clock }, id, "T-ai-features", { kit: first.kitKey! });
+    expect((await view(id)).picked).toBe("T-ai-features");
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+
+    const { rows } = await db.query(
+      "select changed, factual_edit, draft from {{schema}}.draft_outcomes where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ changed: ["sentence:N1"], factual_edit: true, draft: "T-full-stack" }]);
+  });
+
   it("makes the draft picked the kit: each keeps its own sentence and flag decisions, the post's go with the pick", async () => {
     const id = await readyKit(NO_ADDRESS, { templates: true, record: askingForADegree });
     const first = await view(id);

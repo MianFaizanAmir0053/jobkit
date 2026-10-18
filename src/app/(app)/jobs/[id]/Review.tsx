@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { gateChanged, holdOutbound } from "../polling";
 
 import { messageFor } from "./ActionButton";
-import { decided, wordsAfter } from "./wordsChain";
+import { decided, forget, wordsAfter } from "./wordsChain";
 
 /**
  * Posts one of the owner's decisions on the kit the page shows; the page is
@@ -36,6 +36,9 @@ async function decide(
     if (response.ok) {
       const answer = (await response.json().catch(() => null)) as { words?: unknown } | null;
       if (typeof answer?.words === "string") decided(jobId, named, answer.words);
+    } else {
+      // Refused: the page is drawn again with the words the server has, which the next one names.
+      forget(jobId);
     }
     return { error: response.ok ? null : messageFor(response.status), answered: true };
   } catch {
@@ -47,12 +50,26 @@ async function decide(
 }
 
 /**
+ * Forgets what this page's decisions left once it is drawn with new words
+ * (wordsChain): what it shows is then the server's, and words that come
+ * back later, as after an Undo on the other device, are its own again.
+ */
+export function WordsDrawn({ jobId, words }: { jobId: string; words: string }) {
+  useEffect(() => {
+    forget(jobId);
+  }, [jobId, words]);
+  return null;
+}
+
+/**
  * A sentence of the email with Edit beside it (review spec, "Job page"): Edit
  * opens a box with the sentence as it stands, which the owner puts in their
  * own words; Save keeps them, and the email then waits until the owner
  * confirms them. The box stays, its buttons held, until the page shows the
  * words saved; a refusal keeps it open with what the owner typed, so neither
- * a dropped connection nor a page drawn on another kit loses it.
+ * a dropped connection nor a page drawn again, on another kit included,
+ * loses it while the sentence is still in the email. One deleted elsewhere
+ * takes its box with it.
  */
 export function SentenceEdit({
   jobId,
@@ -63,6 +80,7 @@ export function SentenceEdit({
   maxLength,
   prompt,
   added = false,
+  last = false,
 }: {
   jobId: string;
   kit: string;
@@ -80,6 +98,8 @@ export function SentenceEdit({
   prompt?: string;
   /** Whether it is a sentence the owner added, which a deletion takes for good. */
   added?: boolean;
+  /** Whether it is the email's last sentence, which the email keeps: no Delete. */
+  last?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -97,6 +117,8 @@ export function SentenceEdit({
   const changedElsewhere = open && !busy && !refreshing && openedOn !== text;
   const held = busy || refreshing || changedElsewhere;
   const editButton = useRef<HTMLButtonElement>(null);
+  // What the box's buttons name, so two open boxes are told apart.
+  const named = prompt ?? openedOn;
 
   // While the box is open, the handoffs wait: the page shows words not saved yet.
   useEffect(() => {
@@ -143,7 +165,11 @@ export function SentenceEdit({
         {prompt === undefined ? (
           <p className="min-w-0 flex-1 py-2.5 whitespace-pre-wrap">{text}</p>
         ) : (
-          <p className="min-w-0 flex-1 py-2.5 font-medium italic">{prompt}</p>
+          // The placeholder as the email holds it, and what to write in its place.
+          <div className="min-w-0 flex-1 py-2.5">
+            <p className="whitespace-pre-wrap">{text}</p>
+            <p className="font-medium italic">{prompt}</p>
+          </div>
         )}
         <Button
           ref={editButton}
@@ -179,12 +205,18 @@ export function SentenceEdit({
       </label>
       {changedElsewhere && (
         <p role="status" className="font-medium">
-          This sentence changed elsewhere since you opened it, as on your other device: it now reads
-          &ldquo;{text}&rdquo;. Copy your words if you need them, then Cancel and edit it again.
+          This sentence changed since you opened it, as when another draft is shown or on your other
+          device: it now reads &ldquo;{text}&rdquo;. Copy your words if you need them, then Cancel
+          and edit it again.
         </p>
       )}
       <div className="flex flex-wrap gap-2">
-        <Button type="submit" className="min-h-11" disabled={held || typed.trim() === ""}>
+        <Button
+          type="submit"
+          className="min-h-11"
+          disabled={held || typed.trim() === ""}
+          aria-label={`Save your words for: ${named}`}
+        >
           {busy || refreshing ? "Saving…" : "Save"}
         </Button>
         <Button
@@ -192,24 +224,28 @@ export function SentenceEdit({
           variant="outline"
           className="min-h-11"
           disabled={busy || refreshing}
+          aria-label={`Cancel editing: ${named}`}
           onClick={close}
         >
           Cancel
         </Button>
-        <Button
-          type="button"
-          variant="outline"
-          className="min-h-11 text-destructive"
-          disabled={held}
-          onClick={() => {
-            // A sentence the owner added is gone for good; a drafted one comes back with Undo delete.
-            if (added && !window.confirm("Delete your sentence? It cannot be brought back."))
-              return;
-            void send({ kind: "delete", blockId });
-          }}
-        >
-          Delete this sentence
-        </Button>
+        {!last && (
+          <Button
+            type="button"
+            variant="outline"
+            className="min-h-11 text-destructive"
+            disabled={held}
+            aria-label={`Delete this sentence: ${named}`}
+            onClick={() => {
+              // A sentence the owner added is gone for good; a drafted one comes back with Undo delete.
+              if (added && !window.confirm("Delete your sentence? It cannot be brought back."))
+                return;
+              void send({ kind: "delete", blockId });
+            }}
+          >
+            Delete this sentence
+          </Button>
+        )}
       </div>
       {error && (
         <p role="alert" className="text-destructive">
@@ -261,10 +297,12 @@ export function AnswersPick({
 
   async function save() {
     setBusy(true);
+    // The choice the page showed: one made since, on the other device, is not replaced unseen.
     const { error, answered } = await decide(jobId, kit, words, {
       kind: "answers",
       blockId,
       requirementId: picked,
+      was: value,
     });
     setBusy(false);
     setError(error);
@@ -482,7 +520,12 @@ export function RetypeField({
     event.preventDefault();
     const typed = String(new FormData(event.currentTarget).get("contact") ?? "");
     setBusy(true);
-    const { error, answered } = await decide(jobId, kit, words, { kind: "retype", value: typed });
+    // What the page showed typed: one typed since, on the other device, is not replaced unseen.
+    const { error, answered } = await decide(jobId, kit, words, {
+      kind: "retype",
+      value: typed,
+      was: value ?? "",
+    });
     setError(error);
     setBusy(false);
     if (answered) router.refresh();

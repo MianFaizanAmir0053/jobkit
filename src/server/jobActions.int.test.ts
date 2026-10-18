@@ -919,12 +919,13 @@ describe("the job page's routes", () => {
     const handOff = (body: object, by?: string) =>
       handoff(post(`/api/jobs/${ready}/handoff`, JSON.stringify(body), by), deps(), ready);
 
-    expect((await handOff({ kit, words }, cookie)).status).toBe(200);
+    expect((await handOff({ kit, words, parts: ["body"] }, cookie)).status).toBe(200);
+    // The body alone, as Copy email gives it, with the draft its words were.
     expect((await jobView({ db, clock }, ready))!.review!.decisions.handoff).toMatchObject({
-      words,
-      changed: [],
-      factual: false,
+      subject: null,
+      body: { draft: "gemini", words, changed: [], factual: false },
     });
+    expect((await handOff({ kit, words, parts: ["cc"] }, cookie)).status).toBe(400);
     expect((await handOff({ kit, words: "00000000" }, cookie)).status).toBe(409);
     expect((await handOff({ kit }, cookie)).status).toBe(400);
     expect((await handOff({ kit, words })).status).toBe(401);

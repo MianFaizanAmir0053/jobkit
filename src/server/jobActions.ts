@@ -480,13 +480,22 @@ export async function submitted(
 /** The Mark sent the page showed, by its time. */
 const bouncedBody = z.object({ sentAt: z.iso.datetime() });
 
-const handoffBody = z.object({ kit: kitShown, words: wordsShown });
+/** The parts a handoff gave: Open in Gmail both, Copy subject the subject, Copy email the body. */
+const handoffBody = z.object({
+  kit: kitShown,
+  words: wordsShown,
+  parts: z
+    .array(z.enum(["subject", "body"]))
+    .min(1)
+    .max(2)
+    .optional(),
+});
 
 /**
  * POST /api/jobs/<id>/handoff: the words a handoff from the page (Open in
- * Gmail, a copy button) handed off, posted right after the click, which
- * Mark sent then records; refused for a page that showed another kit or
- * other words (review spec, "The outbound gate").
+ * Gmail, a copy button) handed off, and which parts, posted right after the
+ * click, which Mark sent then records; refused for a page that showed
+ * another kit or other words (review spec, "The outbound gate").
  */
 export async function handoff(
   request: NextRequest,

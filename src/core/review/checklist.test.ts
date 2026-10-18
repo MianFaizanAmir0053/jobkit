@@ -114,6 +114,28 @@ describe("checklistOf", () => {
     ]);
   });
 
+  it("offers to decline a word limit only on the line that set it, under the email's own limit", () => {
+    const { post, role } = postWith([
+      line("word_limit", "Under 300 words.", "300"),
+      line("word_limit", "Max 150 words.", "150"),
+      line("word_limit", "Keep it under 200 words.", "200"),
+    ]);
+
+    // The email is held to all three, but only 150 tightened its limit: declining another does nothing.
+    expect(checklistOf(post, role, draft({ wordLimit: 150 }))).toEqual([
+      { text: "Under 300 words.", status: "applied" },
+      { text: "Max 150 words.", status: "applied", decline: "word_limit" },
+      { text: "Keep it under 200 words.", status: "applied" },
+    ]);
+    // A limit past the email's own 180 tightens nothing, so there is nothing to decline.
+    const { post: loose, role: looseRole } = postWith([
+      line("word_limit", "Keep it under 200 words.", "200"),
+    ]);
+    expect(checklistOf(loose, looseRole, draft({ wordLimit: 180 }))).toEqual([
+      { text: "Keep it under 200 words.", status: "applied" },
+    ]);
+  });
+
   it("says drafting left out a keyword that repeats a line aimed at AI", () => {
     const { post, role } = postWith([line("include_keyword", "Mention 'banana'.", "banana")]);
 

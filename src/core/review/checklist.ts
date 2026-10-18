@@ -1,4 +1,4 @@
-import { acceptedInstructions, oneLine, wordLimitOf } from "@/core/drafting/build";
+import { acceptedInstructions, BODY_WORD_LIMIT, oneLine, wordLimitOf } from "@/core/drafting/build";
 import type { DraftOutput } from "@/core/drafting/draftStage";
 import { bodyWords } from "@/core/drafting/kit";
 import { hasWord, isCheckable, type KitFlag } from "@/core/drafting/validate";
@@ -97,7 +97,16 @@ export function checklistOf(
           ? limit !== null && words > limit
           : flagged !== undefined && raised.has(flagged);
       if (!applied) return { text: line.text, status: "not_applied" };
-      const decline = DECLINES[line.kind]!;
+      // A word limit is declined on the line that set the email's limit, under its own 180: any
+      // other the email is held to tightens nothing, so declining it would do nothing.
+      const decline =
+        line.kind !== "word_limit" ||
+        (limit === drafted.wordLimit && drafted.wordLimit < BODY_WORD_LIMIT)
+          ? DECLINES[line.kind]!
+          : undefined;
+      if (decline === undefined) {
+        return { text: line.text, status: missed ? "applied_missed" : "applied" };
+      }
       if (declined.includes(decline)) return { text: line.text, status: "declined", decline };
       return { text: line.text, status: missed ? "applied_missed" : "applied", decline };
     });

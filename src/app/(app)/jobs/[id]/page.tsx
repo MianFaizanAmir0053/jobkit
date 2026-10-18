@@ -60,7 +60,15 @@ import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
 import { CROP_KEY } from "./imageUrls";
 import { PostImage } from "./PostImage";
-import { AddSentence, AnswersPick, AttachTick, FitTick, RetypeField, SentenceEdit } from "./Review";
+import {
+  AddSentence,
+  AnswersPick,
+  AttachTick,
+  FitTick,
+  RetypeField,
+  SentenceEdit,
+  WordsDrawn,
+} from "./Review";
 
 export const metadata: Metadata = { title: "Job · jobkit" };
 
@@ -215,13 +223,18 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
   );
 }
 
+/** The states whose page offers no keep: screenshots not all arrived, and a manual run. */
+const UNKEPT_STATES: ReadonlySet<string> = new Set(["uploading", "upload_failed", "manual_run"]);
+
 /**
  * "Keep for evaluation" (evals spec, "Case sources"): the job's screenshots
  * stay until `npm run eval:pull` copies them into a case. Only for a job
- * with screenshots, where the keep flag lives.
+ * with screenshots, where the keep flag lives, once they have all arrived:
+ * "Upload again" makes them anew, unkept. Not on a manual run, whose page
+ * shows nothing else (ledger spec).
  */
 function KeepPanel({ view }: { view: JobView }) {
-  if (view.keptForEval === null) return null;
+  if (view.keptForEval === null || UNKEPT_STATES.has(view.state)) return null;
   return (
     <Panel title="For evaluation">
       <p className="text-sm text-muted-foreground">
@@ -723,6 +736,8 @@ function KitPanel({
   const sentences = locked
     ? kit.blocks.map((block) => ({ block, deleted: false }))
     : listedSentences(draft.kit, decisions);
+  // The email keeps at least one sentence: its last offers no Delete.
+  const last = sentences.filter((sentence) => !sentence.deleted).length <= 1;
   // The send the page shows beside this kit, by the rule the send's route answers with too.
   const send = view.send && showsFor(view.send, kitKey) ? view.send : null;
   // A send that may have gone, whatever came after it: the page warns until the kit is sent.
@@ -819,6 +834,7 @@ function KitPanel({
         <DraftPicker view={view} locked={locked} />
       )}
 
+      <WordsDrawn jobId={view.id} words={words} />
       <Panel title={kit.kind === "email" ? "The email" : "The message"}>
         <p className="text-sm text-muted-foreground">{sourceWords(view)}</p>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
@@ -1049,7 +1065,9 @@ function KitPanel({
                     <p className="whitespace-pre-wrap">{block.text}</p>
                   ) : (
                     <SentenceEdit
-                      key={`${kitKey}:${block.id}`}
+                      // By the sentence alone: a box open as the page is drawn on another kit keeps
+                      // what the owner typed, and says so when the sentence's words changed.
+                      key={block.id}
                       jobId={view.id}
                       kit={kitKey}
                       words={words}
@@ -1058,6 +1076,7 @@ function KitPanel({
                       maxLength={MAX_SENTENCE}
                       prompt={yourLine(block)}
                       added={added}
+                      last={last}
                     />
                   )}
                   {edited && (
@@ -1091,15 +1110,17 @@ function KitPanel({
                         />
                       )}
                       {added ? (
-                        <ActionButton
-                          url={reviewUrl}
-                          gateOf={view.id}
-                          label="Delete"
-                          ariaLabel={`Delete your sentence: ${block.text}`}
-                          confirmText="Delete your sentence? It cannot be brought back."
-                          variant="outline"
-                          body={decision({ kind: "delete", blockId: block.id })}
-                        />
+                        !last && (
+                          <ActionButton
+                            url={reviewUrl}
+                            gateOf={view.id}
+                            label="Delete"
+                            ariaLabel={`Delete your sentence: ${block.text}`}
+                            confirmText="Delete your sentence? It cannot be brought back."
+                            variant="outline"
+                            body={decision({ kind: "delete", blockId: block.id })}
+                          />
+                        )
                       ) : (
                         <ActionButton
                           url={reviewUrl}
@@ -1133,7 +1154,8 @@ function KitPanel({
           {!locked && (
             <div className="mt-3">
               <AddSentence
-                key={kitKey}
+                // One box, whatever kit the page is drawn on, so what the owner typed stays.
+                key="add"
                 jobId={view.id}
                 kit={kitKey}
                 words={words}
@@ -1339,6 +1361,8 @@ function KitPanel({
                           kind: "decline",
                           instruction: item.decline,
                           declined: item.status !== "declined",
+                          // As the page showed it: one changed since, elsewhere, is not undone unseen.
+                          was: item.status === "declined",
                         })}
                       />
                     </div>
