@@ -8,7 +8,7 @@ import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { offlineDns } from "@/adapters/dns";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
-import type { DraftAnswer } from "@/core/drafting/kit";
+import { asEmailKit, type DraftAnswer } from "@/core/drafting/kit";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import type { Dns } from "@/core/ports";
@@ -374,7 +374,9 @@ describe("recordReview", () => {
     expect(drafted.kitParts!.flags.map((flag) => flag.kind)).toEqual(
       expect.arrayContaining(["over_limit", "keyword_missing"]),
     );
-    expect(drafted.kit!.subject).toBe("Application - Senior Full-Stack Engineer - Sam Rivera");
+    expect(asEmailKit(drafted.kit!).subject).toBe(
+      "Application - Senior Full-Stack Engineer - Sam Rivera",
+    );
 
     for (const instruction of ["word_limit", "keyword", "subject_format"] as const) {
       await recordReview(deps(), id, { kind: "decline", instruction, declined: true });
@@ -383,14 +385,16 @@ describe("recordReview", () => {
     const declined = await shown();
     expect(declined.kitParts!.flags.map((flag) => flag.kind)).not.toContain("over_limit");
     expect(declined.kitParts!.flags.map((flag) => flag.kind)).not.toContain("keyword_missing");
-    expect(declined.kit!.subject).toBe("Application: Senior Full-Stack Engineer – Sam Rivera");
+    expect(asEmailKit(declined.kit!).subject).toBe(
+      "Application: Senior Full-Stack Engineer – Sam Rivera",
+    );
     // Taken back: the post's format again.
     await recordReview(deps(), id, {
       kind: "decline",
       instruction: "subject_format",
       declined: false,
     });
-    expect((await shown()).kit!.subject).toBe(drafted.kit!.subject);
+    expect(asEmailKit((await shown()).kit!).subject).toBe(asEmailKit(drafted.kit!).subject);
     await recordReview(deps(), id, {
       kind: "decline",
       instruction: "subject_format",

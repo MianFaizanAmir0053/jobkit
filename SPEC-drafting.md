@@ -33,7 +33,7 @@ Kits:
 
 - **Email kit:** subject, greeting, body blocks, closing. The Gmail app adds the owner's Gmail signature, so jobkit adds none (amendment A14).
 - **Form kit:** cover-note blocks, and one answer per screening question, each marked `fixed` (filled by code) or `drafted`.
-- **Message kit:** message blocks, at most 600 characters including the sign-off, which code appends from the profile.
+- **Message kit:** message blocks, at most 600 characters including the sign-off, which code appends from the profile. A message has no subject, and a post's word limit does not apply to it: the review checklist shows both not applied, for the owner to see to (Claude's choice, 2026-10-19).
 
 References live beside the text, never inside it.
 

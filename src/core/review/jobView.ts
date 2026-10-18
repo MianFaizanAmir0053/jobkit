@@ -5,7 +5,7 @@ import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { bodyWords } from "@/core/drafting/kit";
 import type { TemplatesOutput } from "@/core/drafting/templatesStage";
 import type { KitFlag } from "@/core/drafting/validate";
-import type { EmailKit } from "@/core/drafting/kit";
+import { answersOf, type Kit } from "@/core/drafting/kit";
 import { mustHaveCoverage, templateVerdicts, visibleRole } from "@/core/drafting/templateDrafts";
 import { isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
 import { type Agreement, agreement, type ContactKind } from "@/core/extraction/addressRead";
@@ -119,11 +119,11 @@ export interface JobView {
   /** The draft the kit is: the one the owner picked, else the one jobkit recommends. */
   draft: DraftOutput | null;
   /**
-   * The email as it stands: the draft's, with the owner's words for each
-   * sentence they edited; what every handoff sends. Null with no draft.
+   * The email or message as it stands: the draft's, with the owner's words
+   * for each sentence they edited; what every handoff sends. Null with no draft.
    */
-  kit: EmailKit | null;
-  /** The email's words as a short key, which the gate's answer names; null with no draft. */
+  kit: Kit | null;
+  /** The kit's words as a short key, which the gate's answer names; null with no draft. */
   wordsKey: string | null;
   /** Whether the job is kept for evaluation; null for one with no image to keep. */
   keptForEval: boolean | null;
@@ -390,9 +390,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
           draft: { ...chosen.draft, flags },
           added: owners.added.map((sentence) => sentence.id),
           // The must-haves a line in the owner's words answers in the email as it stands.
-          ownLines: (kit?.blocks ?? []).flatMap((block) =>
-            block.owner && block.class === "gap" && block.gap ? [block.gap.requirementId] : [],
-          ),
+          ownLines: (kit?.blocks ?? []).flatMap((block) => (block.owner ? answersOf(block) : [])),
           verdicts: chosen.verdicts,
           role,
           extraction,

@@ -9,7 +9,7 @@ import { offlineDns } from "@/adapters/dns";
 import { fakeGmail, type FakeGmail } from "@/adapters/fakeGmail";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
-import { emailBody } from "@/core/drafting/kit";
+import { asEmailKit, emailBody } from "@/core/drafting/kit";
 import { setAddress } from "@/core/ledger/statuses";
 import type { Db, GmailSender, QueryResult, Row } from "@/core/ports";
 import { cryptoRandom } from "@/adapters/random";
@@ -484,7 +484,7 @@ describe("deliverSend", () => {
 
   it("sends the email with the signature and the CV, and marks it sent with Gmail's IDs", async () => {
     const id = await readyKit(POST);
-    const kit = (await view(id)).draft!.kit;
+    const kit = asEmailKit((await view(id)).draft!.kit);
     const send = await press(id);
     clock.advance(UNDO_MS);
 

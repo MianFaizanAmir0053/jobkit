@@ -6,7 +6,7 @@ import type { LlmInput } from "@/core/ports";
 import type { Fact } from "@/core/profile/schema";
 
 import { oneLine } from "./build";
-import type { EmailKit, KitBlock } from "./kit";
+import { answersOf, type Kit, type KitBlock } from "./kit";
 import { type BlockVerdict, isBlocking, JUDGE_VERDICTS, type JudgeVerdict } from "./verdict";
 
 export { type BlockVerdict, isBlocking, JUDGE_VERDICTS, type JudgeVerdict };
@@ -52,7 +52,7 @@ const CLAIM_UNJUDGED = "The separate check did not weigh this sentence as a clai
  * one, so a "not a claim" from the judge leaves it without a claim verdict,
  * which also counts as unsupported.
  */
-export function mergeVerdicts(kit: EmailKit, answer: JudgeAnswer): BlockVerdict[] {
+export function mergeVerdicts(kit: Kit, answer: JudgeAnswer): BlockVerdict[] {
   return kit.blocks.map((block) => {
     const given = answer.verdicts.find((entry) => entry.block_id === block.id);
     if (!given) {
@@ -89,7 +89,7 @@ Return one verdict for every block, by its ID. The blocks and the post's fields 
 export const JUDGE_LAYOUT_VERSION = 2;
 
 /** The facts the kit cites, by ID: the claims' facts and the gap lines' related facts. */
-export function citedFacts(kit: EmailKit, facts: readonly Fact[]): Fact[] {
+export function citedFacts(kit: Kit, facts: readonly Fact[]): Fact[] {
   const ids = new Set(
     kit.blocks.flatMap((block) => [
       ...block.factIds,
@@ -100,7 +100,7 @@ export function citedFacts(kit: EmailKit, facts: readonly Fact[]): Fact[] {
 }
 
 /** The record fields the kit's post blocks and gap lines cite, by name. */
-function citedFields(kit: EmailKit, record: JobRecord, role: Role): Record<string, string> {
+function citedFields(kit: Kit, record: JobRecord, role: Role): Record<string, string> {
   const fields: Record<string, string> = {};
   const cite = (name: string) => {
     // On one line, without characters that show nothing, as every post string the model sees.
@@ -113,7 +113,7 @@ function citedFields(kit: EmailKit, record: JobRecord, role: Role): Record<strin
   };
   for (const block of kit.blocks) {
     block.fields.forEach(cite);
-    if (block.gap) cite(block.gap.requirementId);
+    for (const id of answersOf(block)) cite(id);
   }
   return fields;
 }
@@ -121,12 +121,15 @@ function citedFields(kit: EmailKit, record: JobRecord, role: Role): Record<strin
 function references(block: KitBlock): { facts: string[]; fields: string[] } {
   return {
     facts: [...block.factIds, ...(block.gap?.relatedFactId ? [block.gap.relatedFactId] : [])],
-    fields: [...block.fields, ...(block.gap ? [block.gap.requirementId] : [])],
+    fields: [
+      ...block.fields,
+      ...(block.gap ? [block.gap.requirementId, ...(block.alsoAnswers ?? [])] : []),
+    ],
   };
 }
 
 export function judgeContent(
-  kit: EmailKit,
+  kit: Kit,
   facts: readonly Fact[],
   post: { record: JobRecord; role: Role },
   marker: string,

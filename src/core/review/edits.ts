@@ -1,6 +1,6 @@
 import { acceptedInstructions, BODY_WORD_LIMIT, subjectFor } from "@/core/drafting/build";
 import type { DraftOutput } from "@/core/drafting/draftStage";
-import type { BlockClass, EmailKit, KitBlock } from "@/core/drafting/kit";
+import type { BlockClass, Kit, KitBlock } from "@/core/drafting/kit";
 import { templateFlags } from "@/core/drafting/templateDrafts";
 import { type KitFlag, validateKit } from "@/core/drafting/validate";
 import type { JobRecord, Role } from "@/core/extraction/record";
@@ -22,14 +22,14 @@ type Owners = Pick<ReviewDecisions, "edits" | "added" | "deleted"> &
   Partial<Pick<ReviewDecisions, "answers">>;
 
 /**
- * The email as it stands: the draft's, with the owner's words for each
- * sentence they edited, the sentences they added where they put them, and
- * none they deleted; the draft's own while they changed nothing. Their
- * words are marked as theirs (`owner`), which validate checks for what
- * they say, never against facts; one they marked as answering a must-have
- * is its gap line.
+ * The email or message as it stands: the draft's, with the owner's words
+ * for each sentence they edited, the sentences they added where they put
+ * them, and none they deleted; the draft's own while they changed nothing.
+ * Their words are marked as theirs (`owner`), which validate checks for
+ * what they say, never against facts; one they marked as answering a
+ * must-have is its gap line.
  */
-export function editedKit(kit: EmailKit, decisions: Owners): EmailKit {
+export function editedKit<K extends Kit>(kit: K, decisions: Owners): K {
   const { edits, added, deleted } = decisions;
   if (Object.keys(edits).length === 0 && added.length === 0 && deleted.length === 0) return kit;
   // A deleted sentence goes; the paragraph it ended ends with the sentence before it.
@@ -51,7 +51,7 @@ export function editedKit(kit: EmailKit, decisions: Owners): EmailKit {
  * they can take the deletion back.
  */
 export function listedSentences(
-  kit: EmailKit,
+  kit: Kit,
   decisions: Owners,
 ): { block: KitBlock; deleted: boolean }[] {
   return withOwnersWords(kit, decisions).map((block) => ({
@@ -65,16 +65,19 @@ export function listedSentences(
  * theirs where they added them; each of theirs they marked as answering a
  * must-have its gap line.
  */
-function withOwnersWords(kit: EmailKit, decisions: Owners): KitBlock[] {
+function withOwnersWords(kit: Kit, decisions: Owners): KitBlock[] {
   const answers = decisions.answers ?? {};
   return placed(kit, decisions).map((block): KitBlock => {
     if (!block.owner || !Object.hasOwn(answers, block.id)) return block;
     const requirementId = answers[block.id]!;
+    // The line answers what they marked, and only that: a merged line's other must-haves go.
+    const words = { ...block };
+    delete words.alsoAnswers;
     // "No requirement": a sentence of theirs, whatever drafting's was.
     if (requirementId === "")
-      return { ...block, class: "claim", factIds: [], fields: [], gap: null };
+      return { ...words, class: "claim", factIds: [], fields: [], gap: null };
     return {
-      ...block,
+      ...words,
       class: "gap",
       factIds: [],
       fields: [],
@@ -84,7 +87,7 @@ function withOwnersWords(kit: EmailKit, decisions: Owners): KitBlock[] {
 }
 
 /** The draft's sentences with the owner's words for each they edited, and theirs where they added them. */
-function placed(kit: EmailKit, { edits, added }: Owners): KitBlock[] {
+function placed(kit: Kit, { edits, added }: Owners): KitBlock[] {
   const blocks: KitBlock[] = kit.blocks.map((block) =>
     Object.hasOwn(edits, block.id) ? { ...block, text: edits[block.id]!, owner: true } : block,
   );
@@ -110,19 +113,19 @@ function placed(kit: EmailKit, { edits, added }: Owners): KitBlock[] {
 }
 
 /**
- * The email's words as a short key: the gate's answer names it, so a page
+ * The kit's words as a short key: the gate's answer names it, so a page
  * showing other words than the kit now has, as one drawn before an edit in
- * another tab, hands none of them off.
+ * another tab, hands none of them off. An email's key is as it always was.
  */
-export function wordsKey(kit: EmailKit): string {
+export function wordsKey(kit: Kit): string {
   // As JSON, so no sentence's own text passes for a paragraph's end or another sentence.
+  const sentences = kit.blocks.map((block) => [block.paragraphBreak, block.text]);
   return shortHash(
-    JSON.stringify([
-      kit.subject,
-      kit.greeting,
-      kit.blocks.map((block) => [block.paragraphBreak, block.text]),
-      kit.closing,
-    ]),
+    JSON.stringify(
+      kit.kind === "email"
+        ? [kit.subject, kit.greeting, sentences, kit.closing]
+        : ["message", sentences, kit.signOff],
+    ),
   );
 }
 
@@ -163,7 +166,7 @@ export async function asItStands(
     template: boolean;
     decisions: Pick<ReviewDecisions, "edits" | "added" | "deleted" | "answers" | "declined">;
   },
-): Promise<{ kit: EmailKit; flags: KitFlag[] }> {
+): Promise<{ kit: Kit; flags: KitFlag[] }> {
   const { draft, record, role } = input;
   const applied = appliedInstructions(draft, role);
   const declined = new Set(input.decisions.declined.filter((each) => applied.includes(each)));
@@ -171,9 +174,10 @@ export async function asItStands(
   if (edited === draft.kit && declined.size === 0) return { kit: draft.kit, flags: draft.flags };
   const profile = await getProfileVersion(db, draft.profileVersion);
   if (!profile) return { kit: edited, flags: draft.flags };
-  const kit = declined.has("subject_format")
-    ? { ...edited, subject: subjectFor(null, profile.owner.name, role.title) }
-    : edited;
+  const kit =
+    edited.kind === "email" && declined.has("subject_format")
+      ? { ...edited, subject: subjectFor(null, profile.owner.name, role.title) }
+      : edited;
   const found = validateKit(kit, {
     record,
     role,

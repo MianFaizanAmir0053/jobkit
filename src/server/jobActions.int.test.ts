@@ -137,14 +137,18 @@ async function signedIn(): Promise<string> {
 
 /**
  * The owner clears what holds a kit through the review route, as on the
- * page: the address no second read confirmed, typed as the post gives it,
- * and each flag and sentence checked.
+ * page: the address or number no second read confirmed, typed as the post
+ * gives it, and each flag and sentence checked.
  */
-async function clearedOnPage(id: string, cookie: string): Promise<void> {
+async function clearedOnPage(
+  id: string,
+  cookie: string,
+  typed = "jobs@example.com",
+): Promise<void> {
   const view = (await jobView({ db, clock }, id))!;
   const actions: object[] = [];
   if (view.kitParts?.contact?.needsRetype) {
-    actions.push({ kind: "retype", value: "jobs@example.com" });
+    actions.push({ kind: "retype", value: typed });
   }
   for (const flag of view.kitParts?.flags ?? []) {
     actions.push({ kind: "check_flag", flag: flagKey(flag) });
@@ -847,6 +851,44 @@ describe("the job page's routes", () => {
     );
     expect(taken.status).toBe(200);
     expect((await jobView({ db, clock }, ready))!.application?.status).toBe("kit_ready");
+  });
+
+  it("draft a message, not a template's email, for a WhatsApp post, and mark it submitted", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    // A company named, so the sample profile's template fits the role, as it would an email's.
+    const record = fixture("S05-whatsapp-local-number");
+    record.company.name = "Contoso Labs";
+    const ready = await settled([answer(record), answer(DRAFT)], true);
+
+    const view = (await jobView({ db, clock }, ready))!;
+    // The templates are emails: a message's route goes to draft.
+    expect(view.drafts.map((draft) => draft.source)).toEqual(["gemini"]);
+    expect(view.kit).toMatchObject({
+      kind: "message",
+      blocks: [{ text: "I have built production React applications for five years." }],
+      signOff: expect.stringMatching(/^Sam Rivera/),
+    });
+    expect(view.kitRoute).toBe("message");
+    await clearedOnPage(ready, cookie, "0300 0000000");
+    const shown = (await jobView({ db, clock }, ready))!;
+    expect(shown.review?.gate).toEqual([]);
+    // Its words are a message's, which the gate's answer names.
+    const answered = await (
+      await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready)
+    ).json();
+    expect(answered.words).toBe(shown.wordsKey);
+    const response = await submitted(
+      post(
+        `/api/jobs/${ready}/submitted`,
+        JSON.stringify({ kit: shown.kitKey, to: shown.handoff?.to ?? "" }),
+        cookie,
+      ),
+      deps(),
+      ready,
+    );
+    expect(response.status).toBe(200);
+    expect((await jobView({ db, clock }, ready))!.application?.status).toBe("submitted");
   });
 
   it("answers the gate with the email's words, which an edit changes", async () => {

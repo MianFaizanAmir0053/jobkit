@@ -7,7 +7,7 @@ import { SKILLS } from "@/core/shared/skills";
 import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 
-import { BUILD_VERSION, NO_PROFILE } from "./draftStage";
+import { BUILD_VERSION, draftKitOf, NO_PROFILE } from "./draftStage";
 import {
   MAX_ADDED_FACTS,
   MAX_TEMPLATE_DRAFTS,
@@ -22,11 +22,13 @@ import {
  * templates (templateDrafts.ts); when one covers enough of the role, the kit
  * is ready at once with up to two drafts, and the owner can still ask for a
  * Gemini draft beside them. When none does, `draft` writes the email as
- * before. The address stages run beside it, as they do beside `draft`.
+ * before. A route that takes a message gets no template draft, since the
+ * templates are emails: `draft` writes the message. The address stages run
+ * beside it, as they do beside `draft`.
  */
 
 /** Raise it when templateDrafts.ts changes what it drafts, so an output kept from before is not reused. */
-const TEMPLATES_VERSION = 1;
+const TEMPLATES_VERSION = 2;
 
 const BUILD = sha256Hex(
   canonicalJson({
@@ -77,7 +79,10 @@ export function templatesStage(deps: { db: Db }): StageDefinition {
         throw new Error("templates' input names a profile, record or role that is gone");
       }
       const output: TemplatesOutput = {
-        drafts: templateDrafts({ record: extraction.record, role, profile }),
+        drafts:
+          draftKitOf(role.route.kind) === "email"
+            ? templateDrafts({ record: extraction.record, role, profile })
+            : [],
       };
       return { ok: true, output };
     },

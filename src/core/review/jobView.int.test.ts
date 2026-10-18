@@ -12,7 +12,7 @@ import { offlineDns } from "@/adapters/dns";
 import { draftStage } from "@/core/drafting/draftStage";
 import { noTemplateDrafts } from "@/core/drafting/testTemplates";
 import { addressReadStage } from "@/core/extraction/addressReadStage";
-import type { DraftAnswer } from "@/core/drafting/kit";
+import { asEmailKit, type DraftAnswer } from "@/core/drafting/kit";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import { confirmPost, pickRole, skipRolePick } from "@/core/extraction/owner";
@@ -198,7 +198,9 @@ describe("jobView", () => {
       ["Check every sentence separately", "done"],
     ]);
     expect(view.role?.id).toBe("P1");
-    expect(view.draft?.kit.subject).toBe("Application - Senior Full-Stack Engineer - Sam Rivera");
+    expect(asEmailKit(view.draft!.kit).subject).toBe(
+      "Application - Senior Full-Stack Engineer - Sam Rivera",
+    );
   });
 
   it("shows a step whose output is from before its check was built as not checked", async () => {

@@ -71,7 +71,9 @@ const STOPS: ReadonlySet<KitFlagKind> = new Set([
 ]);
 
 /** A draft built from a template, with what it covers, as the job page offers it. */
-export interface TemplateDraft extends DraftOutput {
+export interface TemplateDraft extends Omit<DraftOutput, "kit"> {
+  /** A template is an email's body, so its draft is an email kit. */
+  kit: EmailKit;
   templateId: string;
   templateName: string;
   /** The share of the role's weighable must-haves the finished draft meets. */

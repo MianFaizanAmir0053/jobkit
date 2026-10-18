@@ -5,7 +5,13 @@ import { notFound } from "next/navigation";
 import { buttonVariants } from "@/components/ui/button";
 import type { KitFlag, KitFlagKind } from "@/core/drafting/validate";
 import { NEEDS_YOUR_LINE } from "@/core/drafting/build";
-import { emailBody, type KitBlock } from "@/core/drafting/kit";
+import {
+  emailBody,
+  type KitBlock,
+  MESSAGE_LIMIT,
+  messageLength,
+  messageText,
+} from "@/core/drafting/kit";
 import { type BlockVerdict, isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
 import type { AgreementProblem } from "@/core/extraction/addressRead";
 import { isStrictAddress } from "@/core/extraction/contacts";
@@ -29,6 +35,7 @@ import {
 import { listedSentences } from "@/core/review/edits";
 import { fitTableOf } from "@/core/review/fitTable";
 import { gmailComposeUrl } from "@/core/review/gmail";
+import { whatsAppLink } from "@/core/review/links";
 import type { DraftChoice, JobView, Step } from "@/core/review/jobView";
 import { showsFor } from "@/core/review/kitSends";
 import type { PostImages } from "@/core/review/postImages";
@@ -607,9 +614,11 @@ function KitPanel({
   const kitKey = view.kitKey!;
   // The email's words as this page shows them, which each of its decisions and Send names.
   const words = view.wordsKey!;
-  // The email as it stands, with the owner's edits: what every handoff sends.
+  // The email or message as it stands, with the owner's edits: what every handoff sends.
   const kit = view.kit ?? draft.kit;
-  const body = emailBody(kit);
+  const body = kit.kind === "email" ? emailBody(kit) : messageText(kit);
+  // What the panel calls it: the email, or the message for WhatsApp or LinkedIn.
+  const kitNoun = kit.kind === "email" ? "email" : "message";
   // An email kit goes through Gmail; a form or message is sent where the owner applies.
   const byEmail = view.kitRoute === "email";
   const where = byEmail ? "in Gmail" : "where you apply";
@@ -810,7 +819,7 @@ function KitPanel({
         <DraftPicker view={view} locked={locked} />
       )}
 
-      <Panel title="The email">
+      <Panel title={kit.kind === "email" ? "The email" : "The message"}>
         <p className="text-sm text-muted-foreground">{sourceWords(view)}</p>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
           <dt className="text-muted-foreground">To</dt>
@@ -828,7 +837,9 @@ function KitPanel({
                     role.route.address &&
                     !needsRetype &&
                     `: ${role.route.address}`}
-                  . The text below is drafted as an email: adapt it there.
+                  {kit.kind === "email"
+                    ? ". The text below is drafted as an email: adapt it there."
+                    : "."}
                 </span>
                 {/* The number in large type, to check against the post (review spec, "Contact panel"). */}
                 {role.route.kind === "whatsapp" && address !== "" && !needsRetype && (
@@ -995,13 +1006,17 @@ function KitPanel({
               )}
             </dd>
           )}
-          <dt className="text-muted-foreground">Subject</dt>
-          <dd className="min-w-0 [overflow-wrap:anywhere]">{kit.subject}</dd>
+          {kit.kind === "email" && (
+            <>
+              <dt className="text-muted-foreground">Subject</dt>
+              <dd className="min-w-0 [overflow-wrap:anywhere]">{kit.subject}</dd>
+            </>
+          )}
         </dl>
         {/* The body sentence by sentence, each of which the owner may put in their own words. */}
         <div className="rounded-md bg-muted p-3 text-sm [overflow-wrap:anywhere]">
-          <p className="whitespace-pre-wrap">{kit.greeting}</p>
-          <ol className="mt-3 flex flex-col gap-1">
+          {kit.kind === "email" && <p className="mb-3 whitespace-pre-wrap">{kit.greeting}</p>}
+          <ol className="flex flex-col gap-1">
             {sentences.map(({ block, deleted }, i) => {
               const edited = isEdited(decisions, block.id);
               const added = isAdded(decisions, block.id);
@@ -1134,8 +1149,26 @@ function KitPanel({
               />
             </div>
           )}
-          <p className="mt-3 whitespace-pre-wrap">{kit.closing}</p>
+          {kit.kind === "email" ? (
+            <p className="mt-3 whitespace-pre-wrap">{kit.closing}</p>
+          ) : (
+            <>
+              <p className="mt-3 whitespace-pre-wrap">{kit.signOff}</p>
+              <p className="mt-1 text-muted-foreground">Your sign-off, from your profile.</p>
+            </>
+          )}
         </div>
+        {kit.kind === "message" && (
+          <p
+            className={
+              messageLength(kit) > MESSAGE_LIMIT
+                ? "text-sm text-destructive"
+                : "text-sm text-muted-foreground"
+            }
+          >
+            {messageLength(kit)} of {MESSAGE_LIMIT} characters, with your sign-off.
+          </p>
+        )}
       </Panel>
 
       {(flags.length > 0 || judged.length > 0) && (
@@ -1498,7 +1531,7 @@ function KitPanel({
             </div>
           )}
         </div>
-        {byEmail && !sent && !skipped && (
+        {byEmail && kit.kind === "email" && !sent && !skipped && (
           <>
             <ApproveSend
               key={shown ? `${shown.id}-${shown.status}` : "none"}
@@ -1528,12 +1561,20 @@ function KitPanel({
           words={view.wordsKey}
           email={byEmail}
           gmailHref={
-            open && byEmail && to !== ""
+            open && byEmail && kit.kind === "email" && to !== ""
               ? gmailComposeUrl(to, kit.subject, body, account || null)
               : null
           }
-          subject={kit.subject}
+          // A message for WhatsApp opens WhatsApp on the number it goes to; LinkedIn's is copied.
+          whatsApp={kit.kind === "message" && role.route.kind === "whatsapp"}
+          whatsAppHref={
+            open && kit.kind === "message" && role.route.kind === "whatsapp" && to !== ""
+              ? whatsAppLink(to, body)
+              : null
+          }
+          subject={kit.kind === "email" ? kit.subject : null}
           body={body}
+          noun={kitNoun}
         />
         {byEmail && !sent && !skipped && (
           <p className="text-sm text-muted-foreground">

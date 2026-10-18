@@ -1,4 +1,4 @@
-import { emailBody } from "@/core/drafting/kit";
+import { asEmailKit, emailBody } from "@/core/drafting/kit";
 import { getProfileVersion } from "@/core/profile/profile";
 import type { Clock, Db, GmailSender, GmailSendResult, Storage } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
@@ -112,7 +112,11 @@ export async function scheduleSend(
     if (!("view" in locked)) return locked;
     const { view } = locked;
     const roleId = view.role!.id;
-    if (view.role!.route.kind !== "email") return { ok: false, reason: "not-email" };
+    // Approve & send sends an email kit, on a route that takes one.
+    const standing = view.kit ?? view.draft!.kit;
+    if (view.role!.route.kind !== "email" || standing.kind !== "email") {
+      return { ok: false, reason: "not-email" };
+    }
     if (view.kitParts.sending) return { ok: false, reason: "sending" };
     // jobkit attaches the CV alone: a post asking for another file goes through Gmail.
     if (view.kitParts.attachments.length > 0) return { ok: false, reason: "attachment" };
@@ -354,8 +358,8 @@ async function emailOf(
   if (!profile) return { problem: NOT_SENT.noProfile };
   const cv = await within(deps.storage.get(profile.cv.path), CV_READ_MS, "Reading your CV");
   if (!cv) return { problem: NOT_SENT.noCv };
-  // The email as it stands, with the owner's edits.
-  const kit = view.kit ?? draft.kit;
+  // The email as it stands, with the owner's edits; a press for any other kit is refused.
+  const kit = asEmailKit(view.kit ?? draft.kit);
   const body = [emailBody(kit), profile.signature.trim()].filter(Boolean).join("\n");
   return buildMime({
     to,

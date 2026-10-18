@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import type { Role } from "@/core/extraction/record";
 import { caseless } from "@/core/platform/caseless";
 
 /**
@@ -125,6 +126,33 @@ export interface MessageKit {
 
 export type Kit = EmailKit | MessageKit;
 
+/** The kit as an email, for code that handles an email kit alone; any other is a mistake. */
+export function asEmailKit(kit: Kit): EmailKit {
+  if (kit.kind !== "email") throw new Error("An email kit was expected");
+  return kit;
+}
+
+/**
+ * The kit a route takes (drafting spec, "Kit type"); none for a route the
+ * owner must name.
+ */
+export function kitTypeOf(route: Role["route"]["kind"]): "email" | "form" | "message" | null {
+  switch (route) {
+    case "email":
+      return "email";
+    case "ats_form":
+    case "easy_apply":
+    case "careers_page":
+      return "form";
+    case "whatsapp":
+    case "linkedin_dm":
+    case "linkedin_comment":
+      return "message";
+    default:
+      return null;
+  }
+}
+
 /** The must-haves a gap block answers: its own, and those a merged line answers too. */
 export function answersOf(block: KitBlock): string[] {
   if (block.class !== "gap" || block.gap === null) return [];
@@ -169,7 +197,7 @@ export function messageLength(kit: MessageKit): number {
 }
 
 /** Words in the body's blocks, as the word limit counts them. */
-export function bodyWords(kit: EmailKit): number {
+export function bodyWords(kit: Pick<Kit, "blocks">): number {
   return kit.blocks
     .map((block) => block.text)
     .join(" ")

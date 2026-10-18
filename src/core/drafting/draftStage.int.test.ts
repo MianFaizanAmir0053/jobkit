@@ -25,7 +25,7 @@ import { DEFAULT_GREETING, CLOSING } from "./build";
 import { type DraftOutput, draftStage, NO_PROFILE } from "./draftStage";
 import { type JudgeOutput, judgeStage } from "./judgeStage";
 import { noTemplateDrafts } from "./testTemplates";
-import type { DraftAnswer } from "./kit";
+import { asEmailKit, type DraftAnswer } from "./kit";
 
 /*
  * The thin path's drafting group on the fake model (drafting spec, "Stage
@@ -229,9 +229,10 @@ describe("the thin drafting group", () => {
       ["S5", "not_a_claim"],
     ]);
     const draft = (await stageOutput(db, id, "draft"))!.output as DraftOutput;
-    expect(draft.kit.subject).toBe("Application - Senior Full-Stack Engineer - Sam Rivera");
-    expect(draft.kit.greeting).toBe(DEFAULT_GREETING);
-    expect(draft.kit.closing).toBe(CLOSING);
+    const email = asEmailKit(draft.kit);
+    expect(email.subject).toBe("Application - Senior Full-Stack Engineer - Sam Rivera");
+    expect(email.greeting).toBe(DEFAULT_GREETING);
+    expect(email.closing).toBe(CLOSING);
     expect(draft.kit.blocks.find((block) => block.id === "S4")?.text).toBe(
       "I haven't used AWS professionally; the closest is Docker deployments on managed platforms.",
     );
@@ -245,6 +246,69 @@ describe("the thin drafting group", () => {
       [id],
     );
     expect(rows.map((row) => row.stage)).toEqual(["extract", "draft", "judge"]);
+  });
+
+  it("drafts a message for a WhatsApp route, ending with the profile's sign-off (drafting AC1, AC8)", async () => {
+    await seedSample();
+    const message: DraftAnswer = {
+      fit: [{ requirement_id: "R1", verdict: "met", fact_ids: ["F-react-production"], note: "" }],
+      blocks: [
+        {
+          id: "S1",
+          text: "Hello, I would like to apply for the Next.js Developer role.",
+          paragraph_break: false,
+          class: "post",
+          fact_ids: [],
+          fields: ["title"],
+          gap: gapBlock,
+        },
+        {
+          id: "S2",
+          text: "I have built production React and Next.js applications for five years.",
+          paragraph_break: false,
+          class: "claim",
+          fact_ids: ["F-react-production"],
+          fields: [],
+          gap: gapBlock,
+        },
+      ],
+    };
+
+    const id = await run("Next.js Developer needed. Send CV on WhatsApp: 0300 0000000", [
+      answer(fixture("S05-whatsapp-local-number")),
+      answer(message),
+      answer({
+        verdicts: [
+          { block_id: "S1", verdict: "not_a_claim", company_claim: false, note: "" },
+          { block_id: "S2", verdict: "supported", company_claim: false, note: "" },
+        ],
+      }),
+    ]);
+
+    expect(await loadJob(db, id)).toMatchObject({ state: "kit_ready", pendingStage: null });
+    const draft = (await stageOutput(db, id, "draft"))!.output as DraftOutput;
+    const signOff = [
+      "Sam Rivera",
+      "Portfolio: https://portfolio.example.com",
+      "WhatsApp: +1 202 555 0143",
+    ].join(String.fromCharCode(10));
+    expect(draft.kit).toEqual({
+      kind: "message",
+      blocks: [
+        expect.objectContaining({ id: "S1", class: "post" }),
+        expect.objectContaining({ id: "S2", class: "claim" }),
+      ],
+      signOff,
+    });
+    // No subject, and no word limit: the checklist shows a post's as not applied.
+    expect(draft).toMatchObject({ flags: [], subjectFormat: null, wordLimit: 180 });
+    const request = llm.calls[1]!;
+    expect(request.system).toContain("short job application message, sent on WhatsApp or LinkedIn");
+    // 600 characters less the sign-off and the blank line before it.
+    expect(texts(request.content)).toContain(
+      `The message's limit: ${600 - [...signOff].length - 2} characters`,
+    );
+    expect(texts(request.content)).toContain("Write the fit table and the message for this role.");
   });
 
   it("sends the role's typed fields between markers, with no raw post text and nothing aimed at AI", async () => {

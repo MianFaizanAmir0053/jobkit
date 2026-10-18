@@ -119,7 +119,9 @@ export function changesOf(
   );
   // One typed in the post's place, and differing from it; none while none is typed.
   const address = typed && to !== "" && !sameAddress(to, role.route.address);
-  const subject = view.kit!.subject !== view.draft!.kit.subject;
+  const [now, drafted] = [view.kit!, view.draft!.kit];
+  const subject =
+    now.kind === "email" && drafted.kind === "email" && now.subject !== drafted.subject;
   const changed = [
     ...(address ? ["address"] : []),
     ...(subject ? ["subject"] : []),

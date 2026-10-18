@@ -1,3 +1,4 @@
+import { kitTypeOf } from "@/core/drafting/kit";
 import { isStrictAddress, normaliseWhatsAppNumber } from "@/core/extraction/contacts";
 import { chosenRole, currentExtraction } from "@/core/extraction/owner";
 import type { Role } from "@/core/extraction/record";
@@ -16,22 +17,12 @@ import type { Clock, Db } from "@/core/ports";
 
 type Deps = { db: Db; clock: Clock };
 
-/** The kind of kit a route takes, as the ledger records it; none for a route the owner must name. */
-const ROUTES: Readonly<Record<Role["route"]["kind"], Route | null>> = {
-  email: "email",
-  ats_form: "form",
-  easy_apply: "form",
-  careers_page: "form",
-  whatsapp: "message",
-  linkedin_dm: "message",
-  linkedin_comment: "message",
-  other: null,
-  unknown: null,
-};
-
-/** The kind of kit a role's route takes, as the ledger records it; null for a route the owner must name. */
+/**
+ * The kind of kit a role's route takes, as the ledger records it, by
+ * drafting's route table; null for a route the owner must name.
+ */
 export function routeOf(kind: Role["route"]["kind"]): Route | null {
-  return ROUTES[kind];
+  return kitTypeOf(kind);
 }
 
 /**
@@ -96,7 +87,7 @@ export async function openForJob(
       company: extraction.record.company.name,
       role: role.title,
       address: contactForLedger(role.route.kind, role.route.address),
-      route: ROUTES[role.route.kind],
+      route: routeOf(role.route.kind),
       requirements: role.requirements.map((requirement) => requirement.text),
       arm: null,
       jobKind: "real",

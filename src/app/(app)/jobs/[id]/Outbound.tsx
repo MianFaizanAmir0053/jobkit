@@ -19,7 +19,7 @@ import { CopyButton } from "./CopyButton";
 
 /**
  * The kit's outbound controls (review spec, "The outbound gate"): Open in
- * Gmail and the copy buttons. The page draws them open only when its gate
+ * Gmail, Open WhatsApp and the copy buttons. The page draws them open only when its gate
  * is, and they open only while the server agrees on what the page shows:
  * the kit, its gate, the address it goes to and the status of the role's
  * application, asked when they are drawn and again as polling.ts says. The
@@ -41,8 +41,11 @@ export function Outbound({
   words,
   email,
   gmailHref,
+  whatsApp,
+  whatsAppHref,
   subject,
   body,
+  noun,
 }: {
   jobId: string;
   /** The kit the page shows. */
@@ -53,14 +56,21 @@ export function Outbound({
   to: string | null;
   /** The status of the role's application the page shows; null before there is one. */
   status: string | null;
-  /** The email's words as the page shows them, as a short key. */
+  /** The kit's words as the page shows them, as a short key. */
   words: string | null;
-  /** Whether the kit is an email: Gmail's control shows, held or not. */
+  /** Whether the kit is an email sent through Gmail: Gmail's control shows, held or not. */
   email: boolean;
   /** Gmail's compose link, for an email kit whose gate is open; null otherwise. */
   gmailHref: string | null;
-  subject: string;
+  /** Whether the kit is a message for WhatsApp: WhatsApp's control shows, held or not. */
+  whatsApp: boolean;
+  /** WhatsApp's link to the number with the message, for a message whose gate is open; null otherwise. */
+  whatsAppHref: string | null;
+  /** The email's subject, to copy; null for a message, which has none. */
+  subject: string | null;
   body: string;
+  /** What the kit is called: "email" or "message". */
+  noun: "email" | "message";
 }) {
   const router = useRouter();
   const shown = `${kit}\n${String(open)}\n${to ?? ""}\n${status ?? ""}\n${words ?? ""}`;
@@ -101,8 +111,9 @@ export function Outbound({
   const enabled = open && confirmed === shown && !held;
   // Each handoff posts the words it handed off, right after the click, which Mark sent records;
   // the handoff never waits for it (review spec, "The outbound gate").
+  // An email's alone: factual edits count for email handoffs only (ledger spec).
   const handedOff = () => {
-    if (words === null) return;
+    if (words === null || !email) return;
     void fetch(`/api/jobs/${jobId}/handoff`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -119,8 +130,8 @@ export function Outbound({
       : confirmed === shown
         ? ""
         : unreachable
-          ? "jobkit cannot be reached to confirm that nothing holds this email back, so the buttons wait. It asks again every 15 seconds."
-          : "Checking that nothing holds this email back…";
+          ? `jobkit cannot be reached to confirm that nothing holds this ${noun} back, so the buttons wait. It asks again every 15 seconds.`
+          : `Checking that nothing holds this ${noun} back…`;
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-wrap gap-2">
@@ -144,8 +155,40 @@ export function Outbound({
               Open in Gmail
             </span>
           ))}
-        <CopyButton text={subject} label="Copy subject" disabled={!enabled} onCopied={handedOff} />
-        <CopyButton text={body} label="Copy email" disabled={!enabled} onCopied={handedOff} />
+        {whatsApp &&
+          (enabled && whatsAppHref !== null ? (
+            <a
+              href={whatsAppHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`${buttonVariants()} min-h-11`}
+              onClick={handedOff}
+            >
+              Open WhatsApp
+            </a>
+          ) : (
+            <span
+              role="link"
+              aria-disabled="true"
+              className={`${buttonVariants()} pointer-events-none min-h-11 opacity-50`}
+            >
+              Open WhatsApp
+            </span>
+          ))}
+        {subject !== null && (
+          <CopyButton
+            text={subject}
+            label="Copy subject"
+            disabled={!enabled}
+            onCopied={handedOff}
+          />
+        )}
+        <CopyButton
+          text={body}
+          label={noun === "email" ? "Copy email" : "Copy message"}
+          disabled={!enabled}
+          onCopied={handedOff}
+        />
       </div>
       <p role="status" className="min-h-5 text-sm text-muted-foreground">
         {waiting}

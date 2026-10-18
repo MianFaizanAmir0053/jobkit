@@ -11,20 +11,32 @@ import { SKILLS } from "@/core/shared/skills";
 import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 
-import { acceptedInstructions, buildEmailKit, oneLine } from "./build";
-import { draftAnswerSchema, type EmailKit, type FitRow } from "./kit";
-import { DRAFT_LAYOUT_VERSION, draftContent, draftSystemPrompt } from "./prompt";
+import {
+  acceptedInstructions,
+  BODY_WORD_LIMIT,
+  buildEmailKit,
+  buildMessageKit,
+  oneLine,
+} from "./build";
+import { draftAnswerSchema, type FitRow, type Kit, kitTypeOf, MESSAGE_LIMIT } from "./kit";
+import {
+  DRAFT_LAYOUT_VERSION,
+  draftContent,
+  draftSystemPrompt,
+  messageSystemPrompt,
+} from "./prompt";
 import { hasWord, type KitFlag, validateKit } from "./validate";
 
 /**
- * The `draft` stage for an email kit (drafting spec, "Stage draft"): one
- * Gemini 3.8 Flash call with the approved profile and the chosen role's typed
- * fields, never raw post text, for the fit table and the body's blocks. Code
- * then writes the subject, greeting, gap lines and closing, and runs the
- * checks; the kit is kept with its flags for the owner to review. On the
- * thin path every route gets an email kit (form and message kits, the
+ * The `draft` stage (drafting spec, "Stage draft"): one Gemini 3.8 Flash
+ * call with the approved profile and the chosen role's typed fields, never
+ * raw post text, for the fit table and the body's blocks. Code then writes
+ * the gap lines, and for an email the subject, greeting and closing, for a
+ * message the profile's sign-off, and runs the checks; the kit is kept with
+ * its flags for the owner to review. WhatsApp and LinkedIn routes get a
+ * message kit; every other route an email kit for now (form kits, the
  * kit-type pick and topic questions come later). The instructions the owner
- * declines on the review page apply to the email as it stands, never to a
+ * declines on the review page apply to the kit as it stands, never to a
  * draft, so the declined instructions given here are always none.
  */
 
@@ -46,16 +58,47 @@ export const DRAFT = {
  */
 export const BUILD_VERSION = 9;
 
-// The prompt as sent (its rules, the user turn's layout, the output's schema) and the build.
-const PROMPT = sha256Hex(
-  canonicalJson({
-    rules: draftSystemPrompt(0),
-    layout: DRAFT_LAYOUT_VERSION,
-    schema: z.toJSONSchema(draftAnswerSchema),
-    build: BUILD_VERSION,
-    skills: SKILLS,
-  }),
-);
+// The prompt as sent (its rules, the user turn's layout, the output's schema) and the build, for
+// each kit; an email's as it always was.
+const PROMPTS = {
+  email: sha256Hex(
+    canonicalJson({
+      rules: draftSystemPrompt(0),
+      layout: DRAFT_LAYOUT_VERSION,
+      schema: z.toJSONSchema(draftAnswerSchema),
+      build: BUILD_VERSION,
+      skills: SKILLS,
+    }),
+  ),
+  message: sha256Hex(
+    canonicalJson({
+      kit: "message",
+      rules: messageSystemPrompt(0),
+      layout: DRAFT_LAYOUT_VERSION,
+      schema: z.toJSONSchema(draftAnswerSchema),
+      build: BUILD_VERSION,
+      skills: SKILLS,
+      limit: MESSAGE_LIMIT,
+    }),
+  ),
+} as const;
+
+/** The kit `draft` writes for a route: a message for WhatsApp and LinkedIn, an email for the rest for now. */
+export function draftKitOf(route: Role["route"]["kind"]): DraftKit {
+  return kitTypeOf(route) === "message" ? "message" : "email";
+}
+
+type DraftKit = "email" | "message";
+
+/**
+ * A message's budget for the model's sentences and the gap lines: its 600
+ * characters less the sign-off and the blank line before it, and never under
+ * 100, so a long sign-off leaves the model room to write in. validate counts
+ * the message as it stands.
+ */
+function messageBudget(signOff: string): number {
+  return Math.max(100, MESSAGE_LIMIT - [...signOff.trim()].length - 2);
+}
 
 export const NO_PROFILE =
   "There is no profile yet. Seed it on the laptop with npm run profile:seed, then press Retry.";
@@ -63,12 +106,16 @@ export const NO_PROFILE =
 const PASSING: ReadonlySet<ModelCallFailure> = new Set(["timeout", "unavailable"]);
 
 export interface DraftOutput {
-  kit: EmailKit;
+  kit: Kit;
   fit: FitRow[];
   flags: KitFlag[];
+  /** The email body's limit in words; a message's the default one, as no word limit applies to it. */
   wordLimit: number;
   keyword: string | null;
-  /** The post's subject format code applied, so validate can run again from what is stored. */
+  /**
+   * The post's subject format code applied, so validate can run again from
+   * what is stored; none for a message, which has no subject.
+   */
   subjectFormat: string | null;
   markers: string[];
   profileVersion: string;
@@ -79,7 +126,7 @@ interface DraftInput {
   record: string;
   role: string;
   profile: string | null;
-  kit: "email";
+  kit: DraftKit;
   declined: string[];
   model: string;
   effort: Effort;
@@ -102,15 +149,16 @@ export function draftStage(deps: DraftDeps): StageDefinition {
       const role = await chosenRole(deps.db, ctx.job.id);
       if (!extract || !role) throw new Error("draft runs only after extract has chosen a role");
       const profile = await getActiveProfile(deps.db);
+      const kit = draftKitOf(role.route.kind);
       return {
         record: extract.outputHash,
         role: role.id,
         profile: profile?.versionId ?? null,
-        kit: "email",
+        kit,
         declined: [],
         model: DRAFT.model,
         effort: DRAFT.effort,
-        prompt: PROMPT,
+        prompt: PROMPTS[kit],
       };
     },
 
@@ -123,15 +171,23 @@ export function draftStage(deps: DraftDeps): StageDefinition {
       if (!profile || !extraction || !role) {
         throw new Error("draft's input names a profile, record or role that is gone");
       }
+      const message = input.kit === "message";
       const accepted = acceptedInstructions(role);
+      // A message has no subject, and no word limit applies to it: the checklist shows them not
+      // applied, for the owner to see to.
+      const subjectFormat = message ? null : accepted.subjectFormat;
+      const wordLimit = message ? BODY_WORD_LIMIT : accepted.wordLimit;
       const post = withoutAiLines(extraction.record, role, accepted.keyword);
       const marker = Buffer.from(deps.random.bytes(16)).toString("hex");
+      const budget = messageBudget(profile.signature);
       const called = await callModel(deps.models, {
         stage: "draft",
         jobId: ctx.job.id,
         model: input.model,
-        system: draftSystemPrompt(accepted.wordLimit),
-        content: draftContent(profile, post, accepted.wordLimit, marker),
+        system: message ? messageSystemPrompt(budget) : draftSystemPrompt(wordLimit),
+        content: message
+          ? draftContent(profile, post, budget, marker, "message")
+          : draftContent(profile, post, wordLimit, marker),
         schema: draftAnswerSchema,
         effort: input.effort,
         maxTokens: DRAFT.maxTokens,
@@ -144,30 +200,32 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         knownGaps: profile.knownGaps,
         gapTemplates: profile.gapTemplates,
       };
-      const { kit, fit } = buildEmailKit(called.output, {
-        record: extraction.record,
-        role,
-        ownerName: profile.owner.name,
-        accepted,
-        profile: parts,
-      });
+      const { kit, fit } = message
+        ? buildMessageKit(called.output, { role, signOff: profile.signature, profile: parts })
+        : buildEmailKit(called.output, {
+            record: extraction.record,
+            role,
+            ownerName: profile.owner.name,
+            accepted,
+            profile: parts,
+          });
       const flags = validateKit(kit, {
         record: extraction.record,
         role,
         profile: parts,
         fit,
-        wordLimit: accepted.wordLimit,
+        wordLimit,
         keyword: post.keyword,
-        subjectFormat: accepted.subjectFormat,
+        subjectFormat,
         markers: [marker],
       });
       const output: DraftOutput = {
         kit,
         fit,
         flags,
-        wordLimit: accepted.wordLimit,
+        wordLimit,
         keyword: post.keyword,
-        subjectFormat: accepted.subjectFormat,
+        subjectFormat,
         markers: [marker],
         profileVersion: profile.versionId,
         roleId: role.id,
