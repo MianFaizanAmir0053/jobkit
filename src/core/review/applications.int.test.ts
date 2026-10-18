@@ -18,14 +18,14 @@ import { extractStage } from "@/core/extraction/extract";
 import { pickRole } from "@/core/extraction/owner";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
-import { changeStatus, openApplication } from "@/core/ledger/statuses";
+import { changeStatus, openApplication, setRoute } from "@/core/ledger/statuses";
 import type { ModelCallDeps } from "@/core/platform/models";
 import { claimJob, type Pipeline, runJob } from "@/core/platform/runner";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 
-import { openForJob, skippedForJob, trackApplications } from "./applications";
+import { kitReadyForJob, openForJob, skippedForJob, trackApplications } from "./applications";
 import { jobView } from "./jobView";
 import { applyAgainForJob, recordReview } from "./kitReview";
 import { markSent } from "./markSent";
@@ -230,6 +230,36 @@ describe("the application", () => {
     expect((await jobView({ db, clock }, id))!.duplicates).toEqual([
       expect.objectContaining({ reason: "address", company: "Globex", covered: false }),
     ]);
+  });
+
+  it("keeps the address the owner typed, and the kit type they picked, when the kit is ready again", async () => {
+    await sentToGlobex();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await recordReview({ db, clock, dns: offlineDns() }, id, {
+      kind: "retype",
+      value: "hr@example.org",
+    });
+
+    // As after a Gemini draft asked for beside the templates': the kit is ready again.
+    await kitReadyForJob({ db, clock }, id);
+
+    expect(await addressOf(id)).toBe("hr@example.org");
+    expect((await jobView({ db, clock }, id))!.review?.gate.map((reason) => reason.kind)).toEqual([
+      "duplicate",
+    ]);
+
+    const walkIn = await pasted("We're hiring. Walk in with your CV.");
+    await run(walkIn, [answer(fixture("S19-walk-in")), answer(DRAFT)]);
+    const { rows } = await db.query<{ id: string }>(
+      "select id from {{schema}}.applications where job_id = $1",
+      [walkIn],
+    );
+    await setRoute({ db }, rows[0]!.id, "form");
+
+    await kitReadyForJob({ db, clock }, walkIn);
+
+    expect((await jobView({ db, clock }, walkIn))!.kitRoute).toBe("form");
   });
 
   it("keeps the address the owner typed when the kit is marked sent", async () => {

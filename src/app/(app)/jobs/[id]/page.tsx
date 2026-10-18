@@ -186,7 +186,9 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
           <Panel title="This kit cannot be read">
             <p className="text-sm">
               jobkit can no longer read this kit, as after an update.
-              {!view.went && " Send the post again as a new job."}
+              {!view.went &&
+                view.application?.status !== "skipped" &&
+                " Send the post again as a new job."}
             </p>
             {view.role && !view.went && <KitSkip view={view} kit={null} timeZone={timeZone} />}
             {view.went && (
@@ -1195,7 +1197,7 @@ function KitPanel({
                     variant="outline"
                     body={{ sentAt: view.application.sentAt.toISOString() }}
                     gateOf={view.id}
-                    confirmText="Take back Mark sent? Do this only if you did not send it: the kit opens again."
+                    confirmText="Take back Mark sent? Do this only if you did not send it."
                   />
                 </div>
               )}
@@ -1382,7 +1384,7 @@ function Submitted({
             variant="outline"
             body={{ submittedAt: at.toISOString() }}
             gateOf={view.id}
-            confirmText="Take back Mark submitted? Do this only if you did not send it: the kit opens again."
+            confirmText="Take back Mark submitted? Do this only if you did not send it."
           />
         </div>
       )}

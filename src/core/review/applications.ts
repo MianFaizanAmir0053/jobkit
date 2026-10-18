@@ -107,15 +107,22 @@ export async function openForJob(
 
 /**
  * The job reached its kit: its application, opened if need be, becomes
- * kit_ready. The session is the owner's when their tap opened it, as Apply
- * again does on a kit from before applications opened with their jobs.
+ * kit_ready. One already open keeps what the owner set on it since, the
+ * address they typed and the kit type they picked: reaching the kit again,
+ * as after a Gemini draft asked for beside the templates', changes
+ * neither, while a new reading of the post opens it afresh at extract. The
+ * session is the owner's when their tap opened it, as Apply again does on
+ * a kit from before applications opened with their jobs.
  */
 export async function kitReadyForJob(
   deps: Deps,
   jobId: string,
   sessionId: string | null = null,
 ): Promise<void> {
-  const applicationId = await openForJob(deps, jobId, sessionId);
+  const role = await chosenRole(deps.db, jobId);
+  if (!role) return;
+  const applicationId =
+    (await applicationIdOf(deps.db, jobId, role.id)) ?? (await openForJob(deps, jobId, sessionId));
   if (applicationId) await changeStatus(deps, applicationId, "kit_ready", sessionId);
 }
 

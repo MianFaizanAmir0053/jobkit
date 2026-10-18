@@ -150,7 +150,8 @@ async function marking(
       // Already kit_ready, or sent, after an earlier tap: the next move decides.
       await changeStatus(at, applicationId, "kit_ready", sessionId);
       const sent = await changeStatus(at, applicationId, "sent", sessionId);
-      // Unreached after the checks above; were it reached, nothing of the tap would be kept.
+      // Unreached after the checks above; were it reached, nothing of the owner's tap would be kept.
+      // jobkit's, inside its send's own transaction, keeps where its email went.
       if (!sent.ok) throw new SendRefused();
       if (sent.changed) {
         // Until the editor exists, the one field the owner changes in jobkit is the address.
