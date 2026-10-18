@@ -12,9 +12,9 @@ import type { Role } from "@/core/extraction/record";
 import { flagRank, judgeMessage } from "@/core/review/canHandOff";
 import { type ChecklistStatus, checklistOf } from "@/core/review/checklist";
 import {
+  approvable,
   flagKey,
   isMeetable,
-  NEEDS_NEW_WORDS,
   needsNewWords,
   NO_DECISIONS,
 } from "@/core/review/decisions";
@@ -64,7 +64,7 @@ const CHECKLIST_WORDS: Readonly<Record<ChecklistStatus, string>> = {
   applied: "Applied",
   applied_missed: "Applied, but the email misses it: see the checks above",
   left_out: "Left out: it repeats a line aimed at AI",
-  attachment: "See the files below",
+  attachment: "For you to attach",
   not_applied: "Not applied",
   not_followed: "Not followed: addressed to AI",
   followed: "Addressed to AI, and the email repeats it: take it out",
@@ -629,8 +629,8 @@ function KitPanel({
   // The outbound gate: every outbound control opens only when no reason holds it back.
   const decisions = view.review?.decisions ?? NO_DECISIONS;
   const meets = new Set(decisions.meets);
-  // The facts the email's own sentences cite, which a paired phone may show.
-  const stated = new Set(kit.blocks.flatMap((block) => block.factIds));
+  // The chosen role's must-haves: one the owner does not meet needs a line saying so.
+  const musts = new Set(parts.mustHaves ?? []);
   const gate = view.review?.gate ?? [];
   const open = view.review !== null && gate.length === 0;
   const sent = parts.sent;
@@ -648,22 +648,26 @@ function KitPanel({
   };
   // The countdown says jobkit is sending it; the list says what else holds it.
   const reasons = gate.filter((reason) => reason.kind !== "sending");
-  // Approve & send marks every flagged sentence and flag checked, but for those only new words
-  // resolve and those only the owner can answer; the other reasons need the owner.
-  const approvals = reasons.flatMap((reason) => {
-    if (reason.kind === "judge") {
-      return [`${reason.message} — "${blockText.get(reason.blockId) ?? ""}"`];
+  // What Approve & send marks, as the server will: the flagged sentences and flags the gate holds,
+  // but for those only new words resolve and those only the owner can answer. The confirmation
+  // lists them and the press names them, so it never marks what the page did not list.
+  const approved = approvable(parts, decisions);
+  const approvals = approved.map((key) => {
+    if (key.startsWith("sentence:")) {
+      const blockId = key.slice("sentence:".length);
+      const reason = reasons.find((each) => each.kind === "judge" && each.blockId === blockId);
+      return `${reason?.message ?? "The separate check holds this sentence."} — "${blockText.get(blockId) ?? ""}"`;
     }
-    if (
-      reason.kind === "flag" &&
-      !NEEDS_NEW_WORDS.has(reason.flag.kind) &&
-      !isMeetable(reason.flag)
-    ) {
-      const about = aboutFlag(reason.flag);
-      return [about ? `${reason.message} — "${about}"` : reason.message];
-    }
-    return [];
+    const flag = parts.flags[Number(key.slice("flag:F".length)) - 1];
+    if (!flag) return key;
+    const about = aboutFlag(flag);
+    return withoutContacts(about ? `${flag.message} — "${about}"` : flag.message, typing(view));
   });
+  // The must-haves the owner said they will fix in Gmail, not meeting them.
+  const unmet = fitRows.filter(
+    (row) =>
+      row.tick && row.must && row.flag !== null && flagsChecked.has(row.flag) && !meets.has(row.id),
+  ).length;
   // What Approve & send cannot settle: a file besides the CV, which it cannot attach, words that
   // must change, which it cannot change, and the reasons only the owner can.
   const held =
@@ -912,7 +916,10 @@ function KitPanel({
 
       {(flags.length > 0 || judged.length > 0) && (
         <Panel title="Check these before you send">
-          {flags.some(([, flag]) => FIXED_IN_GMAIL.has(flag.kind)) && (
+          {flags.some(
+            ([place, flag]) =>
+              FIXED_IN_GMAIL.has(flag.kind) || (meetable.has(flagKey(place)) && musts.has(flag.at)),
+          ) && (
             <p className="text-sm text-muted-foreground">
               {byEmail
                 ? "Some of these need the email's words changed, which jobkit cannot do yet: change them in Gmail before you send, and answer Yes when jobkit asks whether you changed anything."
@@ -936,6 +943,7 @@ function KitPanel({
                           url={reviewUrl}
                           gateOf={view.id}
                           label="Undo"
+                          ariaLabel={`Undo: ${blockText.get(verdict.blockId) ?? ""}`}
                           variant="outline"
                           body={decision({ kind: "uncheck", blockId: verdict.blockId })}
                         />
@@ -945,6 +953,7 @@ function KitPanel({
                         url={reviewUrl}
                         gateOf={view.id}
                         label="I checked this"
+                        ariaLabel={`I checked this: ${blockText.get(verdict.blockId) ?? ""}`}
                         variant="outline"
                         body={decision({ kind: "check", blockId: verdict.blockId })}
                       />
@@ -959,23 +968,34 @@ function KitPanel({
               // A requirement only the owner can confirm: for one they do not meet, the email must
               // not claim it, so it is fixed where they send it.
               const meetsIt = meetable.has(key);
-              const inGmail = FIXED_IN_GMAIL.has(flag.kind) || meetsIt;
-              const named = about ?? flag.message;
+              const met = meetsIt && meets.has(meetable.get(key)!);
+              // A must-have the owner does not meet needs a line saying so, written where they send it.
+              const must = meetsIt && musts.has(flag.at);
+              const inGmail = FIXED_IN_GMAIL.has(flag.kind) || must;
+              // Its place too, so two flags of one message, as on the subject and the greeting, differ.
+              const named =
+                about ??
+                (flag.at === "subject"
+                  ? `${flag.message} (the subject)`
+                  : flag.at === "greeting"
+                    ? `${flag.message} (the greeting)`
+                    : flag.message);
               return (
                 <li key={key}>
                   {flag.message}
                   {about && <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>}
-                  {meetsIt &&
-                    !meets.has(meetable.get(key)!) &&
-                    !flagsChecked.has(key) &&
-                    !locked && (
-                      <p className="mt-1 text-muted-foreground">
-                        If you meet it, tick &ldquo;I meet this requirement&rdquo; under How you
-                        fit. If not, take out what the email says about it {where}, and for a
-                        must-have say you do not meet it.
-                      </p>
-                    )}
-                  {meets.has(meetable.get(key) ?? "") ? (
+                  {meetsIt && !met && !locked && (
+                    <p className="mt-1 text-muted-foreground">
+                      {flagsChecked.has(key)
+                        ? must
+                          ? `You will fix it ${where}: take out what the email says about it, and add a line saying you do not meet it.`
+                          : "You checked this: the email must not claim it."
+                        : must
+                          ? `If you meet it, tick “I meet this requirement” under How you fit. If not, take out what the email says about it ${where}, add a line saying you do not meet it, and press “I will fix it ${where}”.`
+                          : "If you meet it, tick “I meet this requirement” under How you fit. If not, make sure the email does not claim it, and press “I checked this”."}
+                    </p>
+                  )}
+                  {met ? (
                     <p className="mt-1 text-muted-foreground">
                       You said you meet it, under How you fit.
                     </p>
@@ -984,9 +1004,11 @@ function KitPanel({
                       <div className="mt-1 flex items-center gap-2">
                         {flagsChecked.has(key) ? (
                           <>
-                            <span className="text-muted-foreground">
-                              {inGmail ? `You will fix it ${where}.` : "You checked this."}
-                            </span>
+                            {!meetsIt && (
+                              <span className="text-muted-foreground">
+                                {inGmail ? `You will fix it ${where}.` : "You checked this."}
+                              </span>
+                            )}
                             <ActionButton
                               url={reviewUrl}
                               gateOf={view.id}
@@ -1073,13 +1095,16 @@ function KitPanel({
       )}
 
       <Panel title="How you fit">
+        {fitRows.length === 0 && (
+          <p className="text-sm text-muted-foreground">The post names no requirements to weigh.</p>
+        )}
         <ul className="flex flex-col gap-3 text-sm">
           {fitRows.map((row) => {
-            // The facts the row cites, as the profile version the draft was written with holds them;
-            // on a paired phone, only those the email's own sentences cite (platform spec B5).
-            const known = row.factIds.filter((id) => facts.has(id));
-            const shown = onLaptop ? known : known.filter((id) => stated.has(id));
-            const met = row.tick && meets.has(row.id);
+            // The facts the row cites, each once, as the profile version the draft was written with
+            // holds them; the review spec shows them on any device that shows the kit.
+            const cited = [...new Set(row.factIds)];
+            const known = cited.filter((id) => facts.has(id));
+            const met = meets.has(row.id);
             const checked = row.flag !== null && flagsChecked.has(row.flag);
             // Checked by an owner who did not say they meet it: the fit check counts it short.
             const unconfirmed = row.tick && checked && !met;
@@ -1101,41 +1126,46 @@ function KitPanel({
                         : VERDICT_WORDS[counted]}
                       <span className="sr-only">: {requirement}</span>
                     </summary>
-                    {shown.length > 0 && (
+                    {known.length > 0 && (
                       <ul className="list-disc pl-5 text-muted-foreground">
-                        {shown.map((id) => (
+                        {known.map((id) => (
                           <li key={id}>{facts.get(id)}</li>
                         ))}
                       </ul>
                     )}
-                    {(row.factIds.length === 0 ||
-                      known.length === 0 ||
-                      shown.length < known.length) && (
+                    {known.length < cited.length || cited.length === 0 ? (
                       <p className="text-muted-foreground">
-                        {row.factIds.length === 0
+                        {cited.length === 0
                           ? "It cites no fact from your profile."
                           : known.length === 0
                             ? "It cites facts this profile version does not have."
-                            : `${shown.length === 0 ? "The facts it cites" : "The other facts it cites"} show on the laptop, since the email does not state them.`}
+                            : "It also cites facts this profile version does not have."}
                       </p>
-                    )}
+                    ) : null}
                   </details>
                 )}
                 {row.note && (
                   <p className="text-muted-foreground">{withoutContacts(row.note, typing(view))}</p>
                 )}
                 {row.why && (
-                  <p className={met || checked ? "text-muted-foreground" : "text-destructive"}>
-                    {met
+                  <p
+                    className={
+                      (row.tick && met) || checked ? "text-muted-foreground" : "text-destructive"
+                    }
+                  >
+                    {row.tick && met
                       ? "You said you meet it."
                       : unconfirmed
-                        ? `You will fix the email ${where}, since you did not say you meet it.`
+                        ? row.must
+                          ? `You will fix the email ${where}: take out what it says about this, and add a line saying you do not meet it.`
+                          : "You checked this: the email must not claim it."
                         : checked
                           ? `You checked this: ${row.why}`
                           : row.why}
                   </p>
                 )}
-                {(row.tick || meets.has(row.id)) && (
+                {/* A word a pick carried to a row that takes no tick here shows, to withdraw. */}
+                {(row.tick || met) && (
                   <FitTick
                     jobId={view.id}
                     kit={kitKey}
@@ -1193,7 +1223,7 @@ function KitPanel({
                         : undefined;
                   return (
                     <li key={i}>
-                      {reason.message}
+                      {withoutContacts(reason.message, typing(view))}
                       {about && (
                         <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>
                       )}
@@ -1216,6 +1246,7 @@ function KitPanel({
               onLaptop={onLaptop}
               cv={cvFile}
               approvals={approvals}
+              approved={approved}
               held={held}
               uncertainId={uncertain?.id ?? null}
               shown={shown}
@@ -1243,6 +1274,8 @@ function KitPanel({
             In Gmail, {account ? `check that From shows ${account}, ` : "check the From address, "}
             attach your CV, and send. Gmail adds your signature. If you change the email&apos;s
             wording in Gmail, answer Yes when jobkit asks; attaching your CV does not count.
+            {unmet > 0 &&
+              " For each requirement you said you do not meet, take out what the email claims about it, and add a line saying so."}
           </p>
         )}
       </Panel>

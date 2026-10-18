@@ -5,7 +5,7 @@ import { isUuid } from "@/lib/uuid";
 import { within } from "@/lib/within";
 
 import { canHandOff } from "./canHandOff";
-import { approveAll, gateInputOf, needsNewWords, NO_DECISIONS } from "./decisions";
+import { approvable, approveAll, gateInputOf, needsNewWords, NO_DECISIONS } from "./decisions";
 import type { JobView } from "./jobView";
 import {
   BEGIN_WITHIN_MS,
@@ -93,6 +93,11 @@ export interface Pressed {
   kit: string;
   to: string;
   uncertain: string | null;
+  /**
+   * The sentences and flags the confirmation listed, which the press marks
+   * (approvable); the route refuses a press that names none.
+   */
+  approved?: readonly string[];
   sessionId: string | null;
 }
 
@@ -113,10 +118,18 @@ export async function scheduleSend(
     // jobkit attaches the CV alone: a post asking for another file goes through Gmail.
     if (view.kitParts.attachments.length > 0) return { ok: false, reason: "attachment" };
     // It sends the words as they stand: one that must change goes through Gmail too.
-    if (needsNewWords(view.kitParts, view.review?.decisions ?? NO_DECISIONS)) {
-      return { ok: false, reason: "words" };
+    const before = view.review?.decisions ?? NO_DECISIONS;
+    if (needsNewWords(view.kitParts, before)) return { ok: false, reason: "words" };
+    // The press marks only what its confirmation listed: one drawn before a decision was made or
+    // taken back, here or on the other device, is refused, and the page is drawn again.
+    if (pressed.approved !== undefined) {
+      const listed = new Set(pressed.approved);
+      const marks = approvable(view.kitParts, before);
+      if (marks.length !== listed.size || marks.some((key) => !listed.has(key))) {
+        return { ok: false, reason: "changed" };
+      }
     }
-    const decisions = approveAll(view.kitParts, view.review?.decisions ?? NO_DECISIONS);
+    const decisions = approveAll(view.kitParts, before);
     if (canHandOff(gateInputOf(view.kitParts, decisions)).length > 0) {
       return { ok: false, reason: "held" };
     }

@@ -733,6 +733,9 @@ function kitPartsOf(parts: {
     submitted: parts.submitted,
     sending: parts.sending,
     skipped: parts.skipped,
+    mustHaves: parts.role.requirements
+      .filter((requirement) => requirement.priority === "must")
+      .map((requirement) => requirement.id),
   };
 }
 

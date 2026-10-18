@@ -110,11 +110,16 @@ async function deliverWhenDue(
   return outcome;
 }
 
-/** The kit, the address and the send that may have gone, as the page showed them at the press. */
+/**
+ * The kit, the address, the send that may have gone, and the sentences and
+ * flags the confirmation listed, as the page showed them at the press; a
+ * page from before it named them is refused as changed, and drawn again.
+ */
 const sendBody = z.object({
   kit: z.string().min(1).max(100),
   to: z.string().max(400),
   uncertain: z.uuid().nullable(),
+  approved: z.array(z.string().min(1).max(40)).max(500).optional(),
 });
 
 /**
@@ -133,6 +138,7 @@ export async function send(
   if (!isUuid(jobId)) return refusal(404, "not-found");
   const body = await bodyOf(request, sendBody);
   if (!body.ok) return body.response;
+  if (body.data.approved === undefined) return refusal(409, "changed");
   const connection = await gmailConnection(deps.db);
   if (!connection) return refusal(409, "gmail-not-connected");
   if (connection.refusedAt) return refusal(409, "gmail-refused");

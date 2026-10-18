@@ -4,6 +4,7 @@ import { ADDRESS_CHECKS_VERSION, type AddressCheck } from "./addressChecks";
 import { canHandOff } from "./canHandOff";
 import {
   approveAll,
+  approvable,
   decide,
   decisionsSchema,
   flagKey,
@@ -39,6 +40,7 @@ const PARTS: KitParts = {
   sent: false,
   sending: false,
   skipped: false,
+  mustHaves: ["R2"],
 };
 
 const MAIL_HOST: AddressCheck = {
@@ -247,14 +249,36 @@ describe("approveAll", () => {
     expect(approveAll(PARTS, said)).toMatchObject({ flagsChecked: [], meets: ["R2"] });
   });
 
-  it("asks for new words when the owner checked a requirement only they can confirm without saying they meet it", () => {
+  it("asks for new words when the owner checked a must-have only they can confirm without saying they meet it", () => {
     const checked = decide(NO_DECISIONS, { kind: "check_flag", flag: "F1" });
 
     expect(needsNewWords(PARTS, NO_DECISIONS)).toBe(false);
     expect(needsNewWords(PARTS, checked)).toBe(true);
+    // A nice-to-have the email may never mention needs no new words.
+    expect(needsNewWords({ ...PARTS, mustHaves: [] }, checked)).toBe(false);
     expect(
       needsNewWords(PARTS, decide(checked, { kind: "meets", requirementId: "R2", ticked: true })),
     ).toBe(false);
+  });
+
+  it("names what Approve & send marks: the sentences and flags the gate holds that it may settle", () => {
+    const parts: KitParts = {
+      ...PARTS,
+      flags: [
+        FLAG,
+        { kind: "over_limit", at: "body", message: "Too long." },
+        { kind: "needs_your_line", at: "S3", message: "Needs your line." },
+        { kind: "keyword_missing", at: "body", message: "No keyword." },
+      ],
+    };
+
+    // S2 is overstated; FLAG (F1) is the owner's to answer and needs_your_line (F3) new words.
+    expect(approvable(parts, NO_DECISIONS)).toEqual(["sentence:S2", "flag:F2", "flag:F4"]);
+    const some = decide(decide(NO_DECISIONS, { kind: "check", blockId: "S2" }), {
+      kind: "check_flag",
+      flag: "F4",
+    });
+    expect(approvable(parts, some)).toEqual(["flag:F2"]);
   });
 
   it("reads decisions kept before the fit tick as saying the owner meets nothing", () => {

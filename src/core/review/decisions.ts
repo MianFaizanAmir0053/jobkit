@@ -232,6 +232,12 @@ export interface KitParts {
   sending: boolean;
   /** Whether the owner skipped the job, its kit ready (ledger spec, "Statuses"). */
   skipped: boolean;
+  /**
+   * The chosen role's must-have requirements, by ID: one only the owner can
+   * confirm, which they checked without saying they meet it, needs new
+   * words, a line saying they do not meet it.
+   */
+  mustHaves?: readonly string[];
 }
 
 /**
@@ -253,17 +259,49 @@ export const NEEDS_NEW_WORDS: ReadonlySet<KitFlagKind> = new Set([
 
 /** Whether the kit's words must change before it goes, so Approve & send cannot send it. */
 export function needsNewWords(
-  parts: Pick<KitParts, "flags">,
+  parts: Pick<KitParts, "flags" | "mustHaves">,
   decisions: Pick<ReviewDecisions, "flagsChecked" | "meets"> = NO_DECISIONS,
 ): boolean {
   const checked = new Set(decisions.flagsChecked);
   const meets = new Set(decisions.meets);
+  const musts = new Set(parts.mustHaves ?? []);
   return parts.flags.some(
     (flag, place) =>
       NEEDS_NEW_WORDS.has(flag.kind) ||
-      // Checked by an owner who did not say they meet it: the email must not claim it.
-      (isMeetable(flag) && checked.has(flagKey(place)) && !meets.has(flag.at)),
+      // A must-have checked by an owner who did not say they meet it: the email must not claim it,
+      // and needs a line saying so.
+      (isMeetable(flag) &&
+        musts.has(flag.at) &&
+        checked.has(flagKey(place)) &&
+        !meets.has(flag.at)),
   );
+}
+
+/**
+ * What Approve & send marks "I checked this" on, of what the gate now
+ * holds: the separate check's sentences ("sentence:S2"), then validate's
+ * flags ("flag:F1"), but those only new words resolve and those only the
+ * owner can answer. The confirmation lists them and the press names them,
+ * so a press never marks what its page did not list, as when a decision
+ * was taken back on the other device after the page was drawn.
+ */
+export function approvable(parts: KitParts, decisions: ReviewDecisions): string[] {
+  const blocks = new Set(parts.blocks);
+  const checked = new Set(decisions.checked);
+  const flagsChecked = new Set(decisions.flagsChecked);
+  const sentences = parts.verdicts
+    .filter(
+      (verdict) =>
+        isBlocking(verdict) && blocks.has(verdict.blockId) && !checked.has(verdict.blockId),
+    )
+    .map((verdict) => `sentence:${verdict.blockId}`);
+  const flags = parts.flags.flatMap((flag, place) => {
+    const key = flagKey(place);
+    return flagsChecked.has(key) || NEEDS_NEW_WORDS.has(flag.kind) || isMeetable(flag)
+      ? []
+      : [`flag:${key}`];
+  });
+  return [...new Set(sentences), ...flags];
 }
 
 /**

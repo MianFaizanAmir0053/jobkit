@@ -13,6 +13,7 @@ import { cryptoRandom } from "@/adapters/random";
 import { issueSession } from "@/core/platform/sessions";
 import type { Db, QueryResult, Row } from "@/core/ports";
 import { LATE_MS } from "@/core/review/kitSends";
+import { approvable } from "@/core/review/decisions";
 import { jobView } from "@/core/review/jobView";
 import { readyKit, resetKitBed } from "@/core/review/testKit";
 import type { AppConfig } from "@/server/config";
@@ -103,7 +104,12 @@ function droppingFirstClaim(inner: Db): Db {
 /** What the job page shows as the owner presses Send: the kit and the address. */
 async function pressedOn(id: string) {
   const view = (await jobView({ db, clock }, id))!;
-  return { kit: view.kitKey!, to: view.handoff!.to, uncertain: view.uncertain?.id ?? null };
+  return {
+    kit: view.kitKey!,
+    to: view.handoff!.to,
+    uncertain: view.uncertain?.id ?? null,
+    approved: approvable(view.kitParts!, view.review!.decisions),
+  };
 }
 
 /** Runs what the routes scheduled, as after() would once the response has gone. */

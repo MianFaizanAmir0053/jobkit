@@ -205,16 +205,20 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
   }
   // From every role: a line aimed at AI that the model recorded under another role still counts.
   // Looked for in the body only: the subject, greeting and closing are the app's words.
-  // Each value once, however many roles record its line, so taking one out never hides another.
-  const followed = new Set(
-    context.record.roles
-      .flatMap((each) => each.instructions)
-      .filter((instruction) => instruction.addressed_to_ai)
-      .map((instruction) => oneLine(instruction.value))
-      // A value under three characters ("OK") is matched in its own case, so "ok" in a sentence is not it.
-      .filter((value) => isCheckable(value) && hasWord(body, value, [...value].length < 3)),
-  );
-  for (const value of followed) {
+  // Each value once, however many roles record its line and in whatever case, as it is matched,
+  // so taking one out never hides another.
+  const followed = new Map<string, string>();
+  for (const value of context.record.roles
+    .flatMap((each) => each.instructions)
+    .filter((instruction) => instruction.addressed_to_ai)
+    .map((instruction) => oneLine(instruction.value))) {
+    // A value under three characters ("OK") is matched in its own case, so "ok" in a sentence is not it.
+    const exact = [...value].length < 3;
+    if (!isCheckable(value) || !hasWord(body, value, exact)) continue;
+    const key = exact ? value : value.toLowerCase();
+    if (!followed.has(key)) followed.set(key, value);
+  }
+  for (const value of followed.values()) {
     const shown = [...value].slice(0, 60).join("");
     flag(
       "ai_instruction_followed",

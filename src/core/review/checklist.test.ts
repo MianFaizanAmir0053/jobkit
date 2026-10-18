@@ -103,14 +103,14 @@ describe("checklistOf", () => {
     ]);
   });
 
-  it("leaves a file the post asks for not applied when it lists none to attach", () => {
+  it("marks a file the post asks for as the owner's to attach, whatever it lists", () => {
     // As in S16: "Send me a DM here with your portfolio", with no file listed.
     const { post, role } = postWith([
       line("attach_document", "Send me a DM with your portfolio.", "portfolio"),
     ]);
     role.required_attachments = [];
 
-    expect(checklistOf(post, role, draft({})).map((item) => item.status)).toEqual(["not_applied"]);
+    expect(checklistOf(post, role, draft({})).map((item) => item.status)).toEqual(["attachment"]);
   });
 
   it("reads the subject format an older draft applied, which it did not keep", () => {

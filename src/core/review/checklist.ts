@@ -11,13 +11,13 @@ import type { JobRecord, Role } from "@/core/extraction/record";
  * one the draft kept, its keyword), or applied but missed (validate's flag
  * for the subject or the keyword stands; the body runs past the line's own
  * limit); a keyword drafting left out, as one that repeats a line aimed at
- * AI; a file to attach, when the post lists files below; else not
- * applied, for the owner to see to. And the lines aimed at AI, from every
- * role once, since the model may record a line about the whole post under
- * one role: an instruction not followed, or followed when the email's
- * body repeats its words as validate looks for them; a screening question
- * not answered. Declining an applied line comes with the block editor
- * (Task 29), which runs validate again.
+ * AI; a file, the owner's to attach, whatever the post lists below; else
+ * not applied, for the owner to see to. And the lines aimed at AI, from
+ * every role once, since the model may record a line about the whole post
+ * under one role: an instruction not followed, or followed when the
+ * email's body repeats its words as validate looks for them; a screening
+ * question not answered. Declining an applied line comes with the block
+ * editor (Task 29), which runs validate again.
  */
 
 export type ChecklistStatus =
@@ -54,12 +54,7 @@ export function checklistOf(record: JobRecord, role: Role, drafted: Drafted): Ch
   const own = role.instructions
     .filter((line) => !line.addressed_to_ai)
     .map((line): ChecklistItem => {
-      if (line.kind === "attach_document") {
-        return {
-          text: line.text,
-          status: role.required_attachments.length > 0 ? "attachment" : "not_applied",
-        };
-      }
+      if (line.kind === "attach_document") return { text: line.text, status: "attachment" };
       const limit = line.kind === "word_limit" ? wordLimitOf(line) : null;
       // The accepted keyword, which drafting left out when it repeats a line aimed at AI.
       if (

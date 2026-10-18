@@ -82,6 +82,7 @@ export function ApproveSend({
   onLaptop,
   cv,
   approvals,
+  approved,
   held,
   uncertainId,
   shown,
@@ -100,6 +101,8 @@ export function ApproveSend({
   cv: string | null;
   /** What the press marks "I checked this": each flagged sentence and flag the page lists. */
   approvals: string[];
+  /** The same, as the press names them, so it never marks what the confirmation did not list. */
+  approved: readonly string[];
   /** Why Approve & send cannot send it now, in the owner's words; null when it can. */
   held: string | null;
   /** The earlier send that may have gone, which the confirmation repeats and the press names. */
@@ -222,7 +225,7 @@ export function ApproveSend({
       const response = await fetch(`/api/jobs/${jobId}/send`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ kit, to, uncertain: uncertainId }),
+        body: JSON.stringify({ kit, to, uncertain: uncertainId, approved }),
         signal: AbortSignal.timeout(ANSWER_MS),
       });
       if (!response.ok) {
