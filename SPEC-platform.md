@@ -256,7 +256,7 @@ Modules register stages; the runner owns their order, the job's state and the bo
 |---|---|---|---|
 | `manual_run` | owner | assigned to the manual arm of the timing comparison (ledger spec); nothing uploads and no stage runs | `closed` (Stop) |
 | `uploading` | client | intake is receiving images | `queued`, `upload_failed` |
-| `upload_failed` | owner | the upload did not complete within 15 minutes, or its objects were missing | `uploading` (Upload again), `closed` (Skip) |
+| `upload_failed` | owner | the upload did not complete within 15 minutes, or its objects were missing; or Upload again restarted an upload under way, on its way back to `uploading` | `uploading` (Upload again), `closed` (Skip) |
 | `queued` | running | ready for the first stage | `extracting` |
 | `extracting` | running | `extract` or `extract_questions` due or running | `needs_role_pick`, `checking`, `drafting` (new form questions on a ready kit), `stopped`, `failed` |
 | `needs_role_pick` | waiting | the owner picks a role | `checking`; on Skip, `closed`, or back to `kit_ready` if another role already has a kit |

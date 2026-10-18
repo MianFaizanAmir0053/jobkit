@@ -58,7 +58,7 @@ export default async function NewJobPage(props: PageProps<"/jobs/new">) {
         {job && (
           // Which job: one whose upload failed has no reading of its post to name it by.
           <p className="mt-1 text-sm text-muted-foreground">
-            The job started {formatTime(job.receivedAt, await viewerTimeZone())}.
+            This job came in on {formatTime(job.receivedAt, await viewerTimeZone())}.
           </p>
         )}
         {!job ? (

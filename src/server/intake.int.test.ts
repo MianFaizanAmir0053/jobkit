@@ -463,6 +463,40 @@ describe("POST /api/jobs/<id>/upload-again", () => {
   });
 });
 
+describe("a page whose upload was begun again", () => {
+  it("is told so when it asks for fresh URLs, or confirms, carrying screenshots the job no longer has", async () => {
+    const cookie = await signedIn();
+    const created = await newJob(
+      { images: [image(1, 1_000)], pastedText: "", clientElapsedMs: 0 },
+      cookie,
+    );
+    const { jobId } = (await created.json()) as { jobId: string };
+    const stale = JSON.stringify({ imageIds: ["00000000-0000-4000-8000-000000000001"] });
+
+    const urls = await reissue(
+      post(`/api/jobs/${jobId}/upload-urls`, stale, cookie),
+      deps(),
+      jobId,
+    );
+    expect(urls.status).toBe(409);
+    expect(await urls.json()).toEqual({ error: "begun-again" });
+    const confirmed = await confirm(
+      post(`/api/jobs/${jobId}/uploaded`, stale, cookie),
+      deps(),
+      jobId,
+    );
+    expect(confirmed.status).toBe(409);
+    expect(await confirmed.json()).toEqual({ error: "begun-again" });
+    // A list of screenshots that is not one is refused.
+    const odd = await reissue(
+      post(`/api/jobs/${jobId}/upload-urls`, JSON.stringify({ imageIds: "x" }), cookie),
+      deps(),
+      jobId,
+    );
+    expect(odd.status).toBe(400);
+  });
+});
+
 describe("POST /api/jobs/<id>/upload-urls", () => {
   it("gives fresh URLs for the screenshots not yet stored, after which the job completes (intake AC7)", async () => {
     const cookie = await signedIn();

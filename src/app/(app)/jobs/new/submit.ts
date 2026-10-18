@@ -84,6 +84,10 @@ export const MESSAGES = {
   notFound: "The job could not be found. Press Start again.",
   notFailed:
     "This job is not waiting for its screenshots any more: open it from the Jobs list to see how it stands.",
+  begunAgain:
+    "This job's upload was started again, on another device or in another tab: open the job to follow it.",
+  againLost:
+    "The connection dropped as the upload began again. Press Start again: the upload starts over.",
   uploadingElsewhere:
     "Another tab of this browser is uploading this job's screenshots. Open the job there, or close that tab and press Start again.",
   notResumed:
@@ -108,6 +112,7 @@ const KEEPING = [
  */
 const ENDING = [
   MESSAGES.uploadTimedOut,
+  MESSAGES.begunAgain,
   MESSAGES.notFound,
   MESSAGES.refusedUpload,
   MESSAGES.notStarted,
@@ -250,6 +255,9 @@ export async function submitJob(
 
   /** Starts the job, or its upload again, and sends its screenshots, under the lock if not held. */
   async function startAndSend(locked: boolean): Promise<Submitted> {
+    // An answer lost as the upload begins again: pressing Start again starts it over, safely.
+    const lost = againOf ? MESSAGES.againLost : MESSAGES.createLost;
+    if (againOf) await deps.pending.clear(againOf).catch(() => undefined);
     // The server's upload clock starts when this request arrives; the page's starts sooner.
     const deadline: Deadline = {
       at: deps.now() + UPLOAD_DEADLINE_MS,
@@ -281,13 +289,13 @@ export async function submitJob(
         },
       );
       // A server error may come after the job was created; so may an answer the page cannot read.
-      if (response.status >= 500) return { ok: false, message: MESSAGES.createLost };
+      if (response.status >= 500) return { ok: false, message: lost };
       if (!response.ok) return { ok: false, message: await createMessage(response) };
       created = (await response.json()) as typeof created;
       if (!Array.isArray(created.uploads)) throw new Error("no uploads");
     } catch {
-      // The server may have created the job before the answer was lost.
-      return { ok: false, message: MESSAGES.createLost };
+      // The server may have created the job, or begun its upload again, before the answer was lost.
+      return { ok: false, message: lost };
     }
     if (created.uploads.length !== images.length) {
       return { ok: false, message: MESSAGES.notStarted };
@@ -313,7 +321,7 @@ export async function submitJob(
       try {
         const uploaded = await uploadAll(deps, created.uploads, blobs, deadline, onStatus);
         outcome = uploaded
-          ? await settled(deps, jobId, await lastWord(deps, jobId, uploaded))
+          ? await settled(deps, jobId, await lastWord(deps, jobId, uploaded, [...blobs.keys()]))
           : await finish(deps, jobId, blobs, deadline, onStatus);
       } catch {
         // The page says to press Start again, so no later visit may finish this job.
@@ -380,14 +388,17 @@ async function finishKept(
   onStatus("Finishing the upload of a job started before…");
   const { jobId } = pending;
   const tooSlow: Submitted = { ok: false, message: MESSAGES.tooSlow };
+  const carried = pending.images.map((image) => image.imageId);
   const left = pending.deadlineAt - deps.wallNow();
-  if (left <= 0) return settled(deps, jobId, await lastWord(deps, jobId, tooSlow));
+  if (left <= 0) return settled(deps, jobId, await lastWord(deps, jobId, tooSlow, carried));
   const deadline: Deadline = { at: deps.now() + left, wallAt: pending.deadlineAt };
-  const fresh = await freshUploads(deps, jobId, deadline);
-  if (!Array.isArray(fresh)) return settled(deps, jobId, await lastWord(deps, jobId, fresh));
+  const fresh = await freshUploads(deps, jobId, deadline, carried);
+  if (!Array.isArray(fresh)) {
+    return settled(deps, jobId, await lastWord(deps, jobId, fresh, carried));
+  }
   const blobs = new Map(pending.images.map((image) => [image.imageId, image.blob]));
   const uploaded = await uploadAll(deps, fresh, blobs, deadline, onStatus);
-  if (uploaded) return settled(deps, jobId, await lastWord(deps, jobId, uploaded));
+  if (uploaded) return settled(deps, jobId, await lastWord(deps, jobId, uploaded, carried));
   return finish(deps, jobId, blobs, deadline, onStatus);
 }
 
@@ -396,9 +407,14 @@ async function finishKept(
  * was lost may have arrived: before saying the upload is too slow, it asks
  * for the confirmation, which queues the job when every file did.
  */
-async function lastWord(deps: SubmitDeps, jobId: string, outcome: Submitted): Promise<Submitted> {
+async function lastWord(
+  deps: SubmitDeps,
+  jobId: string,
+  outcome: Submitted,
+  carried: readonly string[],
+): Promise<Submitted> {
   if (outcome.ok || outcome.message !== MESSAGES.tooSlow) return outcome;
-  const confirmed = await confirmUpload(deps, jobId);
+  const confirmed = await confirmUpload(deps, jobId, carried);
   return confirmed === "missing" ? outcome : confirmed;
 }
 
@@ -432,17 +448,18 @@ async function finish(
   deadline: Deadline,
   onStatus: (status: string) => void,
 ): Promise<Submitted> {
+  const carried = [...blobs.keys()];
   for (let round = 0; ; round++) {
     onStatus("Checking the upload…");
-    const confirmed = await confirmUpload(deps, jobId);
+    const confirmed = await confirmUpload(deps, jobId, carried);
     if (confirmed !== "missing") return settled(deps, jobId, confirmed);
     if (round === RESUME_ROUNDS)
       return settled(deps, jobId, { ok: false, message: MESSAGES.notArrived });
     // The confirmation just said what is missing, so a deadline past here needs no other.
-    const fresh = await freshUploads(deps, jobId, deadline);
+    const fresh = await freshUploads(deps, jobId, deadline, carried);
     if (!Array.isArray(fresh)) return settled(deps, jobId, fresh);
     const uploaded = await uploadAll(deps, fresh, blobs, deadline, onStatus);
-    if (uploaded) return settled(deps, jobId, await lastWord(deps, jobId, uploaded));
+    if (uploaded) return settled(deps, jobId, await lastWord(deps, jobId, uploaded, carried));
   }
 }
 
@@ -466,6 +483,8 @@ async function freshUploads(
   deps: SubmitDeps,
   jobId: string,
   deadline: Deadline,
+  /** The screenshots the page carries, which the server checks are still the job's. */
+  carried: readonly string[],
 ): Promise<Uploads | Submitted> {
   // Asked again while the connection or the server fails, three times at most, and never past
   // the deadline: each request logs an upload attempt, and none could run.
@@ -476,6 +495,8 @@ async function freshUploads(
     try {
       response = await deps.fetch(`/api/jobs/${jobId}/upload-urls`, {
         method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ imageIds: carried }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch {
@@ -493,6 +514,9 @@ async function freshUploads(
   if (response.status === 409 && body?.error === "not-uploading") return { ok: true, jobId };
   if (response.status === 409 && body?.error === "upload-failed") {
     return { ok: false, message: MESSAGES.uploadTimedOut };
+  }
+  if (response.status === 409 && body?.error === "begun-again") {
+    return { ok: false, message: MESSAGES.begunAgain };
   }
   if (response.status === 404) return { ok: false, message: MESSAGES.notFound };
   return { ok: false, message: keptSessionMessage(response.status) ?? MESSAGES.notResumed };
@@ -571,7 +595,12 @@ async function uploadFile(
  * the job was queued, so from then on a refusal that forgets the upload says
  * to check the Jobs list; one that keeps it says New job checks again.
  */
-async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted | "missing"> {
+async function confirmUpload(
+  deps: SubmitDeps,
+  jobId: string,
+  /** The screenshots the page carries, which the server checks are still the job's. */
+  carried: readonly string[],
+): Promise<Submitted | "missing"> {
   let uncertain = false;
   const failed = (message: string): Submitted => ({
     ok: false,
@@ -583,6 +612,8 @@ async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted
     try {
       response = await deps.fetch(`/api/jobs/${jobId}/uploaded`, {
         method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ imageIds: carried }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch {
@@ -598,6 +629,9 @@ async function confirmUpload(deps: SubmitDeps, jobId: string): Promise<Submitted
     if (response.status === 409 && body?.error === "not-uploading") return { ok: true, jobId };
     if (response.status === 409 && body?.error === "upload-failed") {
       return { ok: false, message: MESSAGES.uploadTimedOut };
+    }
+    if (response.status === 409 && body?.error === "begun-again") {
+      return { ok: false, message: MESSAGES.begunAgain };
     }
     if (response.status === 404) return failed(MESSAGES.notFound);
     if (response.status === 409 && body?.error === "missing") return "missing";

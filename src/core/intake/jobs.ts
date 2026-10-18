@@ -136,8 +136,19 @@ export async function startJob(
 
 export type ConfirmResult =
   | { ok: true }
-  | { ok: false; reason: "not-found" | "not-uploading" | "upload-failed" }
+  | { ok: false; reason: "not-found" | "not-uploading" | "upload-failed" | "begun-again" }
   | { ok: false; reason: "missing"; missing: string[] };
+
+/**
+ * Whether the screenshots a page carries are the job's: a page whose upload
+ * was begun again since, here or on the other device, carries others. A
+ * page that names none, from before pages named them, is taken at its word.
+ */
+function carriesTheJobs(carried: readonly string[] | undefined, rows: readonly { id: string }[]) {
+  if (carried === undefined) return true;
+  const ids = new Set(rows.map((row) => row.id));
+  return carried.length === ids.size && carried.every((id) => ids.has(id));
+}
 
 /**
  * Checks that every image of an uploading job is stored at its declared
@@ -149,9 +160,15 @@ export type ConfirmResult =
  * phone hashed, extract checks when it reads them, and it cuts tiles by the
  * stored image's own size, refusing one too tall or too wide, so the tile
  * and size limits hold for what was uploaded. The width, height and tile
- * count stored for each image are the phone's word.
+ * count stored for each image are the phone's word. A page carrying other
+ * screenshots than the job's, or one whose upload was begun again as it
+ * confirmed, is told so: its upload is not the job's any more.
  */
-export async function confirmUploads(deps: Deps, jobId: string): Promise<ConfirmResult> {
+export async function confirmUploads(
+  deps: Deps,
+  jobId: string,
+  carried?: readonly string[],
+): Promise<ConfirmResult> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   await expireUploads(deps.db, deps.clock.now(), jobId);
   const job = await loadJob(deps.db, jobId);
@@ -163,6 +180,7 @@ export async function confirmUploads(deps: Deps, jobId: string): Promise<Confirm
       where job_id = $1 order by purpose, position`,
     [jobId],
   );
+  if (!carriesTheJobs(carried, rows)) return { ok: false, reason: "begun-again" };
   const missing: string[] = [];
   for (const row of rows) {
     const stored = await deps.storage.stat(row.storage_path);
@@ -185,15 +203,16 @@ export async function confirmUploads(deps: Deps, jobId: string): Promise<Confirm
   // Something moved the job meanwhile: the upload timeout, a confirm before this one, or the
   // timeout and then Upload again on the other device, which began another upload.
   const now = await loadJob(deps.db, jobId);
-  const failed =
-    now?.state === "upload_failed" ||
-    (now?.state === "uploading" && now.stateChangedAt.getTime() !== job.stateChangedAt.getTime());
-  return { ok: false, reason: failed ? "upload-failed" : "not-uploading" };
+  if (now?.state === "upload_failed") return { ok: false, reason: "upload-failed" };
+  if (now?.state === "uploading" && now.stateChangedAt.getTime() !== job.stateChangedAt.getTime()) {
+    return { ok: false, reason: "begun-again" };
+  }
+  return { ok: false, reason: "not-uploading" };
 }
 
 export type ReissueResult =
   | { ok: true; uploads: { imageId: string; url: string }[] }
-  | { ok: false; reason: "not-found" | "not-uploading" | "upload-failed" };
+  | { ok: false; reason: "not-found" | "not-uploading" | "upload-failed" | "begun-again" };
 
 /**
  * Fresh upload URLs for the files of an uploading job not yet stored at
@@ -203,7 +222,11 @@ export type ReissueResult =
  * failed and a new one starts with the files left; when every file arrived,
  * none is given, and the phone goes on to confirm.
  */
-export async function reissueUploads(deps: Deps, jobId: string): Promise<ReissueResult> {
+export async function reissueUploads(
+  deps: Deps,
+  jobId: string,
+  carried?: readonly string[],
+): Promise<ReissueResult> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   await expireUploads(deps.db, deps.clock.now(), jobId);
   const job = await loadJob(deps.db, jobId);
@@ -215,6 +238,8 @@ export async function reissueUploads(deps: Deps, jobId: string): Promise<Reissue
       where job_id = $1 order by purpose, position`,
     [jobId],
   );
+  // A page carrying other screenshots than the job's gets no URL, and starts no attempt.
+  if (!carriesTheJobs(carried, rows)) return { ok: false, reason: "begun-again" };
   const left: typeof rows = [];
   const wrong: string[] = [];
   for (const row of rows) {
@@ -241,10 +266,10 @@ export async function reissueUploads(deps: Deps, jobId: string): Promise<Reissue
     );
     if (locked[0]?.state === "upload_failed") return { ok: false, reason: "upload-failed" };
     if (locked[0]?.state !== "uploading") return { ok: false, reason: "not-uploading" };
-    // Uploading again since the page read it, as after Upload again on the other device: the
-    // upload this page carried failed, and its files are not the job's any more.
+    // Uploading again since this request read it, as after Upload again on the other device:
+    // the upload this page carried is not the job's any more.
     if (locked[0].state_changed_at.getTime() !== job.stateChangedAt.getTime()) {
-      return { ok: false, reason: "upload-failed" };
+      return { ok: false, reason: "begun-again" };
     }
     await endAttempt(tx, jobId, "failed", at);
     await startAttempt(
@@ -308,15 +333,23 @@ export async function uploadAgain(
   const now = deps.clock.now();
   const purgeAfter = new Date(now.getTime() + RETENTION_MS);
   const replaced = await deps.db.tx(async (tx) => {
-    let since = job.stateChangedAt;
-    if (job.state === "uploading") {
+    // The job as it stands under its lock: a status read may have timed its upload out since the
+    // read above, or another press may have begun it again.
+    const { rows: locked } = await tx.query<{ state: string; state_changed_at: Date }>(
+      "select state, state_changed_at from {{schema}}.jobs where id = $1 for update",
+      [jobId],
+    );
+    const current = locked[0];
+    if (current?.state !== "upload_failed" && current?.state !== "uploading") return null;
+    let since = current.state_changed_at;
+    if (current.state === "uploading") {
       // The upload under way fails, as its timeout would fail it, its attempt with it.
       const failed = await moveJob(tx, jobId, {
         from: "uploading",
         to: "upload_failed",
         pending: null,
         at: now,
-        ifChangedAt: job.stateChangedAt,
+        ifChangedAt: since,
       });
       if (!failed) return null;
       await endAttempt(tx, jobId, "failed", now);

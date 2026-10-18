@@ -8,7 +8,7 @@ import {
   startJob,
   uploadAgain,
 } from "@/core/intake/jobs";
-import { CONTENT_TYPES } from "@/core/intake/limits";
+import { CONTENT_TYPES, LIMITS } from "@/core/intake/limits";
 import type { RunnerDeps } from "@/core/platform/runner";
 import type { Storage } from "@/core/ports";
 import type { AppConfig } from "@/server/config";
@@ -119,12 +119,12 @@ export async function confirm(
 ): Promise<NextResponse> {
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
-  if ((await readLimited(request, MAX_BODY_BYTES)) === "too-large") {
-    return refusal(413, "too-large");
-  }
+  const carried = await carriedIn(request);
+  if (carried === "too-large") return refusal(413, "too-large");
+  if (carried === "invalid") return refusal(400, "invalid");
   let confirmed: Awaited<ReturnType<typeof confirmUploads>>;
   try {
-    confirmed = await confirmUploads(deps, jobId);
+    confirmed = await confirmUploads(deps, jobId, carried);
   } catch {
     // Storage could not say what arrived; the page asks again.
     return refusal(503, "storage-unavailable");
@@ -154,18 +154,42 @@ export async function reissue(
 ): Promise<NextResponse> {
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
-  if ((await readLimited(request, MAX_BODY_BYTES)) === "too-large") {
-    return refusal(413, "too-large");
-  }
+  const carried = await carriedIn(request);
+  if (carried === "too-large") return refusal(413, "too-large");
+  if (carried === "invalid") return refusal(400, "invalid");
   let reissued: Awaited<ReturnType<typeof reissueUploads>>;
   try {
-    reissued = await reissueUploads(deps, jobId);
+    reissued = await reissueUploads(deps, jobId, carried);
   } catch {
     // Storage could not say what arrived, or give a URL; the page asks again.
     return refusal(503, "storage-unavailable");
   }
   if (!reissued.ok) return refusal(reissued.reason === "not-found" ? 404 : 409, reissued.reason);
   return NextResponse.json({ uploads: reissued.uploads }, { status: 200, headers: NO_STORE });
+}
+
+const carriedBody = z.object({ imageIds: z.array(z.uuid()).max(LIMITS.images) });
+
+/**
+ * The screenshots a page carries, which it names as it asks for fresh URLs
+ * or confirms, so a page whose upload was begun again since is told so;
+ * none from a page from before pages named them, which sends nothing.
+ */
+async function carriedIn(
+  request: NextRequest,
+): Promise<readonly string[] | undefined | "too-large" | "invalid"> {
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return "too-large";
+  const text = new TextDecoder().decode(body).trim();
+  if (text === "") return undefined;
+  let json: unknown = null;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    return "invalid";
+  }
+  const parsed = carriedBody.safeParse(json);
+  return parsed.success ? parsed.data.imageIds : "invalid";
 }
 
 /** The body as JSON, null when it is not JSON, or "too-large" past 64 KB, declared or sent. */

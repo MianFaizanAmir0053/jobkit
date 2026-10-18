@@ -679,7 +679,7 @@ describe("uploadAgain", () => {
     expect(await images(jobId)).toHaveLength(2);
   });
 
-  it("tells a page whose upload was begun again elsewhere as it asked for URLs, or confirmed, that its upload failed", async () => {
+  it("tells a page whose upload was begun again elsewhere as it asked for URLs, or confirmed, that it was", async () => {
     // As the page asks, its upload runs out of time and another device presses Upload again.
     const begunAgain = (inner: Db, jobId: string, marker: string): Db => {
       let done = false;
@@ -721,7 +721,7 @@ describe("uploadAgain", () => {
         { db: begunAgain(db, asking.jobId, "for update"), clock, storage },
         asking.jobId,
       ),
-    ).toEqual({ ok: false, reason: "upload-failed" });
+    ).toEqual({ ok: false, reason: "begun-again" });
     expect(await attempts(asking.jobId)).toHaveLength(1);
     // Not taken as confirmed, which the page would read as its job going on.
     expect(
@@ -729,7 +729,72 @@ describe("uploadAgain", () => {
         { db: begunAgain(db, confirming.jobId, "set state = $3"), clock, storage },
         confirming.jobId,
       ),
-    ).toEqual({ ok: false, reason: "upload-failed" });
+    ).toEqual({ ok: false, reason: "begun-again" });
+  });
+
+  it("refuses a page carrying other screenshots than the job's, touching no attempt: its upload was begun again", async () => {
+    const { jobId } = await failedUpload();
+    const first = await uploadAgain(deps(), jobId, [image(3)]);
+    if (!first.ok) throw new Error(JSON.stringify(first));
+    const before = await attempts(jobId);
+    const stale = ["00000000-0000-4000-8000-000000000001"];
+
+    expect(await reissueUploads(deps(), jobId, stale)).toEqual({
+      ok: false,
+      reason: "begun-again",
+    });
+    expect(await confirmUploads(deps(), jobId, stale)).toEqual({
+      ok: false,
+      reason: "begun-again",
+    });
+    expect(await attempts(jobId)).toEqual(before);
+    // The page carrying the job's own screenshots goes on.
+    expect(
+      await reissueUploads(
+        deps(),
+        jobId,
+        first.uploads.map((upload) => upload.imageId),
+      ),
+    ).toMatchObject({ ok: true });
+  });
+
+  it("restarts an upload as the job stands under its lock, though a status read timed it out a moment before", async () => {
+    const started = await startJob(deps(), {
+      images: [image(1)],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    if (!started.ok) throw new Error("not started");
+    clock.advance(1_000);
+    // As this press reads the job, another read applies its timeout, failing the upload.
+    let done = false;
+    const timedOut = (base: Db): Db => ({
+      schema: base.schema,
+      query: async <T extends Row = Row>(sql: string, params?: readonly unknown[]) => {
+        if (!done && sql.includes("from {{schema}}.jobs where id = $1 for update")) {
+          done = true;
+          await base.query("update {{schema}}.jobs set state = 'upload_failed' where id = $1", [
+            started.jobId,
+          ]);
+          await base.query(
+            "update {{schema}}.upload_attempts set outcome = 'failed', ended_at = $2 where job_id = $1",
+            [started.jobId, clock.now()],
+          );
+        }
+        return base.query<T>(sql, params) as Promise<QueryResult<T>>;
+      },
+      exec: (sql) => base.exec(sql),
+      tx: (fn) => base.tx((tx) => fn(timedOut(tx))),
+    });
+
+    expect(
+      await uploadAgain({ db: timedOut(db), clock, storage }, started.jobId, [image(2)]),
+    ).toMatchObject({ ok: true });
+    expect(await loadJob(db, started.jobId)).toMatchObject({ state: "uploading" });
+    expect((await attempts(started.jobId)).map((attempt) => attempt.outcome)).toEqual([
+      "failed",
+      null,
+    ]);
   });
 
   it("starts no upload again once this month's model calls reach the cap for new jobs", async () => {

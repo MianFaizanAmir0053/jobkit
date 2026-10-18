@@ -171,6 +171,15 @@ export function NewJobForm({
   const [clock, setClock] = useState(0);
   const armed = heldAt === null || clock - Math.max(heldAt, lastTap) >= QUIET_MS;
   const armedNow = useRef(armed);
+  // Whether the form is on screen: a Start that ends after the owner left opens no job then.
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     armedNow.current = armed;
@@ -314,7 +323,7 @@ export function NewJobForm({
     if (submitted.ok) {
       // Busy until the job page replaces this one, so Start is not pressed twice.
       setStatus("Opening the job…");
-      router.push(`/jobs/${submitted.jobId}`);
+      if (mounted.current) router.push(`/jobs/${submitted.jobId}`);
       return;
     }
     setStatus(null);

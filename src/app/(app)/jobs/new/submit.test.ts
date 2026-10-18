@@ -241,6 +241,38 @@ describe("submitJob", () => {
     ).toEqual({ ok: false, message: MESSAGES.notFailed });
   });
 
+  it("names the screenshots it carries as it confirms, and forgets an upload begun again elsewhere", async () => {
+    const fake = browser({ "a.png": screenshot(1) }, (call) =>
+      call.url === "/api/jobs/job-3/uploaded"
+        ? json({ error: "begun-again" }, 409)
+        : server("job-3", 1)(call),
+    );
+
+    expect(await submitJob(fake.deps, { files: [file("a.png")], text: "" }, fake.onStatus)).toEqual(
+      { ok: false, message: MESSAGES.begunAgain },
+    );
+    expect(fake.calls.at(-1)!.body).toEqual({ imageIds: ["image-0"] });
+    expect(fake.kept.has("job-3")).toBe(false);
+  });
+
+  it("starting a job's upload over, forgets the upload of it this browser kept, and says to press Start again when the answer is lost", async () => {
+    const fake = browser({ "a.png": screenshot(1) }, () => new Error("connection dropped"));
+    fake.kept.set("job-9", {
+      jobId: "job-9",
+      deadlineAt: 2_000_000,
+      images: [{ imageId: "old", blob: new Blob(["x"]) }],
+    });
+
+    expect(
+      await submitJob(
+        fake.deps,
+        { files: [file("a.png")], text: "", againOf: "job-9" },
+        fake.onStatus,
+      ),
+    ).toEqual({ ok: false, message: MESSAGES.againLost });
+    expect(fake.kept.has("job-9")).toBe(false);
+  });
+
   it("refuses before sending anything when a screenshot cannot be prepared", async () => {
     const fake = browser(
       { "tall.png": { ok: false, message: TOO_TALL }, "a.png": screenshot(1) },
