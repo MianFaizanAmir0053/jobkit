@@ -423,13 +423,14 @@ export async function takeBack(
   return ok();
 }
 
-/** The kit the page showed as the owner submitted it. */
-const submittedBody = z.object({ kit: kitShown });
+/** The kit, and the WhatsApp number ("" for none), the page showed as the owner applied. */
+const submittedBody = z.object({ kit: kitShown, to: z.string().max(400) });
 
 /**
  * POST /api/jobs/<id>/submitted: Mark submitted, after the owner sent the
  * application through the post's form, or as a message, with the kit's
- * words; refused for an email kit, and when the page showed another kit.
+ * words; refused for an email kit, and when the page showed another kit or
+ * number than the kit now has.
  */
 export async function submitted(
   request: NextRequest,
@@ -449,7 +450,7 @@ export async function submitted(
   }
   const parsed = submittedBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
-  const marked = await markSubmitted(deps, jobId, actor.session.id, parsed.data.kit);
+  const marked = await markSubmitted(deps, jobId, actor.session.id, parsed.data);
   if (!marked.ok) return refusal(marked.reason === "not-found" ? 404 : 409, marked.reason);
   return ok(200, { ok: true, changed: marked.changed });
 }

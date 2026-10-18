@@ -29,6 +29,11 @@ const ROUTES: Readonly<Record<Role["route"]["kind"], Route | null>> = {
   unknown: null,
 };
 
+/** The kind of kit a role's route takes, as the ledger records it; null for a route the owner must name. */
+export function routeOf(kind: Role["route"]["kind"]): Route | null {
+  return ROUTES[kind];
+}
+
 /**
  * A contact as the ledger keeps it, for the duplicate check: an email
  * address that passes the strict check, or a WhatsApp number that

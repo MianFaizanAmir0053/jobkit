@@ -202,14 +202,18 @@ async function unskipped(
  * goes back to kit_ready, its outcome with it, and the kit opens again. The
  * page names the Mark sent it showed, by its time, so a late tap from a
  * page drawn before the owner marked it sent again changes nothing. An
- * email jobkit sent is not taken back: it went (decisions A20).
+ * email jobkit sent is not taken back: it went (decisions A20). Nor is a
+ * kit the page can no longer read: it could not be marked sent again, and
+ * an email that went would read as one never sent.
  */
 export async function takeBackSent(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
   shownSentAt?: Date,
-): Promise<{ ok: true } | { ok: false; reason: "not-found" | "not-sent" | "sent-by-jobkit" }> {
+): Promise<
+  { ok: true } | { ok: false; reason: "not-found" | "not-sent" | "sent-by-jobkit" | "unreadable" }
+> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   const role = await chosenRole(deps.db, jobId);
   if (!role) return { ok: false, reason: "not-found" };
@@ -233,6 +237,8 @@ export async function takeBackSent(
     if (byJobkit.rows.length > 0) {
       return { ok: false as const, reason: "sent-by-jobkit" as const };
     }
+    const view = await jobView(at, jobId);
+    if (!view?.review || !view.kitKey) return { ok: false as const, reason: "unreadable" as const };
     const undone = await undoStatus(
       at,
       application.id,

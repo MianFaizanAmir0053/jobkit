@@ -45,12 +45,12 @@ import { closeSkipped, skipKit, takeBackSkip } from "./skipKit";
  * second read confirmed, typed as the post gives it, each sentence and flag
  * checked, each file promised.
  */
-async function cleared(id: string): Promise<void> {
+async function cleared(id: string, typed = "jobs@example.com"): Promise<void> {
   const decide = (action: Parameters<typeof recordReview>[2]) =>
     recordReview({ db, clock, dns: offlineDns() }, id, action);
   const view = (await jobView({ db, clock }, id))!;
   if (view.kitParts?.contact?.needsRetype) {
-    await decide({ kind: "retype", value: "jobs@example.com" });
+    await decide({ kind: "retype", value: typed });
   }
   for (const reason of view.review?.gate ?? []) {
     if (reason.kind === "judge") await decide({ kind: "check", blockId: reason.blockId });
@@ -571,6 +571,26 @@ describe("a post's scam signs", () => {
 });
 
 describe("markSent", () => {
+  it("does not take back a Mark sent on a kit it can no longer read, which it could not mark again", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await cleared(id);
+    await markSent({ db, clock }, id, null, { changedInGmail: false });
+    const sentAt = (await jobView({ db, clock }, id))!.application!.sentAt!;
+    // As after an update: the kit's draft can no longer be read.
+    await db.query(
+      "update {{schema}}.job_stage_runs set output = '{}'::jsonb where job_id = $1 and stage = 'draft'",
+      [id],
+    );
+
+    expect(await takeBackSent({ db, clock }, id, null, sentAt)).toEqual({
+      ok: false,
+      reason: "unreadable",
+    });
+    expect((await jobView({ db, clock }, id))!.application?.status).toBe("sent");
+  });
+
   it("records the application as sent once, with the role's address and the email route", async () => {
     await seedSample();
     const id = await pasted();
@@ -1235,11 +1255,11 @@ describe("markSubmitted", () => {
       const { id, kit } = await readyFor(post);
       clock.advance(60_000);
 
-      expect(await markSubmitted({ db, clock }, id, null, kit)).toEqual({
+      expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
         ok: true,
         changed: true,
       });
-      expect(await markSubmitted({ db, clock }, id, null, kit)).toEqual({
+      expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
         ok: true,
         changed: false,
       });
@@ -1254,7 +1274,7 @@ describe("markSubmitted", () => {
 
   it("takes back the Mark submitted the page showed, opening the kit again, and never a later one", async () => {
     const { id, kit } = await readyFor("S17-form-ai-question");
-    await markSubmitted({ db, clock }, id, null, kit);
+    await markSubmitted({ db, clock }, id, null, { kit, to: "" });
     const submittedAt = (await jobView({ db, clock }, id))!.application!.submittedAt!;
     clock.advance(60_000);
 
@@ -1267,7 +1287,7 @@ describe("markSubmitted", () => {
       reason: "not-submitted",
     });
     // Submitted again: a late tap from the page that showed the first changes nothing.
-    await markSubmitted({ db, clock }, id, null, kit);
+    await markSubmitted({ db, clock }, id, null, { kit, to: "" });
     expect(await takeBackSubmitted({ db, clock }, id, null, submittedAt)).toEqual({
       ok: false,
       reason: "not-submitted",
@@ -1280,25 +1300,162 @@ describe("markSubmitted", () => {
     await run(email, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
     await cleared(email);
     const emailKit = (await jobView({ db, clock }, email))!.kitKey!;
-    expect(await markSubmitted({ db, clock }, email, null, emailKit)).toEqual({
+    expect(await markSubmitted({ db, clock }, email, null, { kit: emailKit, to: "" })).toEqual({
       ok: false,
       reason: "not-form-or-message",
     });
 
     const { id, kit } = await readyFor("S17-form-ai-question");
-    expect(await markSubmitted({ db, clock }, id, null, "another kit")).toEqual({
+    expect(await markSubmitted({ db, clock }, id, null, { kit: "another kit", to: "" })).toEqual({
       ok: false,
       reason: "changed",
     });
     // Held: the owner skipped it, so nothing could have gone from the page.
     await skipKit({ db, clock }, id, null, { kit, uncertain: null });
-    expect(await markSubmitted({ db, clock }, id, null, kit)).toEqual({
+    expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
       ok: false,
       reason: "held",
     });
     expect(
-      await markSubmitted({ db, clock }, "33333333-3333-4333-8333-333333333333", null, kit),
+      await markSubmitted({ db, clock }, "33333333-3333-4333-8333-333333333333", null, {
+        kit,
+        to: "",
+      }),
     ).toEqual({ ok: false, reason: "not-found" });
+  });
+
+  it("moves the application the app opened with the role from kit_ready to submitted, with its audit row", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(
+      id,
+      [answer(fixture("S17-form-ai-question")), answer(DRAFT)],
+      trackApplications(pipeline(), { db, clock }),
+    );
+    await cleared(id);
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.application?.status).toBe("kit_ready");
+    clock.advance(60_000);
+
+    expect(await markSubmitted({ db, clock }, id, null, { kit: view.kitKey!, to: "" })).toEqual({
+      ok: true,
+      changed: true,
+    });
+    const { rows } = await db.query<{ from_status: string | null; to_status: string }>(
+      `select c.from_status, c.to_status from {{schema}}.status_changes c
+         join {{schema}}.applications a on a.id = c.application_id
+        where a.job_id = $1 and c.to_status in ('kit_ready', 'submitted')
+        order by c.changed_at`,
+      [id],
+    );
+    expect(rows).toEqual([
+      { from_status: "open", to_status: "kit_ready" },
+      { from_status: "kit_ready", to_status: "submitted" },
+    ]);
+  });
+
+  it("records the WhatsApp number the page showed, typed in place of the post's, and refuses another", async () => {
+    await seedSample();
+    // A kit from before applications opened with their jobs: Mark submitted opens it.
+    const id = await pasted();
+    await run(id, [answer(fixture("S06-number-without-country-code")), answer(DRAFT)]);
+    const kit = (await jobView({ db, clock }, id))!.kitKey!;
+    // The post's number has no country code: the gate holds the kit until one is typed.
+    expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
+      ok: false,
+      reason: "held",
+    });
+
+    await cleared(id, "+1 202 555 0143");
+    const shown = (await jobView({ db, clock }, id))!.handoff!.to;
+    expect(shown).toBe("+1 202 555 0143");
+    // Typed again on the other device: the page that showed the first number is refused.
+    await recordReview({ db, clock, dns: offlineDns() }, id, {
+      kind: "retype",
+      value: "+1 202 555 0199",
+    });
+    expect(await markSubmitted({ db, clock }, id, null, { kit, to: shown })).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+
+    expect(await markSubmitted({ db, clock }, id, null, { kit, to: "+1 202 555 0199" })).toEqual({
+      ok: true,
+      changed: true,
+    });
+    const { rows } = await db.query<{ address: string | null; status: string }>(
+      "select address, status from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ address: "+1 202 555 0199", status: "submitted" }]);
+  });
+
+  it("keeps nothing of a Mark submitted the ledger refuses", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(
+      id,
+      [answer(fixture("S06-number-without-country-code")), answer(DRAFT)],
+      trackApplications(pipeline(), { db, clock }),
+    );
+    await cleared(id, "+1 202 555 0143");
+    const kit = (await jobView({ db, clock }, id))!.kitKey!;
+    // As if the ledger kept another route for the application than the role's, and no number.
+    await db.query(
+      "update {{schema}}.applications set route = 'email', address = null where job_id = $1",
+      [id],
+    );
+
+    expect(await markSubmitted({ db, clock }, id, null, { kit, to: "+1 202 555 0143" })).toEqual({
+      ok: false,
+      reason: "refused",
+    });
+    // Not even the number the owner typed, which the refused tap recorded before the ledger refused.
+    const { rows } = await db.query<{ address: string | null; status: string }>(
+      "select address, status from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ address: null, status: "kit_ready" }]);
+  });
+
+  it("refuses a kit whose route waits for the owner to name it", async () => {
+    for (const post of ["S18-no-route", "S19-walk-in"]) {
+      const { id, kit } = await readyFor(post);
+
+      expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
+        ok: false,
+        reason: "not-form-or-message",
+      });
+    }
+  });
+
+  it("records two taps at once as one", async () => {
+    const { id, kit } = await readyFor("S16-linkedin-dm");
+
+    const both = await Promise.all([
+      markSubmitted({ db, clock }, id, null, { kit, to: "" }),
+      markSubmitted({ db, clock }, id, null, { kit, to: "" }),
+    ]);
+
+    expect(both).toContainEqual({ ok: true, changed: true });
+    expect(both).toContainEqual({ ok: true, changed: false });
+  });
+
+  it("does not take back a Mark submitted on a kit it can no longer read, which it could not mark again", async () => {
+    const { id, kit } = await readyFor("S17-form-ai-question");
+    await markSubmitted({ db, clock }, id, null, { kit, to: "" });
+    const submittedAt = (await jobView({ db, clock }, id))!.application!.submittedAt!;
+    // As after an update: the kit's draft can no longer be read.
+    await db.query(
+      "update {{schema}}.job_stage_runs set output = '{}'::jsonb where job_id = $1 and stage = 'draft'",
+      [id],
+    );
+
+    expect(await takeBackSubmitted({ db, clock }, id, null, submittedAt)).toEqual({
+      ok: false,
+      reason: "unreadable",
+    });
+    expect((await jobView({ db, clock }, id))!.application?.status).toBe("submitted");
   });
 });
 
@@ -1446,7 +1603,10 @@ describe("listJobViews", () => {
     const id = await pasted();
     await run(id, [answer(fixture("S17-form-ai-question")), answer(DRAFT)]);
     await cleared(id);
-    await markSubmitted({ db, clock }, id, null, (await jobView({ db, clock }, id))!.kitKey!);
+    await markSubmitted({ db, clock }, id, null, {
+      kit: (await jobView({ db, clock }, id))!.kitKey!,
+      to: "",
+    });
 
     expect(await listJobViews({ db, clock })).toEqual([
       expect.objectContaining({ id, sent: true, submitted: true, bounced: false }),

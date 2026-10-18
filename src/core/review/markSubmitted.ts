@@ -1,10 +1,10 @@
 import { chosenRole } from "@/core/extraction/owner";
-import { changeStatus, undoStatus } from "@/core/ledger/statuses";
+import { changeStatus, setAddress, undoStatus } from "@/core/ledger/statuses";
 import { loadJob } from "@/core/platform/jobs";
 import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
-import { applicationIdOf, openForJob } from "./applications";
+import { applicationIdOf, openForJob, routeOf } from "./applications";
 import { jobView } from "./jobView";
 import { keepGate, lockReview } from "./markSent";
 
@@ -15,10 +15,15 @@ import { keepGate, lockReview } from "./markSent";
  * marked submitted; an email is marked sent. It is done under the kit's
  * review row's lock, as Mark sent is: only a kit the gate released, as the
  * page showed it, is marked, since one it holds could not have been copied
- * from the page. The chosen role's application, opened at the role pick
- * or, for a job from before that, here, moves to kit_ready and submitted,
- * each with its audit row, and the gate kept with the decisions then holds
- * the kit as gone. A second tap changes nothing.
+ * from the page. The page names the kit and the WhatsApp number it showed,
+ * so a Mark submitted from a page drawn on another, as in a tab the owner
+ * has not looked at since typing the number again elsewhere, is refused,
+ * and the ledger never keeps a number the message did not go to. The
+ * chosen role's application, opened at the role pick or, for a job from
+ * before that, here, keeps the number the owner typed in place of the
+ * post's, and moves to kit_ready and submitted, each with its audit row;
+ * the gate kept with the decisions then holds the kit as gone. A refusal by
+ * the ledger after these checks keeps nothing. A second tap changes nothing.
  */
 
 export type MarkSubmitted =
@@ -28,21 +33,20 @@ export type MarkSubmitted =
       reason: "not-found" | "not-ready" | "not-form-or-message" | "changed" | "held" | "refused";
     };
 
-/** The routes whose kit is a form or a message (drafting spec, "Kit type"). */
-const SUBMITTED_ROUTES: ReadonlySet<string> = new Set([
-  "ats_form",
-  "easy_apply",
-  "careers_page",
-  "whatsapp",
-  "linkedin_dm",
-  "linkedin_comment",
-]);
+/** What the page showed as the owner applied: the kit, and the number it goes to ("" for none). */
+export interface SubmittedFrom {
+  kit: string;
+  to: string;
+}
+
+/** A Mark submitted the status machine refused after the checks: its writes are rolled back. */
+class SubmitRefused extends Error {}
 
 export async function markSubmitted(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
-  shownKit: string,
+  shown: SubmittedFrom,
 ): Promise<MarkSubmitted> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   const job = await loadJob(deps.db, jobId);
@@ -50,41 +54,73 @@ export async function markSubmitted(
   if (job.state !== "kit_ready") return { ok: false, reason: "not-ready" };
   const role = await chosenRole(deps.db, jobId);
   if (!role) return { ok: false, reason: "not-ready" };
-  if (!SUBMITTED_ROUTES.has(role.route.kind)) return { ok: false, reason: "not-form-or-message" };
-  return deps.db.tx(async (tx): Promise<MarkSubmitted> => {
-    const at = { ...deps, db: tx };
-    await lockReview(at, jobId, role.id);
-    const view = await jobView(at, jobId);
-    if (view?.state !== "kit_ready" || !view.review) return { ok: false, reason: "not-ready" };
-    if (view.kitKey !== shownKit) return { ok: false, reason: "changed" };
-    // A second tap on a kit already gone changes nothing; any other open reason holds it.
-    if (view.review.gate.some((reason) => reason.kind !== "sent")) {
-      return { ok: false, reason: "held" };
-    }
-    const applicationId =
-      (await applicationIdOf(tx, jobId, role.id)) ?? (await openForJob(at, jobId, sessionId));
-    if (!applicationId) return { ok: false, reason: "not-ready" };
-    // Already kit_ready, or submitted after an earlier tap: the next move decides.
-    await changeStatus(at, applicationId, "kit_ready", sessionId);
-    const submitted = await changeStatus(at, applicationId, "submitted", sessionId);
-    if (!submitted.ok) return { ok: false, reason: "refused" };
-    await keepGate(at, jobId, role.id);
-    return { ok: true, changed: submitted.changed };
-  });
+  const route = routeOf(role.route.kind);
+  if (route !== "form" && route !== "message") return { ok: false, reason: "not-form-or-message" };
+  try {
+    return await deps.db.tx(async (tx): Promise<MarkSubmitted> =>
+      submitting(deps, tx, jobId, role.id, sessionId, shown),
+    );
+  } catch (error) {
+    if (error instanceof SubmitRefused) return { ok: false, reason: "refused" };
+    throw error;
+  }
+}
+
+/** Mark submitted itself, in one transaction under the review row's lock. */
+async function submitting(
+  deps: { db: Db; clock: Clock },
+  tx: Db,
+  jobId: string,
+  roleId: string,
+  sessionId: string | null,
+  shown: SubmittedFrom,
+): Promise<MarkSubmitted> {
+  const at = { ...deps, db: tx };
+  await lockReview(at, jobId, roleId);
+  const view = await jobView(at, jobId);
+  // The job as it stands under the lock: still ready, for the role whose row is locked.
+  if (view?.state !== "kit_ready" || view.role?.id !== roleId || !view.review) {
+    return { ok: false, reason: "not-ready" };
+  }
+  if (view.kitKey !== shown.kit || (view.handoff?.to ?? "") !== shown.to) {
+    return { ok: false, reason: "changed" };
+  }
+  // A second tap on a kit already gone changes nothing; any other open reason holds it.
+  if (view.review.gate.some((reason) => reason.kind !== "sent")) {
+    return { ok: false, reason: "held" };
+  }
+  const applicationId =
+    (await applicationIdOf(tx, jobId, roleId)) ?? (await openForJob(at, jobId, sessionId));
+  if (!applicationId) return { ok: false, reason: "not-ready" };
+  // The number the owner typed in place of the post's, which duplicate checks then use, as Mark
+  // sent keeps an address.
+  if (view.handoff?.typed && view.handoff.to !== "") {
+    await setAddress(at, applicationId, view.handoff.to);
+  }
+  // Already kit_ready, or submitted after an earlier tap: the next move decides.
+  await changeStatus(at, applicationId, "kit_ready", sessionId);
+  const submitted = await changeStatus(at, applicationId, "submitted", sessionId);
+  // Unreached after the checks above; were it reached, nothing of the tap would be kept.
+  if (!submitted.ok) throw new SubmitRefused();
+  await keepGate(at, jobId, roleId);
+  return { ok: true, changed: submitted.changed };
 }
 
 /**
  * Takes back a mistaken Mark submitted (ledger spec, "Statuses"): the
  * application goes back to kit_ready and the kit opens again. The page
  * names the Mark submitted it showed, by its time, so a late tap from a
- * page drawn before the owner marked it submitted again changes nothing.
+ * page drawn before the owner marked it submitted again changes nothing. A
+ * kit the page can no longer read is not taken back: it could not be
+ * marked submitted again, and an application that went would read as one
+ * never sent.
  */
 export async function takeBackSubmitted(
   deps: { db: Db; clock: Clock },
   jobId: string,
   sessionId: string | null,
   shownSubmittedAt: Date,
-): Promise<{ ok: true } | { ok: false; reason: "not-found" | "not-submitted" }> {
+): Promise<{ ok: true } | { ok: false; reason: "not-found" | "not-submitted" | "unreadable" }> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   const role = await chosenRole(deps.db, jobId);
   if (!role) return { ok: false, reason: "not-found" };
@@ -99,6 +135,8 @@ export async function takeBackSubmitted(
     if (application?.status !== "submitted") {
       return { ok: false as const, reason: "not-submitted" as const };
     }
+    const view = await jobView(at, jobId);
+    if (!view?.review || !view.kitKey) return { ok: false as const, reason: "unreadable" as const };
     const undone = await undoStatus(
       at,
       application.id,

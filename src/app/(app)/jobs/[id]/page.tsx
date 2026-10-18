@@ -9,6 +9,7 @@ import { type BlockVerdict, isBlocking, NEVER_WEIGHED } from "@/core/drafting/ve
 import type { AgreementProblem } from "@/core/extraction/addressRead";
 import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
+import { routeOf } from "@/core/review/applications";
 import { flagRank, judgeMessage } from "@/core/review/canHandOff";
 import { flagKey, NEEDS_NEW_WORDS, needsNewWords, NO_DECISIONS } from "@/core/review/decisions";
 import { gmailComposeUrl } from "@/core/review/gmail";
@@ -180,7 +181,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
             {view.went && (
               <div className="flex flex-col gap-2 text-sm">
                 <Bounce view={view} timeZone={timeZone} />
-                <Submitted view={view} timeZone={timeZone} />
+                <Submitted view={view} timeZone={timeZone} canTakeBack={false} />
               </div>
             )}
           </Panel>
@@ -671,8 +672,8 @@ function KitPanel({
             {!byEmail ? (
               <span>
                 The post asks you to apply {ROUTE_WORDS[role.route.kind]}
-                {role.route.address && !needsRetype && `: ${role.route.address}`}. Use the text
-                below there.
+                {role.route.address && !needsRetype && `: ${role.route.address}`}. The text below is
+                drafted as an email: adapt it there.
               </span>
             ) : !needsRetype ? (
               address
@@ -955,7 +956,13 @@ function KitPanel({
           {reasons.length > 0 && (
             <div className="rounded-md border border-destructive/40 p-3 text-sm">
               <p className="font-medium">
-                {sent ? "Sent already" : skipped ? "Skipped" : "Before you send"}
+                {view.application?.status === "submitted"
+                  ? "Submitted already"
+                  : sent
+                    ? "Sent already"
+                    : skipped
+                      ? "Skipped"
+                      : "Before you send"}
               </p>
               <ul className="mt-1 list-disc pl-5 [overflow-wrap:anywhere]">
                 {reasons.map((reason, i) => {
@@ -1025,7 +1032,7 @@ function KitPanel({
       <Panel title={skipped ? "Not applying" : byEmail ? "After you send it" : "After you apply"}>
         {sent && view.application?.status === "submitted" ? (
           <div className="flex flex-col gap-2 text-sm">
-            <Submitted view={view} timeZone={timeZone} />
+            <Submitted view={view} timeZone={timeZone} canTakeBack />
           </div>
         ) : sent ? (
           <div className="flex flex-col gap-2 text-sm">
@@ -1067,21 +1074,20 @@ function KitPanel({
               Mark sent appears once nothing holds the email back.
             </p>
           )
-        ) : role.route.kind === "unknown" || role.route.kind === "other" ? (
+        ) : routeOf(role.route.kind) === null ? (
           <p className="text-sm text-muted-foreground">
             Choosing how to apply, and recording it once sent, comes with the kit-type pick.
           </p>
         ) : open ? (
           <div className="flex flex-col gap-2 text-sm">
             <p className="text-muted-foreground">
-              Once you have applied {ROUTE_WORDS[role.route.kind]}, using the text above, mark it
-              submitted.
+              Once you have applied {ROUTE_WORDS[role.route.kind]}, mark it submitted.
             </p>
             <div>
               <ActionButton
                 url={`/api/jobs/${view.id}/submitted`}
                 label="Mark submitted"
-                body={{ kit: kitKey }}
+                body={{ kit: kitKey, to: view.handoff?.to ?? "" }}
                 gateOf={view.id}
                 confirmText="Did you send the application? Mark it submitted: you can take it back."
               />
@@ -1211,16 +1217,25 @@ function Bounce({ view, timeZone }: { view: JobView; timeZone: string }) {
 
 /**
  * A form or message the owner marked submitted (review spec, "Handoffs"):
- * when, with "Take back Mark submitted", by the tap it shows.
+ * when, with "Take back Mark submitted", by the tap it shows, on a kit the
+ * page can read, which could be marked submitted again.
  */
-function Submitted({ view, timeZone }: { view: JobView; timeZone: string }) {
+function Submitted({
+  view,
+  timeZone,
+  canTakeBack,
+}: {
+  view: JobView;
+  timeZone: string;
+  canTakeBack: boolean;
+}) {
   const application = view.application;
   if (application?.status !== "submitted") return null;
   const at = application.submittedAt;
   return (
     <>
       <p>{at ? `Marked submitted on ${formatTime(at, timeZone)}.` : "Marked submitted."}</p>
-      {at && (
+      {at && canTakeBack && (
         <div>
           <ActionButton
             url={`/api/jobs/${view.id}/take-back`}

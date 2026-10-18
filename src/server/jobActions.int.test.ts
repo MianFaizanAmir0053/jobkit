@@ -771,13 +771,20 @@ describe("the job page's routes", () => {
     await clearedOnPage(ready, cookie);
     const kit = await kitOf(ready);
 
-    for (const body of ["", "{}", JSON.stringify({ kit: "" })]) {
+    for (const body of ["", "{}", JSON.stringify({ kit: "", to: "" }), JSON.stringify({ kit })]) {
       expect(
         (await submitted(post(`/api/jobs/${ready}/submitted`, body, cookie), deps(), ready)).status,
       ).toBe(400);
     }
+    // A page that showed another kit.
+    const stale = await submitted(
+      post(`/api/jobs/${ready}/submitted`, JSON.stringify({ kit: "another", to: "" }), cookie),
+      deps(),
+      ready,
+    );
+    expect(stale.status).toBe(409);
     const response = await submitted(
-      post(`/api/jobs/${ready}/submitted`, JSON.stringify({ kit }), cookie),
+      post(`/api/jobs/${ready}/submitted`, JSON.stringify({ kit, to: "" }), cookie),
       deps(),
       ready,
     );
