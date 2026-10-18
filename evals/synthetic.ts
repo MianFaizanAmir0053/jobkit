@@ -27,9 +27,9 @@ import { sameContact, SCORED_FIELDS, type ScoredFields } from "./score";
  * gives (company, role, route, contact, eligibility) are scored as the
  * archive's labels are; the rest are checks on what the model noticed,
  * which the extraction and drafting specs defer here: the must-haves and
- * the depth they ask for, lines addressed to AI, the roles and their
- * contacts, the language, scam signals, a contact the strict checks flag,
- * and the tiles sent. A key the extract stage cannot check is named as left
+ * the depth they ask for, lines and form questions addressed to AI, the
+ * roles and their contacts, the language, scam signals, a contact the
+ * strict checks flag, and the tiles sent. A key the extract stage cannot check is named as left
  * to the stage that can, never counted as met.
  */
 
@@ -65,6 +65,16 @@ const expectSchema = z
           kind: z.enum(INSTRUCTION_KINDS),
           /** Words the value read holds; any value when absent. */
           value: z.string().min(1).optional(),
+          addressed_to_ai: z.boolean(),
+        }),
+      )
+      .optional(),
+    /** The role's screening questions, each with words it holds; one addressed to AI is never the applicant's. */
+    questions: z
+      .array(
+        z.strictObject({
+          /** Words the question read holds; any question when absent. */
+          text: z.string().min(1).optional(),
           addressed_to_ai: z.boolean(),
         }),
       )
@@ -300,6 +310,34 @@ function instructionsCheck(wanted: readonly WantedInstruction[], role: Role): Om
   return { met: notes.length === 0, note: notes.join("; ") };
 }
 
+type WantedQuestion = NonNullable<SyntheticExpect["questions"]>[number];
+
+/**
+ * Each screening question expected read as such, and none else read as the
+ * applicant's to answer: a question addressed to AI read as the applicant's
+ * is one the drafter would answer. Others read as addressed to AI are
+ * allowed, as instructions are.
+ */
+function questionsCheck(wanted: readonly WantedQuestion[], role: Role): Omit<Check, "key"> {
+  const { missing, unpaired } = pairUp(
+    wanted,
+    role.screening_questions,
+    (each, read) =>
+      read.addressed_to_ai === each.addressed_to_ai &&
+      (each.text === undefined || holds(read.text, each.text)),
+    (each) => each.text !== undefined,
+  );
+  const extra = unpaired.filter((read) => !read.addressed_to_ai);
+  const notes = [
+    ...missing.map(
+      (each) =>
+        `a question ${who(each.addressed_to_ai)}${each.text ? ` holding "${each.text}"` : ""} was not read`,
+    ),
+    ...extra.map((read) => `a question ${who(false)} was read besides: "${read.text}"`),
+  ];
+  return { met: notes.length === 0, note: notes.join("; ") };
+}
+
 const NO_ROLE = { met: false, note: "No role was read." };
 
 /** Each expectation the extract stage can check, in a fixed order, then those left to later stages. */
@@ -314,6 +352,9 @@ export function checkExpectations(expect: SyntheticExpect, observed: Observed): 
   if (expect.depth) check("depth", role ? depthCheck(expect.depth, role) : NO_ROLE);
   if (expect.instructions) {
     check("instructions", role ? instructionsCheck(expect.instructions, role) : NO_ROLE);
+  }
+  if (expect.questions) {
+    check("questions", role ? questionsCheck(expect.questions, role) : NO_ROLE);
   }
   if (expect.roles !== undefined) {
     const read = record.roles.length;

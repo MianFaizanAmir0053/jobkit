@@ -31,7 +31,7 @@ describe("loadSyntheticPosts", () => {
   it("reads every synthetic post with the size it renders at", () => {
     const posts = loadSyntheticPosts(POSTS);
 
-    expect(posts).toHaveLength(14);
+    expect(posts).toHaveLength(19);
     expect(posts[0]).toMatchObject({
       id: "S01-email-simple",
       render: { width: 1080, height: 2400 },

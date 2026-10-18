@@ -95,6 +95,7 @@ describe("the synthetic posts with their recorded outputs", () => {
     expect(run.cases).toHaveLength(posts.length);
     expect(run.checks).toMatchObject({
       instructions: { successes: 2, n: 2 },
+      questions: { successes: 1, n: 1 },
       scam_signals: { successes: 1, n: 1 },
       contact_flag: { successes: 2, n: 2 },
       language: { successes: 1, n: 1 },

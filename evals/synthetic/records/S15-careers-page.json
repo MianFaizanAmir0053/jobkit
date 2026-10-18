@@ -1,0 +1,78 @@
+{
+  "post_kind": "job_post",
+  "language": "en",
+  "company": {
+    "name": "Margie's Travel",
+    "website": ""
+  },
+  "recruiter": {
+    "name": "",
+    "title": ""
+  },
+  "scam_signals": [],
+  "roles": [
+    {
+      "id": "P1",
+      "title": "Junior Frontend Developer",
+      "seniority": "junior",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "remote",
+        "places": [],
+        "remote_regions": ["Pakistan"],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [],
+        "sponsorship": "unspecified",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "",
+        "currency": "",
+        "min": -1,
+        "max": -1,
+        "period": "unspecified"
+      },
+      "requirements": [
+        {
+          "id": "R1",
+          "text": "React",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["react"],
+          "depth": "any",
+          "years": -1
+        },
+        {
+          "id": "R2",
+          "text": "HTML and CSS",
+          "priority": "must",
+          "kind": "skill",
+          "skills": ["html", "css"],
+          "depth": "any",
+          "years": -1
+        }
+      ],
+      "route": {
+        "kind": "careers_page",
+        "address": "https://careers.example.com/margies-travel/frontend",
+        "quote": "Apply on our careers page: https://careers.example.com/margies-travel/frontend",
+        "box": {
+          "tile": -1,
+          "x1": -1,
+          "y1": -1,
+          "x2": -1,
+          "y2": -1
+        }
+      },
+      "instructions": [],
+      "required_attachments": [],
+      "screening_questions": []
+    }
+  ]
+}

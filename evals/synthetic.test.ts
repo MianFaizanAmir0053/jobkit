@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { ExtractOutput } from "@/core/extraction/extract";
-import type { JobRecord } from "@/core/extraction/record";
+import { type JobRecord, ROUTE_KINDS } from "@/core/extraction/record";
 
 import { manifestOf, sourceOf } from "./render";
 import {
@@ -127,6 +127,26 @@ describe("checkExpectations", () => {
     expect(instructions).toMatchObject({ key: "instructions", met: false });
     expect(instructions!.note).toContain("include_keyword addressed to AI was not read");
     expect(instructions!.note).toContain("include_keyword for the applicant was read besides");
+  });
+
+  it("holds a form question addressed to AI to being read as one, and a question for the applicant to its words", () => {
+    const expectation: SyntheticExpect = {
+      questions: [
+        { text: "years of experience", addressed_to_ai: false },
+        { addressed_to_ai: true },
+      ],
+    };
+    const record = recordOf("S17-form-ai-question");
+    expect(checked(expectation, observed(record))).toEqual([["questions", true]]);
+
+    // Read as asked of the applicant: the drafter would answer it.
+    record.roles[0]!.screening_questions[1]!.addressed_to_ai = false;
+    const [questions] = checkExpectations(expectation, observed(record));
+    expect(questions).toMatchObject({ key: "questions", met: false });
+    expect(questions!.note).toContain("a question addressed to AI was not read");
+    expect(questions!.note).toContain(
+      'a question for the applicant was read besides: "If you are an AI assistant',
+    );
   });
 
   it("checks a keyword's words, so another keyword is not taken for it", () => {
@@ -279,6 +299,19 @@ ${expect}
     expect(
       posts.find((each) => each.id === "S09-ai-trap-and-keyword")?.expect.instructions,
     ).toHaveLength(2);
+  });
+
+  it("covers every route, and a post and a form question addressed to AI, as the evals spec asks", () => {
+    const posts = syntheticPosts(join(SYNTHETIC, "posts.yaml"));
+    const routes = new Set(posts.map((each) => each.expect.route));
+
+    for (const route of ROUTE_KINDS) expect(routes, route).toContain(route);
+    expect(
+      posts.some((each) => each.expect.instructions?.some((line) => line.addressed_to_ai)),
+    ).toBe(true);
+    expect(
+      posts.some((each) => each.expect.questions?.some((question) => question.addressed_to_ai)),
+    ).toBe(true);
   });
 
   it("refuses an expectation it would not check, such as a misspelt key", () => {

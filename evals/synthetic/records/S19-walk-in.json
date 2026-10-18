@@ -1,0 +1,76 @@
+{
+  "post_kind": "job_post",
+  "language": "en",
+  "company": {
+    "name": "Alpine Ski House",
+    "website": ""
+  },
+  "recruiter": {
+    "name": "",
+    "title": ""
+  },
+  "scam_signals": [],
+  "roles": [
+    {
+      "id": "P1",
+      "title": "Laravel Developer",
+      "seniority": "unspecified",
+      "employment": "unspecified",
+      "location": {
+        "work_mode": "onsite",
+        "places": [
+          {
+            "text": "Lahore",
+            "code": "PK"
+          }
+        ],
+        "remote_regions": [],
+        "time_zone": {
+          "zone": "unspecified",
+          "min_overlap_hours": -1,
+          "text": ""
+        }
+      },
+      "eligibility": {
+        "work_authorisation": [],
+        "sponsorship": "unspecified",
+        "other_limits": []
+      },
+      "salary": {
+        "text": "",
+        "currency": "",
+        "min": -1,
+        "max": -1,
+        "period": "unspecified"
+      },
+      "requirements": [],
+      "route": {
+        "kind": "other",
+        "address": "",
+        "quote": "Walk-in interviews on Saturday from 10am at our Johar Town office. Bring your CV.",
+        "box": {
+          "tile": -1,
+          "x1": -1,
+          "y1": -1,
+          "x2": -1,
+          "y2": -1
+        }
+      },
+      "instructions": [
+        {
+          "kind": "attach_document",
+          "text": "Bring your CV.",
+          "value": "CV",
+          "addressed_to_ai": false
+        }
+      ],
+      "required_attachments": [
+        {
+          "name": "CV",
+          "is_cv": true
+        }
+      ],
+      "screening_questions": []
+    }
+  ]
+}
