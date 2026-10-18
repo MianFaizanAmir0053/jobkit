@@ -211,7 +211,7 @@ export function canHandOff(input: GateInput): GateReason[] {
     reasons.push({
       kind: "unconfirmed_edit",
       blockId,
-      message: "You changed this sentence: confirm it says only what is true.",
+      message: "Your own words: confirm they say only what is true.",
     });
   }
   for (const attachment of input.attachments) {

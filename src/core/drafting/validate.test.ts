@@ -124,6 +124,28 @@ describe("validateEmailKit", () => {
     ]);
   });
 
+  it("checks the owner's own words for what they say, never against facts, which they confirm", () => {
+    const kit = cleanKit();
+    // Edited: the post's sentence no longer names the company; the claim cites nothing.
+    kit.blocks[0] = {
+      ...kit.blocks[0]!,
+      text: "I am applying for the role you posted.",
+      owner: true,
+    };
+    kit.blocks[1] = {
+      ...kit.blocks[1]!,
+      text: "I would like a salary of USD 4,000 a month.",
+      factIds: [],
+      owner: true,
+    };
+
+    expect(kinds(kit)).toEqual([]);
+    // The drafter's words are checked as ever.
+    const drafted = cleanKit();
+    drafted.blocks[1]!.text = "I would like a salary of USD 4,000 a month.";
+    expect(kinds(drafted)).toEqual([["sensitive_topic_drafted", "S2"]]);
+  });
+
   it("flags a post block citing a field it does not quote, a field that does not exist, or nothing", () => {
     const kit = cleanKit();
     kit.blocks[0]!.text = "I am applying for the role at your exciting company.";

@@ -141,7 +141,7 @@ One Gemini 3.8 Flash call (decisions A18) with structured output, independent of
 
 ## Owner edits
 
-Edits happen block by block. An unchanged block keeps its class, references and verdict. An edited or new block needs the owner's one-tap confirmation; the owner can mark a block they wrote as answering a requirement, which satisfies `missing_gap_line` for it. `validate` runs again on the whole kit after each edit. The list of changed blocks and fields goes to the ledger, which decides `factual_edit` (ledger spec).
+Edits happen block by block. An unchanged block keeps its class, references and verdict. An edited or new block needs the owner's one-tap confirmation; the owner can mark a block they wrote as answering a requirement, which satisfies `missing_gap_line` for it. `validate` runs again on the whole kit after each edit; it checks the owner's own words, edited or added, for what they say, never against facts, so neither `invalid_citation` nor `sensitive_topic_drafted` applies to them: their confirmation covers them (Claude's choice, 2026-10-19). A deleted sentence leaves the email, and its verdict holds nothing; a sentence the owner adds goes after the one they choose, or first. The list of changed blocks and fields goes to the ledger, which decides `factual_edit` (ledger spec).
 
 ## Acceptance criteria
 

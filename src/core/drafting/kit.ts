@@ -86,6 +86,12 @@ export interface KitBlock {
   fields: string[];
   /** For a gap block, the choice its line was built from. */
   gap: GapChoice | null;
+  /**
+   * The owner's own words, edited or added on the review page: validate
+   * checks them for what they say, never against facts, which the owner
+   * confirms instead. Absent on every drafted block.
+   */
+  owner?: true;
 }
 
 export interface EmailKit {

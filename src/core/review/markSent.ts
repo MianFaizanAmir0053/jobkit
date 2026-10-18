@@ -155,16 +155,21 @@ async function marking(
       // jobkit's, inside its send's own transaction, keeps where its email went.
       if (!sent.ok) throw new SendRefused();
       if (sent.changed) {
-        // What the owner changed in jobkit: the address, and each sentence they edited; an edited
-        // claim, gap line or sentence about the post is a factual edit (ledger spec).
-        const edits = view.review.decisions.edits;
-        const edited = view.draft!.kit.blocks.filter((block) => Object.hasOwn(edits, block.id));
+        // What the owner changed in jobkit: the address, and each sentence they edited, deleted or
+        // added; an edited or deleted claim, gap line or sentence about the post is a factual edit,
+        // and so is a sentence of their own (ledger spec).
+        const { edits, added, deleted } = view.review.decisions;
+        const edited = view.draft!.kit.blocks.filter(
+          (block) => Object.hasOwn(edits, block.id) || deleted.includes(block.id),
+        );
         const address = typed && !sameAddress(to, role.route.address);
         const changed = [
           ...(address ? ["address"] : []),
           ...edited.map((block) => `sentence:${block.id}`),
+          ...added.map((sentence) => `sentence:${sentence.id}`),
         ];
-        const factual = address || edited.some((block) => FACTUAL_CLASSES.has(block.class));
+        const factual =
+          address || added.length > 0 || edited.some((block) => FACTUAL_CLASSES.has(block.class));
         await tx.query(
           `insert into {{schema}}.draft_outcomes
            (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at,

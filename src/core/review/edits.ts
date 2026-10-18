@@ -1,12 +1,12 @@
 import type { DraftOutput } from "@/core/drafting/draftStage";
-import type { BlockClass, EmailKit } from "@/core/drafting/kit";
+import type { BlockClass, EmailKit, KitBlock } from "@/core/drafting/kit";
 import { templateFlags } from "@/core/drafting/templateDrafts";
 import { type KitFlag, validateEmailKit } from "@/core/drafting/validate";
 import type { JobRecord, Role } from "@/core/extraction/record";
 import type { Db } from "@/core/ports";
 import { getProfileVersion } from "@/core/profile/profile";
 
-import { shortHash } from "./decisions";
+import { type ReviewDecisions, shortHash } from "./decisions";
 
 /**
  * The owner's edits to a kit's sentences (drafting spec, "Owner edits";
@@ -17,15 +17,70 @@ import { shortHash } from "./decisions";
  * is a factual one (ledger spec, "Factual edits").
  */
 
-/** The email as it stands: the draft's, with the owner's words for each sentence they edited. */
-export function editedKit(kit: EmailKit, edits: Readonly<Record<string, string>>): EmailKit {
-  if (Object.keys(edits).length === 0) return kit;
-  return {
-    ...kit,
-    blocks: kit.blocks.map((block) =>
-      Object.hasOwn(edits, block.id) ? { ...block, text: edits[block.id]! } : block,
-    ),
-  };
+type Owners = Pick<ReviewDecisions, "edits" | "added" | "deleted">;
+
+/**
+ * The email as it stands: the draft's, with the owner's words for each
+ * sentence they edited, the sentences they added where they put them, and
+ * none they deleted; the draft's own while they changed nothing. Their
+ * words are marked as theirs (`owner`), which validate checks for what
+ * they say, never against facts.
+ */
+export function editedKit(kit: EmailKit, decisions: Owners): EmailKit {
+  const { edits, added, deleted } = decisions;
+  if (Object.keys(edits).length === 0 && added.length === 0 && deleted.length === 0) return kit;
+  // A deleted sentence goes; the paragraph it ended ends with the sentence before it.
+  const kept: KitBlock[] = [];
+  for (const block of withOwnersWords(kit, decisions)) {
+    if (!deleted.includes(block.id)) {
+      kept.push(block);
+      continue;
+    }
+    const last = kept.at(-1);
+    if (block.paragraphBreak && last) kept[kept.length - 1] = { ...last, paragraphBreak: true };
+  }
+  return { ...kit, blocks: kept };
+}
+
+/**
+ * The email's sentences as the page lists them: the email as it stands,
+ * with each sentence the owner deleted in its place, marked deleted, so
+ * they can take the deletion back.
+ */
+export function listedSentences(
+  kit: EmailKit,
+  decisions: Owners,
+): { block: KitBlock; deleted: boolean }[] {
+  return withOwnersWords(kit, decisions).map((block) => ({
+    block,
+    deleted: decisions.deleted.includes(block.id),
+  }));
+}
+
+/** The draft's sentences with the owner's words for each they edited, and theirs where they added them. */
+function withOwnersWords(kit: EmailKit, { edits, added }: Owners): KitBlock[] {
+  const blocks: KitBlock[] = kit.blocks.map((block) =>
+    Object.hasOwn(edits, block.id) ? { ...block, text: edits[block.id]!, owner: true } : block,
+  );
+  // Each added sentence after the one it names (the last, were that gone), or first, in the order
+  // added: it ends the paragraph the sentence before it ended, and cites nothing.
+  for (const sentence of added) {
+    const named = blocks.findIndex((block) => block.id === sentence.after);
+    const at = sentence.after === "" ? -1 : named === -1 ? blocks.length - 1 : named;
+    const before = blocks[at];
+    blocks.splice(at + 1, 0, {
+      id: sentence.id,
+      text: sentence.text,
+      paragraphBreak: before?.paragraphBreak ?? false,
+      class: "claim",
+      factIds: [],
+      fields: [],
+      gap: null,
+      owner: true,
+    });
+    if (before) blocks[at] = { ...before, paragraphBreak: false };
+  }
+  return blocks;
 }
 
 /**

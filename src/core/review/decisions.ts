@@ -57,8 +57,19 @@ export interface ReviewDecisions {
   meets: string[];
   /** The owner's words for each sentence they edited, by block ID; kept with the draft. */
   edits: Record<string, string>;
-  /** The edited sentences the owner confirmed say only what is true, by block ID. */
+  /** The edited and added sentences the owner confirmed say only what is true, by block ID. */
   confirmed: string[];
+  /** The owner's own sentences, in the order added, each after the sentence it names; kept with the draft. */
+  added: AddedSentence[];
+  /** The drafted sentences the owner deleted, by block ID; kept with the draft. */
+  deleted: string[];
+}
+
+/** A sentence the owner added: "N1" and on, after the sentence `after` names, or first (""). */
+export interface AddedSentence {
+  id: string;
+  after: string;
+  text: string;
 }
 
 export const NO_DECISIONS: ReviewDecisions = {
@@ -71,6 +82,8 @@ export const NO_DECISIONS: ReviewDecisions = {
   meets: [],
   edits: {},
   confirmed: [],
+  added: [],
+  deleted: [],
 };
 
 const addressCheckSchema = z.object({
@@ -95,10 +108,16 @@ export const decisionsSchema = z.object({
   // Kept from before the block editor: none.
   edits: z.record(z.string(), z.string()).default({}),
   confirmed: z.array(z.string()).default([]),
+  // Kept from before sentences could be added or deleted: none.
+  added: z.array(z.object({ id: z.string(), after: z.string(), text: z.string() })).default([]),
+  deleted: z.array(z.string()).default([]),
 });
 
-/** The most characters an edited sentence holds. */
+/** The most characters an edited or added sentence holds. */
 export const MAX_SENTENCE = 1500;
+
+/** The most sentences the owner adds to one draft. */
+export const MAX_ADDED = 30;
 
 /**
  * A flag's name (flagKey): its kind, its place, and eight hex digits of its
@@ -134,6 +153,13 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({ kind: z.literal("revert"), blockId: z.string().min(1).max(20) }),
   z.strictObject({ kind: z.literal("confirm"), blockId: z.string().min(1).max(20) }),
+  // A sentence in the owner's words, after the sentence named, or first ("").
+  z.strictObject({
+    kind: z.literal("add"),
+    after: z.string().max(20),
+    text: z.string().trim().min(1).max(MAX_SENTENCE),
+  }),
+  z.strictObject({ kind: z.literal("delete"), blockId: z.string().min(1).max(20) }),
 ]);
 
 export type ReviewAction = z.infer<typeof reviewActionSchema>;
@@ -209,6 +235,9 @@ export function keptLookup(decisions: ReviewDecisions, address: string): Address
 }
 
 const without = (list: readonly string[], item: string) => list.filter((each) => each !== item);
+/** A record without one of its keys. */
+const withoutKey = (record: Readonly<Record<string, string>>, key: string) =>
+  Object.fromEntries(Object.entries(record).filter(([each]) => each !== key));
 /** The flags' names but those at one sentence, whose "I checked this" weighed other words. */
 const notAt = (names: readonly string[], blockId: string) =>
   names.filter((name) => name.slice(name.indexOf("@") + 1, name.lastIndexOf("~")) !== blockId);
@@ -268,22 +297,62 @@ export function decide(
     // An edit needs the owner's confirmation again, as new words.
     // New words for a sentence, the owner's or drafting's again: confirmed and checked anew, but the
     // separate check's verdict, which weighed the drafted words and stands aside meanwhile.
-    case "edit":
-      return {
+    case "edit": {
+      const text = action.text.trim();
+      const anew = {
         ...decisions,
-        edits: { ...decisions.edits, [action.blockId]: action.text.trim() },
         confirmed: without(decisions.confirmed, action.blockId),
         flagsChecked: notAt(decisions.flagsChecked, action.blockId),
       };
+      return isAdded(decisions, action.blockId)
+        ? {
+            ...anew,
+            added: decisions.added.map((each) =>
+              each.id === action.blockId ? { ...each, text } : each,
+            ),
+          }
+        : { ...anew, edits: { ...decisions.edits, [action.blockId]: text } };
+    }
+    // Drafting's words again, for a sentence edited or deleted.
     case "revert":
       return {
         ...decisions,
-        edits: Object.fromEntries(
-          Object.entries(decisions.edits).filter(([blockId]) => blockId !== action.blockId),
-        ),
+        edits: withoutKey(decisions.edits, action.blockId),
+        deleted: without(decisions.deleted, action.blockId),
         confirmed: without(decisions.confirmed, action.blockId),
         flagsChecked: notAt(decisions.flagsChecked, action.blockId),
       };
+    case "add": {
+      // Named after the highest: "N1", "N2" and on.
+      const highest = Math.max(
+        0,
+        ...decisions.added.map((each) => Number(/^N(\d+)$/.exec(each.id)?.[1] ?? 0)),
+      );
+      const sentence = { id: `N${highest + 1}`, after: action.after, text: action.text.trim() };
+      return { ...decisions, added: [...decisions.added, sentence] };
+    }
+    case "delete": {
+      const cleared = {
+        ...decisions,
+        confirmed: without(decisions.confirmed, action.blockId),
+        flagsChecked: notAt(decisions.flagsChecked, action.blockId),
+      };
+      const gone = decisions.added.find((each) => each.id === action.blockId);
+      // An added sentence goes outright, and one added after it takes its place.
+      if (gone) {
+        return {
+          ...cleared,
+          added: decisions.added
+            .filter((each) => each !== gone)
+            .map((each) => (each.after === gone.id ? { ...each, after: gone.after } : each)),
+        };
+      }
+      return {
+        ...cleared,
+        edits: withoutKey(decisions.edits, action.blockId),
+        deleted: withOne(decisions.deleted, action.blockId),
+      };
+    }
     case "confirm":
       return { ...decisions, confirmed: withOne(decisions.confirmed, action.blockId) };
   }
@@ -294,9 +363,29 @@ export function isEdited(decisions: Pick<ReviewDecisions, "edits">, blockId: str
   return Object.hasOwn(decisions.edits, blockId);
 }
 
+/** Whether a sentence is one the owner added. */
+export function isAdded(decisions: Pick<ReviewDecisions, "added">, blockId: string): boolean {
+  return decisions.added.some((each) => each.id === blockId);
+}
+
+/** Whether the owner deleted a drafted sentence: it is not in the email, and its verdict holds nothing. */
+export function isDeleted(decisions: Pick<ReviewDecisions, "deleted">, blockId: string): boolean {
+  return decisions.deleted.includes(blockId);
+}
+
+/** Whether a sentence of the email is in the owner's words, edited or added, for them to confirm. */
+export function isOwners(
+  decisions: Pick<ReviewDecisions, "edits" | "added" | "deleted">,
+  blockId: string,
+): boolean {
+  return (
+    (isEdited(decisions, blockId) || isAdded(decisions, blockId)) && !isDeleted(decisions, blockId)
+  );
+}
+
 /** What the gate reads from a kit, besides the owner's decisions. */
 export interface KitParts {
-  /** The kit's sentences, by ID. */
+  /** The kit's sentences by ID: the draft's, those the owner deleted included, then those they added. */
   blocks: readonly string[];
   flags: readonly KitFlag[];
   verdicts: readonly BlockVerdict[];
@@ -385,7 +474,8 @@ export function approvals(parts: KitParts, decisions: ReviewDecisions): Approval
         isBlocking(verdict) &&
         blocks.has(verdict.blockId) &&
         !checked.has(verdict.blockId) &&
-        !isEdited(decisions, verdict.blockId),
+        !isEdited(decisions, verdict.blockId) &&
+        !isDeleted(decisions, verdict.blockId),
     )
     .map((verdict) => verdict.blockId);
   const sentences = [...new Set(held)].map((blockId): Approval => ({
@@ -427,7 +517,12 @@ export function approvalsKey(parts: KitParts, decisions: ReviewDecisions): strin
  */
 export function approveAll(parts: KitParts, decisions: ReviewDecisions): ReviewDecisions {
   const held = parts.verdicts
-    .filter((verdict) => isBlocking(verdict) && !isEdited(decisions, verdict.blockId))
+    .filter(
+      (verdict) =>
+        isBlocking(verdict) &&
+        !isEdited(decisions, verdict.blockId) &&
+        !isDeleted(decisions, verdict.blockId),
+    )
     .map((verdict) => verdict.blockId);
   return {
     ...decisions,
@@ -477,13 +572,17 @@ export function gateInputOf(parts: KitParts, decisions: ReviewDecisions): GateIn
     flags: parts.flags.filter(
       (flag) => !flagsChecked.has(flagKey(flag)) && !(isMeetable(flag) && meets.has(flag.at)),
     ),
-    // A verdict on words the owner replaced holds nothing: their edit holds it until confirmed.
+    // A verdict on words the owner replaced or deleted holds nothing: their words hold the kit
+    // until confirmed.
     verdicts: parts.verdicts.filter(
-      (verdict) => blocks.has(verdict.blockId) && !isEdited(decisions, verdict.blockId),
+      (verdict) =>
+        blocks.has(verdict.blockId) &&
+        !isEdited(decisions, verdict.blockId) &&
+        !isDeleted(decisions, verdict.blockId),
     ),
     checked: decisions.checked.filter((id) => blocks.has(id)),
     unconfirmed: parts.blocks.filter(
-      (id) => isEdited(decisions, id) && !decisions.confirmed.includes(id),
+      (id) => isOwners(decisions, id) && !decisions.confirmed.includes(id),
     ),
     attachments: parts.attachments.map(({ id, name }) => ({ name, ticked: attached.has(id) })),
     contact: parts.contact && { ...parts.contact, retyped: decisions.retyped?.value ?? null },

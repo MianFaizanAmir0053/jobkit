@@ -15,12 +15,16 @@ import {
   approvals,
   approvalsKey,
   flagKey,
+  isAdded,
+  isDeleted,
   isEdited,
   isMeetable,
+  MAX_ADDED,
   MAX_SENTENCE,
   needsNewWords,
   NO_DECISIONS,
 } from "@/core/review/decisions";
+import { listedSentences } from "@/core/review/edits";
 import { fitTableOf } from "@/core/review/fitTable";
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { DraftChoice, JobView, Step } from "@/core/review/jobView";
@@ -47,7 +51,7 @@ import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
 import { CROP_KEY } from "./imageUrls";
 import { PostImage } from "./PostImage";
-import { AttachTick, FitTick, RetypeField, SentenceEdit } from "./Review";
+import { AddSentence, AttachTick, FitTick, RetypeField, SentenceEdit } from "./Review";
 
 export const metadata: Metadata = { title: "Job · jobkit" };
 
@@ -639,7 +643,10 @@ function KitPanel({
   // The separate check's findings, a sentence it never weighed included, but on the drafted words
   // of a sentence the owner put in their own: theirs wait for their confirmation instead.
   const judged = parts.verdicts.filter(
-    (verdict) => isBlocking(verdict) && !isEdited(decisions, verdict.blockId),
+    (verdict) =>
+      isBlocking(verdict) &&
+      !isEdited(decisions, verdict.blockId) &&
+      !isDeleted(decisions, verdict.blockId),
   );
   const draftedText = new Map(draft.kit.blocks.map((block) => [block.id, block.text]));
   // The chosen role's must-haves: one the owner does not meet needs a line saying so.
@@ -650,6 +657,11 @@ function KitPanel({
   const skipped = parts.skipped;
   // While jobkit sends the email, or the owner has skipped the job, nothing on the page changes it.
   const locked = sent || parts.sending || skipped;
+  // The email's sentences as the page lists them, each the owner deleted in its place; when the kit
+  // is locked, the email as it went.
+  const sentences = locked
+    ? kit.blocks.map((block) => ({ block, deleted: false }))
+    : listedSentences(draft.kit, decisions);
   // The send the page shows beside this kit, by the rule the send's route answers with too.
   const send = view.send && showsFor(view.send, kitKey) ? view.send : null;
   // A send that may have gone, whatever came after it: the page warns until the kit is sent.
@@ -925,11 +937,32 @@ function KitPanel({
         <div className="rounded-md bg-muted p-3 text-sm [overflow-wrap:anywhere]">
           <p className="whitespace-pre-wrap">{kit.greeting}</p>
           <ol className="mt-3 flex flex-col gap-1">
-            {kit.blocks.map((block, i) => {
+            {sentences.map(({ block, deleted }, i) => {
               const edited = isEdited(decisions, block.id);
+              const added = isAdded(decisions, block.id);
               const confirmed = confirmedEdits.has(block.id);
               // A new paragraph begins after the sentence that ends one.
-              const opens = kit.blocks[i - 1]?.paragraphBreak === true;
+              const opens = sentences[i - 1]?.block.paragraphBreak === true;
+              if (deleted) {
+                return (
+                  <li key={block.id} className={opens ? "mt-3" : undefined}>
+                    <p className="py-2.5 whitespace-pre-wrap text-muted-foreground line-through">
+                      {block.text}
+                    </p>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-muted-foreground">You deleted this sentence.</span>
+                      <ActionButton
+                        url={reviewUrl}
+                        gateOf={view.id}
+                        label="Undo delete"
+                        ariaLabel={`Undo delete: ${block.text}`}
+                        variant="outline"
+                        body={decision({ kind: "revert", blockId: block.id })}
+                      />
+                    </div>
+                  </li>
+                );
+              }
               return (
                 <li key={block.id} className={opens ? "mt-3" : undefined}>
                   {locked ? (
@@ -949,14 +982,16 @@ function KitPanel({
                       Your words. Drafted as: &ldquo;{draftedText.get(block.id) ?? ""}&rdquo;
                     </p>
                   )}
-                  {edited && !locked && (
+                  {(edited || added) && !locked && (
                     <p className={confirmed ? "mt-1 text-muted-foreground" : "mt-1 font-medium"}>
                       {confirmed
                         ? "You confirmed your words."
-                        : "You changed this sentence: confirm it says only what is true."}
+                        : added
+                          ? "You added this sentence: confirm it says only what is true."
+                          : "You changed this sentence: confirm it says only what is true."}
                     </p>
                   )}
-                  {edited && !locked && (
+                  {(edited || added) && !locked && (
                     <div className="mt-1 flex flex-wrap items-center gap-2">
                       {!confirmed && (
                         <ActionButton
@@ -968,20 +1003,43 @@ function KitPanel({
                           body={decision({ kind: "confirm", blockId: block.id })}
                         />
                       )}
-                      <ActionButton
-                        url={reviewUrl}
-                        gateOf={view.id}
-                        label="Undo edit"
-                        ariaLabel={`Undo edit: ${block.text}`}
-                        variant="outline"
-                        body={decision({ kind: "revert", blockId: block.id })}
-                      />
+                      {added ? (
+                        <ActionButton
+                          url={reviewUrl}
+                          gateOf={view.id}
+                          label="Delete"
+                          ariaLabel={`Delete your sentence: ${block.text}`}
+                          variant="outline"
+                          body={decision({ kind: "delete", blockId: block.id })}
+                        />
+                      ) : (
+                        <ActionButton
+                          url={reviewUrl}
+                          gateOf={view.id}
+                          label="Undo edit"
+                          ariaLabel={`Undo edit: ${block.text}`}
+                          variant="outline"
+                          body={decision({ kind: "revert", blockId: block.id })}
+                        />
+                      )}
                     </div>
                   )}
                 </li>
               );
             })}
           </ol>
+          {!locked && (
+            <div className="mt-3">
+              <AddSentence
+                key={kitKey}
+                jobId={view.id}
+                kit={kitKey}
+                sentences={kit.blocks.map((block) => ({ id: block.id, text: block.text }))}
+                maxLength={MAX_SENTENCE}
+                full={decisions.added.length >= MAX_ADDED}
+              />
+            </div>
+          )}
           <p className="mt-3 whitespace-pre-wrap">{kit.closing}</p>
         </div>
       </Panel>

@@ -167,10 +167,12 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
       if (block.text === NEEDS_YOUR_LINE) {
         flag("needs_your_line", block.id, MESSAGES.needs_your_line);
       }
-    } else if (!citesTruly(block, context, factIds)) {
+    } else if (!block.owner && !citesTruly(block, context, factIds)) {
+      // The owner's own words cite nothing: their confirmation stands for them.
       flag("invalid_citation", block.id, MESSAGES.invalid_citation);
     }
-    if (block.class !== "gap" && isSensitive(block.text, names)) {
+    // A personal topic is the owner's to raise in their own words; a drafter's is checked.
+    if (block.class !== "gap" && !block.owner && isSensitive(block.text, names)) {
       flag("sensitive_topic_drafted", block.id, MESSAGES.sensitive_topic_drafted);
     }
   }

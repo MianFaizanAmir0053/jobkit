@@ -14,10 +14,12 @@ import {
   decide,
   emailKey,
   flagKey,
-  isEdited,
+  isDeleted,
   isMeetable,
+  isOwners,
   keptLookup,
   type KitParts,
+  MAX_ADDED,
   NO_DECISIONS,
   type ReviewAction,
   type ReviewDecisions,
@@ -60,12 +62,22 @@ export interface DecisionMade {
 /** Whether the kit has a place for the decision. */
 function fits(action: ReviewAction, parts: KitParts, decisions: ReviewDecisions): boolean {
   switch (action.kind) {
+    // A deleted sentence is neither edited nor confirmed until the deletion is taken back.
     case "edit":
+      return parts.blocks.includes(action.blockId) && !isDeleted(decisions, action.blockId);
     case "revert":
       return parts.blocks.includes(action.blockId);
-    // Only an edited sentence is confirmed.
+    // Only the owner's words are confirmed: a sentence they edited or added.
     case "confirm":
-      return parts.blocks.includes(action.blockId) && isEdited(decisions, action.blockId);
+      return parts.blocks.includes(action.blockId) && isOwners(decisions, action.blockId);
+    case "add":
+      return (
+        decisions.added.length < MAX_ADDED &&
+        (action.after === "" ||
+          (parts.blocks.includes(action.after) && !isDeleted(decisions, action.after)))
+      );
+    case "delete":
+      return parts.blocks.includes(action.blockId) && !isDeleted(decisions, action.blockId);
     case "check":
     case "uncheck":
       return parts.blocks.includes(action.blockId);

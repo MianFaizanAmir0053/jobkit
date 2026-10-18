@@ -77,6 +77,8 @@ export async function pickDraft(
         flagsChecked: decisions.flagsChecked,
         edits: decisions.edits,
         confirmed: decisions.confirmed,
+        added: decisions.added,
+        deleted: decisions.deleted,
       },
     };
     await tx.query(
@@ -90,6 +92,8 @@ export async function pickDraft(
       flagsChecked: back.flagsChecked,
       edits: back.edits,
       confirmed: back.confirmed,
+      added: back.added,
+      deleted: back.deleted,
     };
     const outcome = await keep(at, jobId, roleId, picked.kitKey, carried);
     return outcome.ok ? { ok: true, gate: outcome.gate } : outcome;

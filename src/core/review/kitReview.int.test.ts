@@ -9,6 +9,7 @@ import { offlineDns } from "@/adapters/dns";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import type { DraftAnswer } from "@/core/drafting/kit";
+import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import type { Dns } from "@/core/ports";
 import { createTestDb } from "@/server/db/testDb";
@@ -31,6 +32,48 @@ let storage: LocalStorage;
 const CITING_NOTHING: DraftAnswer = {
   ...KIT_DRAFT,
   blocks: [{ ...KIT_DRAFT.blocks[0]!, fact_ids: ["F-not-in-the-profile"] }],
+};
+
+/** The post asks for Kubernetes in production too, a must-have the owner's profile says they lack. */
+const askingForKubernetes = (record: JobRecord): JobRecord => ({
+  ...record,
+  roles: record.roles.map((role) => ({
+    ...role,
+    requirements: [
+      ...role.requirements,
+      {
+        id: "R5",
+        text: "Kubernetes in production",
+        priority: "must",
+        kind: "skill",
+        skills: ["kubernetes"],
+        depth: "production",
+        years: -1,
+      },
+    ],
+  })),
+});
+
+/** The draft, with the profile's known line about Kubernetes as its gap line. */
+const WITH_GAP_LINE: DraftAnswer = {
+  fit: [...KIT_DRAFT.fit, { requirement_id: "R5", verdict: "gap", fact_ids: [], note: "" }],
+  blocks: [
+    ...KIT_DRAFT.blocks,
+    {
+      id: "S2",
+      text: "",
+      paragraph_break: true,
+      class: "gap",
+      fact_ids: [],
+      fields: [],
+      gap: {
+        requirement_id: "R5",
+        known_line_id: "K-kubernetes",
+        template_id: "",
+        related_fact_id: "",
+      },
+    },
+  ],
 };
 
 /** A DNS where these domains take mail, and no other does. */
@@ -97,6 +140,8 @@ describe("recordReview", () => {
         meets: [],
         edits: {},
         confirmed: [],
+        added: [],
+        deleted: [],
       },
       gate: typed.ok ? typed.gate : [],
     });
@@ -134,6 +179,59 @@ describe("recordReview", () => {
       ok: false,
       reason: "not-in-kit",
     });
+  });
+
+  it("adds the owner's sentence, held until they confirm it, and deletes a drafted one, which holds nothing", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    expect(kinds((await jobView({ db, clock }, id))!.review!.gate)).toEqual(["judge"]);
+    const words = "I lead code reviews for a team of four.";
+
+    const added = await recordReview(deps(), id, { kind: "add", after: "S1", text: words });
+
+    expect(added.ok && kinds(added.gate)).toEqual(["judge", "unconfirmed_edit"]);
+    expect((await jobView({ db, clock }, id))!.kit!.blocks.map((block) => block.id)).toEqual([
+      "S1",
+      "N1",
+    ]);
+    await recordReview(deps(), id, { kind: "confirm", blockId: "N1" });
+    // S1, which the separate check holds, deleted: nothing holds the email, and S1 is not in it.
+    const deleted = await recordReview(deps(), id, { kind: "delete", blockId: "S1" });
+    expect(deleted.ok && kinds(deleted.gate)).toEqual([]);
+    expect((await jobView({ db, clock }, id))!.kit!.blocks.map((block) => block.text)).toEqual([
+      words,
+    ]);
+    // A deleted sentence is not edited until the deletion is taken back, which holds the email again.
+    expect(await recordReview(deps(), id, { kind: "edit", blockId: "S1", text: "x" })).toEqual({
+      ok: false,
+      reason: "not-in-kit",
+    });
+    const back = await recordReview(deps(), id, { kind: "revert", blockId: "S1" });
+    expect(back.ok && kinds(back.gate)).toEqual(["judge"]);
+    // After a sentence the kit has not, or a confirmation of drafting's words: refused.
+    expect(await recordReview(deps(), id, { kind: "add", after: "S9", text: "x" })).toEqual({
+      ok: false,
+      reason: "not-in-kit",
+    });
+    expect(await recordReview(deps(), id, { kind: "confirm", blockId: "S1" })).toEqual({
+      ok: false,
+      reason: "not-in-kit",
+    });
+  });
+
+  it("asks for a line about a must-have once the owner deletes its gap line (drafting AC13)", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      record: askingForKubernetes,
+      draft: WITH_GAP_LINE,
+    });
+    const view = (await jobView({ db, clock }, id))!;
+    const gap = view.kit!.blocks.find((block) => block.class === "gap")!;
+    expect(gap.text).toContain("Kubernetes");
+    expect(view.kitParts!.flags.map((flag) => flag.kind)).not.toContain("missing_gap_line");
+
+    await recordReview(deps(), id, { kind: "delete", blockId: gap.id });
+
+    const flags = (await jobView({ db, clock }, id))!.kitParts!.flags;
+    expect(flags.map((flag) => [flag.kind, flag.at])).toContainEqual(["missing_gap_line", "R5"]);
   });
 
   it("runs validate again on the email as the owner edited it", async () => {

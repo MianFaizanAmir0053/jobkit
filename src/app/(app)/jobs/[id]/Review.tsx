@@ -66,7 +66,7 @@ export function SentenceEdit({
   const [words, setWords] = useState(text);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // The page drawn again after a save: the box shows until it is.
+  // The page drawn again after a save or a deletion: the box shows until it is.
   const [refreshing, startRefresh] = useTransition();
   const shown = open || refreshing;
   const held = busy || refreshing;
@@ -86,6 +86,15 @@ export function SentenceEdit({
     setOpen(false);
   }
 
+  async function send(action: object) {
+    setBusy(true);
+    const { error, answered } = await decide(jobId, kit, action);
+    setBusy(false);
+    if (error === null) close();
+    else setError(error);
+    if (answered) startRefresh(() => router.refresh());
+  }
+
   async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const typed = words.trim();
@@ -93,12 +102,7 @@ export function SentenceEdit({
       close();
       return;
     }
-    setBusy(true);
-    const { error, answered } = await decide(jobId, kit, { kind: "edit", blockId, text: typed });
-    setBusy(false);
-    if (error === null) close();
-    else setError(error);
-    if (answered) startRefresh(() => router.refresh());
+    await send({ kind: "edit", blockId, text: typed });
   }
 
   if (!shown) {
@@ -146,6 +150,147 @@ export function SentenceEdit({
           className="min-h-11"
           disabled={held}
           onClick={close}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-11 text-destructive"
+          disabled={held}
+          onClick={() => void send({ kind: "delete", blockId })}
+        >
+          Delete this sentence
+        </Button>
+      </div>
+      {error && (
+        <p role="alert" className="text-destructive">
+          {error}
+        </p>
+      )}
+    </form>
+  );
+}
+
+/**
+ * "Add a sentence", below the email (review spec, "Job page"): a box for a
+ * sentence in the owner's own words, put after the sentence they choose,
+ * the last by default, or first; it waits, as an edit does, until they
+ * confirm it. The box stays until the page shows it, and a refusal keeps
+ * what they typed.
+ */
+export function AddSentence({
+  jobId,
+  kit,
+  sentences,
+  maxLength,
+  full,
+}: {
+  jobId: string;
+  kit: string;
+  /** The email's sentences as they stand, in order: each one the new sentence may follow. */
+  sentences: { id: string; text: string }[];
+  /** The most characters a sentence holds. */
+  maxLength: number;
+  /** Whether the owner added as many sentences as one draft takes. */
+  full: boolean;
+}) {
+  const router = useRouter();
+  const last = sentences.at(-1)?.id ?? "";
+  const [open, setOpen] = useState(false);
+  const [words, setWords] = useState("");
+  const [after, setAfter] = useState(last);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, startRefresh] = useTransition();
+  const shown = open || refreshing;
+  const held = busy || refreshing;
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    const { error, answered } = await decide(jobId, kit, {
+      kind: "add",
+      after,
+      text: words.trim(),
+    });
+    setBusy(false);
+    if (error === null) {
+      setWords("");
+      setOpen(false);
+    }
+    setError(error);
+    if (answered) startRefresh(() => router.refresh());
+  }
+
+  if (full) {
+    return (
+      <p className="text-muted-foreground">
+        You added the most sentences one draft takes: edit or delete one of yours to change it.
+      </p>
+    );
+  }
+  if (!shown) {
+    return (
+      <div>
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-11"
+          onClick={() => {
+            setAfter(last);
+            setError(null);
+            setOpen(true);
+          }}
+        >
+          Add a sentence
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <form onSubmit={(event) => void save(event)} className="flex flex-col gap-2">
+      <label className="flex flex-col gap-1">
+        <span className="text-muted-foreground">Your sentence, in your own words</span>
+        <textarea
+          autoFocus
+          value={words}
+          maxLength={maxLength}
+          rows={3}
+          readOnly={held}
+          onChange={(event) => setWords(event.currentTarget.value)}
+          className="min-h-24 w-full rounded-md border border-border bg-background p-2"
+        />
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-muted-foreground">Put it after</span>
+        <select
+          value={after}
+          disabled={held}
+          onChange={(event) => setAfter(event.currentTarget.value)}
+          className="min-h-11 w-full rounded-md border border-border bg-background px-2"
+        >
+          <option value="">The greeting: first in the email</option>
+          {sentences.map((sentence) => (
+            <option key={sentence.id} value={sentence.id}>
+              {sentence.text.length > 60 ? `${sentence.text.slice(0, 59)}…` : sentence.text}
+            </option>
+          ))}
+        </select>
+      </label>
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" className="min-h-11" disabled={held || words.trim() === ""}>
+          {held ? "Saving…" : "Add it"}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-11"
+          disabled={held}
+          onClick={() => {
+            setError(null);
+            setOpen(false);
+          }}
         >
           Cancel
         </Button>

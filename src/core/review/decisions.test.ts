@@ -78,6 +78,8 @@ describe("decide", () => {
       meets: [],
       edits: {},
       confirmed: [],
+      added: [],
+      deleted: [],
     });
     expect(decide(decisions, { kind: "uncheck", blockId: "S2" }).checked).toEqual([]);
     expect(decide(decisions, { kind: "uncheck_flag", flag: F }).flagsChecked).toEqual([]);
@@ -130,6 +132,95 @@ describe("decide", () => {
     expect(reviewActionSchema.safeParse({ kind: "edit", blockId: "S1", text: "   " }).success).toBe(
       false,
     );
+  });
+
+  it("adds the owner's sentence after another or first, each to be confirmed, and edits it in place", () => {
+    let decisions = decide(NO_DECISIONS, {
+      kind: "add",
+      after: "S2",
+      text: "  I led a team of four.  ",
+    });
+    decisions = decide(decisions, { kind: "add", after: "", text: "First words." });
+    expect(decisions.added).toEqual([
+      { id: "N1", after: "S2", text: "I led a team of four." },
+      { id: "N2", after: "", text: "First words." },
+    ]);
+    decisions = decide(decisions, { kind: "confirm", blockId: "N1" });
+    decisions = decide(decisions, { kind: "edit", blockId: "N1", text: "I led a team of five." });
+
+    expect(decisions.added[0]).toEqual({ id: "N1", after: "S2", text: "I led a team of five." });
+    // Changed: confirmed anew; and a sentence the owner added is no edit of a drafted one.
+    expect(decisions.confirmed).toEqual([]);
+    expect(decisions.edits).toEqual({});
+  });
+
+  it("deletes a drafted sentence with its edit and checks, until the owner takes the deletion back", () => {
+    const onS2 = flagKey({ kind: "sensitive_topic_drafted", at: "S2", message: "Check this." });
+    let decisions = decide(NO_DECISIONS, { kind: "edit", blockId: "S2", text: "New words." });
+    decisions = decide(decisions, { kind: "confirm", blockId: "S2" });
+    decisions = decide(decisions, { kind: "check_flag", flag: onS2 });
+    decisions = decide(decisions, { kind: "delete", blockId: "S2" });
+
+    expect(decisions).toMatchObject({
+      deleted: ["S2"],
+      edits: {},
+      confirmed: [],
+      flagsChecked: [],
+    });
+    expect(decide(decisions, { kind: "revert", blockId: "S2" }).deleted).toEqual([]);
+  });
+
+  it("deletes an added sentence outright, one added after it taking its place", () => {
+    let decisions = decide(NO_DECISIONS, { kind: "add", after: "S1", text: "One." });
+    decisions = decide(decisions, { kind: "add", after: "N1", text: "Two." });
+    decisions = decide(decisions, { kind: "confirm", blockId: "N1" });
+    decisions = decide(decisions, { kind: "delete", blockId: "N1" });
+
+    expect(decisions).toMatchObject({
+      added: [{ id: "N2", after: "S1", text: "Two." }],
+      deleted: [],
+      confirmed: [],
+    });
+    // The next sentence added is named after the highest.
+    const next = decide(decisions, { kind: "add", after: "S1", text: "Three." });
+    expect(next.added.map((each) => each.id)).toEqual(["N2", "N3"]);
+  });
+
+  it("holds the gate on each added sentence until confirmed, and on no deleted one", () => {
+    const parts: KitParts = { ...PARTS, blocks: ["S1", "S2", "S3", "N1"] };
+    let decisions = decide(NO_DECISIONS, { kind: "add", after: "S3", text: "Mine." });
+    expect(gateInputOf(parts, decisions).unconfirmed).toEqual(["N1"]);
+    decisions = decide(decisions, { kind: "confirm", blockId: "N1" });
+    expect(gateInputOf(parts, decisions).unconfirmed).toEqual([]);
+
+    // S2 is overstated: deleted, its verdict holds nothing, and Approve & send marks nothing for it.
+    const deleted = decide(NO_DECISIONS, { kind: "delete", blockId: "S2" });
+    expect(gateInputOf(PARTS, deleted).verdicts.map((each) => each.blockId)).not.toContain("S2");
+    expect(approvable(PARTS, deleted)).not.toContain("sentence:S2");
+    expect(approveAll(PARTS, deleted).checked).toEqual([]);
+    // Nor does an edit of it, deleted after, wait for confirming.
+    const edited = decide(decide(NO_DECISIONS, { kind: "edit", blockId: "S2", text: "x" }), {
+      kind: "delete",
+      blockId: "S2",
+    });
+    expect(gateInputOf(PARTS, edited).unconfirmed).toEqual([]);
+  });
+
+  it("takes an added sentence's words as an edit's, after a sentence or first, and a deletion by ID", () => {
+    const parses = (action: object) => reviewActionSchema.safeParse(action).success;
+
+    expect(parses({ kind: "add", after: "S2", text: "Mine." })).toBe(true);
+    expect(parses({ kind: "add", after: "", text: "Mine." })).toBe(true);
+    expect(parses({ kind: "add", after: "S2", text: "  " })).toBe(false);
+    expect(parses({ kind: "add", after: "S2", text: "x".repeat(1501) })).toBe(false);
+    expect(parses({ kind: "delete", blockId: "N1" })).toBe(true);
+  });
+
+  it("reads decisions kept before sentences were added or deleted as adding and deleting none", () => {
+    const { added, deleted, ...before } = NO_DECISIONS;
+
+    expect([added, deleted]).toEqual([[], []]);
+    expect(decisionsSchema.parse(before)).toMatchObject({ added: [], deleted: [] });
   });
 
   it("names a flag by what it found, so it keeps its name when validate runs again", () => {
@@ -278,6 +369,8 @@ describe("gateInputOf", () => {
       meets: ["R9"],
       edits: { S9: "A sentence the kit no longer has." },
       confirmed: ["S9"],
+      added: [],
+      deleted: ["S9"],
     };
 
     const input = gateInputOf({ ...PARTS, blocks: ["S1"] }, decisions);

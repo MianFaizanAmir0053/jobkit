@@ -332,12 +332,13 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const kitKey = hasKit ? chosen!.kitKey : null;
   const decisions =
     kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey, chosen!.draft.flags) : null;
-  // The email as it stands, the owner's words in place of each sentence they edited; validate runs
-  // again on an edited one (drafting spec, "Owner edits"), and an unedited one keeps drafting's flags.
-  const edits = decisions?.edits ?? {};
-  const kit = chosen ? editedKit(chosen.draft.kit, edits) : null;
+  // The email as it stands, with the owner's edits, the sentences they added and none they deleted;
+  // validate runs again on a changed one (drafting spec, "Owner edits"), and an unchanged one keeps
+  // drafting's flags.
+  const owners = decisions ?? NO_DECISIONS;
+  const kit = chosen ? editedKit(chosen.draft.kit, owners) : null;
   const flags =
-    chosen && role && extraction && kit && Object.keys(edits).length > 0
+    chosen && role && extraction && kit && kit !== chosen.draft.kit
       ? await flagsOfEdited(deps.db, {
           draft: chosen.draft,
           kit,
@@ -383,6 +384,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     chosen && role && extraction
       ? kitPartsOf({
           draft: { ...chosen.draft, flags },
+          added: owners.added.map((sentence) => sentence.id),
           verdicts: chosen.verdicts,
           role,
           extraction,
@@ -729,6 +731,8 @@ async function unopenedDuplicates(
 /** What the gate reads from a kit. The CV needs no tick: the page says to attach it in Gmail. */
 function kitPartsOf(parts: {
   draft: DraftOutput;
+  /** The sentences the owner added, by ID. */
+  added: readonly string[];
   verdicts: KitParts["verdicts"];
   role: Role;
   extraction: ExtractOutput;
@@ -743,7 +747,7 @@ function kitPartsOf(parts: {
 }): KitParts {
   const { kind } = parts.role.route;
   return {
-    blocks: parts.draft.kit.blocks.map((block) => block.id),
+    blocks: [...parts.draft.kit.blocks.map((block) => block.id), ...parts.added],
     flags: parts.draft.flags,
     verdicts: parts.verdicts,
     attachments: parts.role.required_attachments.flatMap((attachment, i) =>
@@ -807,6 +811,9 @@ export const draftChecksSchema = z.record(
     // Kept from before the block editor: none.
     edits: z.record(z.string(), z.string()).default({}),
     confirmed: z.array(z.string()).default([]),
+    // Kept from before sentences could be added or deleted: none.
+    added: z.array(z.object({ id: z.string(), after: z.string(), text: z.string() })).default([]),
+    deleted: z.array(z.string()).default([]),
   }),
 );
 export type DraftChecks = z.infer<typeof draftChecksSchema>;

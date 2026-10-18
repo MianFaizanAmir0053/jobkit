@@ -227,6 +227,27 @@ describe("pickDraft", () => {
     expect(kinds(after)).toEqual(["unconfirmed_edit"]);
   });
 
+  it("keeps the sentences the owner added and deleted with their draft through a pick", async () => {
+    const id = await readyKit(POST, { templates: true });
+    const first = await view(id);
+    const decide = { db, clock, dns: mail };
+    await recordReview(decide, id, { kind: "add", after: "", text: "I lead code reviews." });
+    await recordReview(decide, id, { kind: "delete", blockId: first.kit!.blocks.at(-1)!.id });
+    const edited = await view(id);
+
+    await pickDraft({ db, clock }, id, "T-ai-features", { kit: edited.kitKey! });
+
+    const other = await view(id);
+    expect(other.review!.decisions).toMatchObject({ added: [], deleted: [] });
+    expect(other.kit).toEqual(other.draft!.kit);
+    await pickDraft({ db, clock }, id, "T-full-stack", { kit: other.kitKey! });
+    const again = await view(id);
+    expect(again.kit!.blocks.map((block) => block.text)).toEqual(
+      edited.kit!.blocks.map((block) => block.text),
+    );
+    expect(again.kit!.blocks[0]!.text).toBe("I lead code reviews.");
+  });
+
   it("keeps the draft shown when picked, and refuses a pick from another kit's page, of a draft the kit lacks, or while it sends", async () => {
     const id = await readyKit(POST, { templates: true });
     const shown = await view(id);

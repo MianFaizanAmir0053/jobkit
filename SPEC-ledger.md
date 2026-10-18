@@ -74,7 +74,7 @@ Any other transition is refused, and "Mark sent" needs the email route while "Ma
 
 ## Factual edits and the trust-gate counter
 
-- An email handoff records `factual_edit = true` when the owner's in-app edits changed a claim sentence, the address, the subject, a company or role name, the greeting's name or a gap line, or when the owner answers "Yes" to "Did you change anything in Gmail?" at Mark sent.
+- An email handoff records `factual_edit = true` when the owner's in-app edits changed a claim sentence (deleting one included, and adding a sentence of their own), the address, the subject, a company or role name, the greeting's name or a gap line, or when the owner answers "Yes" to "Did you change anything in Gmail?" at Mark sent.
 - "I checked this" on a flagged sentence, with no edit, keeps the outcome clean and is counted separately as a judge false positive.
 - `trustGateState()` reads email outcomes in time order and returns `{ unlocked, cleanStreak, needed }`: unlocked after 10 consecutive clean outcomes; once unlocked, a factual edit locks it again and 5 clean outcomes unlock it. Skipped jobs and form and message kits do not count. In the MVP nothing acts on it.
 - The streak is a gate, not a measurement. The Stats page reports the factual-edit rate over all email outcomes with its interval, and says that a streak of ten can occur by chance even at a rate near one in four.
