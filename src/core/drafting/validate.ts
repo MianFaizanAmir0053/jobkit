@@ -2,18 +2,27 @@ import type { JobRecord, Role } from "@/core/extraction/record";
 
 import { knownLineFits, NEEDS_YOUR_LINE, oneLine, type ProfileParts } from "./build";
 import { checkFit } from "./fit";
-import { bodyWords, type EmailKit, type FitRow, type KitBlock } from "./kit";
+import {
+  answersOf,
+  bodyWords,
+  type FitRow,
+  type Kit,
+  type KitBlock,
+  MESSAGE_LIMIT,
+  messageLength,
+} from "./kit";
 
 /**
- * The code checks on an email kit (drafting spec, "validate(kit, context)"),
- * as far as the thin path needs them: citations, the fit check, gap lines,
- * the word limit, the accepted keyword, anything an AI-addressed line asked
- * for, internal IDs or markers in the text, a line only the owner can write,
- * sensitive topics in drafted sentences and the subject, a placeholder left
- * in the subject, and a body that says nothing about the owner. Pure: it
- * only flags, never rewrites, so the review page can run it in the browser
- * after each edit. Topic questions, short answers and form and message kits
- * come later.
+ * The code checks on an email or a message kit (drafting spec,
+ * "validate(kit, context)"): citations, the fit check, gap lines, the
+ * email's word limit or the message's 600 characters, the accepted keyword,
+ * anything an AI-addressed line asked for, internal IDs or markers in the
+ * text, a line only the owner can write, sensitive topics in drafted
+ * sentences and the email's subject and greeting, a placeholder left in the
+ * subject, and a body that says nothing about the owner. Pure: it only
+ * flags, never rewrites, so it runs again after each edit. Topic questions,
+ * short answers and form kits come later. An email's flags read as they
+ * always have, since a flag's name holds its message (flagKey).
  */
 
 export type KitFlagKind =
@@ -61,7 +70,6 @@ const MESSAGES = {
   fit_tick: ONLY_YOU_CAN_CONFIRM,
   fit_missing: "The draft did not weigh this requirement.",
   missing_gap_line: "A must-have you do not fully meet has no honest line about it.",
-  keyword_missing: "The post asks you to include a keyword, and the email does not.",
   needs_your_line: "Write this line yourself: no gap line in your profile fits this requirement.",
   sensitive_topic_drafted:
     "This mentions money, visas, work permits or another personal topic only your profile may answer. Check it.",
@@ -131,7 +139,7 @@ function without(text: string, name: string): string {
   return rest + text.slice(from);
 }
 
-export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] {
+export function validateKit(kit: Kit, context: KitContext): KitFlag[] {
   const flags: KitFlag[] = [];
   // Each finding once: two lines aimed at AI that read alike as the message quotes them are one,
   // and its name (flagKey) is one flag's.
@@ -144,14 +152,17 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
   const { role, profile } = context;
   const factIds = new Set(profile.facts.map((fact) => fact.id));
   const names = [context.record.company.name, role.title];
+  const noun = kit.kind;
 
-  if (leftPlaceholder(kit.subject, context.subjectFormat)) {
-    flag("subject_placeholder", "subject", MESSAGES.subject_placeholder);
-  }
-  if (isSensitive(kit.subject, names))
-    flag("sensitive_topic_drafted", "subject", MESSAGES.sensitive_topic_drafted);
-  if (isSensitive(kit.greeting, names)) {
-    flag("sensitive_topic_drafted", "greeting", MESSAGES.sensitive_topic_drafted);
+  if (kit.kind === "email") {
+    if (leftPlaceholder(kit.subject, context.subjectFormat)) {
+      flag("subject_placeholder", "subject", MESSAGES.subject_placeholder);
+    }
+    if (isSensitive(kit.subject, names))
+      flag("sensitive_topic_drafted", "subject", MESSAGES.sensitive_topic_drafted);
+    if (isSensitive(kit.greeting, names)) {
+      flag("sensitive_topic_drafted", "greeting", MESSAGES.sensitive_topic_drafted);
+    }
   }
   for (const block of kit.blocks) {
     // A gap whose line code could not write (no known line, no template) is the owner's: it
@@ -176,7 +187,13 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     }
   }
   if (!kit.blocks.some((block) => block.class === "claim" && WORDY.test(block.text))) {
-    flag("no_claims", "body", MESSAGES.no_claims);
+    flag(
+      "no_claims",
+      "body",
+      kit.kind === "email"
+        ? MESSAGES.no_claims
+        : "The message says nothing about you yet. Write at least one sentence from your profile.",
+    );
   }
 
   const { flags: fitFlags, verdicts } = checkFit(role, context.fit, profile.facts);
@@ -190,28 +207,40 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
   }
   for (const requirement of role.requirements) {
     if (requirement.priority !== "must" || verdicts.get(requirement.id) === "met") continue;
-    const answered = kit.blocks.some(
-      (block) => block.class === "gap" && block.gap?.requirementId === requirement.id,
-    );
+    const answered = kit.blocks.some((block) => answersOf(block).includes(requirement.id));
     if (!answered) flag("missing_gap_line", requirement.id, MESSAGES.missing_gap_line);
   }
 
-  const words = bodyWords(kit);
-  if (words > context.wordLimit) {
+  // An email's body counts its words against the limit in force; a message counts its characters,
+  // the sign-off included, against 600, and no word limit applies to it.
+  if (kit.kind === "email") {
+    const words = bodyWords(kit);
+    if (words > context.wordLimit) {
+      flag(
+        "over_limit",
+        "body",
+        `The email's body is ${words} words; the limit is ${context.wordLimit}.`,
+      );
+    }
+  } else if (messageLength(kit) > MESSAGE_LIMIT) {
     flag(
       "over_limit",
       "body",
-      `The email's body is ${words} words; the limit is ${context.wordLimit}.`,
+      `The message is ${messageLength(kit)} characters with your sign-off; the limit is ${MESSAGE_LIMIT}.`,
     );
   }
 
   // The keyword counts only in the body, as a word of its own: "Go" is not in "good".
   const body = kit.blocks.map((block) => block.text).join("\n");
   if (context.keyword !== null && !hasWord(body, context.keyword)) {
-    flag("keyword_missing", "body", MESSAGES.keyword_missing);
+    flag(
+      "keyword_missing",
+      "body",
+      `The post asks you to include a keyword, and the ${noun} does not.`,
+    );
   }
   // From every role: a line aimed at AI that the model recorded under another role still counts.
-  // Looked for in the body only: the subject, greeting and closing are the app's words.
+  // Looked for in the body only: the subject, greeting, closing and sign-off are the app's words.
   // Each value once, however many roles record its line and in whatever case, as it is matched,
   // so taking one out never hides another.
   const followed = new Map<string, string>();
@@ -230,7 +259,7 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     flag(
       "ai_instruction_followed",
       "kit",
-      `The email repeats “${shown}”, which a line aimed at AI tools asked for. Take it out.`,
+      `The ${noun} repeats “${shown}”, which a line aimed at AI tools asked for. Take it out.`,
     );
   }
 
@@ -240,7 +269,11 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     ...profile.gapTemplates.map((template) => template.id),
     ...context.markers,
   ].filter((reference) => reference !== "");
-  const texts = [kit.subject, kit.greeting, ...kit.blocks.map((block) => block.text), kit.closing];
+  const sentences = kit.blocks.map((block) => block.text);
+  const texts =
+    kit.kind === "email"
+      ? [kit.subject, kit.greeting, ...sentences, kit.closing]
+      : [...sentences, kit.signOff];
   // Each leak named, so a check on one never covers another: a profile ID as it is, a marker by
   // its start.
   const leaked = references.filter((reference) => texts.some((text) => hasToken(text, reference)));
@@ -255,7 +288,7 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
     flag(
       "reference_leak",
       "kit",
-      `An internal ID or marker appears in the email: ${named.join(", ")}. Take it out.`,
+      `An internal ID or marker appears in the ${noun}: ${named.join(", ")}. Take it out.`,
     );
   }
   return flags;
@@ -288,7 +321,13 @@ function citesTruly(block: KitBlock, context: KitContext, factIds: ReadonlySet<s
     const template =
       gap.templateId === "" || profile.gapTemplates.some((entry) => entry.id === gap.templateId);
     const related = gap.relatedFactId === "" || factIds.has(gap.relatedFactId);
-    return known && template && related && (gap.knownLineId !== "" || gap.templateId !== "");
+    // A merged line answers only requirements the post has.
+    const also = (block.alsoAnswers ?? []).every((id) =>
+      role.requirements.some((entry) => entry.id === id),
+    );
+    return (
+      known && template && related && also && (gap.knownLineId !== "" || gap.templateId !== "")
+    );
   }
   return true;
 }

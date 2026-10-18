@@ -98,7 +98,7 @@ Runs when `extract_questions` added questions to a job whose kit already exists.
   - or, for a `skill` or `experience` requirement, a template, with `{skill}` replaced by the display name of the requirement's first skill tag that no approved fact has, so a line never says the owner lacks a skill the profile shows, and `{related}` by the related fact's phrase;
   - for a must-have with no skill tag, a degree, a language or an "other" requirement, or one whose every skill appears in an approved fact, no template applies: the block shows "Needs your line" and blocks until the owner types one or picks a known line (the owner's rule, 2026-10-12). A known line answers only a requirement naming one of its skills, so for a requirement with no skill tag the owner types the line.
   
-  In a message kit, several gaps merge into one line ("I haven't used Kubernetes or Kafka professionally; the closest is …") so the 600-character limit can hold them.
+  In a message kit, several gaps merge into one line ("I haven't used Kubernetes or Kafka professionally; the closest is …") so the 600-character limit can hold them. The lines one template and one related fact build merge: `{skill}` lists their skills, each once, joined by "or" where the template's words before it hold a negation ("haven't", "not", "never", "no") and by "and" otherwise, and the line answers each of their must-haves; a known line, the owner's line and a line of another template or related fact keep their own words (Claude's choice, 2026-10-19). The 600 characters count the sign-off and the blank lines between paragraphs and before the sign-off, an emoji as one.
 
 ## Fit check
 

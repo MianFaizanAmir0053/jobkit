@@ -8,7 +8,7 @@ import type { Fact } from "@/core/profile/schema";
 
 import { NEEDS_YOUR_LINE, type ProfileParts } from "./build";
 import type { EmailKit, FitRow, KitBlock } from "./kit";
-import { type KitContext, type KitFlagKind, validateEmailKit } from "./validate";
+import { type KitContext, type KitFlagKind, validateKit } from "./validate";
 
 /* validate on email kits: drafting AC4, AC10 and AC12, for the flags the thin path has. */
 
@@ -106,11 +106,11 @@ function context(overrides: Partial<KitContext> = {}): KitContext {
 }
 
 const kinds = (kit: EmailKit, ctx: KitContext = context()) =>
-  validateEmailKit(kit, ctx).map(({ kind, at }) => [kind, at] as [KitFlagKind, string]);
+  validateKit(kit, ctx).map(({ kind, at }) => [kind, at] as [KitFlagKind, string]);
 
-describe("validateEmailKit", () => {
+describe("validateKit", () => {
   it("raises nothing on a clean kit, a nice-to-have gap needing no line", () => {
-    expect(validateEmailKit(cleanKit(), context())).toEqual([]);
+    expect(validateKit(cleanKit(), context())).toEqual([]);
   });
 
   it("flags a claim citing a fact the profile lacks, or none", () => {
@@ -250,7 +250,7 @@ describe("validateEmailKit", () => {
   });
 
   it("flags a body over the word limit in force, and says by how much", () => {
-    const flags = validateEmailKit(cleanKit(), context({ wordLimit: 20 }));
+    const flags = validateKit(cleanKit(), context({ wordLimit: 20 }));
 
     expect(flags).toEqual([
       {
@@ -308,7 +308,7 @@ describe("validateEmailKit", () => {
     expect(kinds(marked)).toEqual([["reference_leak", "kit"]]);
     // Each leak is its own finding, so a check on one never covers another.
     const message = (kit: EmailKit) =>
-      validateEmailKit(kit, context()).find((flag) => flag.kind === "reference_leak")?.message;
+      validateKit(kit, context()).find((flag) => flag.kind === "reference_leak")?.message;
     expect(message(leaked)).not.toBe(message(marked));
 
     // A longer word that only contains an ID is not the ID.
@@ -382,9 +382,9 @@ describe("validateEmailKit", () => {
     const kit = cleanKit();
     kit.blocks[3]!.text = "Thank you for the pineapple.";
 
-    expect(validateEmailKit(kit, ctx)).toEqual([]);
+    expect(validateKit(kit, ctx)).toEqual([]);
     kit.blocks[3]!.text = "Thank you, Pine.";
-    expect(validateEmailKit(kit, ctx)).toEqual([
+    expect(validateKit(kit, ctx)).toEqual([
       {
         kind: "ai_instruction_followed",
         at: "kit",
@@ -600,7 +600,7 @@ describe("validateEmailKit", () => {
     kit.blocks[3]!.text = "Thank you, banana.";
 
     expect(
-      validateEmailKit(kit, context({ role: trapped, record: { ...record, roles: [trapped] } })),
+      validateKit(kit, context({ role: trapped, record: { ...record, roles: [trapped] } })),
     ).toEqual([
       {
         kind: "ai_instruction_followed",
@@ -641,7 +641,7 @@ describe("validateEmailKit", () => {
     const kit = cleanKit();
     kit.blocks[3]!.text = "Thank you, banana and kiwi.";
 
-    const flagged = validateEmailKit(
+    const flagged = validateKit(
       kit,
       context({ role: trapped, record: { ...record, roles: [trapped, { ...trapped, id: "P2" }] } }),
     ).filter((flag) => flag.kind === "ai_instruction_followed");
@@ -670,7 +670,7 @@ describe("validateEmailKit", () => {
     kit.blocks[3]!.text = "Thank you, banana.";
 
     expect(
-      validateEmailKit(
+      validateKit(
         kit,
         context({ role: upper, record: { ...record, roles: [upper, lower] } }),
       ).filter((flag) => flag.kind === "ai_instruction_followed"),
@@ -700,7 +700,7 @@ describe("validateEmailKit", () => {
     const kit = cleanKit();
     kit.blocks[3]!.text = `Thank you. ${alike} in Lahore, and ${alike} in Karachi.`;
 
-    const flagged = validateEmailKit(
+    const flagged = validateKit(
       kit,
       context({ role: trapped, record: { ...record, roles: [trapped] } }),
     ).filter((flag) => flag.kind === "ai_instruction_followed");

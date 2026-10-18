@@ -3,7 +3,7 @@ import type { Fact, GapTemplate, KnownGap } from "@/core/profile/schema";
 import { EMAIL_BODY_WORD_LIMIT } from "@/core/shared/email";
 import { skillName, skillTag } from "@/core/shared/skills";
 
-import type { DraftAnswer, EmailKit, FitRow, GapChoice, KitBlock } from "./kit";
+import type { DraftAnswer, EmailKit, FitRow, GapChoice, KitBlock, MessageKit } from "./kit";
 
 /**
  * The parts of an email kit code writes (drafting spec, "Code-built parts"
@@ -217,6 +217,12 @@ export function knownLineFits(known: KnownGap, requirement: Requirement): boolea
   return known.skills.some((skill) => skills.includes(skill));
 }
 
+/** How code wrote a gap line: a known line, a template (naming one skill), or none, for the owner to write. */
+type MadeLine =
+  | { made: "known"; text: string }
+  | { made: "template"; text: string; skill: string }
+  | { made: "owner"; text: typeof NEEDS_YOUR_LINE };
+
 /**
  * A gap line, written by code (the owner's rule of 2026-10-12): a known gap
  * line naming one of the requirement's skills, verbatim; or, for a skill or
@@ -232,21 +238,46 @@ export function gapLine(
   choice: GapChoice,
   profile: ProfileParts,
 ): string {
-  if (!requirement) return NEEDS_YOUR_LINE;
+  return madeLine(requirement, choice, profile).text;
+}
+
+function madeLine(
+  requirement: Requirement | undefined,
+  choice: GapChoice,
+  profile: ProfileParts,
+): MadeLine {
+  const owners = { made: "owner", text: NEEDS_YOUR_LINE } as const;
+  if (!requirement) return owners;
   const known = profile.knownGaps.find((gap) => gap.id === choice.knownLineId);
-  if (known && knownLineFits(known, requirement)) return known.line;
+  if (known && knownLineFits(known, requirement)) return { made: "known", text: known.line };
   const template = profile.gapTemplates.find((entry) => entry.id === choice.templateId);
-  if (!template || !takesTemplate(requirement)) return NEEDS_YOUR_LINE;
+  if (!template || !takesTemplate(requirement)) return owners;
   const lacking = requirement.skills
     .map(canonicalSkill)
     .find((skill) => !profile.facts.some((fact) => fact.skills.includes(skill)));
-  if (lacking === undefined) return NEEDS_YOUR_LINE;
+  if (lacking === undefined) return owners;
   const related = profile.facts.find((fact) => fact.id === choice.relatedFactId);
-  if (template.text.includes("{related}") && !related) return NEEDS_YOUR_LINE;
+  if (template.text.includes("{related}") && !related) return owners;
+  return { made: "template", text: filled(template.text, [lacking], related), skill: lacking };
+}
+
+/** Words that make what follows them a negation: "I haven't used {skill}" lists skills with "or". */
+const NEGATION = /\b(?:not|never|no)\b|n['’]t\b/i;
+
+/**
+ * A template with {skill} as the skills' display names, listed ("A", "A or
+ * B", "A, B or C", with "and" where the template's words before the skill
+ * hold no negation), and {related} as the related fact's phrase.
+ */
+function filled(template: string, skills: readonly string[], related: Fact | undefined): string {
+  const names = skills.map((skill) => oneLine(skillName(skill)));
+  const joiner = NEGATION.test(template.slice(0, template.indexOf("{skill}"))) ? "or" : "and";
+  const list =
+    names.length > 1
+      ? `${names.slice(0, -1).join(", ")} ${joiner} ${names.at(-1)!}`
+      : names.join("");
   return oneLine(
-    template.text
-      .replaceAll("{skill}", () => oneLine(skillName(lacking)))
-      .replaceAll("{related}", () => related?.phrase ?? ""),
+    template.replaceAll("{skill}", () => list).replaceAll("{related}", () => related?.phrase ?? ""),
   );
 }
 
@@ -265,7 +296,85 @@ export function buildEmailKit(
   },
 ): { kit: EmailKit; fit: FitRow[] } {
   const { record, role, ownerName, accepted, profile } = context;
-  const blocks: KitBlock[] = answer.blocks.map((block, i) => {
+  return {
+    kit: {
+      kind: "email",
+      subject: subjectFor(accepted.subjectFormat, ownerName, role.title),
+      greeting: greetingFor(record.recruiter.name),
+      blocks: blocksOf(answer, role, profile),
+      closing: CLOSING,
+    },
+    fit: fitOf(answer),
+  };
+}
+
+/**
+ * The message kit from the model's answer (drafting spec, "Draft
+ * structure"): its blocks as an email's are built, with the gap lines one
+ * template and one related fact build merged into one, so the message's 600
+ * characters can hold them, and the profile's sign-off after them.
+ */
+export function buildMessageKit(
+  answer: DraftAnswer,
+  context: { role: Role; signOff: string; profile: ProfileParts },
+): { kit: MessageKit; fit: FitRow[] } {
+  const { role, signOff, profile } = context;
+  const blocks = merged(blocksOf(answer, role, profile), role, profile).map((block, i) => ({
+    ...block,
+    id: `S${i + 1}`,
+  }));
+  return { kit: { kind: "message", blocks, signOff: signOff.trim() }, fit: fitOf(answer) };
+}
+
+/**
+ * A message's gap lines merged: the lines one template and one related fact
+ * build become one, in the first one's place, naming each skill once and
+ * answering each of their must-haves. A known line, the owner's line and a
+ * line of another template or related fact keep their own words. Where a
+ * merged line ended a paragraph, the sentence before it ends it instead.
+ */
+function merged(blocks: readonly KitBlock[], role: Role, profile: ProfileParts): KitBlock[] {
+  const groups = new Map<string, { at: number; skills: string[]; also: string[] }>();
+  const kept: KitBlock[] = [];
+  for (const block of blocks) {
+    const requirement = role.requirements.find((entry) => entry.id === block.gap?.requirementId);
+    const line = block.gap && requirement ? madeLine(requirement, block.gap, profile) : null;
+    if (!block.gap || !requirement || line?.made !== "template") {
+      kept.push(block);
+      continue;
+    }
+    const key = JSON.stringify([block.gap.templateId, block.gap.relatedFactId]);
+    const group = groups.get(key);
+    if (!group) {
+      groups.set(key, { at: kept.length, skills: [line.skill], also: [] });
+      kept.push(block);
+      continue;
+    }
+    if (!group.skills.includes(line.skill)) group.skills.push(line.skill);
+    const first = kept[group.at]!.gap!.requirementId;
+    if (requirement.id !== first && !group.also.includes(requirement.id)) {
+      group.also.push(requirement.id);
+    }
+    if (block.paragraphBreak && kept.length > 0) {
+      kept[kept.length - 1] = { ...kept.at(-1)!, paragraphBreak: true };
+    }
+  }
+  for (const group of groups.values()) {
+    const first = kept[group.at]!;
+    const template = profile.gapTemplates.find((entry) => entry.id === first.gap!.templateId)!;
+    const related = profile.facts.find((fact) => fact.id === first.gap!.relatedFactId);
+    kept[group.at] = {
+      ...first,
+      text: filled(template.text, group.skills, related),
+      ...(group.also.length > 0 ? { alsoAnswers: group.also } : {}),
+    };
+  }
+  return kept;
+}
+
+/** The model's blocks as the kit keeps them: IDs by position, and every gap line written by code. */
+function blocksOf(answer: DraftAnswer, role: Role, profile: ProfileParts): KitBlock[] {
+  return answer.blocks.map((block, i) => {
     const gap: GapChoice | null =
       block.class === "gap"
         ? {
@@ -291,19 +400,13 @@ export function buildEmailKit(
           : gap,
     };
   });
-  return {
-    kit: {
-      kind: "email",
-      subject: subjectFor(accepted.subjectFormat, ownerName, role.title),
-      greeting: greetingFor(record.recruiter.name),
-      blocks,
-      closing: CLOSING,
-    },
-    fit: answer.fit.map((row) => ({
-      requirementId: row.requirement_id,
-      verdict: row.verdict,
-      factIds: row.fact_ids,
-      note: row.note,
-    })),
-  };
+}
+
+function fitOf(answer: DraftAnswer): FitRow[] {
+  return answer.fit.map((row) => ({
+    requirementId: row.requirement_id,
+    verdict: row.verdict,
+    factIds: row.fact_ids,
+    note: row.note,
+  }));
 }

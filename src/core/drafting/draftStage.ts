@@ -14,7 +14,7 @@ import { sha256Hex } from "@/lib/encoding";
 import { acceptedInstructions, buildEmailKit, oneLine } from "./build";
 import { draftAnswerSchema, type EmailKit, type FitRow } from "./kit";
 import { DRAFT_LAYOUT_VERSION, draftContent, draftSystemPrompt } from "./prompt";
-import { hasWord, type KitFlag, validateEmailKit } from "./validate";
+import { hasWord, type KitFlag, validateKit } from "./validate";
 
 /**
  * The `draft` stage for an email kit (drafting spec, "Stage draft"): one
@@ -151,7 +151,7 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         accepted,
         profile: parts,
       });
-      const flags = validateEmailKit(kit, {
+      const flags = validateKit(kit, {
         record: extraction.record,
         role,
         profile: parts,

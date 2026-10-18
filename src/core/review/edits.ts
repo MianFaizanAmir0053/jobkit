@@ -2,7 +2,7 @@ import { acceptedInstructions, BODY_WORD_LIMIT, subjectFor } from "@/core/drafti
 import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { BlockClass, EmailKit, KitBlock } from "@/core/drafting/kit";
 import { templateFlags } from "@/core/drafting/templateDrafts";
-import { type KitFlag, validateEmailKit } from "@/core/drafting/validate";
+import { type KitFlag, validateKit } from "@/core/drafting/validate";
 import type { JobRecord, Role } from "@/core/extraction/record";
 import type { Db } from "@/core/ports";
 import { getProfileVersion } from "@/core/profile/profile";
@@ -174,7 +174,7 @@ export async function asItStands(
   const kit = declined.has("subject_format")
     ? { ...edited, subject: subjectFor(null, profile.owner.name, role.title) }
     : edited;
-  const found = validateEmailKit(kit, {
+  const found = validateKit(kit, {
     record,
     role,
     profile: {

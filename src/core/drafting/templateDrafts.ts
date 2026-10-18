@@ -18,7 +18,7 @@ import {
   type KitFlag,
   type KitFlagKind,
   ONLY_YOU_CAN_CONFIRM,
-  validateEmailKit,
+  validateKit,
 } from "./validate";
 import type { BlockVerdict } from "./verdict";
 
@@ -411,7 +411,7 @@ function draftFrom(
     accepted,
     profile: parts,
   });
-  const found = validateEmailKit(built.kit, {
+  const found = validateKit(built.kit, {
     record,
     role,
     profile: parts,

@@ -3,11 +3,13 @@ import { z } from "zod";
 import { caseless } from "@/core/platform/caseless";
 
 /**
- * The email kit (drafting spec, "Draft structure"). The model writes the fit
- * table and the body as sentence blocks, each with its class and the
- * references it rests on, which live beside the text and never inside it.
- * Code writes the subject, the greeting, every gap line and the closing; the
- * Gmail app adds the owner's signature (amendment A14). The schema follows
+ * The email and message kits (drafting spec, "Draft structure"). The model
+ * writes the fit table and the body as sentence blocks, each with its class
+ * and the references it rests on, which live beside the text and never
+ * inside it. Code writes every gap line, and for an email the subject, the
+ * greeting and the closing; the Gmail app adds the owner's signature
+ * (amendment A14), while a message ends with the profile's sign-off, which
+ * code appends. The schema follows
  * the job record's rules for structured outputs: every field required, empty
  * values instead of nulls, no patterns or bounds, enum fields caseless.
  */
@@ -92,6 +94,12 @@ export interface KitBlock {
    * confirms instead. Absent on every drafted block.
    */
   owner?: true;
+  /**
+   * In a message kit, the other must-haves a merged gap line answers: lines
+   * one template and one related fact build merge into one (drafting spec,
+   * "Code-built parts"). Absent everywhere else.
+   */
+  alsoAnswers?: string[];
 }
 
 export interface EmailKit {
@@ -102,6 +110,27 @@ export interface EmailKit {
   closing: string;
 }
 
+/** A message's most characters, the sign-off included (drafting spec, "Draft structure"). */
+export const MESSAGE_LIMIT = 600;
+
+/**
+ * The message kit, for WhatsApp and LinkedIn: the message's blocks, then the
+ * profile's sign-off, which code appends.
+ */
+export interface MessageKit {
+  kind: "message";
+  blocks: KitBlock[];
+  signOff: string;
+}
+
+export type Kit = EmailKit | MessageKit;
+
+/** The must-haves a gap block answers: its own, and those a merged line answers too. */
+export function answersOf(block: KitBlock): string[] {
+  if (block.class !== "gap" || block.gap === null) return [];
+  return [block.gap.requirementId, ...(block.alsoAnswers ?? [])];
+}
+
 export interface FitRow {
   requirementId: string;
   verdict: Verdict;
@@ -109,11 +138,11 @@ export interface FitRow {
   note: string;
 }
 
-/** The email as the owner copies it: greeting, the body's paragraphs, closing. */
-export function emailBody(kit: EmailKit): string {
+/** The blocks as paragraphs: sentences joined by a space, each paragraph ending where a block says. */
+function paragraphsOf(blocks: readonly KitBlock[]): string[] {
   const paragraphs: string[] = [];
   let current: string[] = [];
-  for (const block of kit.blocks) {
+  for (const block of blocks) {
     if (block.text !== "") current.push(block.text);
     if (block.paragraphBreak && current.length > 0) {
       paragraphs.push(current.join(" "));
@@ -121,7 +150,22 @@ export function emailBody(kit: EmailKit): string {
     }
   }
   if (current.length > 0) paragraphs.push(current.join(" "));
-  return [kit.greeting, ...paragraphs, kit.closing].join("\n\n");
+  return paragraphs;
+}
+
+/** The email as the owner copies it: greeting, the body's paragraphs, closing. */
+export function emailBody(kit: EmailKit): string {
+  return [kit.greeting, ...paragraphsOf(kit.blocks), kit.closing].join("\n\n");
+}
+
+/** The message as the owner sends it: its paragraphs, then the sign-off, each after a blank line. */
+export function messageText(kit: MessageKit): string {
+  return [...paragraphsOf(kit.blocks), kit.signOff].filter((part) => part !== "").join("\n\n");
+}
+
+/** The message's length as its limit counts it: in characters, so an emoji is one. */
+export function messageLength(kit: MessageKit): number {
+  return [...messageText(kit)].length;
 }
 
 /** Words in the body's blocks, as the word limit counts them. */
