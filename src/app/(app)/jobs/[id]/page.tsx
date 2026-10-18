@@ -14,11 +14,13 @@ import { flagKey, NEEDS_NEW_WORDS, needsNewWords, NO_DECISIONS } from "@/core/re
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { DraftChoice, JobView, Step } from "@/core/review/jobView";
 import { showsFor } from "@/core/review/kitSends";
+import type { PostImages } from "@/core/review/postImages";
 import { appConfig } from "@/server/config";
 import {
   gmailForViewer,
   jobForViewer,
   kitCvForViewer,
+  postImagesForViewer,
   requestTime,
   requireSession,
   viewerTimeZone,
@@ -106,6 +108,14 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
   const readable = ready && view.draft && view.role && view.kitParts && view.kitKey;
   const gmail = readable ? await gmailForViewer() : null;
   const cv = readable ? await kitCvForViewer(view.draft!.profileVersion) : null;
+  // The contact's crop beside it, and the screenshots when the owner must type it from them.
+  const images =
+    readable && view.kitParts?.contact
+      ? await postImagesForViewer(view.id, {
+          cropPath: view.contact?.cropPath ?? null,
+          screenshots: view.kitParts.contact.needsRetype,
+        })
+      : null;
   const now = await requestTime();
 
   return (
@@ -150,6 +160,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
               : { state: "not-connected", email: null }
           }
           cvFile={cv}
+          images={images}
           onLaptop={session.kind === "google"}
           now={now}
           timeZone={timeZone}
@@ -512,6 +523,7 @@ function KitPanel({
   account,
   gmail,
   cvFile,
+  images,
   onLaptop,
   now,
   timeZone,
@@ -522,6 +534,8 @@ function KitPanel({
   gmail: { state: "connected" | "not-connected" | "refused"; email: string | null };
   /** The CV Approve & send attaches, as the recruiter sees its name. */
   cvFile: string | null;
+  /** The contact's crop and the post's screenshots, signed for 60 seconds; null for none. */
+  images: PostImages | null;
   /** Whether this device can open Devices: a paired phone cannot. */
   onLaptop: boolean;
   now: Date;
@@ -662,6 +676,31 @@ function KitPanel({
               </span>
             )}
             {disputed && <p className="mt-1 text-destructive">{disputed}</p>}
+            {images?.crop && (
+              // A signed URL that lasts 60 seconds, which Next's image loader would outlive.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={images.crop}
+                alt={`The ${noun} in the post's screenshot, enlarged`}
+                className="mt-2 h-auto max-w-full rounded border border-border"
+              />
+            )}
+            {needsRetype && images && images.screenshots.length > 0 && (
+              <div className="mt-2 flex flex-col gap-2">
+                <p className="text-muted-foreground">
+                  The post&apos;s screenshots, to type the {noun} from. Zoom in to read it.
+                </p>
+                {images.screenshots.map((url, i) => (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    key={url}
+                    src={url}
+                    alt={`Screenshot ${i + 1} of the post`}
+                    className="h-auto w-full rounded border border-border"
+                  />
+                ))}
+              </div>
+            )}
             {needsRetype &&
               to === "" &&
               postChecks

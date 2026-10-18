@@ -125,8 +125,12 @@ export interface JobView {
   canGoBackToDrafts: boolean;
   /** The judge's verdicts on Gemini's draft; null before it ran, from before it was built, or with none. */
   judge: JudgeOutput | null;
-  /** How the contact's second read settled; null before it ran, or for a role with no contact. */
-  contact: { kind: ContactKind; agreement: Agreement } | null;
+  /**
+   * How the contact's second read settled, and the crop it read, for the
+   * page to show beside the contact (null when it made none, or read
+   * another contact); null before it ran, or for a role with no contact.
+   */
+  contact: { kind: ContactKind; agreement: Agreement; cropPath: string | null } | null;
   /** The email address's checks; null before they ran, or for another route. */
   addressChecks: AddressCheck[] | null;
   /**
@@ -253,14 +257,16 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   if (judge && !judge.checked) unchecked.add("judge");
   // Settled against the contact as it stands now: a read made for another contact is no second
   // read of this one, and blocks it as a missing read does.
+  const readThis =
+    read?.checked && contact && read.kind === contact.kind && read.contact === contact.contact;
   const settled: JobView["contact"] =
     read?.checked && contact
       ? {
           kind: contact.kind,
-          agreement:
-            read.kind === contact.kind && read.contact === contact.contact
-              ? agreement(contact.kind, contact.contact, read.second)
-              : { ok: false, reason: "no_second_read" },
+          agreement: readThis
+            ? agreement(contact.kind, contact.contact, read.second)
+            : { ok: false, reason: "no_second_read" },
+          cropPath: readThis ? (read.cropPath ?? null) : null,
         }
       : null;
   const addressChecks =

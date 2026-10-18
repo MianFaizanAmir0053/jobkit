@@ -272,6 +272,7 @@ describe("jobView", () => {
     expect((await jobView({ db, clock }, missing))?.contact).toEqual({
       kind: "email",
       agreement: { ok: false, reason: "not_in_text" },
+      cropPath: null,
     });
   });
 
@@ -378,9 +379,11 @@ describe("jobView", () => {
       [id],
     );
 
+    // Nor is its crop shown for this one.
     expect((await jobView({ db, clock }, id))?.contact).toEqual({
       kind: "email",
       agreement: { ok: false, reason: "no_second_read" },
+      cropPath: null,
     });
   });
 

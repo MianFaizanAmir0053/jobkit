@@ -21,6 +21,7 @@ import {
   type SessionRequirements,
 } from "@/core/platform/sessions";
 import { type JobListItem, listJobViews, jobView, type JobView } from "@/core/review/jobView";
+import { type PostImages, postImages } from "@/core/review/postImages";
 import { cvFileName } from "@/core/review/send";
 import { spendState } from "@/core/ledger/spend";
 import { isUuid } from "@/lib/uuid";
@@ -136,6 +137,19 @@ export const profileForViewer = cache(
  * of the profile version the email was written with; null when that version,
  * or its CV in storage, is gone.
  */
+/**
+ * The post's crop and screenshots for the job page, signed for 60 seconds
+ * (review spec, "Contact panel"), each time the page is drawn.
+ */
+export async function postImagesForViewer(
+  jobId: string,
+  wanted: { cropPath: string | null; screenshots: boolean },
+): Promise<PostImages> {
+  await requireSession();
+  const { db, storage } = await getContainer();
+  return postImages({ db, storage }, jobId, wanted);
+}
+
 export const kitCvForViewer = cache(async (versionId: string): Promise<string | null> => {
   await requireSession();
   const { db, storage } = await getContainer();
