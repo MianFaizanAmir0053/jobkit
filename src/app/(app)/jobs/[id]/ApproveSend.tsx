@@ -35,7 +35,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
   attachment:
     "This post asks for a file besides your CV, which jobkit cannot attach: send it yourself with Open in Gmail.",
   words:
-    "This email's words must change before it goes, which jobkit cannot do: send it yourself with Open in Gmail, and change them there.",
+    "This email's words must change before it goes: change them on this page where you can, or send it yourself with Open in Gmail and change them there.",
   held: "Something still holds this email back. The page now shows what.",
   changed: "The email changed after this page was drawn. The page now shows it as it stands.",
   sending: "jobkit is already sending this email.",

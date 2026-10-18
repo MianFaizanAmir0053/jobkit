@@ -15,7 +15,9 @@ import {
   approvals,
   approvalsKey,
   flagKey,
+  isEdited,
   isMeetable,
+  MAX_SENTENCE,
   needsNewWords,
   NO_DECISIONS,
 } from "@/core/review/decisions";
@@ -45,7 +47,7 @@ import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
 import { CROP_KEY } from "./imageUrls";
 import { PostImage } from "./PostImage";
-import { AttachTick, FitTick, RetypeField } from "./Review";
+import { AttachTick, FitTick, RetypeField, SentenceEdit } from "./Review";
 
 export const metadata: Metadata = { title: "Job · jobkit" };
 
@@ -599,8 +601,6 @@ function KitPanel({
     const text = requirementText.get(flag.at);
     return text === undefined ? undefined : withoutContacts(text, typing(view));
   };
-  // The separate check's findings, a sentence it never weighed included.
-  const judged = parts.verdicts.filter(isBlocking);
   // validate's flags, most serious first; each named by what it found (flagKey).
   const flags = [...parts.flags].sort((a, b) => flagRank(a.kind) - flagRank(b.kind));
   // What the post asks of applicants, each line marked as drafting dealt with it.
@@ -635,6 +635,13 @@ function KitPanel({
   const meets = new Set(decisions.meets);
   const checked = new Set(decisions.checked);
   const flagsChecked = new Set(decisions.flagsChecked);
+  const confirmedEdits = new Set(decisions.confirmed);
+  // The separate check's findings, a sentence it never weighed included, but on the drafted words
+  // of a sentence the owner put in their own: theirs wait for their confirmation instead.
+  const judged = parts.verdicts.filter(
+    (verdict) => isBlocking(verdict) && !isEdited(decisions, verdict.blockId),
+  );
+  const draftedText = new Map(draft.kit.blocks.map((block) => [block.id, block.text]));
   // The chosen role's must-haves: one the owner does not meet needs a line saying so.
   const musts = new Set(parts.mustHaves ?? []);
   const gate = view.review?.gate ?? [];
@@ -681,7 +688,7 @@ function KitPanel({
     parts.attachments.length > 0
       ? "This post asks for a file besides your CV, which jobkit cannot attach: send it yourself with Open in Gmail, and attach the file there."
       : needsNewWords(parts, decisions)
-        ? "Some of this email's words must change before it goes, which jobkit cannot do: send it yourself with Open in Gmail, and change them there."
+        ? "Some of this email's words must change before it goes: change them above where you can, or send it yourself with Open in Gmail and change them there."
         : reasons.some((reason) => reason.kind === "flag" && isMeetable(reason.flag))
           ? "Only you can say whether you meet a requirement above: tick it under How you fit, or say you will fix the email, first."
           : reasons.some((reason) => reason.kind !== "judge" && reason.kind !== "flag")
@@ -914,8 +921,68 @@ function KitPanel({
           <dt className="text-muted-foreground">Subject</dt>
           <dd className="min-w-0 [overflow-wrap:anywhere]">{kit.subject}</dd>
         </dl>
-        <div className="rounded-md bg-muted p-3 text-sm whitespace-pre-wrap [overflow-wrap:anywhere]">
-          {body}
+        {/* The body sentence by sentence, each of which the owner may put in their own words. */}
+        <div className="rounded-md bg-muted p-3 text-sm [overflow-wrap:anywhere]">
+          <p className="whitespace-pre-wrap">{kit.greeting}</p>
+          <ol className="mt-3 flex flex-col gap-1">
+            {kit.blocks.map((block, i) => {
+              const edited = isEdited(decisions, block.id);
+              const confirmed = confirmedEdits.has(block.id);
+              // A new paragraph begins after the sentence that ends one.
+              const opens = kit.blocks[i - 1]?.paragraphBreak === true;
+              return (
+                <li key={block.id} className={opens ? "mt-3" : undefined}>
+                  {locked ? (
+                    <p className="whitespace-pre-wrap">{block.text}</p>
+                  ) : (
+                    <SentenceEdit
+                      key={`${kitKey}:${block.id}`}
+                      jobId={view.id}
+                      kit={kitKey}
+                      blockId={block.id}
+                      text={block.text}
+                      maxLength={MAX_SENTENCE}
+                    />
+                  )}
+                  {edited && (
+                    <p className="mt-1 text-muted-foreground">
+                      Your words. Drafted as: &ldquo;{draftedText.get(block.id) ?? ""}&rdquo;
+                    </p>
+                  )}
+                  {edited && !locked && (
+                    <p className={confirmed ? "mt-1 text-muted-foreground" : "mt-1 font-medium"}>
+                      {confirmed
+                        ? "You confirmed your words."
+                        : "You changed this sentence: confirm it says only what is true."}
+                    </p>
+                  )}
+                  {edited && !locked && (
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      {!confirmed && (
+                        <ActionButton
+                          url={reviewUrl}
+                          gateOf={view.id}
+                          label="Confirm"
+                          ariaLabel={`Confirm your words: ${block.text}`}
+                          variant="outline"
+                          body={decision({ kind: "confirm", blockId: block.id })}
+                        />
+                      )}
+                      <ActionButton
+                        url={reviewUrl}
+                        gateOf={view.id}
+                        label="Undo edit"
+                        ariaLabel={`Undo edit: ${block.text}`}
+                        variant="outline"
+                        body={decision({ kind: "revert", blockId: block.id })}
+                      />
+                    </div>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+          <p className="mt-3 whitespace-pre-wrap">{kit.closing}</p>
         </div>
       </Panel>
 
@@ -927,8 +994,8 @@ function KitPanel({
           ) && (
             <p className="text-sm text-muted-foreground">
               {byEmail
-                ? "Some of these need the email's words changed, which jobkit cannot do yet: change them in Gmail before you send, and answer Yes when jobkit asks whether you changed anything."
-                : "Some of these need the words changed, which jobkit cannot do yet: change them where you apply, before you send."}
+                ? "Some of these need the email's words changed: change them above where you can, or in Gmail before you send, and then answer Yes when jobkit asks whether you changed anything."
+                : "Some of these need the words changed: change them above where you can, or where you apply, before you send."}
             </p>
           )}
           <ul className="flex flex-col gap-2 text-sm [overflow-wrap:anywhere]">
@@ -1223,7 +1290,7 @@ function KitPanel({
                 {reasons.map((reason, i) => {
                   // A sentence's finding names the sentence, so two findings never read alike.
                   const about =
-                    reason.kind === "judge"
+                    reason.kind === "judge" || reason.kind === "unconfirmed_edit"
                       ? blockText.get(reason.blockId)
                       : reason.kind === "flag"
                         ? aboutFlag(reason.flag)
@@ -1280,8 +1347,9 @@ function KitPanel({
         {byEmail && !sent && !skipped && (
           <p className="text-sm text-muted-foreground">
             In Gmail, {account ? `check that From shows ${account}, ` : "check the From address, "}
-            attach your CV, and send. Gmail adds your signature. If you change the email&apos;s
-            wording in Gmail, answer Yes when jobkit asks; attaching your CV does not count.
+            attach your CV, and send. Gmail adds your signature. Change the wording here rather than
+            in Gmail; if you do change it in Gmail, answer Yes when jobkit asks. Attaching your CV
+            does not count.
             {unmet > 0 &&
               " For each requirement you said you do not meet, take out what the email claims about it, and add a line saying so."}
           </p>

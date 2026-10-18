@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState, useTransition } from "react";
 
 import { Button } from "@/components/ui/button";
 
@@ -36,6 +36,127 @@ async function decide(
     release();
     gateChanged(jobId);
   }
+}
+
+/**
+ * A sentence of the email with Edit beside it (review spec, "Job page"): Edit
+ * opens a box with the sentence as it stands, which the owner puts in their
+ * own words; Save keeps them, and the email then waits until the owner
+ * confirms them. The box stays, its buttons held, until the page shows the
+ * words saved; a refusal keeps it open with what the owner typed, so neither
+ * a dropped connection nor a page drawn on another kit loses it.
+ */
+export function SentenceEdit({
+  jobId,
+  kit,
+  blockId,
+  text,
+  maxLength,
+}: {
+  jobId: string;
+  kit: string;
+  blockId: string;
+  /** The sentence as it stands: the owner's words, or drafting's. */
+  text: string;
+  /** The most characters a sentence holds. */
+  maxLength: number;
+}) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [words, setWords] = useState(text);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The page drawn again after a save: the box shows until it is.
+  const [refreshing, startRefresh] = useTransition();
+  const shown = open || refreshing;
+  const held = busy || refreshing;
+  const editButton = useRef<HTMLButtonElement>(null);
+  // Focus goes back to Edit once the box closes, for keyboard and screen-reader users.
+  const closing = useRef(false);
+
+  useEffect(() => {
+    if (shown || !closing.current) return;
+    closing.current = false;
+    editButton.current?.focus();
+  }, [shown]);
+
+  function close() {
+    closing.current = true;
+    setError(null);
+    setOpen(false);
+  }
+
+  async function save(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const typed = words.trim();
+    if (typed === text.trim()) {
+      close();
+      return;
+    }
+    setBusy(true);
+    const { error, answered } = await decide(jobId, kit, { kind: "edit", blockId, text: typed });
+    setBusy(false);
+    if (error === null) close();
+    else setError(error);
+    if (answered) startRefresh(() => router.refresh());
+  }
+
+  if (!shown) {
+    return (
+      <div className="flex items-start gap-2">
+        <p className="min-w-0 flex-1 py-2.5 whitespace-pre-wrap">{text}</p>
+        <Button
+          ref={editButton}
+          type="button"
+          variant="ghost"
+          className="min-h-11 shrink-0 underline"
+          aria-label={`Edit: ${text}`}
+          onClick={() => {
+            setWords(text);
+            setError(null);
+            setOpen(true);
+          }}
+        >
+          Edit
+        </Button>
+      </div>
+    );
+  }
+  return (
+    <form onSubmit={(event) => void save(event)} className="flex flex-col gap-2">
+      <label className="flex flex-col gap-1">
+        <span className="text-muted-foreground">Your words for this sentence</span>
+        <textarea
+          autoFocus
+          value={words}
+          maxLength={maxLength}
+          rows={3}
+          readOnly={held}
+          onChange={(event) => setWords(event.currentTarget.value)}
+          className="min-h-24 w-full rounded-md border border-border bg-background p-2"
+        />
+      </label>
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" className="min-h-11" disabled={held || words.trim() === ""}>
+          {held ? "Saving…" : "Save"}
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          className="min-h-11"
+          disabled={held}
+          onClick={close}
+        >
+          Cancel
+        </Button>
+      </div>
+      {error && (
+        <p role="alert" className="text-destructive">
+          {error}
+        </p>
+      )}
+    </form>
+  );
 }
 
 /**
