@@ -43,6 +43,7 @@ import {
   draftAnyway,
   gate,
   geminiDraft,
+  keepForEval,
   pick,
   readAgain,
   retry,
@@ -864,6 +865,24 @@ describe("the job page's routes", () => {
     const second = await (await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready)).json();
     expect(second.words).not.toBe(first.words);
     expect(second.kit).toBe(first.kit);
+  });
+
+  it("keep for evaluation only a job with screenshots, and only from a signed-in browser", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const pasted = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    const keepIt = (by?: string) =>
+      keepForEval(
+        post(`/api/jobs/${pasted}/keep`, JSON.stringify({ kept: true }), by),
+        deps(),
+        pasted,
+      );
+
+    const refused = await keepIt(cookie);
+
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: "no-images" });
+    expect((await keepIt()).status).toBe(401);
   });
 
   it("apply again on the matches the banner showed, and on no others", async () => {

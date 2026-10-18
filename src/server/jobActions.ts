@@ -20,6 +20,7 @@ import { markSubmitted, takeBackSubmitted } from "@/core/review/markSubmitted";
 import { markSent, takeBackSent } from "@/core/review/markSent";
 import { postImages } from "@/core/review/postImages";
 import { closeSkipped, skipKit, takeBackSkip } from "@/core/review/skipKit";
+import { keepForEvaluation } from "@/core/intake/keepForEval";
 import { isUuid } from "@/lib/uuid";
 import type { AppConfig } from "@/server/config";
 import { NO_STORE, readLimited, refusal, sessionForChange, sessionForRead } from "@/server/http";
@@ -477,6 +478,28 @@ export async function submitted(
 
 /** The Mark sent the page showed, by its time. */
 const bouncedBody = z.object({ sentAt: z.iso.datetime() });
+
+const keepBody = z.object({ kept: z.boolean() });
+
+/**
+ * POST /api/jobs/<id>/keep: "Keep for evaluation", or letting the job go
+ * again (evals spec, "Case sources"); refused for a job with no image to
+ * keep, as one of pasted text alone.
+ */
+export async function keepForEval(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await bodyOf(request, keepBody);
+  if (!body.ok) return body.response;
+  const kept = await keepForEvaluation(deps.db, jobId, body.data.kept);
+  if (!kept.ok) return refusal(kept.reason === "not-found" ? 404 : 409, kept.reason);
+  return ok(200, { kept: kept.kept });
+}
 
 /**
  * POST /api/jobs/<id>/bounced: Mark bounced, on a sent email that came back

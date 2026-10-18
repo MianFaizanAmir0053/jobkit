@@ -221,7 +221,34 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
           </Panel>
         )
       )}
+      <KeepPanel view={view} />
     </section>
+  );
+}
+
+/**
+ * "Keep for evaluation" (evals spec, "Case sources"): the job's screenshots
+ * stay until `npm run eval:pull` copies them into a case. Only for a job
+ * with screenshots, where the keep flag lives.
+ */
+function KeepPanel({ view }: { view: JobView }) {
+  if (view.keptForEval === null) return null;
+  return (
+    <Panel title="For evaluation">
+      <p className="text-sm text-muted-foreground">
+        {view.keptForEval
+          ? "Kept: its screenshots stay until npm run eval:pull copies them into a case for jobkit's evaluation."
+          : "Keep this job's screenshots for jobkit's evaluation: they stay until npm run eval:pull copies them into a case."}
+      </p>
+      <div>
+        <ActionButton
+          url={`/api/jobs/${view.id}/keep`}
+          label={view.keptForEval ? "Don't keep it" : "Keep for evaluation"}
+          variant="outline"
+          body={{ kept: !view.keptForEval }}
+        />
+      </div>
+    </Panel>
   );
 }
 

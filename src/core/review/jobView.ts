@@ -27,6 +27,7 @@ import { expireUploads, type Job, jobStatus } from "@/core/platform/jobs";
 import { kindOf, type JobState, type StageName, type StateKind } from "@/core/platform/jobStates";
 import { stageOutput } from "@/core/platform/runner";
 import type { Clock, Db } from "@/core/ports";
+import { keptForEvaluation } from "@/core/intake/keepForEval";
 import { getProfileVersion } from "@/core/profile/profile";
 import { mapBox } from "@/core/shared/tileGeometry";
 import { canonicalJson } from "@/lib/canonicalJson";
@@ -124,6 +125,8 @@ export interface JobView {
   kit: EmailKit | null;
   /** The email's words as a short key, which the gate's answer names; null with no draft. */
   wordsKey: string | null;
+  /** Whether the job is kept for evaluation; null for one with no image to keep. */
+  keptForEval: boolean | null;
   /** Its ID among `drafts`; null when there is none. */
   picked: string | null;
   /**
@@ -425,6 +428,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     draft: chosen?.draft ?? null,
     kit,
     wordsKey: kit ? wordsKey(kit) : null,
+    keptForEval: await keptForEvaluation(deps.db, id),
     picked: chosen?.choice.id ?? null,
     canDraftWithGemini:
       ready &&
