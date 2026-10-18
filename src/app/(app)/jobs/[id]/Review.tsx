@@ -54,6 +54,7 @@ export function SentenceEdit({
   blockId,
   text,
   maxLength,
+  prompt,
 }: {
   jobId: string;
   kit: string;
@@ -64,10 +65,17 @@ export function SentenceEdit({
   text: string;
   /** The most characters a sentence holds. */
   maxLength: number;
+  /**
+   * What to write, for a line only the owner can write ("Needs your line"):
+   * shown in place of the placeholder, whose box opens empty.
+   */
+  prompt?: string;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [typed, setTyped] = useState(text);
+  // The box opens with the sentence, or empty for a line still to write.
+  const start = prompt === undefined ? text : "";
+  const [typed, setTyped] = useState(start);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The page drawn again after a save or a deletion: the box shows until it is.
@@ -112,20 +120,24 @@ export function SentenceEdit({
   if (!shown) {
     return (
       <div className="flex items-start gap-2">
-        <p className="min-w-0 flex-1 py-2.5 whitespace-pre-wrap">{text}</p>
+        {prompt === undefined ? (
+          <p className="min-w-0 flex-1 py-2.5 whitespace-pre-wrap">{text}</p>
+        ) : (
+          <p className="min-w-0 flex-1 py-2.5 font-medium italic">{prompt}</p>
+        )}
         <Button
           ref={editButton}
           type="button"
           variant="ghost"
           className="min-h-11 shrink-0 underline"
-          aria-label={`Edit: ${text}`}
+          aria-label={prompt === undefined ? `Edit: ${text}` : `Write it: ${prompt}`}
           onClick={() => {
-            setTyped(text);
+            setTyped(start);
             setError(null);
             setOpen(true);
           }}
         >
-          Edit
+          {prompt === undefined ? "Edit" : "Write it"}
         </Button>
       </div>
     );
@@ -133,7 +145,7 @@ export function SentenceEdit({
   return (
     <form onSubmit={(event) => void save(event)} className="flex flex-col gap-2">
       <label className="flex flex-col gap-1">
-        <span className="text-muted-foreground">Your words for this sentence</span>
+        <span className="text-muted-foreground">{prompt ?? "Your words for this sentence"}</span>
         <textarea
           autoFocus
           value={typed}

@@ -4,7 +4,8 @@ import { notFound } from "next/navigation";
 
 import { buttonVariants } from "@/components/ui/button";
 import type { KitFlag, KitFlagKind } from "@/core/drafting/validate";
-import { emailBody } from "@/core/drafting/kit";
+import { NEEDS_YOUR_LINE } from "@/core/drafting/build";
+import { emailBody, type KitBlock } from "@/core/drafting/kit";
 import { type BlockVerdict, isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
 import type { AgreementProblem } from "@/core/extraction/addressRead";
 import { isStrictAddress } from "@/core/extraction/contacts";
@@ -657,6 +658,15 @@ function KitPanel({
       !isDeleted(decisions, verdict.blockId),
   );
   const draftedText = new Map(draft.kit.blocks.map((block) => [block.id, block.text]));
+  // A gap line only the owner can write, as drafting left it: what to write, in place of its
+  // placeholder.
+  const yourLine = (block: KitBlock): string | undefined => {
+    if (block.text !== NEEDS_YOUR_LINE || !block.gap) return undefined;
+    const requirement = requirementText.get(block.gap.requirementId);
+    return requirement === undefined
+      ? "Write this line yourself."
+      : `Write your line about “${withoutContacts(requirement, typing(view))}”: no gap line in your profile fits it.`;
+  };
   // The chosen role's must-haves: one the owner does not meet needs a line saying so.
   const musts = new Set(parts.mustHaves ?? []);
   // The must-haves a sentence of the owner's answers, as their line about each.
@@ -1009,11 +1019,16 @@ function KitPanel({
                       blockId={block.id}
                       text={block.text}
                       maxLength={MAX_SENTENCE}
+                      prompt={yourLine(block)}
                     />
                   )}
                   {edited && (
                     <p className="mt-1 text-muted-foreground">
-                      Your words. Drafted as: &ldquo;{draftedText.get(block.id) ?? ""}&rdquo;
+                      {draftedText.get(block.id) === NEEDS_YOUR_LINE ? (
+                        "Your line, which jobkit could not write."
+                      ) : (
+                        <>Your words. Drafted as: &ldquo;{draftedText.get(block.id) ?? ""}&rdquo;</>
+                      )}
                     </p>
                   )}
                   {(edited || added) && !locked && (
