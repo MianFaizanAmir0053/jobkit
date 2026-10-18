@@ -10,14 +10,16 @@ import { draftStage } from "@/core/drafting/draftStage";
 import { templatesStage } from "@/core/drafting/templatesStage";
 import { noTemplateDrafts } from "@/core/drafting/testTemplates";
 import type { BlockVerdict } from "@/core/drafting/judge";
-import type { DraftAnswer } from "@/core/drafting/kit";
-import { addressReadStage } from "@/core/extraction/addressReadStage";
+import type { DraftAnswer, FormDraftAnswer } from "@/core/drafting/kit";
+import { addressReadStage, contactOf } from "@/core/extraction/addressReadStage";
+import { chosenRole } from "@/core/extraction/owner";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import type { ModelCallDeps } from "@/core/platform/models";
-import { claimJob, type Pipeline, runJob } from "@/core/platform/runner";
+import type { StageName } from "@/core/platform/jobStates";
+import { claimJob, type Pipeline, runJob, type StageContext } from "@/core/platform/runner";
 import type { Dns } from "@/core/ports";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
@@ -101,7 +103,8 @@ export async function resetKitBed(bed: KitBed): Promise<void> {
 }
 
 export interface KitOptions {
-  draft?: DraftAnswer;
+  /** The draft the model answers with: an email's or a message's, or a form's for a form route. */
+  draft?: DraftAnswer | FormDraftAnswer;
   dns?: Dns;
   verdicts?: BlockVerdict[] | "before the judge" | "fails";
   /** Changes the synthetic record extract answers with. */
@@ -141,6 +144,13 @@ export async function runKit(
   const { db, clock, storage } = bed;
   const llm: FakeLlm = fakeLlm(steps);
   const models: ModelCallDeps = { db, clock, llmFor: () => llm, guard: async () => ({ ok: true }) };
+  // Beside drafting, as the app's pipeline runs them: a contact's second read, and an address's
+  // checks; none for a form's route, which has no contact.
+  const beside = async (ctx: StageContext): Promise<StageName[]> => {
+    const contact = contactOf(await chosenRole(db, ctx.job.id));
+    if (!contact) return [];
+    return contact.kind === "email" ? ["address_read", "address_checks"] : ["address_read"];
+  };
   const pipeline: Pipeline = {
     extract: extractStage({ db, storage, random, models }),
     eligibility: opts.eligibilityFails
@@ -153,11 +163,11 @@ export async function runKit(
       : eligibilityStage({ db, clock }),
     templates: {
       ...(opts.templates ? templatesStage({ db }) : noTemplateDrafts()),
-      alongside: () => ["address_read", "address_checks"],
+      alongside: beside,
     },
     draft: {
       ...draftStage({ db, random, models }),
-      alongside: () => ["address_read", "address_checks"],
+      alongside: beside,
     },
     address_read: addressReadStage({ db, storage, random, models }),
     address_checks: addressChecksStage({ db, dns: opts.dns ?? offlineDns() }),

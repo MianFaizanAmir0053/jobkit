@@ -261,13 +261,18 @@ export function messageText(kit: MessageKit): string {
   return [...paragraphsOf(kit.blocks), kit.signOff].filter((part) => part !== "").join("\n\n");
 }
 
+/** A form's cover note as it is pasted into its field: its paragraphs. */
+export function coverNoteText(kit: FormKit): string {
+  return paragraphsOf(kit.blocks).join("\n\n");
+}
+
 /**
  * The form as "Copy all" gives it (review spec, "Handoffs"): the cover note,
  * then each question with its answer, as labelled plain text, a question
  * with no answer left out.
  */
 export function formText(kit: FormKit): string {
-  const cover = paragraphsOf(kit.blocks).join("\n\n");
+  const cover = coverNoteText(kit);
   const answered = kit.answers.filter((each) => each.text !== "");
   return [
     ...(cover === "" ? [] : [`Cover note\n${cover}`]),

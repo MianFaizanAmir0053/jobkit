@@ -46,6 +46,9 @@ export function Outbound({
   subject,
   body,
   noun,
+  application = false,
+  applicationHref = null,
+  fields = [],
 }: {
   jobId: string;
   /** The kit the page shows. */
@@ -71,6 +74,12 @@ export function Outbound({
   body: string;
   /** What the kit is called: "email", "message" or "form". */
   noun: "email" | "message" | "form";
+  /** Whether the kit is a form with an https link to apply through: its control shows, held or not. */
+  application?: boolean;
+  /** The post's https link to apply through, for a form whose gate is open; null otherwise. */
+  applicationHref?: string | null;
+  /** A form's fields, each copied on its own: the cover note, then each answer. */
+  fields?: { name: string; text: string }[];
 }) {
   const router = useRouter();
   const shown = `${kit}\n${String(open)}\n${to ?? ""}\n${status ?? ""}\n${words ?? ""}`;
@@ -177,6 +186,25 @@ export function Outbound({
               Open WhatsApp
             </span>
           ))}
+        {application &&
+          (enabled && applicationHref !== null ? (
+            <a
+              href={applicationHref}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`${buttonVariants()} min-h-11`}
+            >
+              Open application link
+            </a>
+          ) : (
+            <span
+              role="link"
+              aria-disabled="true"
+              className={`${buttonVariants()} pointer-events-none min-h-11 opacity-50`}
+            >
+              Open application link
+            </span>
+          ))}
         {subject !== null && (
           <CopyButton
             text={subject}
@@ -192,6 +220,22 @@ export function Outbound({
           onCopied={handedOff(["body"])}
         />
       </div>
+      {fields.length > 0 && (
+        <ul className="flex flex-col gap-2 text-sm">
+          {fields.map((field, i) => (
+            <li key={i} className="flex items-center gap-2">
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{field.name}</span>
+              <CopyButton
+                text={field.text}
+                label="Copy"
+                ariaLabel={`Copy: ${field.name}`}
+                disabled={!enabled}
+                onCopied={handedOff(["body"])}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
       <p role="status" className="min-h-5 text-sm text-muted-foreground">
         {waiting}
       </p>

@@ -15,16 +15,27 @@ import {
   acceptedInstructions,
   BODY_WORD_LIMIT,
   buildEmailKit,
+  buildFormKit,
   buildMessageKit,
   oneLine,
 } from "./build";
-import { draftAnswerSchema, type FitRow, type Kit, kitTypeOf, MESSAGE_LIMIT } from "./kit";
+import {
+  type DraftAnswer,
+  draftAnswerSchema,
+  type FitRow,
+  formAnswerSchema,
+  type Kit,
+  kitTypeOf,
+  MESSAGE_LIMIT,
+} from "./kit";
 import {
   DRAFT_LAYOUT_VERSION,
   draftContent,
   draftSystemPrompt,
+  formSystemPrompt,
   messageSystemPrompt,
 } from "./prompt";
+import { TOPICS } from "./topics";
 import { hasWord, type KitFlag, validateKit } from "./validate";
 
 /**
@@ -34,8 +45,9 @@ import { hasWord, type KitFlag, validateKit } from "./validate";
  * the gap lines, and for an email the subject, greeting and closing, for a
  * message the profile's sign-off, and runs the checks; the kit is kept with
  * its flags for the owner to review. WhatsApp and LinkedIn routes get a
- * message kit; every other route an email kit for now (form kits, the
- * kit-type pick and topic questions come later). The instructions the owner
+ * message kit, a form's routes a form kit, its questions answered as the
+ * two classifiers decide; every other route an email kit for now (the
+ * kit-type pick comes later). The instructions the owner
  * declines on the review page apply to the kit as it stands, never to a
  * draft, so the declined instructions given here are always none.
  */
@@ -81,14 +93,29 @@ const PROMPTS = {
       limit: MESSAGE_LIMIT,
     }),
   ),
+  form: sha256Hex(
+    canonicalJson({
+      kit: "form",
+      rules: formSystemPrompt(0),
+      layout: DRAFT_LAYOUT_VERSION,
+      schema: z.toJSONSchema(formAnswerSchema),
+      build: BUILD_VERSION,
+      skills: SKILLS,
+      topics: TOPICS,
+    }),
+  ),
 } as const;
 
-/** The kit `draft` writes for a route: a message for WhatsApp and LinkedIn, an email for the rest for now. */
+/**
+ * The kit `draft` writes for a route: a message for WhatsApp and LinkedIn, a
+ * form for a form's routes, an email for the rest for now.
+ */
 export function draftKitOf(route: Role["route"]["kind"]): DraftKit {
-  return kitTypeOf(route) === "message" ? "message" : "email";
+  const kit = kitTypeOf(route);
+  return kit === "message" || kit === "form" ? kit : "email";
 }
 
-type DraftKit = "email" | "message";
+type DraftKit = "email" | "message" | "form";
 
 /**
  * A message's budget for the model's sentences and the gap lines: its 600
@@ -171,44 +198,68 @@ export function draftStage(deps: DraftDeps): StageDefinition {
       if (!profile || !extraction || !role) {
         throw new Error("draft's input names a profile, record or role that is gone");
       }
-      const message = input.kit === "message";
+      const kitType = input.kit;
       const accepted = acceptedInstructions(role);
-      // A message has no subject, and no word limit applies to it: the checklist shows them not
-      // applied, for the owner to see to.
-      const subjectFormat = message ? null : accepted.subjectFormat;
-      const wordLimit = message ? BODY_WORD_LIMIT : accepted.wordLimit;
+      // Only an email has a subject; no word limit applies to a message: the checklist shows them
+      // not applied, for the owner to see to. A form's cover note keeps the limit in force.
+      const subjectFormat = kitType === "email" ? accepted.subjectFormat : null;
+      const wordLimit = kitType === "message" ? BODY_WORD_LIMIT : accepted.wordLimit;
       const post = withoutAiLines(extraction.record, role, accepted.keyword);
       const marker = Buffer.from(deps.random.bytes(16)).toString("hex");
       const budget = messageBudget(profile.signature);
-      const called = await callModel(deps.models, {
+      const call = {
         stage: "draft",
         jobId: ctx.job.id,
         model: input.model,
-        system: message ? messageSystemPrompt(budget) : draftSystemPrompt(wordLimit),
-        content: message
-          ? draftContent(profile, post, budget, marker, "message")
-          : draftContent(profile, post, wordLimit, marker),
-        schema: draftAnswerSchema,
         effort: input.effort,
         maxTokens: DRAFT.maxTokens,
-      });
-      if (!called.ok)
-        return { ok: false, reason: called.message, retry: PASSING.has(called.reason) };
-
+      } as const;
       const parts = {
         facts: profile.facts,
         knownGaps: profile.knownGaps,
         gapTemplates: profile.gapTemplates,
       };
-      const { kit, fit } = message
-        ? buildMessageKit(called.output, { role, signOff: profile.signature, profile: parts })
-        : buildEmailKit(called.output, {
-            record: extraction.record,
-            role,
-            ownerName: profile.owner.name,
-            accepted,
-            profile: parts,
-          });
+      let built: { kit: Kit; fit: FitRow[] };
+      if (kitType === "form") {
+        const called = await callModel(deps.models, {
+          ...call,
+          system: formSystemPrompt(wordLimit),
+          content: draftContent(profile, post, wordLimit, marker, "form"),
+          schema: formAnswerSchema,
+        });
+        if (!called.ok)
+          return { ok: false, reason: called.message, retry: PASSING.has(called.reason) };
+        built = buildFormKit(called.output, {
+          role,
+          profile: parts,
+          topics: { home: profile.owner.location.country, answers: profile.fixedAnswers },
+        });
+      } else {
+        const called = await callModel(deps.models, {
+          ...call,
+          system:
+            kitType === "message" ? messageSystemPrompt(budget) : draftSystemPrompt(wordLimit),
+          content:
+            kitType === "message"
+              ? draftContent(profile, post, budget, marker, "message")
+              : draftContent(profile, post, wordLimit, marker),
+          schema: draftAnswerSchema,
+        });
+        if (!called.ok)
+          return { ok: false, reason: called.message, retry: PASSING.has(called.reason) };
+        const answer: DraftAnswer = called.output;
+        built =
+          kitType === "message"
+            ? buildMessageKit(answer, { role, signOff: profile.signature, profile: parts })
+            : buildEmailKit(answer, {
+                record: extraction.record,
+                role,
+                ownerName: profile.owner.name,
+                accepted,
+                profile: parts,
+              });
+      }
+      const { kit, fit } = built;
       const flags = validateKit(kit, {
         record: extraction.record,
         role,
@@ -279,7 +330,10 @@ export function withoutAiLines(
           skills: requirement.skills.filter((skill) => !touched(skill)),
         })),
       instructions: [],
-      screening_questions: [],
+      // A form's questions as it may see them: none addressed to AI, nor one repeating such a line.
+      screening_questions: role.screening_questions.filter(
+        (question) => !question.addressed_to_ai && !touched(question.text),
+      ),
     },
     keyword: keyword !== null && touched(keyword) ? null : keyword,
   };

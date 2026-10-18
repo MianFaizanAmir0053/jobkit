@@ -12,6 +12,7 @@ import {
   messageLength,
   messageText,
   formText,
+  coverNoteText,
 } from "@/core/drafting/kit";
 import { type BlockVerdict, isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
 import type { AgreementProblem } from "@/core/extraction/addressRead";
@@ -36,7 +37,7 @@ import {
 import { listedSentences } from "@/core/review/edits";
 import { fitTableOf } from "@/core/review/fitTable";
 import { gmailComposeUrl } from "@/core/review/gmail";
-import { whatsAppLink } from "@/core/review/links";
+import { whatsAppLink, applicationLink } from "@/core/review/links";
 import type { DraftChoice, JobView, Step } from "@/core/review/jobView";
 import { showsFor } from "@/core/review/kitSends";
 import type { PostImages } from "@/core/review/postImages";
@@ -568,7 +569,7 @@ function PostPanel({ view, withAiLines }: { view: JobView; withAiLines: boolean 
       {aimedAtAi.length > 0 && (
         <Panel title="Lines aimed at AI tools">
           <p className="text-sm">
-            jobkit was told not to follow these lines; the checks on the email say if it did.
+            jobkit was told not to follow these lines; the checks on what it drafts say if it did.
           </p>
           <ul className="list-disc pl-5 text-sm [overflow-wrap:anywhere]">
             {aimedAtAi.map((line, i) => (
@@ -642,10 +643,26 @@ function KitPanel({
   const byEmail = view.kitRoute === "email";
   const where = byEmail ? "in Gmail" : "where you apply";
   const address = role.route.address.trim();
-  const blockText = new Map(kit.blocks.map((block) => [block.id, block.text]));
+  // A form, its answers as they stand, and the https link it goes through, if the post gives one.
+  const form = kit.kind === "form" ? kit : null;
+  const applyAt = form ? applicationLink(address) : null;
+  // A form's question for each answer, in the post's words, a contact hidden while it is typed.
+  const questionText = new Map(
+    (form?.answers ?? []).map((answer) => [
+      answer.id,
+      withoutContacts(answer.question, typing(view)),
+    ]),
+  );
+  // Each sentence's words, and each answer's, which a finding on it names.
+  const blockText = new Map([
+    ...kit.blocks.map((block): [string, string] => [block.id, block.text]),
+    ...(form?.answers ?? []).map((answer): [string, string] => [answer.id, answer.text]),
+  ]);
   const requirementText = new Map(role.requirements.map((entry) => [entry.id, entry.text]));
-  // A requirement's words are the post's, so a contact in them is hidden while it is typed.
+  // A requirement's words are the post's, so a contact in them is hidden while it is typed. A flag
+  // on a form's answer names its question.
   const aboutFlag = (flag: KitFlag) => {
+    if (questionText.has(flag.at)) return questionText.get(flag.at);
     if (!ABOUT_A_REQUIREMENT.has(flag.kind)) return blockText.get(flag.at) ?? undefined;
     const text = requirementText.get(flag.at);
     return text === undefined ? undefined : withoutContacts(text, typing(view));
@@ -695,6 +712,7 @@ function KitPanel({
       !isDeleted(decisions, verdict.blockId),
   );
   const draftedText = new Map(draft.kit.blocks.map((block) => [block.id, block.text]));
+  const draftedForm = draft.kit.kind === "form" ? draft.kit : null;
   // A gap line only the owner can write, as drafting left it: what to write, in place of its
   // placeholder.
   const yourLine = (block: KitBlock): string | undefined => {
@@ -841,7 +859,11 @@ function KitPanel({
       )}
 
       <WordsDrawn jobId={view.id} words={words} />
-      <Panel title={kit.kind === "email" ? "The email" : "The message"}>
+      <Panel
+        title={
+          kit.kind === "email" ? "The email" : kit.kind === "message" ? "The message" : "The form"
+        }
+      >
         <p className="text-sm text-muted-foreground">{sourceWords(view)}</p>
         <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-2 text-sm">
           <dt className="text-muted-foreground">To</dt>
@@ -863,6 +885,13 @@ function KitPanel({
                     ? ". The text below is drafted as an email: adapt it there."
                     : "."}
                 </span>
+                {/* A link to apply through that is not https is shown, never opened (review spec, "Handoffs"). */}
+                {form && address !== "" && applyAt === null && (
+                  <span className="mt-1 block text-destructive">
+                    This link is not a secure https one, so jobkit does not open it: check it before
+                    you visit it.
+                  </span>
+                )}
                 {/* The number in large type, to check against the post (review spec, "Contact panel"). */}
                 {role.route.kind === "whatsapp" && address !== "" && !needsRetype && (
                   <span className="mt-1 block text-xl font-medium">{address}</span>
@@ -1038,6 +1067,7 @@ function KitPanel({
         {/* The body sentence by sentence, each of which the owner may put in their own words. */}
         <div className="rounded-md bg-muted p-3 text-sm [overflow-wrap:anywhere]">
           {kit.kind === "email" && <p className="mb-3 whitespace-pre-wrap">{kit.greeting}</p>}
+          {form && <p className="mb-2 font-medium">Cover note</p>}
           <ol className="flex flex-col gap-1">
             {sentences.map(({ block, deleted }, i) => {
               const edited = isEdited(decisions, block.id);
@@ -1185,6 +1215,154 @@ function KitPanel({
             </>
           )}
         </div>
+        {form && (
+          <div className="flex flex-col gap-2 text-sm">
+            <p className="font-medium">The form&apos;s questions</p>
+            <ol className="flex flex-col gap-4">
+              {form.answers.map((answer) => {
+                const question = questionText.get(answer.id) ?? answer.question;
+                const edited = isEdited(decisions, answer.id);
+                const confirmed = confirmedEdits.has(answer.id);
+                const chosen = decisions.choices[answer.id];
+                const built = draftedForm?.answers.find((each) => each.id === answer.id);
+                return (
+                  <li key={answer.id} className="flex flex-col gap-1 [overflow-wrap:anywhere]">
+                    <p className="font-medium">{question}</p>
+                    {answer.source === "not_answered" ? (
+                      <p className="text-muted-foreground">
+                        Not answered: the post wrote this question for AI tools.
+                      </p>
+                    ) : answer.source === "choice" && !edited ? (
+                      <div className="flex flex-col gap-2">
+                        <p className="text-muted-foreground">
+                          Only one check took this for a question your profile answers. Which answer
+                          goes in the form?
+                        </p>
+                        <p>
+                          Your profile:{" "}
+                          {answer.profile?.kind === "answer"
+                            ? `“${answer.profile.text}”`
+                            : `no answer. ${answer.profile?.reason ?? ""}`}
+                        </p>
+                        <p>
+                          Drafted:{" "}
+                          {answer.drafted
+                            ? `“${answer.drafted.text}”`
+                            : "no answer, so you would write your own."}
+                        </p>
+                        {!locked && (
+                          <div className="flex flex-wrap gap-2">
+                            <ActionButton
+                              url={reviewUrl}
+                              gateOf={view.id}
+                              label="Use my profile answer"
+                              ariaLabel={`Use my profile answer: ${question}`}
+                              variant="outline"
+                              body={decision({
+                                kind: "choose",
+                                questionId: answer.id,
+                                use: "profile",
+                                was: "",
+                              })}
+                            />
+                            <ActionButton
+                              url={reviewUrl}
+                              gateOf={view.id}
+                              label="Use the drafted answer"
+                              ariaLabel={`Use the drafted answer: ${question}`}
+                              variant="outline"
+                              body={decision({
+                                kind: "choose",
+                                questionId: answer.id,
+                                use: "drafted",
+                                was: "",
+                              })}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    ) : locked ? (
+                      <p className="whitespace-pre-wrap">{answer.text}</p>
+                    ) : (
+                      <SentenceEdit
+                        key={answer.id}
+                        jobId={view.id}
+                        kit={kitKey}
+                        words={words}
+                        blockId={answer.id}
+                        text={answer.text}
+                        maxLength={MAX_SENTENCE}
+                        prompt={
+                          answer.source === "needs_your_answer" && !answer.owner
+                            ? `Needs your answer${answer.reason ? `: ${answer.reason}` : "."}`
+                            : undefined
+                        }
+                        answer
+                      />
+                    )}
+                    {answer.source === "profile" && !answer.owner && (
+                      <p className="text-muted-foreground">From your profile.</p>
+                    )}
+                    {answer.source === "drafted" && !answer.owner && (
+                      <p className="text-muted-foreground">Drafted from your approved facts.</p>
+                    )}
+                    {chosen && !edited && !locked && (
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-muted-foreground">
+                          You chose{" "}
+                          {chosen === "profile" ? "your profile's answer" : "the drafted answer"}.
+                        </span>
+                        <ActionButton
+                          url={reviewUrl}
+                          gateOf={view.id}
+                          label="Choose again"
+                          ariaLabel={`Choose again: ${question}`}
+                          variant="outline"
+                          body={decision({
+                            kind: "choose",
+                            questionId: answer.id,
+                            use: "",
+                            was: chosen,
+                          })}
+                        />
+                      </div>
+                    )}
+                    {edited && !locked && (
+                      <>
+                        <p className={confirmed ? "text-muted-foreground" : "font-medium"}>
+                          {confirmed
+                            ? "You confirmed your answer."
+                            : "Your answer: confirm it says only what is true."}
+                          {built?.text ? <> Drafted as: &ldquo;{built.text}&rdquo;</> : null}
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {!confirmed && (
+                            <ActionButton
+                              url={reviewUrl}
+                              gateOf={view.id}
+                              label="Confirm"
+                              ariaLabel={`Confirm your answer: ${question}`}
+                              variant="outline"
+                              body={decision({ kind: "confirm", blockId: answer.id })}
+                            />
+                          )}
+                          <ActionButton
+                            url={reviewUrl}
+                            gateOf={view.id}
+                            label="Undo edit"
+                            ariaLabel={`Undo your answer: ${question}`}
+                            variant="outline"
+                            body={decision({ kind: "revert", blockId: answer.id })}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        )}
         {kit.kind === "message" && (
           <p
             className={
@@ -1263,6 +1441,10 @@ function KitPanel({
               // Only new words resolve these, which Approve & send cannot give: the owner changes them
               // above, or where they send the email.
               const inGmail = NEEDS_NEW_WORDS.has(flag.kind) || (must && !hasLine);
+              // A form's question the owner can answer in the form itself, as they apply.
+              const inForm =
+                form !== null &&
+                (flag.kind === "needs_your_answer" || flag.kind === "topic_choice_needed");
               // Its place too, so two flags of one message, as on the subject and the greeting, differ.
               const named =
                 about ??
@@ -1301,7 +1483,11 @@ function KitPanel({
                           <>
                             {!meetsIt && (
                               <span className="text-muted-foreground">
-                                {inGmail ? `You will fix it ${where}.` : "You checked this."}
+                                {inForm
+                                  ? "You will answer it in the form."
+                                  : inGmail
+                                    ? `You will fix it ${where}.`
+                                    : "You checked this."}
                               </span>
                             )}
                             <ActionButton
@@ -1317,8 +1503,14 @@ function KitPanel({
                           <ActionButton
                             url={reviewUrl}
                             gateOf={view.id}
-                            label={inGmail ? `I will fix it ${where}` : "I checked this"}
-                            ariaLabel={`${inGmail ? `I will fix it ${where}` : "I checked this"}: ${named}`}
+                            label={
+                              inForm
+                                ? "I will answer it in the form"
+                                : inGmail
+                                  ? `I will fix it ${where}`
+                                  : "I checked this"
+                            }
+                            ariaLabel={`${inForm ? "I will answer it in the form" : inGmail ? `I will fix it ${where}` : "I checked this"}: ${named}`}
                             variant="outline"
                             body={decision({ kind: "check_flag", flag: key })}
                           />
@@ -1380,8 +1572,8 @@ function KitPanel({
             (item) => item.status === "not_followed" || item.status === "not_answered",
           ) && (
             <p className="text-sm text-muted-foreground">
-              jobkit was told not to follow the lines aimed at AI tools; the checks on the email say
-              if it did.
+              jobkit was told not to follow the lines aimed at AI tools; the checks on the {kitNoun}{" "}
+              say if it did.
             </p>
           )}
           {cv.length > 0 && (
@@ -1604,6 +1796,24 @@ function KitPanel({
           subject={kit.kind === "email" ? kit.subject : null}
           body={body}
           noun={kitNoun}
+          // A form opens its https link, and copies its fields one by one or all at once.
+          application={applyAt !== null}
+          applicationHref={open ? applyAt : null}
+          fields={
+            form
+              ? [
+                  ...(coverNoteText(form) === ""
+                    ? []
+                    : [{ name: "Cover note", text: coverNoteText(form) }]),
+                  ...form.answers
+                    .filter((answer) => answer.text !== "")
+                    .map((answer) => ({
+                      name: questionText.get(answer.id) ?? answer.question,
+                      text: answer.text,
+                    })),
+                ]
+              : []
+          }
         />
         {byEmail && !sent && !skipped && (
           <p className="text-sm text-muted-foreground">

@@ -5,6 +5,7 @@ import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { bodyWords } from "@/core/drafting/kit";
 import type { TemplatesOutput } from "@/core/drafting/templatesStage";
 import type { KitFlag } from "@/core/drafting/validate";
+import { draftedAnswers } from "@/core/drafting/judge";
 import { answersOf, type Kit } from "@/core/drafting/kit";
 import { mustHaveCoverage, templateVerdicts, visibleRole } from "@/core/drafting/templateDrafts";
 import { isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
@@ -391,7 +392,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
           added: owners.added.map((sentence) => sentence.id),
           // The must-haves a line in the owner's words answers in the email as it stands.
           ownLines: (kit?.blocks ?? []).flatMap((block) => (block.owner ? answersOf(block) : [])),
-          verdicts: chosen.verdicts,
+          verdicts: verdictsAsItStands(kit, chosen.verdicts),
           role,
           extraction,
           needsRetype,
@@ -659,7 +660,9 @@ function verdictsOf(
   judge: JudgeOutput | PassedThrough | undefined,
 ): KitParts["verdicts"] {
   const given = judge?.checked ? judge.verdicts : [];
-  return draft.kit.blocks.map(
+  // A form's answers the drafter wrote are weighed too, as sentences are.
+  const weighed = [...draft.kit.blocks, ...draftedAnswers(draft.kit)];
+  return weighed.map(
     (block) =>
       given.find((verdict) => verdict.blockId === block.id) ?? {
         blockId: block.id,
@@ -754,8 +757,19 @@ function kitPartsOf(parts: {
   skipped: boolean;
 }): KitParts {
   const { kind } = parts.role.route;
+  // A form's answers but those never given, which the owner types or checks like sentences.
+  const answers =
+    parts.draft.kit.kind === "form"
+      ? parts.draft.kit.answers.filter((answer) => answer.source !== "not_answered")
+      : [];
   return {
-    blocks: [...parts.draft.kit.blocks.map((block) => block.id), ...parts.added],
+    blocks: [
+      ...parts.draft.kit.blocks.map((block) => block.id),
+      ...parts.added,
+      ...answers.map((answer) => answer.id),
+    ],
+    answers: answers.map((answer) => answer.id),
+    choices: answers.filter((answer) => answer.source === "choice").map((answer) => answer.id),
     applied: appliedInstructions(parts.draft, parts.role),
     ownLines: parts.ownLines,
     flags: parts.draft.flags,
@@ -779,6 +793,20 @@ function kitPartsOf(parts: {
       .filter((requirement) => requirement.priority === "must")
       .map((requirement) => requirement.id),
   };
+}
+
+/**
+ * The separate check's verdicts on the kit as it stands: a form's answer
+ * keeps its verdict only while it is the drafted one, as when the owner
+ * chose it, never once the profile's or the owner's words stand instead.
+ */
+function verdictsAsItStands(kit: Kit | null, verdicts: KitParts["verdicts"]): KitParts["verdicts"] {
+  if (kit?.kind !== "form") return verdicts;
+  const answers = new Map(kit.answers.map((answer) => [answer.id, answer]));
+  return verdicts.filter((verdict) => {
+    const answer = answers.get(verdict.blockId);
+    return !answer || (answer.source === "drafted" && !answer.owner);
+  });
 }
 
 /** The decisions as kit_reviews keeps them: with the kit they were made on. */

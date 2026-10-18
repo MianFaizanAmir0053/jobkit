@@ -12,7 +12,7 @@ import { offlineDns } from "@/adapters/dns";
 import { draftStage } from "@/core/drafting/draftStage";
 import { noTemplateDrafts } from "@/core/drafting/testTemplates";
 import { addressReadStage } from "@/core/extraction/addressReadStage";
-import { asEmailKit, type DraftAnswer } from "@/core/drafting/kit";
+import { asEmailKit, type DraftAnswer, type FormDraftAnswer } from "@/core/drafting/kit";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import { confirmPost, pickRole, skipRolePick } from "@/core/extraction/owner";
@@ -126,6 +126,12 @@ const DRAFT: DraftAnswer = {
       gap: none,
     },
   ],
+};
+
+/** The draft as a form's, for the S17 post: DRAFT's cover note, and the drafter's topic for its question. */
+const FORM_DRAFT: FormDraftAnswer = {
+  ...DRAFT,
+  answers: [{ question_id: "Q1", topic: "years_with_skill", text: "", fact_ids: [] }],
 };
 
 async function run(
@@ -1338,7 +1344,7 @@ describe("markSubmitted", () => {
   async function readyFor(post: string): Promise<{ id: string; kit: string }> {
     await seedSample();
     const id = await pasted();
-    await run(id, [answer(fixture(post)), answer(DRAFT)]);
+    await run(id, [answer(fixture(post)), answer(post.includes("form") ? FORM_DRAFT : DRAFT)]);
     await cleared(id);
     return { id, kit: (await jobView({ db, clock }, id))!.kitKey! };
   }
@@ -1422,7 +1428,7 @@ describe("markSubmitted", () => {
     const id = await pasted();
     await run(
       id,
-      [answer(fixture("S17-form-ai-question")), answer(DRAFT)],
+      [answer(fixture("S17-form-ai-question")), answer(FORM_DRAFT)],
       trackApplications(pipeline(), { db, clock }),
     );
     await cleared(id);
@@ -1735,7 +1741,7 @@ describe("listJobViews", () => {
   it("shows a form the owner marked submitted as submitted", async () => {
     await seedSample();
     const id = await pasted();
-    await run(id, [answer(fixture("S17-form-ai-question")), answer(DRAFT)]);
+    await run(id, [answer(fixture("S17-form-ai-question")), answer(FORM_DRAFT)]);
     await cleared(id);
     await markSubmitted({ db, clock }, id, null, {
       kit: (await jobView({ db, clock }, id))!.kitKey!,

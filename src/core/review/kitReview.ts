@@ -84,15 +84,23 @@ function fits(action: ReviewAction, parts: KitParts, decisions: ReviewDecisions)
       return (
         decisions.added.length < MAX_ADDED &&
         (action.after === "" ||
-          (parts.blocks.includes(action.after) && !isDeleted(decisions, action.after)))
+          (parts.blocks.includes(action.after) &&
+            !(parts.answers ?? []).includes(action.after) &&
+            !isDeleted(decisions, action.after)))
       );
-    // The email keeps at least one sentence.
+    // The email keeps at least one sentence; a form's answer is typed over, never deleted.
     case "delete":
       return (
         parts.blocks.includes(action.blockId) &&
+        !(parts.answers ?? []).includes(action.blockId) &&
         !isDeleted(decisions, action.blockId) &&
-        parts.blocks.filter((id) => !isDeleted(decisions, id)).length > 1
+        parts.blocks.filter(
+          (id) => !isDeleted(decisions, id) && !(parts.answers ?? []).includes(id),
+        ).length > 1
       );
+    // A form question only one classifier tied to a topic, or two that differ.
+    case "choose":
+      return (parts.choices ?? []).includes(action.questionId);
     // Declining an instruction drafting applied; taking a decline back goes on any draft.
     case "decline":
       return !action.declined || (parts.applied ?? []).includes(action.instruction);
@@ -100,6 +108,7 @@ function fits(action: ReviewAction, parts: KitParts, decisions: ReviewDecisions)
     case "answers":
       return (
         parts.blocks.includes(action.blockId) &&
+        !(parts.answers ?? []).includes(action.blockId) &&
         isOwners(decisions, action.blockId) &&
         (action.requirementId === "" || (parts.mustHaves ?? []).includes(action.requirementId))
       );
@@ -145,6 +154,10 @@ function showsAsItStands(action: ReviewAction, kit: Kit, decisions: ReviewDecisi
     case "decline":
       return (
         action.was === undefined || action.was === decisions.declined.includes(action.instruction)
+      );
+    case "choose":
+      return (
+        action.was === undefined || action.was === (decisions.choices[action.questionId] ?? "")
       );
     default:
       return true;

@@ -77,6 +77,13 @@ export interface ReviewDecisions {
    */
   declined: Declinable[];
   /**
+   * A form's questions only one classifier tied to a topic, or two that
+   * differ (drafting spec, "Screening questions"), by the question's ID:
+   * the owner's choice of the profile's answer or the drafted one. A typed
+   * answer is an edit of the answer, by the same ID.
+   */
+  choices: Record<string, AnswerChoice>;
+  /**
    * The email as the owner last handed it off from the page, part by part,
    * whichever draft the page shows since: Mark sent records it rather than
    * the email as it stands then; none before a handoff. A decision on the
@@ -120,6 +127,9 @@ export interface Handoff {
 export const DECLINABLE = ["subject_format", "word_limit", "keyword"] as const;
 export type Declinable = (typeof DECLINABLE)[number];
 
+/** The owner's choice on a form question: the profile's answer, or the drafted one. */
+export type AnswerChoice = "profile" | "drafted";
+
 /** A sentence the owner added: "N1" and on, after the sentence `after` names, or first (""). */
 export interface AddedSentence {
   id: string;
@@ -141,6 +151,7 @@ export const NO_DECISIONS: ReviewDecisions = {
   deleted: [],
   answers: {},
   declined: [],
+  choices: {},
   handoff: null,
 };
 
@@ -180,6 +191,8 @@ export const decisionsSchema = z.object({
   answers: z.record(z.string(), z.string()).default({}),
   // Kept from before the owner could decline an instruction: none.
   declined: z.array(z.enum(DECLINABLE)).default([]),
+  // Kept from before form kits: none.
+  choices: z.record(z.string(), z.enum(["profile", "drafted"])).default({}),
   // Kept from before handoffs were recorded: none.
   handoff: z
     .union([
@@ -293,6 +306,13 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
     requirementId: z.union([z.literal(""), z.string().regex(/^R\d{1,4}$/)]),
     was: z.union([z.literal(""), z.string().regex(/^R\d{1,4}$/)]).optional(),
   }),
+  // A form question's answer: the profile's, the drafted one, or the choice taken back ("").
+  z.strictObject({
+    kind: z.literal("choose"),
+    questionId: z.string().min(1).max(20),
+    use: z.enum(["profile", "drafted", ""]),
+    was: z.enum(["profile", "drafted", ""]).optional(),
+  }),
   // One of the post's instructions declined, or the decline taken back.
   z.strictObject({
     kind: z.literal("decline"),
@@ -376,8 +396,8 @@ export function keptLookup(decisions: ReviewDecisions, address: string): Address
 
 const without = (list: readonly string[], item: string) => list.filter((each) => each !== item);
 /** A record without one of its keys. */
-const withoutKey = (record: Readonly<Record<string, string>>, key: string) =>
-  Object.fromEntries(Object.entries(record).filter(([each]) => each !== key));
+const withoutKey = <T extends string>(record: Readonly<Record<string, T>>, key: string) =>
+  Object.fromEntries(Object.entries(record).filter(([each]) => each !== key)) as Record<string, T>;
 /** The flags' names but those at one sentence, whose "I checked this" weighed other words. */
 const notAt = (names: readonly string[], blockId: string) =>
   names.filter((name) => name.slice(name.indexOf("@") + 1, name.lastIndexOf("~")) !== blockId);
@@ -517,6 +537,16 @@ export function decide(
       const others = decisions.declined.filter((each) => each !== action.instruction);
       return { ...decisions, declined: action.declined ? [...others, action.instruction] : others };
     }
+    // A check on the question weighed the answer before the choice.
+    case "choose":
+      return {
+        ...decisions,
+        choices:
+          action.use === ""
+            ? withoutKey(decisions.choices, action.questionId)
+            : { ...decisions.choices, [action.questionId]: action.use },
+        flagsChecked: notAt(decisions.flagsChecked, action.questionId),
+      };
     // "No requirement" is kept, so a drafted gap line the owner rewrote can stop being one. A check
     // on the requirement it answered, or comes to answer, weighed the email without this line.
     case "answers": {
@@ -566,8 +596,16 @@ export interface KitParts {
    * stands: one they marked, or a drafted gap line they rewrote.
    */
   ownLines?: string[];
-  /** The kit's sentences by ID: the draft's, those the owner deleted included, then those they added. */
+  /**
+   * The kit's sentences by ID: the draft's, those the owner deleted
+   * included, then those they added, then a form's answers but those never
+   * given.
+   */
   blocks: readonly string[];
+  /** A form's answers among `blocks`: the owner types or checks one, never deletes it. */
+  answers?: readonly string[];
+  /** A form's answers the owner chooses for, by the question's ID. */
+  choices?: readonly string[];
   flags: readonly KitFlag[];
   verdicts: readonly BlockVerdict[];
   /**

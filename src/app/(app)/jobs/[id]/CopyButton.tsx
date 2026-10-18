@@ -15,9 +15,12 @@ export function CopyButton({
   label,
   disabled = false,
   onCopied,
+  ariaLabel,
 }: {
   text: string;
   label: string;
+  /** What a screen reader says, where the label alone does not name what is copied. */
+  ariaLabel?: string;
   disabled?: boolean;
   /** Told once the text is on the clipboard: a handoff. */
   onCopied?: () => void;
@@ -45,6 +48,7 @@ export function CopyButton({
         variant="outline"
         className="min-h-11"
         disabled={disabled}
+        aria-label={ariaLabel}
         onClick={() => void copy()}
       >
         {state === "copied" ? "Copied" : label}

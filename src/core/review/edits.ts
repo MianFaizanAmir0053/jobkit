@@ -1,6 +1,6 @@
 import { acceptedInstructions, BODY_WORD_LIMIT, subjectFor } from "@/core/drafting/build";
 import type { DraftOutput } from "@/core/drafting/draftStage";
-import type { BlockClass, Kit, KitBlock } from "@/core/drafting/kit";
+import type { BlockClass, FormAnswer, Kit, KitBlock } from "@/core/drafting/kit";
 import { templateFlags } from "@/core/drafting/templateDrafts";
 import { type KitFlag, validateKit } from "@/core/drafting/validate";
 import type { JobRecord, Role } from "@/core/extraction/record";
@@ -19,7 +19,7 @@ import { type Declinable, type ReviewDecisions, shortHash } from "./decisions";
  */
 
 type Owners = Pick<ReviewDecisions, "edits" | "added" | "deleted"> &
-  Partial<Pick<ReviewDecisions, "answers">>;
+  Partial<Pick<ReviewDecisions, "answers" | "choices">>;
 
 /**
  * The email or message as it stands: the draft's, with the owner's words
@@ -31,7 +31,15 @@ type Owners = Pick<ReviewDecisions, "edits" | "added" | "deleted"> &
  */
 export function editedKit<K extends Kit>(kit: K, decisions: Owners): K {
   const { edits, added, deleted } = decisions;
-  if (Object.keys(edits).length === 0 && added.length === 0 && deleted.length === 0) return kit;
+  const choices = decisions.choices ?? {};
+  if (
+    Object.keys(edits).length === 0 &&
+    added.length === 0 &&
+    deleted.length === 0 &&
+    Object.keys(choices).length === 0
+  ) {
+    return kit;
+  }
   // A deleted sentence goes; the paragraph it ended ends with the sentence before it.
   const kept: KitBlock[] = [];
   for (const block of withOwnersWords(kit, decisions)) {
@@ -42,7 +50,38 @@ export function editedKit<K extends Kit>(kit: K, decisions: Owners): K {
     const last = kept.at(-1);
     if (block.paragraphBreak && last) kept[kept.length - 1] = { ...last, paragraphBreak: true };
   }
-  return { ...kit, blocks: kept };
+  if (kit.kind !== "form") return { ...kit, blocks: kept };
+  return {
+    ...kit,
+    blocks: kept,
+    answers: kit.answers.map((answer) => answerAsItStands(answer, edits, choices)),
+  };
+}
+
+/**
+ * A form's answer as it stands: the owner's words, typed as an edit of the
+ * answer; for a choice, the profile's answer or the drafted one as they
+ * chose, or theirs to give when the one chosen has none; else as built.
+ */
+function answerAsItStands(
+  answer: FormAnswer,
+  edits: Readonly<Record<string, string>>,
+  choices: NonNullable<Owners["choices"]>,
+): FormAnswer {
+  if (Object.hasOwn(edits, answer.id)) return { ...answer, text: edits[answer.id]!, owner: true };
+  if (answer.source !== "choice") return answer;
+  const chosen = choices[answer.id];
+  if (chosen === "profile") {
+    return answer.profile?.kind === "answer"
+      ? { ...answer, source: "profile", text: answer.profile.text }
+      : { ...answer, source: "needs_your_answer", reason: answer.profile?.reason };
+  }
+  if (chosen === "drafted") {
+    return answer.drafted
+      ? { ...answer, source: "drafted", text: answer.drafted.text, factIds: answer.drafted.factIds }
+      : { ...answer, source: "needs_your_answer", reason: "The draft gave no answer to it." };
+  }
+  return answer;
 }
 
 /**
@@ -166,7 +205,10 @@ export async function asItStands(
     record: JobRecord;
     role: Role;
     template: boolean;
-    decisions: Pick<ReviewDecisions, "edits" | "added" | "deleted" | "answers" | "declined">;
+    decisions: Pick<
+      ReviewDecisions,
+      "edits" | "added" | "deleted" | "answers" | "declined" | "choices"
+    >;
   },
 ): Promise<{ kit: Kit; flags: KitFlag[] }> {
   const { draft, record, role } = input;

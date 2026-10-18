@@ -146,6 +146,7 @@ describe("recordReview", () => {
         deleted: [],
         answers: {},
         declined: [],
+        choices: {},
         handoff: null,
       },
       gate: typed.ok ? typed.gate : [],

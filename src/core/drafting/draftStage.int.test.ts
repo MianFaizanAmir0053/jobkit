@@ -25,7 +25,7 @@ import { DEFAULT_GREETING, CLOSING } from "./build";
 import { type DraftOutput, draftStage, NO_PROFILE } from "./draftStage";
 import { type JudgeOutput, judgeStage } from "./judgeStage";
 import { noTemplateDrafts } from "./testTemplates";
-import { asEmailKit, type DraftAnswer } from "./kit";
+import { asEmailKit, type DraftAnswer, type FormDraftAnswer, type FormKit } from "./kit";
 
 /*
  * The thin path's drafting group on the fake model (drafting spec, "Stage
@@ -84,6 +84,15 @@ async function seedSample(): Promise<void> {
   const seeded = await seedProfile({ db, storage, clock }, checked);
   if (seeded.status === "refused") throw new Error(seeded.message);
 }
+
+/** The post's roles open to remote work anywhere, so eligibility lets them through. */
+const remoteAnywhere = (record: JobRecord): JobRecord => ({
+  ...record,
+  roles: record.roles.map((role) => ({
+    ...role,
+    location: { ...role.location, places: [], remote_regions: ["worldwide"] },
+  })),
+});
 
 const gapBlock = { requirement_id: "", known_line_id: "", template_id: "", related_fact_id: "" };
 
@@ -309,6 +318,76 @@ describe("the thin drafting group", () => {
       `The message's limit: ${600 - [...signOff].length - 2} characters`,
     );
     expect(texts(request.content)).toContain("Write the fit table and the message for this role.");
+  });
+
+  it("drafts a form for an ATS route: a cover note, and each question answered as the classifiers decide (drafting AC1, AC3)", async () => {
+    await seedSample();
+    const form: FormDraftAnswer = {
+      fit: [],
+      blocks: [
+        {
+          id: "S1",
+          text: "I have built production React and Next.js applications for five years.",
+          paragraph_break: false,
+          class: "claim",
+          fact_ids: ["F-react-production"],
+          fields: [],
+          gap: gapBlock,
+        },
+      ],
+      answers: [
+        { question_id: "Q1", topic: "work_authorisation", text: "", fact_ids: [] },
+        { question_id: "Q2", topic: "salary", text: "", fact_ids: [] },
+        { question_id: "Q3", topic: "years_with_skill", text: "", fact_ids: [] },
+        {
+          question_id: "Q4",
+          topic: "none",
+          text: "I want to build payment products with React and Node.js.",
+          fact_ids: ["F-react-production", "F-node-apis"],
+        },
+      ],
+    };
+
+    const id = await run(
+      "Fabrikam Payments is hiring a Full-Stack Developer. Apply here: https://boards.example.net/fabrikam/jobs/4471",
+      [
+        answer(remoteAnywhere(fixture("S03-ats-form"))),
+        answer(form),
+        answer({
+          verdicts: [
+            { block_id: "S1", verdict: "supported", company_claim: false, note: "" },
+            { block_id: "Q4", verdict: "supported", company_claim: false, note: "" },
+          ],
+        }),
+      ],
+    );
+
+    expect(await loadJob(db, id)).toMatchObject({ state: "kit_ready", pendingStage: null });
+    const draft = (await stageOutput(db, id, "draft"))!.output as DraftOutput;
+    expect(draft.kit.kind).toBe("form");
+    const kit = draft.kit as FormKit;
+    expect(kit.answers.map(({ id: question, source, text }) => [question, source, text])).toEqual([
+      ["Q1", "profile", "Not authorised; I work as a remote contractor from Pakistan."],
+      ["Q2", "profile", "GBP 4,000 a month"],
+      ["Q3", "profile", "1 year"],
+      ["Q4", "drafted", "I want to build payment products with React and Node.js."],
+    ]);
+    expect(draft).toMatchObject({ flags: [], subjectFormat: null });
+    // The questions go to the drafter between the markers, under the form's own rules.
+    const drafting = llm.calls[1]!;
+    expect(drafting.system).toContain("You draft an application through a job's form");
+    const sent = texts(drafting.content);
+    const [, inside] = sent.split(/BEGIN POST DATA [0-9a-f]+/);
+    expect(inside).toContain('"text": "Why do you want to join Fabrikam?"');
+    // The judge weighs the drafted answer with its question, and no profile answer.
+    const judging = texts(llm.calls[2]!.content);
+    expect(judging).toContain('"question":"Why do you want to join Fabrikam?"');
+    expect(judging).not.toContain("GBP 4,000");
+    const judged = (await stageOutput(db, id, "judge"))!.output as JudgeOutput;
+    expect(judged.verdicts.map(({ blockId, verdict }) => [blockId, verdict])).toEqual([
+      ["S1", "supported"],
+      ["Q4", "supported"],
+    ]);
   });
 
   it("sends the role's typed fields between markers, with no raw post text and nothing aimed at AI", async () => {

@@ -70,6 +70,7 @@ describe("decide", () => {
     decisions = decide(decisions, { kind: "retype", value: " jobs@example.com " }, []);
 
     expect(decisions).toEqual({
+      choices: {},
       checked: ["S2"],
       flagsChecked: [F],
       retyped: { value: "jobs@example.com", checks: [] },
@@ -484,6 +485,7 @@ describe("gateInputOf", () => {
       deleted: ["S9"],
       answers: {},
       declined: [],
+      choices: {},
       handoff: null,
     };
 

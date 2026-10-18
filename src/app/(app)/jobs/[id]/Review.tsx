@@ -81,6 +81,7 @@ export function SentenceEdit({
   prompt,
   added = false,
   last = false,
+  answer = false,
 }: {
   jobId: string;
   kit: string;
@@ -100,6 +101,8 @@ export function SentenceEdit({
   added?: boolean;
   /** Whether it is the email's last sentence, which the email keeps: no Delete. */
   last?: boolean;
+  /** Whether it is a form's answer, which the owner types over, never deletes. */
+  answer?: boolean;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -167,7 +170,7 @@ export function SentenceEdit({
         ) : (
           // The placeholder as the email holds it, and what to write in its place.
           <div className="min-w-0 flex-1 py-2.5">
-            <p className="whitespace-pre-wrap">{text}</p>
+            {text !== "" && <p className="whitespace-pre-wrap">{text}</p>}
             <p className="font-medium italic">{prompt}</p>
           </div>
         )}
@@ -192,7 +195,9 @@ export function SentenceEdit({
   return (
     <form onSubmit={(event) => void save(event)} className="flex flex-col gap-2">
       <label className="flex flex-col gap-1">
-        <span className="text-muted-foreground">{prompt ?? "Your words for this sentence"}</span>
+        <span className="text-muted-foreground">
+          {prompt ?? (answer ? "Your answer" : "Your words for this sentence")}
+        </span>
         <textarea
           autoFocus
           value={typed}
@@ -229,7 +234,7 @@ export function SentenceEdit({
         >
           Cancel
         </Button>
-        {!last && (
+        {!last && !answer && (
           <Button
             type="button"
             variant="outline"

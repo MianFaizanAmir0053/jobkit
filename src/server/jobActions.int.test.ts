@@ -816,7 +816,14 @@ describe("the job page's routes", () => {
   it("mark a form submitted by the kit the page showed, and take it back", async () => {
     await seedSample();
     const cookie = await signedIn();
-    const ready = await settled([answer(fixture("S17-form-ai-question")), answer(DRAFT)]);
+    // A form's draft: the cover note, and the drafter's topic for the post's question.
+    const ready = await settled([
+      answer(fixture("S17-form-ai-question")),
+      answer({
+        ...DRAFT,
+        answers: [{ question_id: "Q1", topic: "years_with_skill", text: "", fact_ids: [] }],
+      }),
+    ]);
     await clearedOnPage(ready, cookie);
     const kit = await kitOf(ready);
 

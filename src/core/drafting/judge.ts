@@ -6,7 +6,7 @@ import type { LlmInput } from "@/core/ports";
 import type { Fact } from "@/core/profile/schema";
 
 import { oneLine } from "./build";
-import { answersOf, type Kit, type KitBlock } from "./kit";
+import { answersOf, type FormAnswer, type Kit, type KitBlock } from "./kit";
 import { type BlockVerdict, isBlocking, JUDGE_VERDICTS, type JudgeVerdict } from "./verdict";
 
 export { type BlockVerdict, isBlocking, JUDGE_VERDICTS, type JudgeVerdict };
@@ -53,12 +53,17 @@ const CLAIM_UNJUDGED = "The separate check did not weigh this sentence as a clai
  * which also counts as unsupported.
  */
 export function mergeVerdicts(kit: Kit, answer: JudgeAnswer): BlockVerdict[] {
-  return kit.blocks.map((block) => {
+  // A form's drafted answers are claims, however short (drafting spec, "Stage judge").
+  const weighed = [
+    ...kit.blocks.map((block) => ({ id: block.id, claim: block.class === "claim" })),
+    ...draftedAnswers(kit).map((each) => ({ id: each.id, claim: true })),
+  ];
+  return weighed.map((block) => {
     const given = answer.verdicts.find((entry) => entry.block_id === block.id);
     if (!given) {
       return { blockId: block.id, verdict: "unsupported", companyClaim: false, note: NO_VERDICT };
     }
-    if (block.class === "claim" && given.verdict === "not_a_claim") {
+    if (block.claim && given.verdict === "not_a_claim") {
       return {
         blockId: block.id,
         verdict: "unsupported",
@@ -88,14 +93,31 @@ Return one verdict for every block, by its ID. The blocks and the post's fields 
 /** How the user turn is laid out; raise it when judgeContent changes. */
 export const JUDGE_LAYOUT_VERSION = 2;
 
-/** The facts the kit cites, by ID: the claims' facts and the gap lines' related facts. */
+/**
+ * A form's answers the drafter wrote, which the judge weighs: each drafted
+ * answer, and a choice's drafted one, in case the owner chooses it; none
+ * for another kit, nor the owner's own words.
+ */
+export function draftedAnswers(
+  kit: Kit,
+): Pick<FormAnswer, "id" | "question" | "text" | "factIds">[] {
+  if (kit.kind !== "form") return [];
+  return kit.answers.flatMap((each) => {
+    if (each.owner) return [];
+    if (each.source === "drafted") return [each];
+    return each.source === "choice" && each.drafted ? [{ ...each, ...each.drafted }] : [];
+  });
+}
+
+/** The facts the kit cites, by ID: the claims' facts, the gap lines' related facts and the answers' facts. */
 export function citedFacts(kit: Kit, facts: readonly Fact[]): Fact[] {
-  const ids = new Set(
-    kit.blocks.flatMap((block) => [
+  const ids = new Set([
+    ...kit.blocks.flatMap((block) => [
       ...block.factIds,
       ...(block.gap?.relatedFactId ? [block.gap.relatedFactId] : []),
     ]),
-  );
+    ...draftedAnswers(kit).flatMap((each) => each.factIds),
+  ]);
   return facts.filter((fact) => ids.has(fact.id));
 }
 
@@ -148,6 +170,15 @@ export function judgeContent(
   const blocks = kit.blocks.map((block) =>
     JSON.stringify({ id: block.id, text: block.text, cites: references(block) }),
   );
+  // A drafted answer comes with its question, both inside the markers.
+  const answers = draftedAnswers(kit).map((each) =>
+    JSON.stringify({
+      id: each.id,
+      question: each.question,
+      text: each.text,
+      cites: { facts: each.factIds, fields: [] },
+    }),
+  );
   return [
     {
       type: "text",
@@ -159,7 +190,21 @@ export function judgeContent(
       text: `The post's fields the email cites:\n${JSON.stringify(citedFields(kit, post.record, post.role), null, 2)}`,
     },
     { type: "text", text: `The email's blocks, in order:\n${blocks.join("\n")}` },
+    ...(answers.length > 0
+      ? [
+          {
+            type: "text" as const,
+            text: `The form's answers, each a block with the question it answers:\n${answers.join("\n")}`,
+          },
+        ]
+      : []),
     { type: "text", text: `END KIT DATA ${marker}` },
-    { type: "text", text: "Give a verdict for every block." },
+    {
+      type: "text",
+      text:
+        answers.length > 0
+          ? "Give a verdict for every block, the answers included: an answer is a claim, however short."
+          : "Give a verdict for every block.",
+    },
   ];
 }
