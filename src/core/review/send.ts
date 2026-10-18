@@ -56,6 +56,7 @@ const NOT_SENT = {
   changed:
     "Not sent: the email changed after you pressed Send. Check it, then press Approve & send again.",
   alreadySent: "Not sent: this email was already sent.",
+  skipped: "Not sent: you skipped this job.",
   notConnected:
     "Not sent: jobkit cannot use your Gmail. Connect Gmail on the Devices page, then press Approve & send again.",
   refused:
@@ -74,6 +75,7 @@ export type ScheduleOutcome =
         | "not-ready"
         | "changed"
         | "sent"
+        | "skipped"
         | "not-email"
         | "sending"
         | "held"
@@ -289,7 +291,13 @@ async function claimSend(deps: DeliverDeps, jobId: string, found: SendRow): Prom
     };
     if (now.getTime() > row.send_at.getTime() + LATE_MS) return fail(LAPSED);
     if (!("view" in locked)) {
-      return fail(locked.reason === "sent" ? NOT_SENT.alreadySent : NOT_SENT.changed);
+      return fail(
+        locked.reason === "sent"
+          ? NOT_SENT.alreadySent
+          : locked.reason === "skipped"
+            ? NOT_SENT.skipped
+            : NOT_SENT.changed,
+      );
     }
     const { view } = locked;
     if ((view.handoff?.to ?? "") !== row.to_address) return fail(NOT_SENT.changed);

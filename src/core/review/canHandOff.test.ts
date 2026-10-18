@@ -12,6 +12,7 @@ import { canHandOff, type GateInput } from "./canHandOff";
 const CLEAR: GateInput = {
   sent: false,
   sending: false,
+  skipped: false,
   flags: [],
   verdicts: [],
   checked: [],
@@ -168,6 +169,18 @@ describe("canHandOff", () => {
     expect(kinds({ ...CLEAR, sending: true, flags: [FLAG] })).toEqual(["sending"]);
     // Once it went, the kit is sent.
     expect(kinds({ ...CLEAR, sending: true, sent: true })).toEqual(["sent"]);
+  });
+
+  it("holds a kit the owner skipped for that alone, until the skip is taken back", () => {
+    const [reason] = canHandOff({ ...CLEAR, skipped: true, flags: [FLAG] });
+    expect(reason).toEqual({
+      kind: "skipped",
+      message:
+        "You skipped this job, so nothing goes out from this page. Take the skip back to apply.",
+    });
+    expect(kinds({ ...CLEAR, skipped: true, flags: [FLAG] })).toEqual(["skipped"]);
+    // A kit that went is sent, whatever the owner tapped after.
+    expect(kinds({ ...CLEAR, skipped: true, sent: true })).toEqual(["sent"]);
   });
 
   it("says a sentence the separate check never weighed was never weighed, not that it lacks a fact", () => {

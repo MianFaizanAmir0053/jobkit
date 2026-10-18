@@ -343,6 +343,22 @@ describe("skipJob", () => {
     expect(await skipJob({ db, clock }, "not-a-uuid")).toEqual({ ok: false, reason: "not-found" });
     expect(await loadJob(db, running)).toMatchObject({ state: "queued" });
   });
+
+  it("closes a job only from the state the owner's page showed, as it reads the job to move it", async () => {
+    const stopped = await jobIn("uploading", [
+      ["queued", null],
+      ["extracting", "extract"],
+      ["stopped", null],
+    ]);
+
+    // A page drawn while the job had failed: the job moved on to another state Skip closes.
+    expect(await skipJob({ db, clock }, stopped, "failed")).toEqual({
+      ok: false,
+      reason: "not-skippable",
+    });
+    expect(await loadJob(db, stopped)).toMatchObject({ state: "stopped" });
+    expect(await skipJob({ db, clock }, stopped, "stopped")).toEqual({ ok: true });
+  });
 });
 
 describe("upload timeout", () => {

@@ -10,11 +10,13 @@ import { fakeGmail, type FakeGmail } from "@/adapters/fakeGmail";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { emailBody } from "@/core/drafting/kit";
+import { setAddress } from "@/core/ledger/statuses";
 import type { Db, GmailSender, QueryResult, Row } from "@/core/ports";
 import { cryptoRandom } from "@/adapters/random";
 import { issueSession } from "@/core/platform/sessions";
 import { createTestDb } from "@/server/db/testDb";
 
+import { openForJob } from "./applications";
 import { flagKey, NO_DECISIONS } from "./decisions";
 import { storedDecisions } from "./jobView";
 import { type JobView, jobView } from "./jobView";
@@ -29,6 +31,7 @@ import {
   UNDO_MS,
   undoSend,
 } from "./send";
+import { type SkipKit, skipKit, takeBackSkip } from "./skipKit";
 import { KIT_DRAFT, readyKit as kitFor, resetKitBed, SYNTHETIC } from "./testKit";
 
 /* "Approve & send" from the owner's Gmail, with ten seconds to undo: decisions A20. */
@@ -588,6 +591,52 @@ describe("deliverSend", () => {
     expect((await view(id)).application!.status).toBe("sent");
   });
 
+  it("marks sent over the skip an email Gmail took after the owner skipped past it, as it looked stuck", async () => {
+    const id = await readyKit(POST);
+    const send = await press(id);
+    clock.advance(UNDO_MS);
+    const seen: { skipped?: SkipKit; skippedAt?: Date | null } = {};
+    // Gmail takes longer than jobkit waits for it: the page warns that the send may have gone, and
+    // the owner skips the job past the warning.
+    const slow = slowGmail(async () => {
+      clock.advance(STUCK_MS + 1);
+      const shown = await view(id);
+      seen.skipped = await skipKit({ db, clock }, id, null, {
+        kit: shown.kitKey,
+        uncertain: send.id,
+      });
+      seen.skippedAt = (await view(id)).application?.skippedAt;
+      clock.advance(1_000);
+    });
+
+    expect(await deliverSend(sendDeps(slow), id, send.id)).toMatchObject({
+      send: { status: "sent", messageId: "m1" },
+    });
+    expect(seen.skipped).toEqual({ ok: true, changed: true });
+    expect((await view(id)).application).toMatchObject({ status: "sent", skippedAt: null });
+    const { rows } = await db.query<{ from_status: string | null; to_status: string }>(
+      `select from_status, to_status from {{schema}}.status_changes
+        where application_id = (select id from {{schema}}.applications where job_id = $1)`,
+      [id],
+    );
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { from_status: "kit_ready", to_status: "skipped" },
+        { from_status: "skipped", to_status: "kit_ready" },
+        { from_status: "kit_ready", to_status: "sent" },
+      ]),
+    );
+    // It went: neither the skip nor the send is taken back.
+    expect(await takeBackSkip({ db, clock }, id, null, seen.skippedAt!)).toEqual({
+      ok: false,
+      reason: "sent",
+    });
+    expect(await takeBackSent({ db, clock }, id, null)).toEqual({
+      ok: false,
+      reason: "sent-by-jobkit",
+    });
+  });
+
   it("holds a later send once an earlier one Gmail took late is recorded", async () => {
     const id = await readyKit(POST);
     const first = await press(id);
@@ -663,6 +712,26 @@ describe("deliverSend", () => {
       [id],
     );
     expect(rows).toEqual([{ address: "hr@northwind.io" }]);
+  });
+
+  it("records the address jobkit sent the email to, though a skip kept another the owner typed since", async () => {
+    const id = await readyKit(POST);
+    const applicationId = (await openForJob({ db, clock }, id, null))!;
+    const send = await press(id);
+    clock.advance(UNDO_MS);
+    // Once the send looked stuck, the owner typed another address, which a skip then kept.
+    const retyped = slowGmail(async () => {
+      clock.advance(STUCK_MS + 1);
+      await setAddress({ db }, applicationId, "hr@example.com");
+    });
+
+    await deliverSend(sendDeps(retyped), id, send.id);
+
+    const { rows } = await db.query<{ status: string; address: string }>(
+      "select status, address from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ status: "sent", address: "jobs@example.com" }]);
   });
 
   it("holds the kit as sent once jobkit sent it, though the ledger did not record it", async () => {

@@ -118,7 +118,15 @@ export interface JobView {
   contact: { kind: ContactKind; agreement: Agreement } | null;
   /** The email address's checks; null before they ran, or for another route. */
   addressChecks: AddressCheck[] | null;
-  application: { status: ApplicationStatus; sentAt: Date | null } | null;
+  /** The chosen role's application: its status, and when it was sent or skipped, which Take back names. */
+  application: { status: ApplicationStatus; sentAt: Date | null; skippedAt: Date | null } | null;
+  /**
+   * Whether the chosen role's kit went: the ledger says it was sent,
+   * submitted or bounced, or Gmail took a send of jobkit's, though the
+   * ledger may not have recorded it. The page, the jobs list and Skip read
+   * it alike, whether or not the kit can still be read.
+   */
+  went: boolean;
   /** The ledger's matches for the application, each with whether "Apply again" covered it. */
   duplicates: (DuplicateMatch & { covered: boolean })[];
   /** What the outbound gate reads from the kit; null before there is one. */
@@ -153,6 +161,13 @@ export interface JobView {
    */
   uncertain: KitSend | null;
 }
+
+/** Statuses of an application whose kit went: sent, submitted, or sent and since bounced. */
+export const WENT: ReadonlySet<ApplicationStatus> = new Set<ApplicationStatus>([
+  "sent",
+  "submitted",
+  "bounced",
+]);
 
 const NOT_CHECKED: AddressCheck = {
   kind: "not_checked",
@@ -266,6 +281,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const latest = role ? await latestSend(deps.db, id, role.id) : null;
   const now = deps.clock.now();
   const sentByJobkit = role ? await anySent(deps.db, id, role.id) : false;
+  // jobkit sent it, though the ledger may not have recorded it: it went.
+  const went = Boolean(application && WENT.has(application.status)) || sentByJobkit;
   const kitParts =
     chosen && role && extraction
       ? kitPartsOf({
@@ -276,13 +293,9 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
           needsRetype,
           addressChecks,
           duplicates,
-          sent:
-            application?.status === "sent" ||
-            application?.status === "submitted" ||
-            application?.status === "bounced" ||
-            // jobkit sent it, though the ledger may not have recorded it: it went.
-            sentByJobkit,
+          sent: went,
           sending: latest !== null && isLive(latest, now),
+          skipped: application?.status === "skipped",
         })
       : null;
   return {
@@ -315,7 +328,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       !candidates.some((candidate) => candidate.choice.source === "gemini") &&
       kitParts !== null &&
       !kitParts.sent &&
-      !kitParts.sending,
+      !kitParts.sending &&
+      !kitParts.skipped,
     canGoBackToDrafts:
       job.state === "failed" &&
       (job.pendingStage === "draft" || job.pendingStage === "judge") &&
@@ -323,7 +337,12 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     judge: geminiCurrent && judge?.checked ? judge : null,
     contact: settled,
     addressChecks,
-    application: application && { status: application.status, sentAt: application.sentAt },
+    application: application && {
+      status: application.status,
+      sentAt: application.sentAt,
+      skippedAt: application.skippedAt,
+    },
+    went,
     duplicates,
     kitParts,
     kitKey,
@@ -589,6 +608,7 @@ function kitPartsOf(parts: {
   duplicates: JobView["duplicates"];
   sent: boolean;
   sending: boolean;
+  skipped: boolean;
 }): KitParts {
   const { kind } = parts.role.route;
   return {
@@ -607,6 +627,7 @@ function kitPartsOf(parts: {
     duplicates: duplicateParts(parts.duplicates),
     sent: parts.sent,
     sending: parts.sending,
+    skipped: parts.skipped,
   };
 }
 
@@ -749,12 +770,26 @@ async function applicationOf(
   db: Db,
   jobId: string,
   roleId: string,
-): Promise<{ id: string; status: ApplicationStatus; sentAt: Date | null } | null> {
-  const { rows } = await db.query<{ id: string; status: ApplicationStatus; sent_at: Date | null }>(
-    "select id, status, sent_at from {{schema}}.applications where job_id = $1 and role_id = $2",
+): Promise<{
+  id: string;
+  status: ApplicationStatus;
+  sentAt: Date | null;
+  skippedAt: Date | null;
+} | null> {
+  const { rows } = await db.query<{
+    id: string;
+    status: ApplicationStatus;
+    sent_at: Date | null;
+    skipped_at: Date | null;
+  }>(
+    `select id, status, sent_at, skipped_at from {{schema}}.applications
+      where job_id = $1 and role_id = $2`,
     [jobId, roleId],
   );
-  return rows[0] ? { id: rows[0].id, status: rows[0].status, sentAt: rows[0].sent_at } : null;
+  const row = rows[0];
+  return row
+    ? { id: row.id, status: row.status, sentAt: row.sent_at, skippedAt: row.skipped_at }
+    : null;
 }
 
 /** The application's duplicate matches, each with whether "Apply again" covered it. */
@@ -798,8 +833,16 @@ export interface JobListItem {
   receivedAt: Date;
   company: string;
   title: string;
-  /** Whether the owner marked the chosen role's kit sent, as the job page shows it. */
+  /**
+   * Whether the chosen role's kit went, as the job page says: sent, submitted
+   * or bounced in the ledger, or taken by Gmail from jobkit.
+   */
   sent: boolean;
+  /**
+   * Whether the owner skipped the chosen role's ready kit, which stays ready to take the skip
+   * back; a job a skip closed reads as closed, as its page does.
+   */
+  skipped: boolean;
 }
 
 /**
@@ -821,11 +864,17 @@ export async function listJobViews(
     output: unknown;
     output_hash: string | null;
     sent_roles: string[];
+    skipped_roles: string[];
   }>(
     `select j.id, j.state, j.received_at, j.chosen_role, j.chosen_role_output,
             x.output, x.output_hash,
             array(select a.role_id from {{schema}}.applications as a
-                   where a.job_id = j.id and a.status = 'sent') as sent_roles
+                   where a.job_id = j.id and a.status in ('sent', 'submitted', 'bounced')
+                  union
+                  select k.role_id from {{schema}}.kit_sends as k
+                   where k.job_id = j.id and k.status = 'sent') as sent_roles,
+            array(select a.role_id from {{schema}}.applications as a
+                   where a.job_id = j.id and a.status = 'skipped') as skipped_roles
        from {{schema}}.jobs as j
        left join lateral (
          select output, output_hash from {{schema}}.job_stage_runs as r
@@ -852,6 +901,11 @@ export async function listJobViews(
       company: extraction?.record.company.name ?? "",
       title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : ""),
       sent: role !== undefined && row.sent_roles.includes(role.id),
+      skipped:
+        row.state === "kit_ready" &&
+        role !== undefined &&
+        row.skipped_roles.includes(role.id) &&
+        !row.sent_roles.includes(role.id),
     };
   });
 }

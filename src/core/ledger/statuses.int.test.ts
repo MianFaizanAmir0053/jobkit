@@ -420,19 +420,27 @@ describe("undoStatus", () => {
     });
   });
 
-  it("takes back a skip after the kit, but not one before it, which closed the job", async () => {
+  it("takes back the skip of a ready kit, but not one that closed its job, before the kit or after it", async () => {
     const early = await walked(["skipped"]);
+    const closed = await walked(["kit_ready", "skipped"], { jobId: THIRD_JOB });
     const late = await walked(["kit_ready", "skipped"], { jobId: OTHER_JOB });
-
-    expect(await undoStatus(deps(), early, await lastChange(early), null)).toEqual({
-      ok: false,
-      reason: "refused",
-      status: "skipped",
-    });
-    expect(await undoStatus(deps(), late, await lastChange(late), null)).toMatchObject({
-      status: "kit_ready",
-    });
-    expect(await stamps(late)).toMatchObject({ skipped_at: null });
+    // The ready kit's job stays ready; the others' jobs closed with their skips.
+    await db.query("update {{schema}}.jobs set state = 'kit_ready' where id = $1", [OTHER_JOB]);
+    try {
+      for (const id of [early, closed]) {
+        expect(await undoStatus(deps(), id, await lastChange(id), null)).toEqual({
+          ok: false,
+          reason: "refused",
+          status: "skipped",
+        });
+      }
+      expect(await undoStatus(deps(), late, await lastChange(late), null)).toMatchObject({
+        status: "kit_ready",
+      });
+      expect(await stamps(late)).toMatchObject({ skipped_at: null });
+    } finally {
+      await db.query("update {{schema}}.jobs set state = 'closed' where id = $1", [OTHER_JOB]);
+    }
   });
 
   it("takes back Mark submitted and Mark bounced, one tap at a time", async () => {

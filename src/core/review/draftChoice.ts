@@ -34,7 +34,7 @@ export type PickOutcome =
   | { ok: true; gate: GateReason[] }
   | {
       ok: false;
-      reason: "not-found" | "not-ready" | "changed" | "sent" | "sending" | "not-in-kit";
+      reason: "not-found" | "not-ready" | "changed" | "sent" | "skipped" | "sending" | "not-in-kit";
     };
 
 /** The owner picks one of the kit's drafts: the one the page shows, and Approve & send sends. */
@@ -84,7 +84,10 @@ export async function pickDraft(
 
 export type GeminiOutcome =
   | { ok: true }
-  | { ok: false; reason: "not-found" | "not-ready" | "changed" | "sent" | "sending" | "drafted" };
+  | {
+      ok: false;
+      reason: "not-found" | "not-ready" | "changed" | "sent" | "skipped" | "sending" | "drafted";
+    };
 
 /**
  * "Write a draft with Gemini too": on a kit the templates drafted, drafting

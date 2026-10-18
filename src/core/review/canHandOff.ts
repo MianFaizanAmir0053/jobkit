@@ -16,7 +16,7 @@ import type { AddressCheck } from "./addressChecks";
  * check, and the address checks are those of the address that goes out. A
  * kit marked sent holds everything, so the same email never goes twice, and
  * so does one jobkit is sending (decisions A20), until it went or the owner
- * pressed Undo.
+ * pressed Undo, and one the owner skipped, until the skip is taken back.
  */
 
 export interface GateInput {
@@ -24,6 +24,8 @@ export interface GateInput {
   sent: boolean;
   /** Whether jobkit is sending the kit from the owner's Gmail: counting down to it, or sending. */
   sending: boolean;
+  /** Whether the owner skipped the job, its kit ready (ledger spec, "Statuses"). */
+  skipped: boolean;
   /** validate's flags on the kit as it stands, the owner's decisions applied: each one blocks. */
   flags: readonly KitFlag[];
   /** The judge's verdict on each sentence. */
@@ -51,6 +53,7 @@ export interface GateInput {
 export type GateReason = { message: string } & (
   | { kind: "sent" }
   | { kind: "sending" }
+  | { kind: "skipped" }
   | { kind: "scam"; signals: readonly string[] }
   | { kind: "duplicate"; reason: string }
   | { kind: "contact" }
@@ -118,7 +121,7 @@ export function flagRank(kind: string): number {
 /**
  * The open reasons, the most serious first; none opens every outbound
  * control. A kit marked sent is held for that alone, and so is one jobkit
- * is sending.
+ * is sending, and one the owner skipped.
  */
 export function canHandOff(input: GateInput): GateReason[] {
   if (input.sent) {
@@ -134,6 +137,15 @@ export function canHandOff(input: GateInput): GateReason[] {
       {
         kind: "sending",
         message: "jobkit is sending this email from your Gmail. Press Undo to stop it.",
+      },
+    ];
+  }
+  if (input.skipped) {
+    return [
+      {
+        kind: "skipped",
+        message:
+          "You skipped this job, so nothing goes out from this page. Take the skip back to apply.",
       },
     ];
   }

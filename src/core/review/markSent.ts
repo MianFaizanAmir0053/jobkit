@@ -135,8 +135,11 @@ async function marking(
     const applicationId =
       (await applicationIdOf(tx, jobId, role.id)) ?? (await openForJob(at, jobId, sessionId));
     if (!applicationId) return { ok: false, reason: "not-ready" };
-    // The owner's address, when the kit needed them to type one in place of the post's.
-    if (typed && to !== "") await setAddress(at, applicationId, to);
+    // jobkit's own move, under no session's tap: the email went, whatever the owner tapped since.
+    if (marker.by === "jobkit") await unskipped(at, applicationId, null);
+    // The address the email went to: the owner's, when the kit needed them to type one in place of
+    // the post's, or the one jobkit sent it to, whatever the owner typed since.
+    if ((typed || marker.by === "jobkit") && to !== "") await setAddress(at, applicationId, to);
     // Already kit_ready, or sent, after an earlier tap: the next move decides.
     await changeStatus(at, applicationId, "kit_ready", sessionId);
     const sent = await changeStatus(at, applicationId, "sent", sessionId);
@@ -170,6 +173,33 @@ async function marking(
     await keepGate(at, jobId, role.id);
     return { ok: true, changed: sent.changed };
   });
+}
+
+/**
+ * Takes back a skip of the application, if it was skipped: an email jobkit
+ * was sending went after the owner skipped the job past the warning that it
+ * may have gone. It went, so it is sent, with the audit rows of both moves
+ * (ledger spec, "Statuses"). Were the take-back refused, marking it sent is
+ * refused next, and the delivery says it could not record it.
+ */
+async function unskipped(
+  deps: { db: Db; clock: Clock },
+  applicationId: string,
+  sessionId: string | null,
+): Promise<void> {
+  const { rows } = await deps.db.query<{ status: string; status_changed_at: Date }>(
+    "select status, status_changed_at from {{schema}}.applications where id = $1",
+    [applicationId],
+  );
+  const row = rows[0];
+  if (row?.status === "skipped") {
+    await undoStatus(
+      deps,
+      applicationId,
+      { status: "skipped", at: row.status_changed_at },
+      sessionId,
+    );
+  }
 }
 
 /**

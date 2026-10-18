@@ -121,8 +121,12 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
           {heading}
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          {view.kitParts?.sent ? "Sent" : STATE_WORDS[view.state]} · started{" "}
-          {formatTime(view.receivedAt, timeZone)}
+          {view.went
+            ? "Sent"
+            : ready && view.application?.status === "skipped"
+              ? "Skipped"
+              : STATE_WORDS[view.state]}{" "}
+          · started {formatTime(view.receivedAt, timeZone)}
         </p>
       </div>
 
@@ -154,6 +158,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
               jobkit can no longer read this kit, as after an update. Send the post again as a new
               job.
             </p>
+            {view.role && !view.went && <KitSkip view={view} kit={null} timeZone={timeZone} />}
           </Panel>
         )
       )}
@@ -178,12 +183,19 @@ function Steps({ steps }: { steps: Step[] }) {
 
 function StatePanel({ view }: { view: JobView }) {
   const base = `/api/jobs/${view.id}`;
+  // A send of the kit that may have gone, as when a Gemini draft asked for beside it then failed.
+  const uncertain = view.uncertain;
   const skip = (
     <ActionButton
       url={`${base}/skip`}
       label="Skip"
       variant="outline"
-      confirmText="Skip this job? It closes for good."
+      body={{ state: view.state, uncertain: uncertain?.id ?? null }}
+      confirmText={
+        uncertain
+          ? "A send of this email may have gone: check your Gmail Sent folder first. Skip this job anyway? It closes for good, and the skip cannot be taken back."
+          : "Skip this job? It closes for good."
+      }
     />
   );
 
@@ -197,6 +209,12 @@ function StatePanel({ view }: { view: JobView }) {
               <summary>Details</summary>
               <pre className="mt-2 whitespace-pre-wrap">{view.failure.detail}</pre>
             </details>
+          )}
+          {uncertain && (
+            <p className="rounded-md border border-destructive/40 p-3 text-sm [overflow-wrap:anywhere]">
+              A send of this email may have gone: check your Gmail Sent folder.
+              {view.canGoBackToDrafts && " If it went, go back to your drafts and press Mark sent."}
+            </p>
           )}
           {view.canGoBackToDrafts && (
             <p className="text-sm text-muted-foreground">
@@ -363,7 +381,8 @@ function ScamPanel({ view }: { view: JobView }) {
         (view.review.decisions.continueAnyway ? (
           <p className="text-sm">You chose to continue anyway.</p>
         ) : (
-          !view.kitParts?.sent && (
+          !view.kitParts?.sent &&
+          !view.kitParts?.skipped && (
             <ActionButton
               url={`/api/jobs/${view.id}/review`}
               gateOf={view.id}
@@ -378,10 +397,10 @@ function ScamPanel({ view }: { view: JobView }) {
   );
 }
 
-/** Earlier applications the ledger matched, with "Apply again", until the kit is sent. */
+/** Earlier applications the ledger matched, with "Apply again", until the kit is sent or skipped. */
 function DuplicatePanel({ view, timeZone }: { view: JobView; timeZone: string }) {
   const repeats = view.duplicates.filter((match) => !match.covered);
-  if (repeats.length === 0 || view.kitParts?.sent) return null;
+  if (repeats.length === 0 || view.kitParts?.sent || view.kitParts?.skipped) return null;
   return (
     <Panel title="You may have applied before">
       <ul className="list-disc pl-5 text-sm">
@@ -527,8 +546,9 @@ function KitPanel({
   const gate = view.review?.gate ?? [];
   const open = view.review !== null && gate.length === 0;
   const sent = parts.sent;
-  // While jobkit sends the email, nothing on the page changes it.
-  const locked = sent || parts.sending;
+  const skipped = parts.skipped;
+  // While jobkit sends the email, or the owner has skipped the job, nothing on the page changes it.
+  const locked = sent || parts.sending || skipped;
   // The send the page shows beside this kit, by the rule the send's route answers with too.
   const send = view.send && showsFor(view.send, kitKey) ? view.send : null;
   // A send that may have gone, whatever came after it: the page warns until the kit is sent.
@@ -814,20 +834,22 @@ function KitPanel({
           {byEmail && !sent && send?.status === "sending" && (
             <p className="sr-only">jobkit is sending this email from your Gmail.</p>
           )}
-          {byEmail && !sent && send?.status === "failed" && send.error && (
+          {byEmail && !sent && !skipped && send?.status === "failed" && send.error && (
             <p className="text-sm text-destructive [overflow-wrap:anywhere]">{send.error}</p>
           )}
-          {byEmail && !sent && uncertain?.error && (
+          {byEmail && !sent && !skipped && uncertain?.error && (
             <p className="rounded-md border border-destructive/40 p-3 text-sm [overflow-wrap:anywhere]">
               {uncertain.error}
             </p>
           )}
-          {byEmail && !sent && send?.status === "cancelled" && (
+          {byEmail && !sent && !skipped && send?.status === "cancelled" && (
             <p className="text-sm text-muted-foreground">You pressed Undo, so nothing was sent.</p>
           )}
           {reasons.length > 0 && (
             <div className="rounded-md border border-destructive/40 p-3 text-sm">
-              <p className="font-medium">{sent ? "Sent already" : "Before you send"}</p>
+              <p className="font-medium">
+                {sent ? "Sent already" : skipped ? "Skipped" : "Before you send"}
+              </p>
               <ul className="mt-1 list-disc pl-5 [overflow-wrap:anywhere]">
                 {reasons.map((reason, i) => {
                   // A sentence's finding names the sentence, so two findings never read alike.
@@ -850,7 +872,7 @@ function KitPanel({
             </div>
           )}
         </div>
-        {byEmail && !sent && (
+        {byEmail && !sent && !skipped && (
           <>
             <ApproveSend
               key={shown ? `${shown.id}-${shown.status}` : "none"}
@@ -874,6 +896,7 @@ function KitPanel({
           kit={kitKey}
           open={open}
           to={view.handoff?.to ?? null}
+          skipped={skipped}
           email={byEmail}
           gmailHref={
             open && byEmail && to !== ""
@@ -883,7 +906,7 @@ function KitPanel({
           subject={kit.subject}
           body={body}
         />
-        {byEmail && !sent && (
+        {byEmail && !sent && !skipped && (
           <p className="text-sm text-muted-foreground">
             In Gmail, {account ? `check that From shows ${account}, ` : "check the From address, "}
             attach your CV, and send. Gmail adds your signature. If you change the email&apos;s
@@ -892,7 +915,7 @@ function KitPanel({
         )}
       </Panel>
 
-      <Panel title="After you send it">
+      <Panel title={skipped ? "Not applying" : "After you send it"}>
         {sent ? (
           <div className="flex flex-col gap-2 text-sm">
             <p>
@@ -920,6 +943,8 @@ function KitPanel({
                 </div>
               )}
           </div>
+        ) : skipped ? (
+          <KitSkip view={view} kit={kitKey} timeZone={timeZone} />
         ) : byEmail ? (
           parts.sending ? (
             <p className="text-sm text-muted-foreground">jobkit is sending it.</p>
@@ -938,6 +963,74 @@ function KitPanel({
           </p>
         )}
       </Panel>
+
+      {!sent && !parts.sending && !skipped && (
+        <Panel title="Not applying?">
+          <KitSkip view={view} kit={kitKey} timeZone={timeZone} />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Skip on a ready kit (review spec, "Handoffs"), naming the kit the page
+ * shows, null when it cannot read one, and the send it warned may have gone;
+ * once skipped, when, with "Take back the skip", by the skip it shows, and
+ * while a send from before may have gone, how to record it if it did, where
+ * the page can.
+ */
+function KitSkip({ view, kit, timeZone }: { view: JobView; kit: string | null; timeZone: string }) {
+  if (view.application?.status === "skipped") {
+    const { skippedAt } = view.application;
+    return (
+      <div className="flex flex-col gap-2 text-sm">
+        <p>
+          {skippedAt
+            ? `You skipped this job on ${formatTime(skippedAt, timeZone)}.`
+            : "You skipped this job."}
+        </p>
+        {view.uncertain && (
+          <p className="rounded-md border border-destructive/40 p-3 [overflow-wrap:anywhere]">
+            {kit === null
+              ? "A send of this email from before you skipped may have gone: check your Gmail Sent folder. This page cannot record it, since jobkit can no longer read this kit."
+              : "A send of this email from before you skipped may have gone. Check your Gmail Sent folder: if it went, take the skip back and press Mark sent."}
+          </p>
+        )}
+        {skippedAt && (
+          <div>
+            <ActionButton
+              url={`/api/jobs/${view.id}/take-back`}
+              label="Take back the skip"
+              variant="outline"
+              body={{ skippedAt: skippedAt.toISOString() }}
+              gateOf={view.id}
+            />
+          </div>
+        )}
+      </div>
+    );
+  }
+  const uncertain = view.uncertain;
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-sm text-muted-foreground">
+        Skip this job: nothing goes out, its kit stays here, and you can take the skip back.
+      </p>
+      <div>
+        <ActionButton
+          url={`/api/jobs/${view.id}/skip`}
+          label="Skip this job"
+          variant="outline"
+          body={{ kit, uncertain: uncertain?.id ?? null }}
+          gateOf={view.id}
+          confirmText={
+            uncertain
+              ? "A send of this email may have gone: check your Gmail Sent folder first. Skip this job anyway? Nothing more goes out, and you can take the skip back on this page."
+              : "Skip this job? Nothing goes out, and you can take the skip back on this page."
+          }
+        />
+      </div>
     </div>
   );
 }

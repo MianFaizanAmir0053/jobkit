@@ -194,6 +194,8 @@ export interface KitParts {
   sent: boolean;
   /** Whether jobkit is sending the kit from the owner's Gmail (decisions A20). */
   sending: boolean;
+  /** Whether the owner skipped the job, its kit ready (ledger spec, "Statuses"). */
+  skipped: boolean;
 }
 
 /**
@@ -265,6 +267,7 @@ export function gateInputOf(parts: KitParts, decisions: ReviewDecisions): GateIn
   return {
     sent: parts.sent,
     sending: parts.sending,
+    skipped: parts.skipped,
     flags: parts.flags.filter((_, place) => !flagsChecked.has(flagKey(place))),
     verdicts: parts.verdicts.filter((verdict) => blocks.has(verdict.blockId)),
     checked: decisions.checked.filter((id) => blocks.has(id)),

@@ -37,6 +37,7 @@ const PARTS: KitParts = {
   duplicates: [{ reason: "You applied to this company and role before", covered: false }],
   sent: false,
   sending: false,
+  skipped: false,
 };
 
 const MAIL_HOST: AddressCheck = {

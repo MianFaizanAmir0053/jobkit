@@ -40,6 +40,7 @@ const REFUSALS: Readonly<Record<string, string>> = {
   changed: "The email changed after this page was drawn. The page now shows it as it stands.",
   sending: "jobkit is already sending this email.",
   sent: "This email was already sent.",
+  skipped: "You skipped this job: take the skip back to send it.",
   "too-late": "Too late to undo: the send has begun.",
   uncertain:
     "An earlier send may have gone: the page now says so. Check your Gmail Sent folder first.",

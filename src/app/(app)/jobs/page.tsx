@@ -38,7 +38,7 @@ export default async function JobsPage() {
                   {[job.title, job.company].filter(Boolean).join(" · ") || "A job post"}
                 </span>
                 <span className="text-sm text-muted-foreground">
-                  {job.sent ? "Sent" : STATE_WORDS[job.state]} ·{" "}
+                  {job.sent ? "Sent" : job.skipped ? "Skipped" : STATE_WORDS[job.state]} ·{" "}
                   {formatTime(job.receivedAt, timeZone)}
                 </span>
               </Link>

@@ -39,8 +39,8 @@ const ROUTES_FOR: Partial<Record<ApplicationStatus, readonly Route[]>> = {
 /**
  * The statuses the owner's own taps make, each with the status the tap
  * found the application in, so a mistaken tap can be taken back. A skip
- * before a kit closed its job (platform spec B9), so only a skip after the
- * kit can be.
+ * that closed its job (platform spec B9), before a kit or after one failed,
+ * is not: only the skip of a ready kit, whose job stays ready, can be.
  */
 const UNDO_TO: Readonly<Record<"sent" | "submitted" | "bounced" | "skipped", ApplicationStatus>> = {
   sent: "kit_ready",
@@ -238,7 +238,9 @@ export async function undoStatus(
         `update {{schema}}.applications
             set status = $2, status_changed_at = $5, ${TIME_COLUMN[tapped]} = null
           where id = $1 and status = $3 and status_changed_at = $4
-            and ($3 <> 'skipped' or kit_ready_at is not null)
+            and ($3 <> 'skipped' or exists (
+                  select 1 from {{schema}}.jobs as j
+                   where j.id = applications.job_id and j.state = 'kit_ready'))
           returning id`,
         [applicationId, UNDO_TO[tapped], tapped, last.at, now],
       );

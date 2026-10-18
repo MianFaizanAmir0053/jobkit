@@ -15,11 +15,12 @@ import { addressReadStage } from "@/core/extraction/addressReadStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
-import { confirmPost, pickRole } from "@/core/extraction/owner";
+import { confirmPost, pickRole, skipRolePick } from "@/core/extraction/owner";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import { undoStatus } from "@/core/ledger/statuses";
 import type { ModelCallDeps } from "@/core/platform/models";
+import { loadJob, moveJob, skipJob } from "@/core/platform/jobs";
 import { claimJob, type Pipeline, runJob } from "@/core/platform/runner";
 import type { Db, QueryResult, Row } from "@/core/ports";
 import { seedProfile } from "@/core/profile/seed";
@@ -28,9 +29,14 @@ import { createTestDb } from "@/server/db/testDb";
 
 import { addressChecksStage } from "./addressChecksStage";
 import { flagKey } from "./decisions";
+import { draftWithGemini, pickDraft } from "./draftChoice";
 import { jobView, listJobViews } from "./jobView";
-import { recordReview } from "./kitReview";
-import { markSent } from "./markSent";
+import { applyAgainForJob, recordReview } from "./kitReview";
+import { trackApplications, skippedForJob } from "./applications";
+import { STUCK_MS } from "./kitSends";
+import { markSent, markSentByJobkit } from "./markSent";
+import { scheduleSend } from "./send";
+import { closeSkipped, skipKit, takeBackSkip } from "./skipKit";
 
 /**
  * The owner clears what holds a kit, as before sending it: the address no
@@ -151,7 +157,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.exec(
-    `delete from {{schema}}.kit_reviews; delete from {{schema}}.status_changes;
+    `delete from {{schema}}.kit_sends; delete from {{schema}}.kit_reviews; delete from {{schema}}.status_changes;
      delete from {{schema}}.applications;
      delete from {{schema}}.model_calls; delete from {{schema}}.job_stage_runs;
      delete from {{schema}}.job_leases; delete from {{schema}}.job_images;
@@ -526,6 +532,7 @@ describe("markSent", () => {
     expect((await jobView({ db, clock }, id))?.application).toEqual({
       status: "sent",
       sentAt: clock.now(),
+      skippedAt: null,
     });
     // The Gmail answer is the outcome's, once: a "Yes" is a factual edit (ledger spec).
     const outcomes = await db.query<{
@@ -658,6 +665,361 @@ describe("markSent", () => {
   });
 });
 
+describe("skipKit", () => {
+  /** A ready kit as the app runs it: its application opened with the role, kit_ready with the kit. */
+  async function readyKit(text?: string): Promise<string> {
+    const id = await pasted(text);
+    await run(
+      id,
+      [answer(fixture("S01-email-simple")), answer(DRAFT)],
+      trackApplications(pipeline(), { db, clock }),
+    );
+    return id;
+  }
+
+  /** What the page showed as the owner pressed Skip: the kit, and a send that may have gone. */
+  async function shownOn(id: string) {
+    const view = (await jobView({ db, clock }, id))!;
+    return { kit: view.kitKey, uncertain: view.uncertain?.id ?? null };
+  }
+
+  async function statusChanges(id: string) {
+    const { rows } = await db.query<{ from_status: string | null; to_status: string }>(
+      `select from_status, to_status from {{schema}}.status_changes
+        where application_id = (select id from {{schema}}.applications where job_id = $1)
+        order by changed_at, id`,
+      [id],
+    );
+    return rows;
+  }
+
+  /** A send of the kit, left as it stands at `status`, its last change `ago` milliseconds back. */
+  async function sendOf(id: string, status: string, ago = 0): Promise<string> {
+    const at = new Date(clock.now().getTime() - ago);
+    const { rows } = await db.query<{ id: string }>(
+      `insert into {{schema}}.kit_sends
+         (job_id, role_id, kit, to_address, status, send_at, created_at, updated_at)
+       values ($1, 'P1', $2, 'jobs@example.com', $3, $4, $4, $4)
+       returning id`,
+      [id, (await jobView({ db, clock }, id))!.kitKey, status, at],
+    );
+    return rows[0]!.id;
+  }
+
+  it("skips a ready kit's application, holding everything outbound, and leaves the job and its kit as they were", async () => {
+    await seedSample();
+    const id = await readyKit();
+    await cleared(id);
+    clock.advance(1_000);
+    const shown = await shownOn(id);
+
+    expect(await skipKit({ db, clock }, id, null, shown)).toEqual({ ok: true, changed: true });
+    expect(await skipKit({ db, clock }, id, null, shown)).toEqual({ ok: true, changed: false });
+
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view).toMatchObject({ state: "kit_ready", role: { id: "P1" } });
+    expect(view.draft).not.toBeNull();
+    expect(view.application).toEqual({ status: "skipped", sentAt: null, skippedAt: clock.now() });
+    expect(view.review?.gate.map((reason) => reason.kind)).toEqual(["skipped"]);
+    expect((await statusChanges(id)).at(-1)).toEqual({
+      from_status: "kit_ready",
+      to_status: "skipped",
+    });
+    // Nothing goes out while it is skipped, and nothing on the page changes the kit.
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toEqual({
+      ok: false,
+      reason: "held",
+    });
+    expect(
+      await scheduleSend({ db, clock }, id, {
+        kit: view.kitKey!,
+        to: view.handoff!.to,
+        uncertain: null,
+        sessionId: null,
+      }),
+    ).toEqual({ ok: false, reason: "skipped" });
+    expect(
+      await recordReview({ db, clock, dns: offlineDns() }, id, { kind: "check", blockId: "S1" }),
+    ).toEqual({ ok: false, reason: "skipped" });
+  });
+
+  it("takes back the skip the page showed, opening the kit again, and never one a later skip replaced", async () => {
+    await seedSample();
+    const id = await readyKit();
+    await cleared(id);
+    const skippedAt = async () => (await jobView({ db, clock }, id))!.application!.skippedAt!;
+    clock.advance(1_000);
+    await skipKit({ db, clock }, id, null, await shownOn(id));
+    const first = await skippedAt();
+    clock.advance(1_000);
+    expect(await takeBackSkip({ db, clock }, id, null, first)).toEqual({ ok: true });
+    clock.advance(1_000);
+    await skipKit({ db, clock }, id, null, await shownOn(id));
+    const second = await skippedAt();
+    clock.advance(1_000);
+
+    // A page drawn before the owner skipped again shows the first skip: its tap changes nothing.
+    expect(await takeBackSkip({ db, clock }, id, null, first)).toEqual({
+      ok: false,
+      reason: "not-skipped",
+    });
+    expect(await takeBackSkip({ db, clock }, id, null, second)).toEqual({ ok: true });
+    expect(await takeBackSkip({ db, clock }, id, null, second)).toEqual({
+      ok: false,
+      reason: "not-skipped",
+    });
+
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.application).toEqual({ status: "kit_ready", sentAt: null, skippedAt: null });
+    expect(view.review?.gate).toEqual([]);
+    expect((await statusChanges(id)).slice(-4)).toEqual([
+      { from_status: "kit_ready", to_status: "skipped" },
+      { from_status: "skipped", to_status: "kit_ready" },
+      { from_status: "kit_ready", to_status: "skipped" },
+      { from_status: "skipped", to_status: "kit_ready" },
+    ]);
+  });
+
+  it("takes back no skip of a job the skip closed, which stays closed", async () => {
+    await seedSample();
+    const id = await readyKit();
+    // As when the owner went on to pick another role, then skipped the pick, which closed the job.
+    const job = (await loadJob(db, id))!;
+    expect(
+      await moveJob(db, id, {
+        from: "kit_ready",
+        to: "needs_role_pick",
+        pending: null,
+        at: clock.now(),
+        ifChangedAt: job.stateChangedAt,
+      }),
+    ).toBe(true);
+    expect(await skipRolePick({ db, clock }, id)).toEqual({ ok: true });
+    await skippedForJob({ db, clock }, id, null);
+    const skippedAt = (await jobView({ db, clock }, id))!.application!.skippedAt!;
+
+    expect(await takeBackSkip({ db, clock }, id, null, skippedAt)).toEqual({
+      ok: false,
+      reason: "not-ready",
+    });
+    expect((await jobView({ db, clock }, id))!.application?.status).toBe("skipped");
+  });
+
+  it("takes back no skip of an email Gmail took, though jobkit could not record it as sent", async () => {
+    await seedSample();
+    const id = await readyKit();
+    await skipKit({ db, clock }, id, null, await shownOn(id));
+    const skippedAt = (await jobView({ db, clock }, id))!.application!.skippedAt!;
+    // The send went, but the ledger's write after it failed: the application is still skipped.
+    await sendOf(id, "sent");
+
+    expect(await takeBackSkip({ db, clock }, id, null, skippedAt)).toEqual({
+      ok: false,
+      reason: "sent",
+    });
+    // The page, the gate and the list all say it went.
+    expect((await jobView({ db, clock }, id))!.review?.gate.map((reason) => reason.kind)).toEqual([
+      "sent",
+    ]);
+    expect((await listJobViews({ db, clock })).find((each) => each.id === id)).toMatchObject({
+      sent: true,
+      skipped: false,
+    });
+  });
+
+  it("refuses a skip from a page that showed another kit, or no warning of a send that may have gone, and skips past one it warned of", async () => {
+    await seedSample();
+    const id = await readyKit();
+    const shown = await shownOn(id);
+
+    expect(await skipKit({ db, clock }, id, null, { ...shown, kit: "another kit" })).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+    // Gmail took a send whose answer was lost: it may have gone.
+    const unknown = await sendOf(id, "unknown");
+    expect(await skipKit({ db, clock }, id, null, shown)).toEqual({
+      ok: false,
+      reason: "uncertain",
+    });
+    expect(await skipKit({ db, clock }, id, null, { ...shown, uncertain: unknown })).toEqual({
+      ok: true,
+      changed: true,
+    });
+  });
+
+  it("marks sent, at the address it went to, an email that went after the owner skipped past the send that may have gone", async () => {
+    await seedSample();
+    const id = await readyKit();
+    // A send left sending past its time: it may have gone, and may still go.
+    const stuck = await sendOf(id, "sending", STUCK_MS + 1);
+    await skipKit({ db, clock }, id, null, { ...(await shownOn(id)), uncertain: stuck });
+
+    // Gmail took it after all, at another address than the post's: it went, so it is sent there.
+    expect(await markSentByJobkit({ db, clock }, id, null, "hr@example.com")).toEqual({
+      ok: true,
+      changed: true,
+    });
+    const { rows } = await db.query<{ status: string; address: string }>(
+      "select status, address from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ status: "sent", address: "hr@example.com" }]);
+  });
+
+  it("refuses to skip a job whose post can no longer be read, for which the page offers no Skip", async () => {
+    await seedSample();
+    const id = await readyKit();
+    // As after an update: the post's reading itself can no longer be read.
+    await db.query(
+      "update {{schema}}.job_stage_runs set output = '{}'::jsonb where job_id = $1 and stage = 'extract'",
+      [id],
+    );
+
+    expect(await skipKit({ db, clock }, id, null, { kit: null, uncertain: null })).toEqual({
+      ok: false,
+      reason: "not-ready",
+    });
+  });
+
+  it("skips a kit it can no longer read, while its post can still be read, past the send it warned of, and takes the skip back", async () => {
+    await seedSample();
+    const id = await readyKit();
+    const stuck = await sendOf(id, "unknown");
+    // As after an update: the kit's draft can no longer be read.
+    await db.query(
+      "update {{schema}}.job_stage_runs set output = '{}'::jsonb where job_id = $1 and stage = 'draft'",
+      [id],
+    );
+    const shown = await shownOn(id);
+    expect(shown).toEqual({ kit: null, uncertain: stuck });
+
+    expect(await skipKit({ db, clock }, id, null, { kit: null, uncertain: null })).toEqual({
+      ok: false,
+      reason: "uncertain",
+    });
+    expect(await skipKit({ db, clock }, id, null, shown)).toEqual({ ok: true, changed: true });
+    const skipped = (await jobView({ db, clock }, id))!.application!;
+    expect(skipped.status).toBe("skipped");
+    expect(await takeBackSkip({ db, clock }, id, null, skipped.skippedAt!)).toEqual({ ok: true });
+    expect((await jobView({ db, clock }, id))!.application?.status).toBe("kit_ready");
+  });
+
+  it("opens the application of a kit from before applications opened with their jobs, with the address the owner typed", async () => {
+    await seedSample();
+    // No application: the pipeline here is not the app's, which opens one with the role.
+    const id = await pasted("We're hiring a Senior Full-Stack Engineer.");
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    expect(
+      await recordReview({ db, clock, dns: offlineDns() }, id, {
+        kind: "retype",
+        value: "hr@example.com",
+      }),
+    ).toMatchObject({ ok: true });
+
+    expect(await skipKit({ db, clock }, id, null, await shownOn(id))).toEqual({
+      ok: true,
+      changed: true,
+    });
+    const { rows } = await db.query<{ status: string; address: string }>(
+      "select status, address from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ status: "skipped", address: "hr@example.com" }]);
+  });
+
+  it("refuses to skip a kit marked sent, one jobkit is sending, and a job with no ready kit", async () => {
+    await seedSample();
+    const sent = await readyKit();
+    await cleared(sent);
+    await markSent({ db, clock }, sent, null, { changedInGmail: false });
+    expect(await skipKit({ db, clock }, sent, null, await shownOn(sent))).toEqual({
+      ok: false,
+      reason: "sent",
+    });
+
+    const sending = await readyKit();
+    await sendOf(sending, "scheduled");
+    expect(await skipKit({ db, clock }, sending, null, await shownOn(sending))).toEqual({
+      ok: false,
+      reason: "sending",
+    });
+    // Claimed by a delivery a moment ago: Gmail may be taking it now.
+    const claimed = await readyKit();
+    await sendOf(claimed, "sending");
+    expect(await skipKit({ db, clock }, claimed, null, await shownOn(claimed))).toEqual({
+      ok: false,
+      reason: "sending",
+    });
+
+    const stopped = await pasted();
+    await run(stopped, [answer({ ...fixture("S01-email-simple"), roles: [] })]);
+    expect(await skipKit({ db, clock }, stopped, null, { kit: null, uncertain: null })).toEqual({
+      ok: false,
+      reason: "not-ready",
+    });
+    expect(
+      await skipKit({ db, clock }, "33333333-3333-4333-8333-333333333333", null, {
+        kit: null,
+        uncertain: null,
+      }),
+    ).toEqual({ ok: false, reason: "not-found" });
+  });
+
+  it("takes no decision on a skipped kit: no other draft, no Gemini draft, no Apply again", async () => {
+    await seedSample();
+    const id = await readyKit();
+    await skipKit({ db, clock }, id, null, await shownOn(id));
+    const { picked } = (await jobView({ db, clock }, id))!;
+
+    expect(await pickDraft({ db, clock }, id, picked!)).toEqual({ ok: false, reason: "skipped" });
+    expect(await draftWithGemini({ db, clock }, id)).toEqual({ ok: false, reason: "skipped" });
+    expect(await applyAgainForJob({ db, clock }, id, ["any"])).toEqual({
+      ok: false,
+      reason: "skipped",
+    });
+  });
+
+  it("closes a failed job whose kit's send may have gone only from a page that warned of it, for good", async () => {
+    await seedSample();
+    const id = await readyKit();
+    const stuck = await sendOf(id, "unknown");
+    // As when a Gemini draft asked for beside the kit failed: the job waits on the owner.
+    await db.query(
+      "update {{schema}}.jobs set state = 'failed', pending_stage = 'draft', failed_stage = 'draft' where id = $1",
+      [id],
+    );
+
+    expect(
+      await closeSkipped({ db, clock }, id, null, { state: "failed", uncertain: null }),
+    ).toEqual({ ok: false, reason: "uncertain" });
+    expect((await loadJob(db, id))!.state).toBe("failed");
+    expect(
+      await closeSkipped({ db, clock }, id, null, { state: "failed", uncertain: stuck }),
+    ).toEqual({ ok: true });
+    expect((await loadJob(db, id))!.state).toBe("closed");
+    const skipped = (await jobView({ db, clock }, id))!.application!;
+    expect(skipped.status).toBe("skipped");
+    // A skip that closed its job is never taken back, by the page or by the ledger.
+    expect(await takeBackSkip({ db, clock }, id, null, skipped.skippedAt!)).toEqual({
+      ok: false,
+      reason: "not-ready",
+    });
+    const { rows } = await db.query<{ id: string }>(
+      "select id from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(
+      await undoStatus(
+        { db, clock },
+        rows[0]!.id,
+        { status: "skipped", at: skipped.skippedAt! },
+        null,
+      ),
+    ).toMatchObject({ ok: false, reason: "refused" });
+  });
+});
+
 describe("listJobViews", () => {
   it("lists jobs newest first, with what extract read of each", async () => {
     const older = await pasted();
@@ -714,6 +1076,36 @@ describe("listJobViews", () => {
     expect(list.find((job) => job.id === started.jobId)).toMatchObject({
       state: "upload_failed",
       sent: false,
+    });
+  });
+
+  it("shows a ready kit the owner skipped as skipped, its job still ready", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    await skipKit({ db, clock }, id, null, {
+      kit: (await jobView({ db, clock }, id))!.kitKey,
+      uncertain: null,
+    });
+
+    expect((await listJobViews({ db, clock })).find((job) => job.id === id)).toMatchObject({
+      state: "kit_ready",
+      sent: false,
+      skipped: true,
+    });
+  });
+
+  it("shows a job a skip closed as closed, though its application was skipped with it", async () => {
+    await seedSample();
+    const id = await pasted();
+    await run(id, [answer(fixture("S02-us-only"))], trackApplications(pipeline(), { db, clock }));
+    expect((await jobView({ db, clock }, id))!.state).toBe("needs_eligibility_decision");
+    await skipJob({ db, clock }, id);
+    await skippedForJob({ db, clock }, id, null);
+
+    expect((await listJobViews({ db, clock })).find((job) => job.id === id)).toMatchObject({
+      state: "closed",
+      skipped: false,
     });
   });
 });

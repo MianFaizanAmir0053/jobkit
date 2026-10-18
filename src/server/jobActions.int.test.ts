@@ -187,6 +187,10 @@ async function settled(steps: readonly FakeStep[], templates = false): Promise<s
 
 const stateOf = async (id: string) => (await loadJob(db, id))?.state;
 
+/** The Skip of a page waiting on the owner: the state it showed, and the send it warned may have gone. */
+const closing = (state: string, uncertain: string | null = null) =>
+  JSON.stringify({ state, uncertain });
+
 /** The database, failing every write into this table, as on a dropped connection. */
 const failingOn = (inner: Db, table: string): Db => ({
   schema: inner.schema,
@@ -231,7 +235,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await db.exec(
-    `delete from {{schema}}.kit_reviews; delete from {{schema}}.status_changes;
+    `delete from {{schema}}.kit_reviews; delete from {{schema}}.kit_sends;
+     delete from {{schema}}.status_changes;
      delete from {{schema}}.applications; delete from {{schema}}.sessions; delete from {{schema}}.model_calls;
      delete from {{schema}}.job_stage_runs; delete from {{schema}}.job_leases;
      delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
@@ -299,14 +304,22 @@ describe("the job page's routes", () => {
     const stopped = await settled([answer(fixture("S08-urdu"))]);
 
     expect(
-      (await skip(post(`/api/jobs/${picking}/skip`, "", cookie), deps(), picking)).status,
+      (
+        await skip(
+          post(`/api/jobs/${picking}/skip`, closing("needs_role_pick"), cookie),
+          deps(),
+          picking,
+        )
+      ).status,
     ).toBe(200);
     expect(
-      (await skip(post(`/api/jobs/${stopped}/skip`, "", cookie), deps(), stopped)).status,
+      (await skip(post(`/api/jobs/${stopped}/skip`, closing("stopped"), cookie), deps(), stopped))
+        .status,
     ).toBe(200);
     expect([await stateOf(picking), await stateOf(stopped)]).toEqual(["closed", "closed"]);
     expect(
-      (await skip(post(`/api/jobs/${stopped}/skip`, "", cookie), deps(), stopped)).status,
+      (await skip(post(`/api/jobs/${stopped}/skip`, closing("stopped"), cookie), deps(), stopped))
+        .status,
     ).toBe(409);
   });
 
@@ -349,7 +362,13 @@ describe("the job page's routes", () => {
     ).toBe(409);
 
     expect(
-      (await skip(post(`/api/jobs/${skipped}/skip`, "", cookie), deps(), skipped)).status,
+      (
+        await skip(
+          post(`/api/jobs/${skipped}/skip`, closing("needs_eligibility_decision"), cookie),
+          deps(),
+          skipped,
+        )
+      ).status,
     ).toBe(200);
     expect(await stateOf(skipped)).toBe("closed");
   });
@@ -407,7 +426,12 @@ describe("the job page's routes", () => {
     const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
 
     const held = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
-    expect(await held.json()).toEqual({ kit: await kitOf(ready), open: false, to: "" });
+    expect(await held.json()).toEqual({
+      kit: await kitOf(ready),
+      open: false,
+      to: "",
+      skipped: false,
+    });
     await clearedOnPage(ready, cookie);
 
     // With the address the kit goes to, so a page showing another learns of it.
@@ -416,6 +440,7 @@ describe("the job page's routes", () => {
       kit: await kitOf(ready),
       open: true,
       to: "jobs@example.com",
+      skipped: false,
     });
     expect((await gate(get(`/api/jobs/${ready}/gate`), deps(), ready)).status).toBe(401);
   });
@@ -461,18 +486,176 @@ describe("the job page's routes", () => {
     await openForJob({ db, clock }, id, null);
     const failing = { ...deps(), db: failingOn(db, "status_changes") };
 
-    await expect(skip(post(`/api/jobs/${id}/skip`, "", cookie), failing, id)).rejects.toThrow(
-      "connection lost",
-    );
+    await expect(
+      skip(
+        post(`/api/jobs/${id}/skip`, closing("needs_eligibility_decision"), cookie),
+        failing,
+        id,
+      ),
+    ).rejects.toThrow("connection lost");
     expect(await stateOf(id)).toBe("needs_eligibility_decision");
 
-    expect((await skip(post(`/api/jobs/${id}/skip`, "", cookie), deps(), id)).status).toBe(200);
+    expect(
+      (
+        await skip(
+          post(`/api/jobs/${id}/skip`, closing("needs_eligibility_decision"), cookie),
+          deps(),
+          id,
+        )
+      ).status,
+    ).toBe(200);
     expect(await stateOf(id)).toBe("closed");
     const { rows } = await db.query<{ status: string }>(
       "select status from {{schema}}.applications where job_id = $1",
       [id],
     );
     expect(rows.map((row) => row.status)).toEqual(["skipped"]);
+  });
+
+  it("skip a ready kit's application, the job staying ready, and take back the skip the page showed", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    const shown = JSON.stringify({ kit: await kitOf(ready), uncertain: null });
+
+    const response = await skip(post(`/api/jobs/${ready}/skip`, shown, cookie), deps(), ready);
+
+    expect(response.status).toBe(200);
+    expect(await stateOf(ready)).toBe("kit_ready");
+    const view = (await jobView({ db, clock }, ready))!;
+    expect(view.application?.status).toBe("skipped");
+    expect(view.review?.gate.map((reason) => reason.kind)).toEqual(["skipped"]);
+    // A page drawn before the skip, on another device or in another tab, learns of it.
+    const answered = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
+    expect(await answered.json()).toMatchObject({ open: false, skipped: true });
+    // Taken back by the skip the page showed; a body naming none is refused.
+    const skippedAt = view.application!.skippedAt!.toISOString();
+    expect(
+      (await takeBack(post(`/api/jobs/${ready}/take-back`, "{}", cookie), deps(), ready)).status,
+    ).toBe(400);
+    const taken = await takeBack(
+      post(`/api/jobs/${ready}/take-back`, JSON.stringify({ skippedAt }), cookie),
+      deps(),
+      ready,
+    );
+    expect(taken.status).toBe(200);
+    expect((await jobView({ db, clock }, ready))!.application?.status).toBe("kit_ready");
+    // The other device's page learns of that too.
+    const reopened = await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready);
+    expect(await reopened.json()).toMatchObject({ skipped: false });
+    // A late tap from a page that showed that skip changes nothing.
+    const late = await takeBack(
+      post(`/api/jobs/${ready}/take-back`, JSON.stringify({ skippedAt }), cookie),
+      deps(),
+      ready,
+    );
+    expect(late.status).toBe(409);
+    expect(await late.json()).toEqual({ error: "not-skipped" });
+  });
+
+  it("refuse a Skip the job moved on from: a kit's never closes a job, and a closing one never skips a kit", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    const stopped = await settled([answer({ ...fixture("S01-email-simple"), roles: [] })]);
+    const kitSkip = JSON.stringify({ kit: await kitOf(ready), uncertain: null });
+
+    // A kit's Skip from a page drawn before the job stopped, as after a failed redraft.
+    const late = await skip(post(`/api/jobs/${stopped}/skip`, kitSkip, cookie), deps(), stopped);
+    expect(late.status).toBe(409);
+    expect(await stateOf(stopped)).toBe("stopped");
+    // A stopped page's Skip, arriving after the job moved on to a ready kit, or showing none.
+    const stale = closing("stopped");
+    expect((await skip(post(`/api/jobs/${ready}/skip`, stale, cookie), deps(), ready)).status).toBe(
+      409,
+    );
+    expect((await skip(post(`/api/jobs/${ready}/skip`, "", cookie), deps(), ready)).status).toBe(
+      409,
+    );
+    expect((await jobView({ db, clock }, ready))!.application?.status ?? null).not.toBe("skipped");
+    // A page that says nothing of what it showed, from before Skip said so, is drawn again.
+    expect(
+      (await skip(post(`/api/jobs/${stopped}/skip`, "", cookie), deps(), stopped)).status,
+    ).toBe(409);
+    expect(await stateOf(stopped)).toBe("stopped");
+    // A Skip that names no send, a state that is none, or no kit, is not read.
+    for (const body of [
+      JSON.stringify({ state: "stopped" }),
+      JSON.stringify({ state: "nonsense", uncertain: null }),
+      JSON.stringify({ kit: "", uncertain: null }),
+      JSON.stringify({ kit: "K", uncertain: "not-a-send" }),
+    ]) {
+      expect(
+        (await skip(post(`/api/jobs/${stopped}/skip`, body, cookie), deps(), stopped)).status,
+      ).toBe(400);
+    }
+    // The stopped page's own Skip closes its job, as before.
+    expect(
+      (await skip(post(`/api/jobs/${stopped}/skip`, stale, cookie), deps(), stopped)).status,
+    ).toBe(200);
+    expect(await stateOf(stopped)).toBe("closed");
+  });
+
+  it("skip past a send that may have gone only from a page that warned of it, on a ready kit or a failed job", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    const kit = await kitOf(ready);
+    const { rows } = await db.query<{ id: string }>(
+      `insert into {{schema}}.kit_sends
+         (job_id, role_id, kit, to_address, status, send_at, created_at, updated_at)
+       values ($1, 'P1', $2, 'jobs@example.com', 'unknown', $3, $3, $3)
+       returning id`,
+      [ready, kit, clock.now()],
+    );
+    const stuck = rows[0]!.id;
+
+    const unwarned = await skip(
+      post(`/api/jobs/${ready}/skip`, JSON.stringify({ kit, uncertain: null }), cookie),
+      deps(),
+      ready,
+    );
+    expect(unwarned.status).toBe(409);
+    expect(await unwarned.json()).toEqual({ error: "uncertain" });
+    // As when a Gemini draft asked for beside the kit failed: the failed page's Skip closes the job.
+    await db.query(
+      "update {{schema}}.jobs set state = 'failed', pending_stage = 'draft', failed_stage = 'draft' where id = $1",
+      [ready],
+    );
+    const closingUnwarned = await skip(
+      post(`/api/jobs/${ready}/skip`, closing("failed"), cookie),
+      deps(),
+      ready,
+    );
+    expect(closingUnwarned.status).toBe(409);
+    expect(await closingUnwarned.json()).toEqual({ error: "uncertain" });
+    expect(await stateOf(ready)).toBe("failed");
+    expect(
+      (await skip(post(`/api/jobs/${ready}/skip`, closing("failed", stuck), cookie), deps(), ready))
+        .status,
+    ).toBe(200);
+    expect(await stateOf(ready)).toBe("closed");
+  });
+
+  it("skip a ready kit in one step, so a skip cut short leaves it ready and can be tried again", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    // Its application kit_ready with the kit, as the app's pipeline keeps it.
+    const applicationId = (await openForJob({ db, clock }, ready, null))!;
+    await changeStatus({ db, clock }, applicationId, "kit_ready", null);
+    const shown = JSON.stringify({ kit: await kitOf(ready), uncertain: null });
+    const failing = { ...deps(), db: failingOn(db, "status_changes") };
+
+    await expect(
+      skip(post(`/api/jobs/${ready}/skip`, shown, cookie), failing, ready),
+    ).rejects.toThrow("connection lost");
+    expect((await jobView({ db, clock }, ready))!.application?.status).toBe("kit_ready");
+
+    expect((await skip(post(`/api/jobs/${ready}/skip`, shown, cookie), deps(), ready)).status).toBe(
+      200,
+    );
+    expect((await jobView({ db, clock }, ready))!.application?.status).toBe("skipped");
   });
 
   it("apply again on the matches the banner showed, and on no others", async () => {

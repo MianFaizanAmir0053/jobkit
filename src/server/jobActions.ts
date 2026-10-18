@@ -1,16 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
-import {
-  confirmPost,
-  draftAnyway as draftAnywayCore,
-  pickRole,
-  skipRolePick,
-} from "@/core/extraction/owner";
-import { loadJob, retryJob, skipJob } from "@/core/platform/jobs";
+import { confirmPost, draftAnyway as draftAnywayCore, pickRole } from "@/core/extraction/owner";
+import { loadJob, retryJob } from "@/core/platform/jobs";
+import { JOB_STATES } from "@/core/platform/jobStates";
 import type { RunnerDeps } from "@/core/platform/runner";
 import type { Dns } from "@/core/ports";
-import { openForJob, skippedForJob } from "@/core/review/applications";
+import { openForJob } from "@/core/review/applications";
 import { reviewActionSchema } from "@/core/review/decisions";
 import {
   backToDrafts as backToDraftsCore,
@@ -20,6 +16,7 @@ import {
 import { jobView } from "@/core/review/jobView";
 import { applyAgainForJob, recordReview } from "@/core/review/kitReview";
 import { markSent, takeBackSent } from "@/core/review/markSent";
+import { closeSkipped, skipKit, takeBackSkip } from "@/core/review/skipKit";
 import { isUuid } from "@/lib/uuid";
 import type { AppConfig } from "@/server/config";
 import { NO_STORE, readLimited, refusal, sessionForChange, sessionForRead } from "@/server/http";
@@ -65,23 +62,75 @@ export async function retry(
   return ok(202);
 }
 
-/** POST /api/jobs/<id>/skip: closes a job waiting on the owner, the role pick's Skip included. */
+/** The kit the page showed, which every decision names: one made on another kit is refused. */
+const kitShown = z.string().min(1).max(100);
+
+/**
+ * What the page showed as the owner pressed Skip: on a ready kit, the kit
+ * (null when the page could not read one), on any other page the job's
+ * state, and the send it warned may have gone. A Skip that arrives after
+ * the job moved on is refused rather than taken for another: a kit's Skip,
+ * which can be taken back, never closes a job, and a closing Skip never
+ * becomes a kit's. So is one from a page that says neither, from before
+ * Skip said what it showed.
+ */
+const skipBody = z.union([
+  z
+    .object({ kit: kitShown.nullable(), uncertain: z.uuid().nullable() })
+    .transform((shown) => ({ kind: "kit" as const, ...shown })),
+  z
+    .object({ state: z.enum(JOB_STATES), uncertain: z.uuid().nullable() })
+    .transform((shown) => ({ kind: "state" as const, ...shown })),
+  z
+    .object({})
+    .strict()
+    .transform(() => ({ kind: "none" as const })),
+]);
+
+/**
+ * POST /api/jobs/<id>/skip: closes a job waiting on the owner, the role
+ * pick's Skip included; on a ready kit, skips its application alone, and
+ * the job stays ready, so the skip can be taken back (ledger spec, "Statuses").
+ */
 export async function skip(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
   if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await readLimited(request, MAX_BODY_BYTES);
+  if (body === "too-large") return refusal(413, "too-large");
+  const text = new TextDecoder().decode(body).trim();
+  let json: unknown = {};
+  try {
+    // A page from before Skip said what it showed sends nothing.
+    if (text !== "") json = JSON.parse(text);
+  } catch {
+    json = null;
+  }
+  const parsed = skipBody.safeParse(json);
+  if (!parsed.success) return refusal(400, "invalid");
+  const shown = parsed.data;
   const job = await loadJob(deps.db, jobId);
   if (!job) return refusal(404, "not-found");
-  // Its application, if a role was ever chosen, is skipped with it (ledger spec, "Statuses"), in
-  // one transaction: a skip cut short leaves both as they were, so it can be tried again.
-  const skipped = await deps.db.tx(async (tx) => {
-    const at = { ...deps, db: tx };
-    const moved =
-      job.state === "needs_role_pick" ? await skipRolePick(at, jobId) : await skipJob(at, jobId);
-    if (moved.ok) await skippedForJob(at, jobId, actor.session.id);
-    return moved;
+  if (shown.kind === "kit") {
+    const skippedKit = await skipKit(deps, jobId, actor.session.id, {
+      kit: shown.kit,
+      uncertain: shown.uncertain,
+    });
+    if (!skippedKit.ok) {
+      return refusal(skippedKit.reason === "not-found" ? 404 : 409, skippedKit.reason);
+    }
+    return ok();
+  }
+  // The job closes only from the state the page showed, as the move reads the job again; a page
+  // that showed nothing is drawn again.
+  if (shown.kind === "none" || job.state === "kit_ready" || shown.state !== job.state) {
+    return refusal(409, "changed");
+  }
+  const closed = await closeSkipped(deps, jobId, actor.session.id, {
+    state: shown.state,
+    uncertain: shown.uncertain,
   });
-  if (!skipped.ok) return refusal(skipped.reason === "not-found" ? 404 : 409, skipped.reason);
+  if (!closed.ok) return refusal(closed.reason === "not-found" ? 404 : 409, closed.reason);
   return ok();
 }
 
@@ -152,9 +201,6 @@ export async function draftAnyway(
   await startPipeline(deps, jobId, startedAt);
   return ok(202);
 }
-
-/** The kit the page showed, which every decision names: one made on another kit is refused. */
-const kitShown = z.string().min(1).max(100);
 
 const reviewBody = z.object({ action: reviewActionSchema, kit: kitShown });
 
@@ -316,12 +362,15 @@ export async function applyAgainRoute(
   return ok(200, { gate: outcome.gate });
 }
 
-/** The Mark sent the page showed, by its time. */
-const takeBackBody = z.object({ sentAt: z.iso.datetime() });
+/** The Mark sent or the skip the page showed, by its time. */
+const takeBackBody = z.union([
+  z.object({ sentAt: z.iso.datetime() }),
+  z.object({ skippedAt: z.iso.datetime() }),
+]);
 
 /**
- * POST /api/jobs/<id>/take-back: takes back a mistaken Mark sent, the one
- * the page showed, opening the kit again.
+ * POST /api/jobs/<id>/take-back: takes back a mistaken Mark sent, or a skip
+ * of a ready kit, the one the page showed, opening the kit again.
  */
 export async function takeBack(
   request: NextRequest,
@@ -341,16 +390,21 @@ export async function takeBack(
   }
   const parsed = takeBackBody.safeParse(json);
   if (!parsed.success) return refusal(400, "invalid");
-  const taken = await takeBackSent(deps, jobId, actor.session.id, new Date(parsed.data.sentAt));
+  const taken =
+    "sentAt" in parsed.data
+      ? await takeBackSent(deps, jobId, actor.session.id, new Date(parsed.data.sentAt))
+      : await takeBackSkip(deps, jobId, actor.session.id, new Date(parsed.data.skippedAt));
   if (!taken.ok) return refusal(taken.reason === "not-found" ? 404 : 409, taken.reason);
   return ok();
 }
 
 /**
- * GET /api/jobs/<id>/gate: the kit as it stands, whether its gate is open
- * and the address or number it goes to, so a page drawn earlier, in another
- * tab or on the other device, opens its outbound controls only while the
- * server agrees on all three (review spec, "The outbound gate").
+ * GET /api/jobs/<id>/gate: the kit as it stands, whether its gate is open,
+ * the address or number it goes to and whether the owner skipped the job,
+ * so a page drawn earlier, in another tab or on the other device, opens its
+ * outbound controls only while the server agrees on all four, and one
+ * drawn before a skip or its taking back is drawn again (review spec, "The
+ * outbound gate").
  */
 export async function gate(request: NextRequest, deps: Deps, jobId: string): Promise<NextResponse> {
   const actor = await sessionForRead(request, deps);
@@ -362,6 +416,7 @@ export async function gate(request: NextRequest, deps: Deps, jobId: string): Pro
     kit: view.kitKey,
     open: view.review !== null && view.review.gate.length === 0,
     to: view.handoff?.to ?? null,
+    skipped: view.application?.status === "skipped",
   });
 }
 

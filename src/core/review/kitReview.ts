@@ -43,11 +43,11 @@ export type ReviewOutcome =
   | { ok: true; decisions: ReviewDecisions; gate: GateReason[] }
   | {
       ok: false;
-      reason: "not-found" | "not-ready" | "not-in-kit" | "sent" | "changed" | "sending";
+      reason: "not-found" | "not-ready" | "not-in-kit" | "sent" | "skipped" | "changed" | "sending";
     };
 
 /** Why a decision, or a send, finds no kit to act on as the page showed it. */
-type Refusal = { ok: false; reason: "not-found" | "not-ready" | "sent" | "changed" };
+type Refusal = { ok: false; reason: "not-found" | "not-ready" | "sent" | "skipped" | "changed" };
 
 /** The kit the page showed, which a decision names, and the session whose tap it is. */
 export interface DecisionMade {
@@ -76,7 +76,8 @@ function fits(action: ReviewAction, parts: KitParts): boolean {
 /**
  * Locks the job's review row, made first if need be, and reads the kit as it
  * then stands: a refusal when there is no ready kit to decide on, when the
- * page showed another kit, or when it was marked sent.
+ * page showed another kit, when it was marked sent, or when the owner skipped
+ * it, until the skip is taken back.
  */
 export async function lockedKit(
   deps: { db: Db; clock: Clock },
@@ -104,6 +105,7 @@ export async function lockedKit(
   }
   if (made.kit !== undefined && made.kit !== kitKey) return { ok: false, reason: "changed" };
   if (kitParts.sent) return { ok: false, reason: "sent" };
+  if (kitParts.skipped) return { ok: false, reason: "skipped" };
   return { view: { ...view, kitParts, kitKey } };
 }
 
