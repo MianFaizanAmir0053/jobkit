@@ -32,7 +32,7 @@ Every piece of prose is a list of sentence blocks, and the owner edits block by 
 Kits:
 
 - **Email kit:** subject, greeting, body blocks, closing. The Gmail app adds the owner's Gmail signature, so jobkit adds none (amendment A14).
-- **Form kit:** cover-note blocks, and one answer per screening question, each marked `fixed` (filled by code) or `drafted`.
+- **Form kit:** cover-note blocks, and one answer per screening question, each marked `fixed` (filled by code) or `drafted`. The cover note is held to the word limit in force, as an email's body is. Each answer keeps its question's ID, which the owner's decisions name, and how it came: from the profile; drafted, a claim citing facts, or the owner's to give when the draft gave none; the owner's choice, with the drafter's answer kept for it when it wrote one; or never, for a question addressed to AI. "Copy all" gives the cover note, then each answered question with its answer, as labelled plain text (Claude's choices, 2026-10-19).
 - **Message kit:** message blocks, at most 600 characters including the sign-off, which code appends from the profile. A message has no subject, and a post's word limit does not apply to it: the review checklist shows both not applied, for the owner to see to (Claude's choice, 2026-10-19).
 
 References live beside the text, never inside it.

@@ -7,7 +7,7 @@ import { type ZodType, z } from "zod";
 import { caseless } from "@/core/platform/caseless";
 
 import { judgeAnswerSchema } from "@/core/drafting/judge";
-import { draftAnswerSchema } from "@/core/drafting/kit";
+import { draftAnswerSchema, formAnswerSchema } from "@/core/drafting/kit";
 
 import { contactReadSchema } from "./addressReadStage";
 import { jobRecordSchema } from "./record";
@@ -27,6 +27,7 @@ import { jobRecordSchema } from "./record";
 const STRUCTURED_SCHEMAS: Record<string, ZodType> = {
   "extract: the job record": jobRecordSchema,
   "draft: the fit table and an email body": draftAnswerSchema,
+  "draft: the fit table, a cover note and the answers": formAnswerSchema,
   "judge: a verdict for every block": judgeAnswerSchema,
   "address_read: the contact a crop shows": contactReadSchema,
 };

@@ -11,6 +11,7 @@ import {
   MESSAGE_LIMIT,
   messageLength,
   messageText,
+  formText,
 } from "@/core/drafting/kit";
 import { type BlockVerdict, isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
 import type { AgreementProblem } from "@/core/extraction/addressRead";
@@ -629,9 +630,14 @@ function KitPanel({
   const words = view.wordsKey!;
   // The email or message as it stands, with the owner's edits: what every handoff sends.
   const kit = view.kit ?? draft.kit;
-  const body = kit.kind === "email" ? emailBody(kit) : messageText(kit);
-  // What the panel calls it: the email, or the message for WhatsApp or LinkedIn.
-  const kitNoun = kit.kind === "email" ? "email" : "message";
+  const body =
+    kit.kind === "email"
+      ? emailBody(kit)
+      : kit.kind === "message"
+        ? messageText(kit)
+        : formText(kit);
+  // What the panel calls it: the email, or the message for WhatsApp or LinkedIn, or the form.
+  const kitNoun = kit.kind;
   // An email kit goes through Gmail; a form or message is sent where the owner applies.
   const byEmail = view.kitRoute === "email";
   const where = byEmail ? "in Gmail" : "where you apply";
@@ -1171,9 +1177,8 @@ function KitPanel({
               />
             </div>
           )}
-          {kit.kind === "email" ? (
-            <p className="mt-3 whitespace-pre-wrap">{kit.closing}</p>
-          ) : (
+          {kit.kind === "email" && <p className="mt-3 whitespace-pre-wrap">{kit.closing}</p>}
+          {kit.kind === "message" && (
             <>
               <p className="mt-3 whitespace-pre-wrap">{kit.signOff}</p>
               <p className="mt-1 text-muted-foreground">Your sign-off, from your profile.</p>

@@ -124,7 +124,9 @@ export function wordsKey(kit: Kit): string {
     JSON.stringify(
       kit.kind === "email"
         ? [kit.subject, kit.greeting, sentences, kit.closing]
-        : ["message", sentences, kit.signOff],
+        : kit.kind === "message"
+          ? ["message", sentences, kit.signOff]
+          : ["form", sentences, kit.answers.map((answer) => [answer.id, answer.text])],
     ),
   );
 }

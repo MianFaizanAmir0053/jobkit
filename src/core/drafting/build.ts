@@ -3,7 +3,18 @@ import type { Fact, GapTemplate, KnownGap } from "@/core/profile/schema";
 import { EMAIL_BODY_WORD_LIMIT } from "@/core/shared/email";
 import { skillName, skillTag } from "@/core/shared/skills";
 
-import type { DraftAnswer, EmailKit, FitRow, GapChoice, KitBlock, MessageKit } from "./kit";
+import type {
+  DraftAnswer,
+  EmailKit,
+  FitRow,
+  FormAnswer,
+  FormDraftAnswer,
+  FormKit,
+  GapChoice,
+  KitBlock,
+  MessageKit,
+} from "./kit";
+import { decideTopic, fixedAnswer, type TopicProfile } from "./topics";
 
 /**
  * The parts of an email kit code writes (drafting spec, "Code-built parts"
@@ -324,6 +335,86 @@ export function buildMessageKit(
     id: `S${i + 1}`,
   }));
   return { kit: { kind: "message", blocks, signOff: signOff.trim() }, fit: fitOf(answer) };
+}
+
+/**
+ * The form kit from the model's answer (drafting spec, "Draft structure"
+ * and "Screening questions: fixed answers first"): the cover note's blocks
+ * as an email body's are built, and an answer for each of the role's
+ * screening questions in turn. Both classifiers naming one topic, code
+ * answers from the profile, and a drafted answer it puts aside is recorded
+ * (`replaced`); one classifier, or two that differ, the owner chooses,
+ * offered the keyword table's topic; a question addressed to AI is never
+ * answered; an ordinary one takes the drafter's answer, on one line, citing
+ * its facts. The model never writes a topic question's answer.
+ */
+export function buildFormKit(
+  answer: FormDraftAnswer,
+  context: { role: Role; profile: ProfileParts; topics: TopicProfile },
+): { kit: FormKit; fit: FitRow[] } {
+  const { role, profile, topics } = context;
+  const given = new Map(answer.answers.map((each) => [each.question_id, each]));
+  const answers = role.screening_questions.map((question): FormAnswer => {
+    const base = { id: question.id, question: oneLine(question.text), factIds: [] as string[] };
+    const fromModel = given.get(question.id);
+    const text = fromModel ? oneLine(fromModel.text) : "";
+    const drafted = text === "" ? null : { text, factIds: fromModel!.fact_ids };
+    const decision = decideTopic(
+      question,
+      fromModel && fromModel.topic !== "none" ? fromModel.topic : null,
+    );
+    switch (decision.kind) {
+      case "not_answered":
+        return { ...base, topic: null, source: "not_answered", text: "" };
+      case "fixed": {
+        const fixed = fixedAnswer(decision.topic, question.text, topics);
+        return fixed.kind === "needs_your_answer"
+          ? {
+              ...base,
+              topic: decision.topic,
+              source: "needs_your_answer",
+              text: "",
+              reason: fixed.reason,
+            }
+          : {
+              ...base,
+              topic: decision.topic,
+              source: "profile",
+              text: fixed.text,
+              ...(drafted ? { replaced: true as const } : {}),
+            };
+      }
+      case "choice":
+        return {
+          ...base,
+          topic: decision.topic,
+          source: "choice",
+          text: "",
+          profile: fixedAnswer(decision.topic, question.text, topics),
+          drafted,
+        };
+      case "ordinary":
+        return drafted
+          ? {
+              ...base,
+              topic: null,
+              source: "drafted",
+              text: drafted.text,
+              factIds: drafted.factIds,
+            }
+          : {
+              ...base,
+              topic: null,
+              source: "needs_your_answer",
+              text: "",
+              reason: "The draft gave no answer.",
+            };
+    }
+  });
+  return {
+    kit: { kind: "form", blocks: blocksOf(answer, role, profile), answers },
+    fit: fitOf(answer),
+  };
 }
 
 /**

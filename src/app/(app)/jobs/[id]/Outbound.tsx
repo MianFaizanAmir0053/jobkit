@@ -69,8 +69,8 @@ export function Outbound({
   /** The email's subject, to copy; null for a message, which has none. */
   subject: string | null;
   body: string;
-  /** What the kit is called: "email" or "message". */
-  noun: "email" | "message";
+  /** What the kit is called: "email", "message" or "form". */
+  noun: "email" | "message" | "form";
 }) {
   const router = useRouter();
   const shown = `${kit}\n${String(open)}\n${to ?? ""}\n${status ?? ""}\n${words ?? ""}`;
@@ -187,7 +187,7 @@ export function Outbound({
         )}
         <CopyButton
           text={body}
-          label={noun === "email" ? "Copy email" : "Copy message"}
+          label={noun === "email" ? "Copy email" : noun === "message" ? "Copy message" : "Copy all"}
           disabled={!enabled}
           onCopied={handedOff(["body"])}
         />

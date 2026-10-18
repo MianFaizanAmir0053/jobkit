@@ -3,6 +3,8 @@ import { z } from "zod";
 import type { Role } from "@/core/extraction/record";
 import { caseless } from "@/core/platform/caseless";
 
+import { type FixedAnswer, type Topic, TOPICS } from "./topics";
+
 /**
  * The email and message kits (drafting spec, "Draft structure"). The model
  * writes the fit table and the body as sentence blocks, each with its class
@@ -69,6 +71,32 @@ export const draftAnswerSchema = z.strictObject({
 export type DraftAnswer = z.output<typeof draftAnswerSchema>;
 
 /**
+ * The model's answer for a form kit: the fit table, the cover note's blocks
+ * as an email body's, and for each screening question it is shown, its
+ * topic, the drafter's half of the two classifiers (drafting spec,
+ * "Screening questions: fixed answers first"), and its answer to an
+ * ordinary question, which code drops for a topic question.
+ */
+export const formAnswerSchema = draftAnswerSchema.extend({
+  answers: z
+    .array(
+      z.strictObject({
+        question_id: z.string().describe("The question's ID from the post data, such as Q1."),
+        topic: caseless([...TOPICS, "none"] as const),
+        text: z
+          .string()
+          .describe(
+            "The job seeker's answer to an ordinary question; empty for a question with a topic, which code answers from their profile.",
+          ),
+        fact_ids: ids("The IDs of the facts the answer rests on; empty when the text is."),
+      }),
+    )
+    .describe("One entry for each question in the post data, by its ID."),
+});
+
+export type FormDraftAnswer = z.output<typeof formAnswerSchema>;
+
+/**
  * What a gap block answers and how its line was made. With no known line
  * and no template, code could not write the line: the block is the
  * owner's, "Needs your line" until they type it.
@@ -124,7 +152,49 @@ export interface MessageKit {
   signOff: string;
 }
 
-export type Kit = EmailKit | MessageKit;
+/**
+ * How a form's answer to a screening question came to be (drafting spec,
+ * "Screening questions: fixed answers first"): from the profile, when both
+ * classifiers name its topic; drafted, for an ordinary question; the
+ * owner's to give, where the question or the profile lacks what the answer
+ * needs, or the draft gave none; the owner's choice, when one classifier
+ * names a topic, or the two differ; or never, for a question addressed to
+ * AI.
+ */
+export type AnswerSource = "profile" | "drafted" | "needs_your_answer" | "choice" | "not_answered";
+
+export interface FormAnswer {
+  /** The question's ID in the post (Q1, …), which the owner's decisions name. */
+  id: string;
+  /** The question, on one line as the post asks it. */
+  question: string;
+  /** The topic a classifier named; null for an ordinary question. */
+  topic: Topic | null;
+  source: AnswerSource;
+  /** The answer as it stands, the owner's words in place of any other's; empty while there is none. */
+  text: string;
+  /** For a drafted answer, the facts it rests on. */
+  factIds: string[];
+  /** For "needs_your_answer", why the owner must give it. */
+  reason?: string;
+  /** For a choice: the profile's answer to its topic, or why the owner must give one. */
+  profile?: FixedAnswer;
+  /** For a choice: the drafter's answer, when it wrote one. */
+  drafted?: { text: string; factIds: string[] } | null;
+  /** Code put the profile's answer in place of a drafted one (fixed_answer_drafted). */
+  replaced?: true;
+  /** The owner's own words, typed on the review page: checked for what they say, never against facts. */
+  owner?: true;
+}
+
+/** The form kit: the cover note's blocks, and one answer for each screening question. */
+export interface FormKit {
+  kind: "form";
+  blocks: KitBlock[];
+  answers: FormAnswer[];
+}
+
+export type Kit = EmailKit | MessageKit | FormKit;
 
 /** The kit as an email, for code that handles an email kit alone; any other is a mistake. */
 export function asEmailKit(kit: Kit): EmailKit {
@@ -189,6 +259,20 @@ export function emailBody(kit: EmailKit): string {
 /** The message as the owner sends it: its paragraphs, then the sign-off, each after a blank line. */
 export function messageText(kit: MessageKit): string {
   return [...paragraphsOf(kit.blocks), kit.signOff].filter((part) => part !== "").join("\n\n");
+}
+
+/**
+ * The form as "Copy all" gives it (review spec, "Handoffs"): the cover note,
+ * then each question with its answer, as labelled plain text, a question
+ * with no answer left out.
+ */
+export function formText(kit: FormKit): string {
+  const cover = paragraphsOf(kit.blocks).join("\n\n");
+  const answered = kit.answers.filter((each) => each.text !== "");
+  return [
+    ...(cover === "" ? [] : [`Cover note\n${cover}`]),
+    ...answered.map((each) => `${each.question}\n${each.text}`),
+  ].join("\n\n");
 }
 
 /** The message's length as its limit counts it: in characters, so an emoji is one. */

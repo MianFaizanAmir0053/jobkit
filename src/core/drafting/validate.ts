@@ -37,7 +37,11 @@ export type KitFlagKind =
   | "needs_your_line"
   | "sensitive_topic_drafted"
   | "subject_placeholder"
-  | "no_claims";
+  | "no_claims"
+  | "needs_your_answer"
+  | "topic_choice_needed"
+  | "fixed_answer_drafted"
+  | "short_answer_unconfirmed";
 
 export interface KitFlag {
   kind: KitFlagKind;
@@ -76,7 +80,18 @@ const MESSAGES = {
   subject_placeholder:
     "The subject still holds a placeholder from the post. Fill it in before you send.",
   no_claims: "The email says nothing about you yet. Write at least one sentence from your profile.",
+  topic_choice_needed:
+    "Only one check took this for a question your profile answers: use your profile's answer, or a drafted one.",
+  fixed_answer_drafted:
+    "The draft answered this itself; jobkit put your profile's answer in its place. Check it.",
+  short_answer_unconfirmed:
+    "A short answer: tick it once you have checked it says only what is true.",
+  answer_citation:
+    "This answer cites something that is not in your approved profile. Check it, or write your own.",
 } as const;
+
+/** The fewest words a drafted answer has before it needs no tick (drafting spec, "validate"). */
+const SHORT_ANSWER = 6;
 
 // Money: a currency next to a number; a number with a currency word, or in lakhs or crores; a
 // large amount, or one in thousands, millions or lakhs, per month or year, unless a count follows
@@ -153,6 +168,8 @@ export function validateKit(kit: Kit, context: KitContext): KitFlag[] {
   const factIds = new Set(profile.facts.map((fact) => fact.id));
   const names = [context.record.company.name, role.title];
   const noun = kit.kind;
+  // What the kit's own words are: an email's or a message's body, a form's cover note and answers.
+  const answers = kit.kind === "form" ? kit.answers : [];
 
   if (kit.kind === "email") {
     if (leftPlaceholder(kit.subject, context.subjectFormat)) {
@@ -186,13 +203,37 @@ export function validateKit(kit: Kit, context: KitContext): KitFlag[] {
       flag("sensitive_topic_drafted", block.id, MESSAGES.sensitive_topic_drafted);
     }
   }
+  // Each answer by how it came: the owner's words are theirs; a drafted one is a claim, however
+  // short, which cites its facts and raises no personal topic.
+  for (const answer of answers) {
+    if (answer.owner) continue;
+    if (answer.source === "needs_your_answer") {
+      flag("needs_your_answer", answer.id, `Needs your answer. ${answer.reason ?? ""}`.trim());
+    } else if (answer.source === "choice") {
+      flag("topic_choice_needed", answer.id, MESSAGES.topic_choice_needed);
+    } else if (answer.source === "profile" && answer.replaced) {
+      flag("fixed_answer_drafted", answer.id, MESSAGES.fixed_answer_drafted);
+    } else if (answer.source === "drafted") {
+      if (answer.factIds.length === 0 || !answer.factIds.every((id) => factIds.has(id))) {
+        flag("invalid_citation", answer.id, MESSAGES.answer_citation);
+      }
+      if (isSensitive(answer.text, names)) {
+        flag("sensitive_topic_drafted", answer.id, MESSAGES.sensitive_topic_drafted);
+      }
+      if (answer.text.split(/\s+/).filter((word) => word !== "").length < SHORT_ANSWER) {
+        flag("short_answer_unconfirmed", answer.id, MESSAGES.short_answer_unconfirmed);
+      }
+    }
+  }
   if (!kit.blocks.some((block) => block.class === "claim" && WORDY.test(block.text))) {
     flag(
       "no_claims",
       "body",
       kit.kind === "email"
         ? MESSAGES.no_claims
-        : "The message says nothing about you yet. Write at least one sentence from your profile.",
+        : kit.kind === "message"
+          ? "The message says nothing about you yet. Write at least one sentence from your profile."
+          : "The cover note says nothing about you yet. Write at least one sentence from your profile.",
     );
   }
 
@@ -211,15 +252,17 @@ export function validateKit(kit: Kit, context: KitContext): KitFlag[] {
     if (!answered) flag("missing_gap_line", requirement.id, MESSAGES.missing_gap_line);
   }
 
-  // An email's body counts its words against the limit in force; a message counts its characters,
-  // the sign-off included, against 600, and no word limit applies to it.
-  if (kit.kind === "email") {
+  // An email's body and a form's cover note count their words against the limit in force; a
+  // message counts its characters, the sign-off included, against 600, and no word limit applies.
+  if (kit.kind !== "message") {
     const words = bodyWords(kit);
     if (words > context.wordLimit) {
       flag(
         "over_limit",
         "body",
-        `The email's body is ${words} words; the limit is ${context.wordLimit}.`,
+        kit.kind === "email"
+          ? `The email's body is ${words} words; the limit is ${context.wordLimit}.`
+          : `The cover note is ${words} words; the limit is ${context.wordLimit}.`,
       );
     }
   } else if (messageLength(kit) > MESSAGE_LIMIT) {
@@ -230,8 +273,9 @@ export function validateKit(kit: Kit, context: KitContext): KitFlag[] {
     );
   }
 
-  // The keyword counts only in the body, as a word of its own: "Go" is not in "good".
-  const body = kit.blocks.map((block) => block.text).join("\n");
+  // The keyword counts only in the body, as a word of its own: "Go" is not in "good". A form's
+  // answers are its words too.
+  const body = [...kit.blocks, ...answers].map((each) => each.text).join("\n");
   if (context.keyword !== null && !hasWord(body, context.keyword)) {
     flag(
       "keyword_missing",
@@ -273,7 +317,9 @@ export function validateKit(kit: Kit, context: KitContext): KitFlag[] {
   const texts =
     kit.kind === "email"
       ? [kit.subject, kit.greeting, ...sentences, kit.closing]
-      : [...sentences, kit.signOff];
+      : kit.kind === "message"
+        ? [...sentences, kit.signOff]
+        : [...sentences, ...answers.map((answer) => answer.text)];
   // Each leak named, so a check on one never covers another: a profile ID as it is, a marker by
   // its start.
   const leaked = references.filter((reference) => texts.some((text) => hasToken(text, reference)));
