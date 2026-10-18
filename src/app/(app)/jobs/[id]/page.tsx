@@ -670,13 +670,22 @@ function KitPanel({
           <dt className="text-muted-foreground">To</dt>
           <dd className="min-w-0 [overflow-wrap:anywhere]">
             {!byEmail ? (
-              <span>
-                The post asks you to apply {ROUTE_WORDS[role.route.kind]}
-                {role.route.address && !needsRetype && `: ${role.route.address}`}. The text below is
-                drafted as an email: adapt it there.
-              </span>
+              <>
+                <span>
+                  The post asks you to apply {ROUTE_WORDS[role.route.kind]}
+                  {role.route.kind !== "whatsapp" &&
+                    role.route.address &&
+                    !needsRetype &&
+                    `: ${role.route.address}`}
+                  . The text below is drafted as an email: adapt it there.
+                </span>
+                {/* The number in large type, to check against the post (review spec, "Contact panel"). */}
+                {role.route.kind === "whatsapp" && address !== "" && !needsRetype && (
+                  <span className="mt-1 block text-xl font-medium">{address}</span>
+                )}
+              </>
             ) : !needsRetype ? (
-              address
+              <span className="text-xl font-medium">{address}</span>
             ) : address === "" ? (
               <span className="text-destructive">
                 The post asks you to apply by email, but jobkit found no address in it. Find it in
@@ -749,7 +758,8 @@ function KitPanel({
             )}
             {needsRetype && to !== "" && (
               <p className="mt-1">
-                You typed it: {goes} <span className="font-medium">{to}</span>.
+                You typed it: {goes}
+                <span className="block text-xl font-medium">{to}</span>
               </p>
             )}
             {typedChecks.map((check) => (
