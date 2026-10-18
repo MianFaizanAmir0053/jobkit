@@ -12,7 +12,7 @@ import type { Role } from "@/core/extraction/record";
 import { flagRank, judgeMessage } from "@/core/review/canHandOff";
 import { type ChecklistStatus, checklistOf } from "@/core/review/checklist";
 import {
-  approvable,
+  approvals,
   flagKey,
   isMeetable,
   needsNewWords,
@@ -632,6 +632,8 @@ function KitPanel({
   // The outbound gate: every outbound control opens only when no reason holds it back.
   const decisions = view.review?.decisions ?? NO_DECISIONS;
   const meets = new Set(decisions.meets);
+  const checked = new Set(decisions.checked);
+  const flagsChecked = new Set(decisions.flagsChecked);
   // The chosen role's must-haves: one the owner does not meet needs a line saying so.
   const musts = new Set(parts.mustHaves ?? []);
   const gate = view.review?.gate ?? [];
@@ -654,17 +656,18 @@ function KitPanel({
   // What Approve & send marks, as the server will: the flagged sentences and flags the gate holds,
   // but for those only new words resolve and those only the owner can answer. The confirmation
   // lists them and the press names them, so it never marks what the page did not list.
-  const approved = approvable(parts, decisions);
-  const approvals = approved.map((key) => {
-    if (key.startsWith("sentence:")) {
-      const blockId = key.slice("sentence:".length);
-      const reason = reasons.find((each) => each.kind === "judge" && each.blockId === blockId);
-      return `${reason?.message ?? "The separate check holds this sentence."} — "${blockText.get(blockId) ?? ""}"`;
+  const marks = approvals(parts, decisions);
+  const approved = marks.map((mark) => mark.key);
+  const approvalLines = marks.map((mark) => {
+    if ("blockId" in mark) {
+      const reason = reasons.find((each) => each.kind === "judge" && each.blockId === mark.blockId);
+      return `${reason?.message ?? "The separate check holds this sentence."} — "${blockText.get(mark.blockId) ?? ""}"`;
     }
-    const flag = parts.flags[Number(key.slice("flag:F".length)) - 1];
-    if (!flag) return key;
-    const about = aboutFlag(flag);
-    return withoutContacts(about ? `${flag.message} — "${about}"` : flag.message, typing(view));
+    const about = aboutFlag(mark.flag);
+    return withoutContacts(
+      about ? `${mark.flag.message} — "${about}"` : mark.flag.message,
+      typing(view),
+    );
   });
   // The must-haves the owner said they will fix in Gmail, not meeting them.
   const unmet = fitRows.filter(
@@ -695,8 +698,6 @@ function KitPanel({
   // Where the kit goes: the post's contact, or the one typed in its place once it passes.
   const to = view.handoff?.to ?? "";
   const typedChecks = needsRetype && to !== "" ? (decisions.retyped?.checks ?? []) : [];
-  const checked = new Set(decisions.checked);
-  const flagsChecked = new Set(decisions.flagsChecked);
   const reviewUrl = `/api/jobs/${view.id}/review`;
   const goes = role.route.kind === "whatsapp" ? "the message goes to" : "the email goes to";
   const cv = role.required_attachments.filter((attachment) => attachment.is_cv);
@@ -1248,7 +1249,7 @@ function KitPanel({
               gmail={gmail}
               onLaptop={onLaptop}
               cv={cvFile}
-              approvals={approvals}
+              approvals={approvalLines}
               approved={approved}
               held={held}
               uncertainId={uncertain?.id ?? null}

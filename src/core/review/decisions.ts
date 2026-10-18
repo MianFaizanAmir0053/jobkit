@@ -348,15 +348,19 @@ export function needsNewWords(
   );
 }
 
+/** One mark Approve & send makes: a sentence the separate check holds, or one of validate's flags. */
+export type Approval = { key: string; blockId: string } | { key: string; flag: KitFlag };
+
 /**
  * What Approve & send marks "I checked this" on, of what the gate now
  * holds: the separate check's sentences ("sentence:S2"), then validate's
  * flags ("flag:" and its name), but those only new words resolve and those only the
- * owner can answer. The confirmation lists them and the press names them,
- * so a press never marks what its page did not list, as when a decision
- * was taken back on the other device after the page was drawn.
+ * owner can answer, each with the sentence or flag it marks. The
+ * confirmation lists them and the press names them, so a press never marks
+ * what its page did not list, as when a decision was taken back on the
+ * other device after the page was drawn.
  */
-export function approvable(parts: KitParts, decisions: ReviewDecisions): string[] {
+export function approvals(parts: KitParts, decisions: ReviewDecisions): Approval[] {
   const blocks = new Set(parts.blocks);
   const checked = new Set(decisions.checked);
   const flagsChecked = new Set(decisions.flagsChecked);
@@ -368,14 +372,21 @@ export function approvable(parts: KitParts, decisions: ReviewDecisions): string[
         !checked.has(verdict.blockId) &&
         !isEdited(decisions, verdict.blockId),
     )
-    .map((verdict) => `sentence:${verdict.blockId}`);
-  const flags = parts.flags.flatMap((flag) => {
+    .map((verdict): Approval => ({ key: `sentence:${verdict.blockId}`, blockId: verdict.blockId }));
+  const flags = parts.flags.flatMap((flag): Approval[] => {
     const key = flagKey(flag);
     return flagsChecked.has(key) || NEEDS_NEW_WORDS.has(flag.kind) || isMeetable(flag)
       ? []
-      : [`flag:${key}`];
+      : [{ key: `flag:${key}`, flag }];
   });
-  return [...new Set([...sentences, ...flags])];
+  // Each once: two flags of one name, as validate may give, are one mark.
+  const named = new Map([...sentences, ...flags].map((each) => [each.key, each]));
+  return [...named.values()];
+}
+
+/** The names of what Approve & send marks (approvals), as its press gives them. */
+export function approvable(parts: KitParts, decisions: ReviewDecisions): string[] {
+  return approvals(parts, decisions).map((each) => each.key);
 }
 
 /**

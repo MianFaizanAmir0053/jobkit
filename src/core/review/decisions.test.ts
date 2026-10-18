@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { ADDRESS_CHECKS_VERSION, type AddressCheck } from "./addressChecks";
 import { canHandOff } from "./canHandOff";
 import {
+  approvals,
   approveAll,
   approvable,
   decide,
@@ -359,6 +360,29 @@ describe("approveAll", () => {
       flag: keyword!,
     });
     expect(approvable(parts, some)).toEqual([`flag:${over}`]);
+  });
+
+  it("gives the confirmation each sentence and flag it marks, not a name to read them back from", () => {
+    const parts: KitParts = {
+      ...PARTS,
+      flags: [
+        FLAG,
+        { kind: "over_limit", at: "body", message: "Too long." },
+        { kind: "keyword_missing", at: "body", message: "No keyword." },
+      ],
+    };
+
+    const [, over, keyword] = parts.flags;
+    expect(approvals(parts, NO_DECISIONS)).toEqual([
+      { key: "sentence:S2", blockId: "S2" },
+      { key: `flag:${flagKey(over!)}`, flag: over },
+      { key: `flag:${flagKey(keyword!)}`, flag: keyword },
+    ]);
+    // Two flags of one name are one mark, as approvable names it once.
+    const twice: KitParts = { ...parts, flags: [over!, { ...over! }] };
+    expect(approvals(twice, NO_DECISIONS).map((each) => each.key)).toEqual(
+      approvable(twice, NO_DECISIONS),
+    );
   });
 
   it("reads decisions kept before the fit tick as saying the owner meets nothing", () => {
