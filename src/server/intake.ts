@@ -1,7 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
-import { confirmUploads, reissueUploads, startJob } from "@/core/intake/jobs";
+import {
+  type AgainResult,
+  confirmUploads,
+  reissueUploads,
+  startJob,
+  uploadAgain,
+} from "@/core/intake/jobs";
 import { CONTENT_TYPES } from "@/core/intake/limits";
 import type { RunnerDeps } from "@/core/platform/runner";
 import type { Storage } from "@/core/ports";
@@ -13,8 +19,8 @@ import { startPipeline } from "@/server/jobs";
  * Intake's routes (intake spec, "Upload path"). Only metadata reaches them:
  * the phone uploads image bytes straight to storage through the URLs these
  * hand back, so a body over 64 KB is refused as one that could only be
- * image bytes. Creating a job, asking for fresh upload URLs and confirming
- * one need an approved session.
+ * image bytes. Creating a job, uploading a failed one again, asking for
+ * fresh upload URLs and confirming one need an approved session.
  */
 
 type Deps = RunnerDeps & {
@@ -64,6 +70,43 @@ export async function create(
   return NextResponse.json(
     { jobId: started.jobId, uploads: started.uploads, queued: started.queued },
     { status: 201, headers: NO_STORE },
+  );
+}
+
+const againBody = z.object({ images: newJobBody.shape.images });
+
+/**
+ * POST /api/jobs/<id>/upload-again: "Upload again" on a job whose upload
+ * failed (intake spec, "Upload path", step 5). The screenshots chosen again
+ * replace the job's own, and one upload URL for each comes back, as for a
+ * new job; the page then uploads and confirms them as it does a new job's.
+ */
+export async function again(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  const json = await smallJson(request);
+  if (json === "too-large") return refusal(413, "too-large");
+  const body = againBody.safeParse(json);
+  if (!body.success) return refusal(400, "invalid");
+  let uploaded: AgainResult;
+  try {
+    // What arrived of the failed upload is removed once the answer has gone.
+    uploaded = await uploadAgain(deps, jobId, body.data.images, deps.schedule);
+  } catch {
+    // Storage could not give a URL, or the database the job; nothing changed, and the page asks again.
+    return refusal(503, "storage-unavailable");
+  }
+  if (!uploaded.ok) {
+    if ("message" in uploaded) return refusal(422, uploaded.message);
+    return refusal(uploaded.reason === "not-found" ? 404 : 409, uploaded.reason);
+  }
+  return NextResponse.json(
+    { jobId: uploaded.jobId, uploads: uploaded.uploads },
+    { status: 200, headers: NO_STORE },
   );
 }
 

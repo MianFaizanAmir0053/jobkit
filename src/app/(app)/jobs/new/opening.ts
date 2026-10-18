@@ -69,7 +69,12 @@ export type Opened =
 
 export async function openPage(
   deps: OpeningDeps,
-  page: { autoStart: boolean; capped: boolean },
+  page: {
+    autoStart: boolean;
+    capped: boolean;
+    /** Whether the page uploads a failed job's screenshots again, which takes no share. */
+    again?: boolean;
+  },
   ui: OpeningUi,
 ): Promise<Opened> {
   void deps.sweepShares().catch(() => undefined);
@@ -83,7 +88,8 @@ export async function openPage(
   const finished = before === "elsewhere" ? null : before;
   if (page.capped) return finished ? { kind: "finished", outcome: finished } : { kind: "nothing" };
   if (!id) {
-    const held = await deps.heldShare().catch(() => null);
+    // A share waiting for the tap stays for New job; this page uploads one job's screenshots again.
+    const held = page.again ? null : await deps.heldShare().catch(() => null);
     if (held?.held) {
       ui.hold(held, { shown: true, stored: true });
       return { kind: "held", reason: held.held, before: finished };

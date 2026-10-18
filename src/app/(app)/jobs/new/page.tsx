@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 
-import { newJobsAllowedForViewer, requireSession } from "@/server/dal";
+import Link from "next/link";
+
+import { jobForViewer, newJobsAllowedForViewer, requireSession } from "@/server/dal";
 import { ownerSent } from "@/server/shareStart";
 
 import { NewJobForm } from "./NewJobForm";
@@ -24,13 +26,71 @@ const REFUSED: Readonly<Record<string, string>> = {
  * (ownerSent), on the share's first opening; any other share waits for the
  * owner's tap on Start. A share the worker refused opens it with why. Once
  * this month's spend reaches the cap, it starts no job and drops a share,
- * yet still finishes an upload begun before (ledger spec).
+ * yet still finishes an upload begun before (ledger spec). Opened from a
+ * job whose upload failed (`?again=<id>`), it takes that job's screenshots
+ * again (intake spec, "Upload path", step 5) while the job waits for them,
+ * and while they upload, so a reload finishes the upload this browser
+ * kept. The form is keyed by what it is for, so nothing of a New job form,
+ * such as a share it held, carries over to an upload again, nor back.
  */
 export default async function NewJobPage(props: PageProps<"/jobs/new">) {
   await requireSession();
-  const { refused } = await props.searchParams;
+  const { refused, again } = await props.searchParams;
   const allowed = await newJobsAllowedForViewer();
   const site = (await headers()).get("sec-fetch-site");
+  if (typeof again === "string") {
+    const job = await jobForViewer(again);
+    const failed = job?.state === "upload_failed";
+    // Uploading: a reload in the middle of an upload again finishes what this browser kept.
+    const uploading = job?.state === "uploading";
+    return (
+      <section aria-labelledby="new-job-heading">
+        <h1 id="new-job-heading" className="text-2xl font-semibold tracking-tight">
+          Upload again
+        </h1>
+        {!job ? (
+          <p className="mt-2">
+            This job could not be found.{" "}
+            <Link href="/jobs" className="underline">
+              Open the Jobs list
+            </Link>
+            .
+          </p>
+        ) : failed || uploading ? (
+          allowed && (
+            <p className="mt-2 text-muted-foreground">
+              {failed
+                ? "Choose every screenshot of the post again: they replace all of this job's screenshots, and the job goes on once they all arrive."
+                : "This job's screenshots are on their way. If this browser kept them, jobkit finishes the upload now; to send them again, choose the same screenshots and press Start."}
+            </p>
+          )
+        ) : (
+          <p className="mt-2">
+            This job is not waiting for its screenshots.{" "}
+            <Link href={`/jobs/${job.id}`} className="underline">
+              Open the job
+            </Link>{" "}
+            to see how it stands.
+          </p>
+        )}
+        {!allowed && (
+          <p role="alert" className="mt-6 text-sm text-destructive">
+            This month&apos;s model spend has reached its cap for new jobs, so jobkit starts none
+            until next month.
+          </p>
+        )}
+        {job && (failed || uploading) && (
+          <NewJobForm
+            key={`again-${job.id}`}
+            refused={null}
+            autoStart={false}
+            capped={!allowed}
+            again={job.id}
+          />
+        )}
+      </section>
+    );
+  }
 
   return (
     <section aria-labelledby="new-job-heading">
@@ -47,6 +107,7 @@ export default async function NewJobPage(props: PageProps<"/jobs/new">) {
         </p>
       )}
       <NewJobForm
+        key="new"
         refused={typeof refused === "string" ? (REFUSED[refused] ?? null) : null}
         autoStart={ownerSent(site)}
         capped={!allowed}

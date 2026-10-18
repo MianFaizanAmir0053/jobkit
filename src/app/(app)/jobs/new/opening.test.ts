@@ -209,6 +209,16 @@ describe("openPage", () => {
     expect(fake.events).not.toContain(`start ${SHARE_ID}`);
   });
 
+  it("leaves a share held for the tap where it is while the page uploads a job's screenshots again", async () => {
+    const held = { ...share(), held: OPENING.fromAnotherSite };
+    const fake = page({ held });
+
+    expect(await openPage(fake.deps, { ...auto, again: true }, fake.ui)).toEqual({
+      kind: "nothing",
+    });
+    expect(fake.events.filter((event) => event.startsWith("hold"))).toEqual([]);
+  });
+
   it("says a share is gone, and finishes an upload kept from before without opening its job", async () => {
     const before = { ok: true as const, jobId: "job-1" };
     for (const kept of [null, new Error("IndexedDB failed")]) {

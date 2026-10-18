@@ -82,6 +82,10 @@ export const MESSAGES = {
   uploadTimedOut:
     "The upload took more than 15 minutes, so it was stopped. Press Start again on a faster connection.",
   notFound: "The job could not be found. Press Start again.",
+  notFailed:
+    "This job is not waiting for its screenshots any more: open it from the Jobs list to see how it stands.",
+  uploadingElsewhere:
+    "Another tab of this browser is uploading this job's screenshots. Open the job there, or close that tab and press Start again.",
   notResumed:
     "The upload could not finish yet. Check the connection and open New job again within 15 minutes of the start: jobkit tries again then.",
   unkept:
@@ -208,6 +212,11 @@ export async function submitJob(
     sharedUrl?: string;
     /** How long a share waited before the page took it, which the job's clock counts. */
     startedAgo?: number;
+    /**
+     * A job whose upload failed, whose screenshots these replace (intake
+     * spec, "Upload path", step 5): it keeps its text, link and start.
+     */
+    againOf?: string;
   },
   onStatus: (status: string) => void,
 ): Promise<Submitted> {
@@ -229,68 +238,96 @@ export async function submitJob(
   );
   if (refused) return { ok: false, message: refused };
 
-  onStatus("Starting the job…");
-  // The server's upload clock starts when this request arrives; the page's starts sooner.
-  const deadline: Deadline = {
-    at: deps.now() + UPLOAD_DEADLINE_MS,
-    wallAt: deps.wallNow() + UPLOAD_DEADLINE_MS,
-  };
-  let created: { jobId: string; uploads: Uploads };
-  try {
-    const response = await deps.fetch("/api/jobs", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        images: images.map((image) => image.meta),
-        pastedText: input.text,
-        inputKind: input.inputKind ?? "page",
-        sharedUrl: input.sharedUrl ?? "",
-        clientElapsedMs: Math.max(0, Math.round(deps.now() - startedAt + (input.startedAgo ?? 0))),
-      }),
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    // A server error may come after the job was created; so may an answer the page cannot read.
-    if (response.status >= 500) return { ok: false, message: MESSAGES.createLost };
-    if (!response.ok) return { ok: false, message: await createMessage(response) };
-    created = (await response.json()) as typeof created;
-    if (!Array.isArray(created.uploads)) throw new Error("no uploads");
-  } catch {
-    // The server may have created the job before the answer was lost.
-    return { ok: false, message: MESSAGES.createLost };
+  onStatus(input.againOf ? "Starting the upload again…" : "Starting the job…");
+  const { againOf } = input;
+  // Upload again holds its job's upload lock from before its request, so no other tab of this
+  // browser starts or finishes that job's upload meanwhile, and none takes it once it has begun.
+  if (againOf) {
+    const locked = await deps.exclusive(uploadLock(againOf), () => startAndSend(true));
+    return locked ?? { ok: false, message: MESSAGES.uploadingElsewhere };
   }
-  if (created.uploads.length !== images.length) return { ok: false, message: MESSAGES.notStarted };
-  if (images.length === 0) return { ok: true, jobId: created.jobId };
+  return startAndSend(false);
 
-  const { jobId } = created;
-  const blobs = new Map(created.uploads.map((upload, i) => [upload.imageId, images[i]!.blob]));
-  const sent = await deps.exclusive(uploadLock(jobId), async () => {
-    // Kept until the server has it, so a reload can finish it; a browser that cannot keep it still uploads.
-    const kept = await deps.pending
-      .save({
-        jobId,
-        deadlineAt: deadline.wallAt,
-        images: [...blobs].map(([imageId, blob]) => ({ imageId, blob })),
-      })
-      .then(
-        () => true,
-        () => false,
-      );
-    let outcome: Submitted;
+  /** Starts the job, or its upload again, and sends its screenshots, under the lock if not held. */
+  async function startAndSend(locked: boolean): Promise<Submitted> {
+    // The server's upload clock starts when this request arrives; the page's starts sooner.
+    const deadline: Deadline = {
+      at: deps.now() + UPLOAD_DEADLINE_MS,
+      wallAt: deps.wallNow() + UPLOAD_DEADLINE_MS,
+    };
+    let created: { jobId: string; uploads: Uploads };
     try {
-      const uploaded = await uploadAll(deps, created.uploads, blobs, deadline, onStatus);
-      outcome = uploaded
-        ? await settled(deps, jobId, await lastWord(deps, jobId, uploaded))
-        : await finish(deps, jobId, blobs, deadline, onStatus);
+      const metas = images.map((image) => image.meta);
+      const response = await deps.fetch(
+        againOf ? `/api/jobs/${againOf}/upload-again` : "/api/jobs",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(
+            againOf
+              ? { images: metas }
+              : {
+                  images: metas,
+                  pastedText: input.text,
+                  inputKind: input.inputKind ?? "page",
+                  sharedUrl: input.sharedUrl ?? "",
+                  clientElapsedMs: Math.max(
+                    0,
+                    Math.round(deps.now() - startedAt + (input.startedAgo ?? 0)),
+                  ),
+                },
+          ),
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        },
+      );
+      // A server error may come after the job was created; so may an answer the page cannot read.
+      if (response.status >= 500) return { ok: false, message: MESSAGES.createLost };
+      if (!response.ok) return { ok: false, message: await createMessage(response) };
+      created = (await response.json()) as typeof created;
+      if (!Array.isArray(created.uploads)) throw new Error("no uploads");
     } catch {
-      // The page says to press Start again, so no later visit may finish this job.
-      return settled(deps, jobId, { ok: false, message: MESSAGES.wentWrong });
+      // The server may have created the job before the answer was lost.
+      return { ok: false, message: MESSAGES.createLost };
     }
-    // Nothing kept, nothing for New job to finish: the page must not say it goes on.
-    return kept || !keepsUpload(outcome)
-      ? outcome
-      : { ok: false as const, message: MESSAGES.unkept };
-  });
-  return sent ?? { ok: false, message: MESSAGES.notStarted };
+    if (created.uploads.length !== images.length) {
+      return { ok: false, message: MESSAGES.notStarted };
+    }
+    if (images.length === 0) return { ok: true, jobId: created.jobId };
+
+    const { jobId } = created;
+    const blobs = new Map(created.uploads.map((upload, i) => [upload.imageId, images[i]!.blob]));
+    const send = async (): Promise<Submitted> => {
+      // Kept until the server has it, so a reload can finish it; a browser that cannot keep it
+      // still uploads.
+      const kept = await deps.pending
+        .save({
+          jobId,
+          deadlineAt: deadline.wallAt,
+          images: [...blobs].map(([imageId, blob]) => ({ imageId, blob })),
+        })
+        .then(
+          () => true,
+          () => false,
+        );
+      let outcome: Submitted;
+      try {
+        const uploaded = await uploadAll(deps, created.uploads, blobs, deadline, onStatus);
+        outcome = uploaded
+          ? await settled(deps, jobId, await lastWord(deps, jobId, uploaded))
+          : await finish(deps, jobId, blobs, deadline, onStatus);
+      } catch {
+        // The page says to press Start again, so no later visit may finish this job.
+        return settled(deps, jobId, { ok: false, message: MESSAGES.wentWrong });
+      }
+      // Nothing kept, nothing for New job to finish: the page must not say it goes on.
+      return kept || !keepsUpload(outcome)
+        ? outcome
+        : { ok: false as const, message: MESSAGES.unkept };
+    };
+    if (locked) return send();
+    const sent = await deps.exclusive(uploadLock(jobId), send);
+    return sent ?? { ok: false, message: MESSAGES.notStarted };
+  }
 }
 
 /**
@@ -462,6 +499,8 @@ async function createMessage(response: Response): Promise<string> {
   const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
   if (response.status === 422 && typeof body?.error === "string") return body.error;
   if (response.status === 413) return MESSAGES.tooLarge;
+  // Only Upload again answers so: the job's upload began again elsewhere, or it moved on.
+  if (response.status === 409) return MESSAGES.notFailed;
   return (
     sessionMessage(response.status) ??
     (response.status === 400 ? MESSAGES.badRequest : MESSAGES.notStarted)

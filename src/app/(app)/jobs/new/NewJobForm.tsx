@@ -122,12 +122,15 @@ interface Shared {
  * opens for it once the page has had no tap for two seconds. Start sends it
  * as a share, counting from its arrival, until the owner clears it. An
  * outcome that keeps the upload for New job to finish leaves nothing in the
- * form to start again.
+ * form to start again. Opened for a job whose upload failed, the form takes
+ * screenshots alone, which replace the job's own (intake spec, "Upload
+ * path", step 5), and takes no share; the job opens once they arrive.
  */
 export function NewJobForm({
   refused,
   autoStart,
   capped,
+  again = null,
 }: {
   /** Why the service worker refused a share, in the page's words. */
   refused: string | null;
@@ -135,6 +138,8 @@ export function NewJobForm({
   autoStart: boolean;
   /** Whether this month's spend reached the cap for new jobs: the form starts none. */
   capped: boolean;
+  /** The job whose failed upload this form makes again; null for a new job. */
+  again?: string | null;
 }) {
   const router = useRouter();
   const [files, setFiles] = useState<File[]>([]);
@@ -196,17 +201,26 @@ export function NewJobForm({
         setHeldAt(how.shown ? Date.now() : null);
       },
     };
-    opening.followers.add(follower);
-    // A run going on since an earlier visit: this form follows it too.
-    if (opening.held) follower.hold(opening.held.share, opening.held.how);
-    if (opening.status !== null) follower.status(opening.status);
-    const run = (opening.run ??= openPage(pageDeps, { autoStart, capped }, openingUi).finally(
-      () => {
+    let run: Promise<Opened>;
+    if (again === null) {
+      opening.followers.add(follower);
+      // A run going on since an earlier visit: this form follows it too.
+      if (opening.held) follower.hold(opening.held.share, opening.held.how);
+      if (opening.status !== null) follower.status(opening.status);
+      run = opening.run ??= openPage(pageDeps, { autoStart, capped }, openingUi).finally(() => {
         opening.run = null;
         opening.status = null;
         opening.held = null;
-      },
-    ));
+      });
+    } else {
+      // Uploading one job's screenshots again: a run of its own, which finishes an upload kept
+      // from before and takes no share, so nothing of New job's run, nor its share, reaches it.
+      run = openPage(
+        pageDeps,
+        { autoStart: false, capped, again: true },
+        { status: follower.status, hold: () => undefined },
+      );
+    }
     void run
       .then((opened) => {
         if (left) return;
@@ -252,7 +266,7 @@ export function NewJobForm({
       left = true;
       opening.followers.delete(follower);
     };
-  }, [router, autoStart, capped]);
+  }, [router, autoStart, capped, again]);
 
   async function start() {
     setBusy(true);
@@ -272,7 +286,8 @@ export function NewJobForm({
       browserDeps,
       {
         files,
-        text,
+        text: again === null ? text : "",
+        ...(again !== null && { againOf: again }),
         ...(shared && {
           inputKind: "share" as const,
           sharedUrl: shared.url,
@@ -370,23 +385,27 @@ export function NewJobForm({
           </p>
         )}
       </div>
-      <div className="flex flex-col gap-2">
-        <label htmlFor="pasted" className="font-medium">
-          Paste text
-        </label>
-        <textarea
-          id="pasted"
-          value={text}
-          disabled={busy}
-          onChange={(event) => setText(event.target.value)}
-          rows={8}
-          className="rounded-md border border-border bg-background p-2 text-sm"
-        />
-      </div>
+      {again === null && (
+        <div className="flex flex-col gap-2">
+          <label htmlFor="pasted" className="font-medium">
+            Paste text
+          </label>
+          <textarea
+            id="pasted"
+            value={text}
+            disabled={busy}
+            onChange={(event) => setText(event.target.value)}
+            rows={8}
+            className="rounded-md border border-border bg-background p-2 text-sm"
+          />
+        </div>
+      )}
       <div className="flex items-center gap-3">
         <Button
           type="submit"
-          disabled={busy || !armed || (files.length === 0 && text.trim() === "")}
+          disabled={
+            busy || !armed || (files.length === 0 && (again !== null || text.trim() === ""))
+          }
         >
           Start
         </Button>

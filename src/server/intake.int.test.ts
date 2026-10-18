@@ -17,7 +17,7 @@ import { issueSession } from "@/core/platform/sessions";
 import type { AppConfig } from "@/server/config";
 import { createTestDb } from "@/server/db/testDb";
 
-import { confirm, create, reissue } from "./intake";
+import { again, confirm, create, reissue } from "./intake";
 
 const ORIGIN = "http://localhost:3000";
 const config: AppConfig = {
@@ -385,6 +385,75 @@ describe("POST /api/jobs/<id>/uploaded", () => {
     expect((await confirm(post(`/api/jobs/${jobId}/uploaded`, ""), deps(), jobId)).status).toBe(
       401,
     );
+  });
+});
+
+describe("POST /api/jobs/<id>/upload-again", () => {
+  it("takes the screenshots chosen again for a job whose upload failed, after which the job completes", async () => {
+    const cookie = await signedIn();
+    const created = await newJob(
+      { images: [image(1, 1_000)], pastedText: "", clientElapsedMs: 0 },
+      cookie,
+    );
+    const { jobId } = (await created.json()) as { jobId: string };
+    clock.advance(15 * 60_000 + 1);
+    const shot = await webp(30);
+
+    const response = await again(
+      post(`/api/jobs/${jobId}/upload-again`, JSON.stringify({ images: [shot.meta] }), cookie),
+      deps(),
+      jobId,
+    );
+
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      jobId: string;
+      uploads: { imageId: string; url: string }[];
+    };
+    expect(body.jobId).toBe(jobId);
+    expect(body.uploads).toHaveLength(1);
+    const token = new URL(body.uploads[0]!.url).pathname.split("/").pop()!;
+    expect(await storage.acceptSignedUpload(token, shot.bytes)).toBe(true);
+    expect(
+      (await confirm(post(`/api/jobs/${jobId}/uploaded`, "", cookie), deps(), jobId)).status,
+    ).toBe(202);
+  });
+
+  it("refuses a job whose upload has not failed, screenshots past the limits, a body of the wrong shape, another origin, no session and an unknown job", async () => {
+    const cookie = await signedIn();
+    const created = await newJob(
+      { images: [image(1, 1_000)], pastedText: "", clientElapsedMs: 0 },
+      cookie,
+    );
+    const { jobId } = (await created.json()) as { jobId: string };
+    const ask = (body: object | string, who?: string, origin?: string, id = jobId) =>
+      again(
+        post(
+          `/api/jobs/${id}/upload-again`,
+          typeof body === "string" ? body : JSON.stringify(body),
+          who,
+          origin,
+        ),
+        deps(),
+        id,
+      );
+    const one = { images: [image(2, 1_000)] };
+
+    const early = await ask(one, cookie);
+    expect(early.status).toBe(409);
+    expect(await early.json()).toEqual({ error: "not-failed" });
+    clock.advance(15 * 60_000 + 1);
+    const tooMany = await ask(
+      { images: Array.from({ length: 9 }, (_, i) => image(10 + i, 1_000)) },
+      cookie,
+    );
+    expect(tooMany.status).toBe(422);
+    expect((await ask("{}", cookie)).status).toBe(400);
+    expect((await ask("x".repeat(64 * 1024 + 1), cookie)).status).toBe(413);
+    expect((await ask(one, cookie, "https://evil.example")).status).toBe(403);
+    expect((await ask(one)).status).toBe(401);
+    expect((await ask(one, cookie, ORIGIN, "not-a-uuid")).status).toBe(404);
+    expect((await loadJob(db, jobId))?.state).toBe("upload_failed");
   });
 });
 

@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
+import type { Db, QueryResult, Row } from "@/core/ports";
 import { loadJob } from "@/core/platform/jobs";
 import { createTestDb } from "@/server/db/testDb";
 
@@ -21,6 +22,7 @@ import {
   LIMITS,
   reissueUploads,
   startJob,
+  uploadAgain,
 } from "./jobs";
 
 let db: PgliteDb;
@@ -535,6 +537,221 @@ describe("reissueUploads", () => {
       ok: false,
       reason: "not-found",
     });
+  });
+});
+
+describe("uploadAgain", () => {
+  /** A job whose upload ran out of time, one of its two screenshots stored. */
+  async function failedUpload(): Promise<{ jobId: string; arrived: string }> {
+    const one = await webp(1080, 2400, 10);
+    const started = await startJob(deps(), {
+      images: [one.meta, image(2)],
+      pastedText: "a post",
+      clientElapsedMs: 0,
+    });
+    if (!started.ok) throw new Error(started.message);
+    const arrived = (await images(started.jobId))[0]!.storage_path;
+    await storage.put(arrived, one.bytes, "image/webp");
+    clock.advance(15 * 60_000 + 1);
+    expect(await confirmUploads(deps(), started.jobId)).toEqual({
+      ok: false,
+      reason: "upload-failed",
+    });
+    return { jobId: started.jobId, arrived };
+  }
+
+  it("replaces a failed upload's screenshots, starts its 15 minutes again, and queues the job once they arrive", async () => {
+    const { jobId, arrived } = await failedUpload();
+    clock.advance(60_000);
+    const fresh = await webp(1080, 2400, 20);
+
+    const again = await uploadAgain(deps(), jobId, [fresh.meta]);
+    if (!again.ok) throw new Error(JSON.stringify(again));
+
+    expect(again).toEqual({ ok: true, jobId, uploads: [expect.any(Object)] });
+    expect(await loadJob(db, jobId)).toMatchObject({
+      state: "uploading",
+      stateChangedAt: clock.now(),
+    });
+    // It keeps its pasted text.
+    const kept = await db.query<{ pasted_text: string }>(
+      "select pasted_text from {{schema}}.jobs where id = $1",
+      [jobId],
+    );
+    expect(kept.rows).toEqual([{ pasted_text: "a post" }]);
+    const rows = await images(jobId);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        id: again.uploads[0]!.imageId,
+        position: 0,
+        bytes: fresh.meta.bytes,
+      }),
+    ]);
+    // Nothing of the failed upload is kept.
+    expect(await storage.stat(arrived)).toBeNull();
+    // The failed attempt stays failed; a new one carries the screenshots chosen again.
+    expect(await attempts(jobId)).toEqual([
+      expect.objectContaining({ files: 2, outcome: "failed" }),
+      expect.objectContaining({ files: 1, bytes: fresh.meta.bytes, outcome: null }),
+    ]);
+    // The phone uploads them, and the job is queued as a new one is.
+    await storage.put(rows[0]!.storage_path, fresh.bytes, "image/webp");
+    expect(await confirmUploads(deps(), jobId)).toEqual({ ok: true });
+    expect(await loadJob(db, jobId)).toMatchObject({ state: "queued" });
+  });
+
+  it("sends the same screenshots again from the start while their upload runs, as after an answer that was lost", async () => {
+    const { jobId } = await failedUpload();
+    const fresh = [await webp(1080, 2400, 20), await webp(1080, 2400, 30)];
+    const first = await uploadAgain(
+      deps(),
+      jobId,
+      fresh.map((shot) => shot.meta),
+    );
+    if (!first.ok) throw new Error(JSON.stringify(first));
+    const began = (await loadJob(db, jobId))!.stateChangedAt;
+    // The first screenshot arrived; the page never learned its URLs, or lost the upload.
+    const stored = (await images(jobId))[0]!.storage_path;
+    await storage.put(stored, fresh[0]!.bytes, "image/webp");
+    clock.advance(60_000);
+
+    const again = await uploadAgain(
+      deps(),
+      jobId,
+      fresh.map((shot) => shot.meta),
+    );
+
+    // The same rows, each with a fresh URL in order, and nothing stored to stand in the way.
+    expect(again).toEqual({
+      ok: true,
+      jobId,
+      uploads: first.uploads.map((upload) => ({
+        imageId: upload.imageId,
+        url: expect.any(String),
+      })),
+    });
+    expect(await storage.stat(stored)).toBeNull();
+    // Within the same 15 minutes, as another attempt.
+    expect(await loadJob(db, jobId)).toMatchObject({ state: "uploading", stateChangedAt: began });
+    expect((await attempts(jobId)).map((attempt) => [attempt.files, attempt.outcome])).toEqual([
+      [2, "failed"],
+      [2, "failed"],
+      [2, null],
+    ]);
+    // Other screenshots wait for the upload to run out of time.
+    expect(await uploadAgain(deps(), jobId, [image(9)])).toEqual({
+      ok: false,
+      reason: "not-failed",
+    });
+  });
+
+  it("fails again a job uploaded again that runs out of its new 15 minutes", async () => {
+    const { jobId } = await failedUpload();
+    clock.advance(60 * 60_000);
+    expect(await uploadAgain(deps(), jobId, [image(3)])).toMatchObject({ ok: true });
+
+    clock.advance(15 * 60_000 - 1);
+    expect(await reissueUploads(deps(), jobId)).toMatchObject({ ok: true });
+    clock.advance(2);
+    expect(await confirmUploads(deps(), jobId)).toEqual({ ok: false, reason: "upload-failed" });
+  });
+
+  it("refuses a job whose upload has not failed, one that does not exist, and screenshots past the limits", async () => {
+    const uploading = await startJob(deps(), {
+      images: [image(1)],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    if (!uploading.ok) throw new Error(uploading.message);
+    expect(await uploadAgain(deps(), uploading.jobId, [image(2)])).toEqual({
+      ok: false,
+      reason: "not-failed",
+    });
+    expect(await uploadAgain(deps(), "not-a-uuid", [image(2)])).toEqual({
+      ok: false,
+      reason: "not-found",
+    });
+
+    const { jobId } = await failedUpload();
+    const tooMany = Array.from({ length: LIMITS.images + 1 }, (_, i) => image(10 + i));
+    for (const chosen of [tooMany, []]) {
+      expect(await uploadAgain(deps(), jobId, chosen)).toEqual({
+        ok: false,
+        message: expect.any(String),
+      });
+    }
+    expect(await loadJob(db, jobId)).toMatchObject({ state: "upload_failed" });
+    expect(await images(jobId)).toHaveLength(2);
+  });
+
+  it("tells a page whose upload was begun again elsewhere as it asked for URLs, or confirmed, that its upload failed", async () => {
+    // As the page asks, its upload runs out of time and another device presses Upload again.
+    const begunAgain = (inner: Db, jobId: string, marker: string): Db => {
+      let done = false;
+      const wrap = (base: Db): Db => ({
+        schema: base.schema,
+        query: async <T extends Row = Row>(sql: string, params?: readonly unknown[]) => {
+          if (!done && sql.includes(marker)) {
+            done = true;
+            await base.query(
+              `update {{schema}}.jobs set state_changed_at = state_changed_at + interval '16 minutes'
+                where id = $1`,
+              [jobId],
+            );
+          }
+          return base.query<T>(sql, params) as Promise<QueryResult<T>>;
+        },
+        exec: (sql) => base.exec(sql),
+        tx: (fn) => base.tx((tx) => fn(wrap(tx))),
+      });
+      return wrap(inner);
+    };
+    const one = await webp(1080, 2400, 10);
+    const asking = await startJob(deps(), {
+      images: [image(1)],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    const confirming = await startJob(deps(), {
+      images: [one.meta],
+      pastedText: "",
+      clientElapsedMs: 0,
+    });
+    if (!asking.ok || !confirming.ok) throw new Error("not started");
+    await storage.put((await images(confirming.jobId))[0]!.storage_path, one.bytes, "image/webp");
+
+    // No URL for a screenshot its upload no longer has, and no attempt logged for it.
+    expect(
+      await reissueUploads(
+        { db: begunAgain(db, asking.jobId, "for update"), clock, storage },
+        asking.jobId,
+      ),
+    ).toEqual({ ok: false, reason: "upload-failed" });
+    expect(await attempts(asking.jobId)).toHaveLength(1);
+    // Not taken as confirmed, which the page would read as its job going on.
+    expect(
+      await confirmUploads(
+        { db: begunAgain(db, confirming.jobId, "set state = $3"), clock, storage },
+        confirming.jobId,
+      ),
+    ).toEqual({ ok: false, reason: "upload-failed" });
+  });
+
+  it("starts no upload again once this month's model calls reach the cap for new jobs", async () => {
+    const { jobId } = await failedUpload();
+    await db.query(
+      `insert into {{schema}}.model_calls
+         (stage, attempt, provider, requested_model, started_at, outcome, cost_usd,
+          cost_provisional, price_known)
+       values ('extract', 1, 'gemini', 'gemini-3.8-flash', $1, 'ok', $2, false, true)`,
+      [clock.now(), SPEND_LIMITS.newJobsUsd],
+    );
+
+    expect(await uploadAgain(deps(), jobId, [image(3)])).toEqual({
+      ok: false,
+      message: CAP_REACHED,
+    });
+    expect(await loadJob(db, jobId)).toMatchObject({ state: "upload_failed" });
   });
 });
 

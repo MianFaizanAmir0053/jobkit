@@ -184,6 +184,63 @@ describe("submitJob", () => {
     ]);
   });
 
+  it("uploads a failed job's screenshots again through its own route, then uploads and confirms them as a new job's", async () => {
+    const one = screenshot(1);
+    const fake = browser({ "a.png": one }, (call) =>
+      call.url === "/api/jobs/job-9/upload-again"
+        ? json({
+            jobId: "job-9",
+            uploads: [
+              { imageId: "image-0", url: "http://localhost:3000/api/dev/storage/upload/token-0" },
+            ],
+          })
+        : server("job-9", 1)(call),
+    );
+
+    const submitted = await submitJob(
+      fake.deps,
+      { files: [file("a.png")], text: "", againOf: "job-9" },
+      fake.onStatus,
+    );
+
+    expect(submitted).toEqual({ ok: true, jobId: "job-9" });
+    expect(fake.calls.map((call) => [call.method, call.url])).toEqual([
+      ["POST", "/api/jobs/job-9/upload-again"],
+      ["PUT", "http://localhost:3000/api/dev/storage/upload/token-0"],
+      ["POST", "/api/jobs/job-9/uploaded"],
+    ]);
+    if (!one.ok) throw new Error("unreachable");
+    // Only the screenshots: the job keeps its text, link, start and arm.
+    expect(fake.calls[0]!.body).toEqual({ images: [one.meta] });
+    expect(fake.statuses).toContain("Starting the upload again…");
+  });
+
+  it("uploads a job's screenshots again only from the tab that holds its upload, asking nothing of the server otherwise", async () => {
+    const fake = browser({ "a.png": screenshot(1) }, server("job-9", 1));
+    fake.held.add("jobkit-upload-job-9");
+
+    expect(
+      await submitJob(
+        fake.deps,
+        { files: [file("a.png")], text: "", againOf: "job-9" },
+        fake.onStatus,
+      ),
+    ).toEqual({ ok: false, message: MESSAGES.uploadingElsewhere });
+    expect(fake.calls).toEqual([]);
+  });
+
+  it("says a job is no longer waiting for its screenshots when the server will not upload it again", async () => {
+    const fake = browser({ "a.png": screenshot(1) }, () => json({ error: "not-failed" }, 409));
+
+    expect(
+      await submitJob(
+        fake.deps,
+        { files: [file("a.png")], text: "", againOf: "job-9" },
+        fake.onStatus,
+      ),
+    ).toEqual({ ok: false, message: MESSAGES.notFailed });
+  });
+
   it("refuses before sending anything when a screenshot cannot be prepared", async () => {
     const fake = browser(
       { "tall.png": { ok: false, message: TOO_TALL }, "a.png": screenshot(1) },

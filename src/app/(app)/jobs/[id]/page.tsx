@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import { buttonVariants } from "@/components/ui/button";
 import type { KitFlag, KitFlagKind } from "@/core/drafting/validate";
 import { emailBody } from "@/core/drafting/kit";
 import { type BlockVerdict, isBlocking, NEVER_WEIGHED } from "@/core/drafting/verdict";
@@ -273,8 +274,16 @@ function StatePanel({ view }: { view: JobView }) {
     case "upload_failed":
       return (
         <Panel title="The upload did not finish">
-          <p>The screenshots did not all arrive within 15 minutes. Start a new job with them.</p>
-          <div className="flex gap-2">{skip}</div>
+          <p>
+            The screenshots did not all arrive within 15 minutes. Upload them again, or skip the
+            job.
+          </p>
+          <div className="flex gap-2">
+            <Link href={`/jobs/new?again=${view.id}`} className={`${buttonVariants()} min-h-11`}>
+              Upload again
+            </Link>
+            {skip}
+          </div>
         </Panel>
       );
     case "needs_role_pick":

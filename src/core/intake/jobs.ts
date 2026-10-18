@@ -182,9 +182,13 @@ export async function confirmUploads(deps: Deps, jobId: string): Promise<Confirm
     return queued;
   });
   if (moved) return { ok: true };
-  // Something moved the job meanwhile: the upload timeout, or a confirm before this one.
+  // Something moved the job meanwhile: the upload timeout, a confirm before this one, or the
+  // timeout and then Upload again on the other device, which began another upload.
   const now = await loadJob(deps.db, jobId);
-  return { ok: false, reason: now?.state === "upload_failed" ? "upload-failed" : "not-uploading" };
+  const failed =
+    now?.state === "upload_failed" ||
+    (now?.state === "uploading" && now.stateChangedAt.getTime() !== job.stateChangedAt.getTime());
+  return { ok: false, reason: failed ? "upload-failed" : "not-uploading" };
 }
 
 export type ReissueResult =
@@ -231,12 +235,17 @@ export async function reissueUploads(deps: Deps, jobId: string): Promise<Reissue
     // Under the job's lock, so two requests at once start one attempt each, one after the other,
     // and with its timeout applied again, since the URLs took time to make.
     await expireUploads(tx, at, jobId);
-    const { rows: locked } = await tx.query<{ state: string }>(
-      "select state from {{schema}}.jobs where id = $1 for update",
+    const { rows: locked } = await tx.query<{ state: string; state_changed_at: Date }>(
+      "select state, state_changed_at from {{schema}}.jobs where id = $1 for update",
       [jobId],
     );
     if (locked[0]?.state === "upload_failed") return { ok: false, reason: "upload-failed" };
     if (locked[0]?.state !== "uploading") return { ok: false, reason: "not-uploading" };
+    // Uploading again since the page read it, as after Upload again on the other device: the
+    // upload this page carried failed, and its files are not the job's any more.
+    if (locked[0].state_changed_at.getTime() !== job.stateChangedAt.getTime()) {
+      return { ok: false, reason: "upload-failed" };
+    }
     await endAttempt(tx, jobId, "failed", at);
     await startAttempt(
       tx,
@@ -245,6 +254,171 @@ export async function reissueUploads(deps: Deps, jobId: string): Promise<Reissue
       at,
     );
     return { ok: true, uploads };
+  });
+}
+
+export type AgainResult =
+  | { ok: true; jobId: string; uploads: { imageId: string; url: string }[] }
+  | { ok: false; reason: "not-found" | "not-failed" }
+  | { ok: false; message: string };
+
+const NOTHING_AGAIN = "Choose the screenshots of the post again.";
+
+/**
+ * "Upload again" on a job whose upload failed (intake spec, "Upload path",
+ * step 5; platform spec B9): the owner chooses the screenshots again, and
+ * the phone prepares them as for a new job. The server checks every limit
+ * again, and the spend cap as for a new job, since the job has not run.
+ * In one transaction it replaces all the job's screenshots with these,
+ * moves the job back to uploading, which starts its 15 minutes again, and
+ * starts an upload attempt with them; it hands back one signed upload URL
+ * per screenshot, and the phone uploads and confirms them as for a new
+ * job. Whatever arrived of the failed upload is removed, by `later` when
+ * given, once the answer has gone. The job keeps its pasted text, its links
+ * and when it was received.
+ *
+ * Pressed again with the same screenshots while their upload runs, as
+ * after an answer that was lost or an upload that did not finish, it sends
+ * them again from the start within the same 15 minutes: what arrived is
+ * removed, the attempt before ends as failed and a new one starts, and a
+ * fresh URL comes back for each. Other screenshots wait until the upload
+ * runs out of time.
+ */
+export async function uploadAgain(
+  deps: Deps,
+  jobId: string,
+  chosen: readonly ImageMeta[],
+  later?: (task: () => Promise<unknown>) => void,
+): Promise<AgainResult> {
+  if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
+  // Exact repeats are dropped, the first kept, as for a new job.
+  const seen = new Set<string>();
+  const images = chosen.filter((image) => !seen.has(image.sha256) && seen.add(image.sha256));
+  await expireUploads(deps.db, deps.clock.now(), jobId);
+  const job = await loadJob(deps.db, jobId);
+  if (!job) return { ok: false, reason: "not-found" };
+  if (job.state === "uploading") return sendingAgain(deps, job.id, job.stateChangedAt, images);
+  if (job.state !== "upload_failed") return { ok: false, reason: "not-failed" };
+  if (images.length === 0) return { ok: false, message: NOTHING_AGAIN };
+  const refused = refusal(images, "");
+  if (refused) return { ok: false, message: refused };
+  if (!(await spendState(deps)).newJobsAllowed) return { ok: false, message: CAP_REACHED };
+
+  const now = deps.clock.now();
+  const purgeAfter = new Date(now.getTime() + RETENTION_MS);
+  const replaced = await deps.db.tx(async (tx) => {
+    const moved = await moveJob(tx, jobId, {
+      from: "upload_failed",
+      to: "uploading",
+      pending: null,
+      at: now,
+      ifChangedAt: job.stateChangedAt,
+    });
+    if (!moved) return null;
+    const { rows: before } = await tx.query<{ storage_path: string }>(
+      "delete from {{schema}}.job_images where job_id = $1 returning storage_path",
+      [jobId],
+    );
+    const uploads: { imageId: string; url: string }[] = [];
+    for (const [position, image] of images.entries()) {
+      const { rows } = await tx.query<{ id: string; storage_path: string }>(
+        `insert into {{schema}}.job_images
+           (id, job_id, position, purpose, storage_path, content_type, width, height, bytes, sha256,
+            tile_count, created_at, purge_after)
+         select fresh.id, $1::uuid, $2, 'post', 'jobs/' || $1::text || '/' || fresh.id || '.' || $3::text, $4, $5, $6, $7, $8, $9, $10, $11
+           from (select gen_random_uuid() as id) as fresh
+         returning id, storage_path`,
+        [
+          jobId,
+          position,
+          EXTENSIONS[image.contentType],
+          image.contentType,
+          image.width,
+          image.height,
+          image.bytes,
+          image.sha256,
+          tileCount(image.width, image.height),
+          now,
+          purgeAfter,
+        ],
+      );
+      const row = rows[0]!;
+      const { url } = await deps.storage.createSignedUploadUrl(row.storage_path);
+      uploads.push({ imageId: row.id, url });
+    }
+    await startAttempt(
+      tx,
+      jobId,
+      images.map((image) => image.bytes),
+      now,
+    );
+    return { uploads, before: before.map((row) => row.storage_path) };
+  });
+  // Another tap, here or on the other device, uploaded it again first.
+  if (!replaced) return { ok: false, reason: "not-failed" };
+  // What arrived of the failed upload goes, under paths no row names any more; a removal that
+  // fails leaves it for the purge.
+  if (replaced.before.length > 0) {
+    const remove = () => deps.storage.remove(replaced.before).catch(() => undefined);
+    if (later) later(remove);
+    else await remove();
+  }
+  return { ok: true, jobId, uploads: replaced.uploads };
+}
+
+/**
+ * The same screenshots pressed again while their upload runs: each is sent
+ * again from the start, within the same 15 minutes, as one attempt more.
+ */
+async function sendingAgain(
+  deps: Deps,
+  jobId: string,
+  began: Date,
+  images: readonly ImageMeta[],
+): Promise<AgainResult> {
+  const { rows } = await deps.db.query<{
+    id: string;
+    storage_path: string;
+    bytes: number;
+    sha256: string;
+  }>(
+    `select id, storage_path, bytes, sha256 from {{schema}}.job_images
+      where job_id = $1 and purpose = 'post' order by position`,
+    [jobId],
+  );
+  const same =
+    rows.length === images.length &&
+    rows.every((row, i) => row.sha256 === images[i]!.sha256 && row.bytes === images[i]!.bytes);
+  if (!same) return { ok: false, reason: "not-failed" };
+  // A signed URL never replaces a file, so what arrived goes first; it is sent again anyway.
+  await deps.storage.remove(rows.map((row) => row.storage_path));
+  const uploads: { imageId: string; url: string }[] = [];
+  for (const row of rows) {
+    const { url } = await deps.storage.createSignedUploadUrl(row.storage_path);
+    uploads.push({ imageId: row.id, url });
+  }
+  const at = deps.clock.now();
+  return deps.db.tx(async (tx): Promise<AgainResult> => {
+    // Under the job's lock, as fresh URLs are given, with its timeout applied again.
+    await expireUploads(tx, at, jobId);
+    const { rows: locked } = await tx.query<{ state: string; state_changed_at: Date }>(
+      "select state, state_changed_at from {{schema}}.jobs where id = $1 for update",
+      [jobId],
+    );
+    if (
+      locked[0]?.state !== "uploading" ||
+      locked[0].state_changed_at.getTime() !== began.getTime()
+    ) {
+      return { ok: false, reason: "not-failed" };
+    }
+    await endAttempt(tx, jobId, "failed", at);
+    await startAttempt(
+      tx,
+      jobId,
+      rows.map((row) => row.bytes),
+      at,
+    );
+    return { ok: true, jobId, uploads };
   });
 }
 
