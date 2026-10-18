@@ -15,7 +15,7 @@ import { addressReadStage } from "@/core/extraction/addressReadStage";
 import type { DraftAnswer } from "@/core/drafting/kit";
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
-import { confirmPost } from "@/core/extraction/owner";
+import { confirmPost, pickRole } from "@/core/extraction/owner";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import { undoStatus } from "@/core/ledger/statuses";
@@ -456,6 +456,43 @@ describe("jobView", () => {
   it("is null for a job that does not exist", async () => {
     expect(await jobView({ db, clock }, "33333333-3333-4333-8333-333333333333")).toBeNull();
     expect(await jobView({ db, clock }, "not-a-uuid")).toBeNull();
+  });
+});
+
+describe("a post's scam signs", () => {
+  it("stay with the post, and hold the kit back, whichever role the owner picks (extraction AC7)", async () => {
+    await seedSample();
+    const post: JobRecord = {
+      ...fixture("S07-two-roles"),
+      scam_signals: fixture("S10-scam").scam_signals,
+    };
+    const claim = DRAFT.blocks[0]!;
+    const drafts: Record<string, DraftAnswer> = {
+      P1: {
+        fit: [{ requirement_id: "R1", verdict: "met", fact_ids: ["F-node-apis"], note: "" }],
+        blocks: [{ ...claim, text: "I have built Node.js APIs.", fact_ids: ["F-node-apis"] }],
+      },
+      P2: {
+        fit: [
+          { requirement_id: "R1", verdict: "gap", fact_ids: [], note: "" },
+          { requirement_id: "R2", verdict: "gap", fact_ids: [], note: "" },
+        ],
+        blocks: [claim],
+      },
+    };
+
+    for (const pick of ["P1", "P2"]) {
+      const id = await pasted("We're hiring two engineers. Apply by email.");
+      await run(id, [answer(post)]);
+      expect(await pickRole({ db, clock }, id, pick)).toEqual({ ok: true });
+      await run(id, [answer(drafts[pick]!)]);
+
+      const view = (await jobView({ db, clock }, id))!;
+      expect(view).toMatchObject({ state: "kit_ready", role: { id: pick } });
+      expect(view.extraction?.record.scam_signals).toEqual(post.scam_signals);
+      expect(view.kitParts?.scamSignals).toEqual(post.scam_signals.map((signal) => signal.quote));
+      expect(view.review?.gate.map((reason) => reason.kind)).toContain("scam");
+    }
   });
 });
 
