@@ -83,6 +83,7 @@ describe("decide", () => {
       deleted: [],
       answers: {},
       declined: [],
+      handoff: null,
     });
     expect(decide(decisions, { kind: "uncheck", blockId: "S2" }).checked).toEqual([]);
     expect(decide(decisions, { kind: "uncheck_flag", flag: F }).flagsChecked).toEqual([]);
@@ -269,14 +270,15 @@ describe("decide", () => {
   });
 
   it("reads decisions kept before sentences were added or deleted as adding and deleting none", () => {
-    const { added, deleted, answers, declined, ...before } = NO_DECISIONS;
+    const { added, deleted, answers, declined, handoff, ...before } = NO_DECISIONS;
 
-    expect([added, deleted, answers, declined]).toEqual([[], [], {}, []]);
+    expect([added, deleted, answers, declined, handoff]).toEqual([[], [], {}, [], null]);
     expect(decisionsSchema.parse(before)).toMatchObject({
       added: [],
       deleted: [],
       answers: {},
       declined: [],
+      handoff: null,
     });
   });
 
@@ -448,6 +450,7 @@ describe("gateInputOf", () => {
       deleted: ["S9"],
       answers: {},
       declined: [],
+      handoff: null,
     };
 
     const input = gateInputOf({ ...PARTS, blocks: ["S1"] }, decisions);

@@ -7,9 +7,10 @@ import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
 import { applicationIdOf, kitRouteOf, openForJob } from "./applications";
+import { keep, lockedKit, type ReviewOutcome } from "./kitReview";
 import { FACTUAL_CLASSES } from "./edits";
 import { NO_DECISIONS } from "./decisions";
-import { jobView, storedDecisions } from "./jobView";
+import { type JobView, jobView, storedDecisions } from "./jobView";
 
 /**
  * "Mark sent" on a ready email kit (review spec, "Handoffs"; ledger spec,
@@ -98,6 +99,75 @@ export function markSentByJobkit(
 /** Who marks the kit sent: the owner, from the page they saw, or jobkit, which sent it to `to`. */
 type Marker = { by: "owner"; shown: SentFrom } | { by: "jobkit"; to: string };
 
+/**
+ * What the owner changed in jobkit, as an outcome records it (ledger spec,
+ * "Factual edits"): the address, the subject (the default in place of a
+ * format they declined), and each sentence they edited, deleted or added.
+ * An edited or deleted claim or gap line is a factual edit, and so is a
+ * sentence of their own; a sentence about the post is one when the
+ * company's or the role's name changes with it.
+ */
+export function changesOf(
+  view: JobView,
+  to: string,
+  typed: boolean,
+): { changed: string[]; factual: boolean } {
+  const role = view.role!;
+  const { edits, added, deleted } = view.review!.decisions;
+  const edited = view.draft!.kit.blocks.filter(
+    (block) => Object.hasOwn(edits, block.id) || deleted.includes(block.id),
+  );
+  // One typed in the post's place, and differing from it; none while none is typed.
+  const address = typed && to !== "" && !sameAddress(to, role.route.address);
+  const subject = view.kit!.subject !== view.draft!.kit.subject;
+  const changed = [
+    ...(address ? ["address"] : []),
+    ...(subject ? ["subject"] : []),
+    ...edited.map((block) => `sentence:${block.id}`),
+    ...added.map((sentence) => `sentence:${sentence.id}`),
+  ];
+  const names = [view.extraction!.record.company.name, role.title].filter((name) => name);
+  const factualChange = (block: KitBlock) => {
+    if (block.class !== "post") return FACTUAL_CLASSES.has(block.class);
+    const now = deleted.includes(block.id) ? "" : (edits[block.id] ?? block.text);
+    return names.some((name) => block.text.includes(name) !== now.includes(name));
+  };
+  return {
+    changed,
+    factual: address || subject || added.length > 0 || edited.some(factualChange),
+  };
+}
+
+/**
+ * A handoff from the page (Open in Gmail, a copy button), posted right after
+ * the click (review spec, "The outbound gate"): the words it handed off and
+ * what they changed, kept with the kit, which Mark sent then records rather
+ * than the email as it stands at its tap. Refused for a page that showed
+ * another kit or other words, whose words the server cannot name, as for a
+ * kit sent or skipped.
+ */
+export async function recordHandoff(
+  deps: { db: Db; clock: Clock },
+  jobId: string,
+  shown: { kit: string; words: string },
+): Promise<{ ok: true } | Extract<ReviewOutcome, { ok: false }>> {
+  if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
+  return deps.db.tx(async (tx) => {
+    const at = { db: tx, clock: deps.clock };
+    const locked = await lockedKit(at, jobId, shown);
+    if (!("view" in locked)) return locked;
+    const { view } = locked;
+    const before = view.review?.decisions ?? NO_DECISIONS;
+    const handoff = {
+      words: shown.words,
+      ...changesOf(view, view.handoff?.to ?? "", Boolean(view.handoff?.typed)),
+      at: deps.clock.now().toISOString(),
+    };
+    const kept = await keep(at, jobId, view.role!.id, view.kitKey, { ...before, handoff });
+    return kept.ok ? { ok: true as const } : kept;
+  });
+}
+
 /** A Mark sent the status machine refused after the checks: its writes are rolled back. */
 class SendRefused extends Error {}
 
@@ -156,31 +226,10 @@ async function marking(
       // jobkit's, inside its send's own transaction, keeps where its email went.
       if (!sent.ok) throw new SendRefused();
       if (sent.changed) {
-        // What the owner changed in jobkit: the address, and each sentence they edited, deleted or
-        // added; an edited or deleted claim, gap line or sentence about the post is a factual edit,
-        // and so is a sentence of their own (ledger spec).
-        const { edits, added, deleted } = view.review.decisions;
-        const edited = view.draft!.kit.blocks.filter(
-          (block) => Object.hasOwn(edits, block.id) || deleted.includes(block.id),
-        );
-        const address = typed && !sameAddress(to, role.route.address);
-        // The default subject in place of the post's format, which the owner declined.
-        const subject = view.kit!.subject !== view.draft!.kit.subject;
-        const changed = [
-          ...(address ? ["address"] : []),
-          ...(subject ? ["subject"] : []),
-          ...edited.map((block) => `sentence:${block.id}`),
-          ...added.map((sentence) => `sentence:${sentence.id}`),
-        ];
-        // A sentence about the post is a factual edit when the company's or the role's name changes
-        // with it, deleted or reworded; a claim or a gap line is, however it changes.
-        const names = [view.extraction!.record.company.name, role.title].filter((name) => name);
-        const factualChange = (block: KitBlock) => {
-          if (block.class !== "post") return FACTUAL_CLASSES.has(block.class);
-          const now = deleted.includes(block.id) ? "" : (edits[block.id] ?? block.text);
-          return names.some((name) => block.text.includes(name) !== now.includes(name));
-        };
-        const factual = address || subject || added.length > 0 || edited.some(factualChange);
+        // The owner's tap records what they changed in the words they last handed off, which may
+        // be what went though they changed the email since; jobkit's send, what it sent.
+        const handoff = marker.by === "owner" ? view.review.decisions.handoff : null;
+        const { changed, factual } = handoff ?? changesOf(view, to, typed);
         await tx.query(
           `insert into {{schema}}.draft_outcomes
            (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at,

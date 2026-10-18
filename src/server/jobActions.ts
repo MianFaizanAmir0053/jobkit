@@ -17,7 +17,7 @@ import { jobView } from "@/core/review/jobView";
 import { applyAgainForJob, recordReview } from "@/core/review/kitReview";
 import { markBounced, takeBackBounced } from "@/core/review/markBounced";
 import { markSubmitted, takeBackSubmitted } from "@/core/review/markSubmitted";
-import { markSent, takeBackSent } from "@/core/review/markSent";
+import { markSent, recordHandoff, takeBackSent } from "@/core/review/markSent";
 import { postImages } from "@/core/review/postImages";
 import { closeSkipped, skipKit, takeBackSkip } from "@/core/review/skipKit";
 import { keepForEvaluation } from "@/core/intake/keepForEval";
@@ -478,6 +478,29 @@ export async function submitted(
 
 /** The Mark sent the page showed, by its time. */
 const bouncedBody = z.object({ sentAt: z.iso.datetime() });
+
+const handoffBody = z.object({ kit: kitShown, words: wordsShown });
+
+/**
+ * POST /api/jobs/<id>/handoff: the words a handoff from the page (Open in
+ * Gmail, a copy button) handed off, posted right after the click, which
+ * Mark sent then records; refused for a page that showed another kit or
+ * other words (review spec, "The outbound gate").
+ */
+export async function handoff(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await bodyOf(request, handoffBody);
+  if (!body.ok) return body.response;
+  const recorded = await recordHandoff(deps, jobId, body.data);
+  if (!recorded.ok) return refusal(recorded.reason === "not-found" ? 404 : 409, recorded.reason);
+  return ok(200, { ok: true });
+}
 
 const keepBody = z.object({ kept: z.boolean() });
 

@@ -12,10 +12,13 @@ export function CopyButton({
   text,
   label,
   disabled = false,
+  onCopied,
 }: {
   text: string;
   label: string;
   disabled?: boolean;
+  /** Told once the text is on the clipboard: a handoff. */
+  onCopied?: () => void;
 }) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
 
@@ -23,6 +26,7 @@ export function CopyButton({
     try {
       await navigator.clipboard.writeText(text);
       setState("copied");
+      onCopied?.();
     } catch {
       setState("failed");
     }

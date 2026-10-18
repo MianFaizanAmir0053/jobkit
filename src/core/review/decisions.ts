@@ -75,6 +75,21 @@ export interface ReviewDecisions {
    * decision on the post, which goes with a draft pick.
    */
   declined: Declinable[];
+  /**
+   * The email as the owner last handed it off from the page (Open in Gmail,
+   * a copy button): its words and what they changed, which Mark sent then
+   * records, whatever changed since; none before a handoff. Kept with the
+   * draft.
+   */
+  handoff: Handoff | null;
+}
+
+/** A handoff from the page: the email's words (wordsKey), what they changed, and when. */
+export interface Handoff {
+  words: string;
+  changed: string[];
+  factual: boolean;
+  at: string;
 }
 
 /**
@@ -106,6 +121,7 @@ export const NO_DECISIONS: ReviewDecisions = {
   deleted: [],
   answers: {},
   declined: [],
+  handoff: null,
 };
 
 const addressCheckSchema = z.object({
@@ -136,6 +152,16 @@ export const decisionsSchema = z.object({
   answers: z.record(z.string(), z.string()).default({}),
   // Kept from before the owner could decline an instruction: none.
   declined: z.array(z.enum(DECLINABLE)).default([]),
+  // Kept from before handoffs were recorded: none.
+  handoff: z
+    .object({
+      words: z.string(),
+      changed: z.array(z.string()),
+      factual: z.boolean(),
+      at: z.string(),
+    })
+    .nullable()
+    .default(null),
 });
 
 /** The most characters an edited or added sentence holds. */

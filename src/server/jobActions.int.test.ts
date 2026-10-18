@@ -43,6 +43,7 @@ import {
   draftAnyway,
   gate,
   geminiDraft,
+  handoff,
   keepForEval,
   pick,
   readAgain,
@@ -865,6 +866,26 @@ describe("the job page's routes", () => {
     const second = await (await gate(get(`/api/jobs/${ready}/gate`, cookie), deps(), ready)).json();
     expect(second.words).not.toBe(first.words);
     expect(second.kit).toBe(first.kit);
+  });
+
+  it("record a handoff the page posts, naming the kit and the words it showed, and refuse one from a page that showed others", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const ready = await settled([answer(fixture("S01-email-simple")), answer(DRAFT)]);
+    const kit = await kitOf(ready);
+    const words = await wordsOf(ready);
+    const handOff = (body: object, by?: string) =>
+      handoff(post(`/api/jobs/${ready}/handoff`, JSON.stringify(body), by), deps(), ready);
+
+    expect((await handOff({ kit, words }, cookie)).status).toBe(200);
+    expect((await jobView({ db, clock }, ready))!.review!.decisions.handoff).toMatchObject({
+      words,
+      changed: [],
+      factual: false,
+    });
+    expect((await handOff({ kit, words: "00000000" }, cookie)).status).toBe(409);
+    expect((await handOff({ kit }, cookie)).status).toBe(400);
+    expect((await handOff({ kit, words })).status).toBe(401);
   });
 
   it("keep for evaluation only a job with screenshots, and only from a signed-in browser", async () => {

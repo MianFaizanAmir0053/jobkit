@@ -18,7 +18,7 @@ import type { GateReason } from "./canHandOff";
 import { flagKey, NO_DECISIONS } from "./decisions";
 import { jobView, storedDecisions } from "./jobView";
 import { applyAgainForJob, recordReview } from "./kitReview";
-import { markSent, takeBackSent } from "./markSent";
+import { markSent, recordHandoff, takeBackSent } from "./markSent";
 import { KIT_DRAFT, readyKit as kitFor, resetKitBed } from "./testKit";
 
 /* The owner's decisions on a kit, kept with the gate they leave: review AC1 and AC4. */
@@ -144,6 +144,7 @@ describe("recordReview", () => {
         deleted: [],
         answers: {},
         declined: [],
+        handoff: null,
       },
       gate: typed.ok ? typed.gate : [],
     });
@@ -412,6 +413,66 @@ describe("recordReview", () => {
     expect(
       await recordReview(deps(), id, { kind: "decline", instruction: "keyword", declined: true }),
     ).toEqual({ ok: false, reason: "not-in-kit" });
+  });
+
+  it("records at Mark sent what the owner changed in the words they last handed off, not as the email stands then", async () => {
+    const outcome = async (steps: (id: string) => Promise<void>) => {
+      await resetKitBed({ db, clock, storage });
+      const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+        verdicts: [{ blockId: "S1", verdict: "supported", companyClaim: false, note: "" }],
+      });
+      await steps(id);
+      expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+        ok: true,
+      });
+      const { rows } = await db.query(
+        "select changed, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+        [id],
+      );
+      return rows[0];
+    };
+    const handedOff = async (id: string) => {
+      const shown = (await jobView({ db, clock }, id))!;
+      expect(
+        await recordHandoff({ db, clock }, id, { kit: shown.kitKey!, words: shown.wordsKey! }),
+      ).toEqual({ ok: true });
+    };
+    const words = "I have built production React applications for four years.";
+
+    // Edited and handed off, then the edit taken back: the edited words went.
+    expect(
+      await outcome(async (id) => {
+        await recordReview(deps(), id, { kind: "edit", blockId: "S1", text: words });
+        await recordReview(deps(), id, { kind: "confirm", blockId: "S1" });
+        await handedOff(id);
+        await recordReview(deps(), id, { kind: "revert", blockId: "S1" });
+      }),
+    ).toEqual({ changed: ["sentence:S1"], factual_edit: true });
+    // Handed off as drafted, then edited: drafting's words went.
+    expect(
+      await outcome(async (id) => {
+        await handedOff(id);
+        await recordReview(deps(), id, { kind: "edit", blockId: "S1", text: words });
+        await recordReview(deps(), id, { kind: "confirm", blockId: "S1" });
+      }),
+    ).toEqual({ changed: [], factual_edit: false });
+  });
+
+  it("refuses a handoff from a page that showed other words, or another kit", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    const shown = (await jobView({ db, clock }, id))!;
+    await recordReview(deps(), id, {
+      kind: "edit",
+      blockId: "S1",
+      text: "I have built production React applications for nine years.",
+    });
+
+    expect(
+      await recordHandoff({ db, clock }, id, { kit: shown.kitKey!, words: shown.wordsKey! }),
+    ).toEqual({ ok: false, reason: "changed" });
+    expect(
+      await recordHandoff({ db, clock }, id, { kit: "another kit", words: shown.wordsKey! }),
+    ).toEqual({ ok: false, reason: "changed" });
   });
 
   it("runs validate again on the email as the owner edited it", async () => {

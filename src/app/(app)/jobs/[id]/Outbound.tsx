@@ -99,6 +99,19 @@ export function Outbound({
   );
 
   const enabled = open && confirmed === shown && !held;
+  // Each handoff posts the words it handed off, right after the click, which Mark sent records;
+  // the handoff never waits for it (review spec, "The outbound gate").
+  const handedOff = () => {
+    if (words === null) return;
+    void fetch(`/api/jobs/${jobId}/handoff`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kit, words }),
+      keepalive: true,
+    }).catch(() => {
+      // Mark sent then records the email as it stands.
+    });
+  };
   const waiting = !open
     ? ""
     : held
@@ -118,6 +131,7 @@ export function Outbound({
               target="_blank"
               rel="noopener noreferrer"
               className={`${buttonVariants()} min-h-11`}
+              onClick={handedOff}
             >
               Open in Gmail
             </a>
@@ -130,8 +144,8 @@ export function Outbound({
               Open in Gmail
             </span>
           ))}
-        <CopyButton text={subject} label="Copy subject" disabled={!enabled} />
-        <CopyButton text={body} label="Copy email" disabled={!enabled} />
+        <CopyButton text={subject} label="Copy subject" disabled={!enabled} onCopied={handedOff} />
+        <CopyButton text={body} label="Copy email" disabled={!enabled} onCopied={handedOff} />
       </div>
       <p role="status" className="min-h-5 text-sm text-muted-foreground">
         {waiting}
