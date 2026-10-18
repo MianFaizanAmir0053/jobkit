@@ -79,6 +79,7 @@ export async function pickDraft(
         confirmed: decisions.confirmed,
         added: decisions.added,
         deleted: decisions.deleted,
+        answers: decisions.answers,
       },
     };
     await tx.query(
@@ -94,6 +95,7 @@ export async function pickDraft(
       confirmed: back.confirmed,
       added: back.added,
       deleted: back.deleted,
+      answers: back.answers,
     };
     const outcome = await keep(at, jobId, roleId, picked.kitKey, carried);
     return outcome.ok ? { ok: true, gate: outcome.gate } : outcome;

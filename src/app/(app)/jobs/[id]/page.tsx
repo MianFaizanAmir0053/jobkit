@@ -51,7 +51,7 @@ import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
 import { CROP_KEY } from "./imageUrls";
 import { PostImage } from "./PostImage";
-import { AddSentence, AttachTick, FitTick, RetypeField, SentenceEdit } from "./Review";
+import { AddSentence, AnswersPick, AttachTick, FitTick, RetypeField, SentenceEdit } from "./Review";
 
 export const metadata: Metadata = { title: "Job · jobkit" };
 
@@ -651,6 +651,23 @@ function KitPanel({
   const draftedText = new Map(draft.kit.blocks.map((block) => [block.id, block.text]));
   // The chosen role's must-haves: one the owner does not meet needs a line saying so.
   const musts = new Set(parts.mustHaves ?? []);
+  // The must-haves a sentence of the owner's answers, as their line about each.
+  const lined = new Set(Object.values(decisions.answers));
+  // The must-haves a line of the owner's may answer: each with no honest line, each only they can
+  // confirm they meet, and each a line of theirs answers now.
+  const lineFor = [
+    ...new Set([
+      ...parts.flags
+        .filter(
+          (flag) => flag.kind === "missing_gap_line" || (isMeetable(flag) && musts.has(flag.at)),
+        )
+        .map((flag) => flag.at),
+      ...lined,
+    ]),
+  ].flatMap((id) => {
+    const text = requirementText.get(id);
+    return text === undefined ? [] : [{ id, text: withoutContacts(text, typing(view)) }];
+  });
   const gate = view.review?.gate ?? [];
   const open = view.review !== null && gate.length === 0;
   const sent = parts.sent;
@@ -1024,6 +1041,18 @@ function KitPanel({
                       )}
                     </div>
                   )}
+                  {(edited || added) && !locked && lineFor.length > 0 && (
+                    <div className="mt-1">
+                      <AnswersPick
+                        key={`${kitKey}:${block.id}:${decisions.answers[block.id] ?? ""}`}
+                        jobId={view.id}
+                        kit={kitKey}
+                        blockId={block.id}
+                        value={decisions.answers[block.id] ?? ""}
+                        options={lineFor}
+                      />
+                    </div>
+                  )}
                 </li>
               );
             })}
@@ -1101,9 +1130,11 @@ function KitPanel({
               // not claim it, so it is fixed where they send it.
               const meetsIt = meetable.has(key);
               const met = meetsIt && meets.has(meetable.get(key)!);
-              // A must-have the owner does not meet needs a line saying so, written where they send it.
+              // A must-have the owner does not meet needs a line saying so: theirs, written here and
+              // marked as their line about it, or written where they send the email.
               const must = meetsIt && musts.has(flag.at);
-              const inGmail = FIXED_IN_GMAIL.has(flag.kind) || must;
+              const hasLine = must && lined.has(flag.at);
+              const inGmail = FIXED_IN_GMAIL.has(flag.kind) || (must && !hasLine);
               // Its place too, so two flags of one message, as on the subject and the greeting, differ.
               const named =
                 about ??
@@ -1119,12 +1150,16 @@ function KitPanel({
                   {meetsIt && !met && !locked && (
                     <p className="mt-1 text-muted-foreground">
                       {flagsChecked.has(key)
-                        ? must
-                          ? `You will fix it ${where}: take out what the email says about it, and add a line saying you do not meet it.`
-                          : "You checked this: the email must not claim it."
-                        : must
-                          ? `If you meet it, tick “I meet this requirement” under How you fit. If not, take out what the email says about it ${where}, add a line saying you do not meet it, and press “I will fix it ${where}”.`
-                          : "If you meet it, tick “I meet this requirement” under How you fit. If not, make sure the email does not claim it, and press “I checked this”."}
+                        ? hasLine
+                          ? "You checked this: your line says you do not meet it, and the email claims nothing more."
+                          : must
+                            ? `You will fix it ${where}: take out what the email says about it, and add a line saying you do not meet it.`
+                            : "You checked this: the email must not claim it."
+                        : hasLine
+                          ? "If you meet it, tick “I meet this requirement” under How you fit. If not, make sure the email claims nothing about it beyond your line, and press “I checked this”."
+                          : must
+                            ? `If you meet it, tick “I meet this requirement” under How you fit. If not, take out what the email says about it and add a line saying you do not meet it: above, with Add a sentence, marked as your line about it, or ${where}, pressing “I will fix it ${where}”.`
+                            : "If you meet it, tick “I meet this requirement” under How you fit. If not, make sure the email does not claim it, and press “I checked this”."}
                     </p>
                   )}
                   {met ? (

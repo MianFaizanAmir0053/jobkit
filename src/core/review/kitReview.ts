@@ -78,6 +78,13 @@ function fits(action: ReviewAction, parts: KitParts, decisions: ReviewDecisions)
       );
     case "delete":
       return parts.blocks.includes(action.blockId) && !isDeleted(decisions, action.blockId);
+    // A sentence of the owner's, as the line about one of the post's must-haves, or as none.
+    case "answers":
+      return (
+        parts.blocks.includes(action.blockId) &&
+        isOwners(decisions, action.blockId) &&
+        (action.requirementId === "" || (parts.mustHaves ?? []).includes(action.requirementId))
+      );
     case "check":
     case "uncheck":
       return parts.blocks.includes(action.blockId);

@@ -80,6 +80,7 @@ describe("decide", () => {
       confirmed: [],
       added: [],
       deleted: [],
+      answers: {},
     });
     expect(decide(decisions, { kind: "uncheck", blockId: "S2" }).checked).toEqual([]);
     expect(decide(decisions, { kind: "uncheck_flag", flag: F }).flagsChecked).toEqual([]);
@@ -216,11 +217,28 @@ describe("decide", () => {
     expect(parses({ kind: "delete", blockId: "N1" })).toBe(true);
   });
 
-  it("reads decisions kept before sentences were added or deleted as adding and deleting none", () => {
-    const { added, deleted, ...before } = NO_DECISIONS;
+  it("marks a sentence of the owner's as answering a requirement, until they unmark or delete it", () => {
+    let decisions = decide(NO_DECISIONS, { kind: "add", after: "S3", text: "No Kubernetes yet." });
+    decisions = decide(decisions, { kind: "answers", blockId: "N1", requirementId: "R5" });
+    expect(decisions.answers).toEqual({ N1: "R5" });
+    expect(
+      decide(decisions, { kind: "answers", blockId: "N1", requirementId: "" }).answers,
+    ).toEqual({});
+    expect(decide(decisions, { kind: "delete", blockId: "N1" }).answers).toEqual({});
+    // An edited sentence's mark goes with the edit taken back: drafting's words answer nothing new.
+    let edited = decide(NO_DECISIONS, { kind: "edit", blockId: "S2", text: "My words." });
+    edited = decide(edited, { kind: "answers", blockId: "S2", requirementId: "R5" });
+    expect(decide(edited, { kind: "revert", blockId: "S2" }).answers).toEqual({});
+    expect(
+      reviewActionSchema.safeParse({ kind: "answers", blockId: "N1", requirementId: "F1" }).success,
+    ).toBe(false);
+  });
 
-    expect([added, deleted]).toEqual([[], []]);
-    expect(decisionsSchema.parse(before)).toMatchObject({ added: [], deleted: [] });
+  it("reads decisions kept before sentences were added or deleted as adding and deleting none", () => {
+    const { added, deleted, answers, ...before } = NO_DECISIONS;
+
+    expect([added, deleted, answers]).toEqual([[], [], {}]);
+    expect(decisionsSchema.parse(before)).toMatchObject({ added: [], deleted: [], answers: {} });
   });
 
   it("names a flag by what it found, so it keeps its name when validate runs again", () => {
@@ -371,6 +389,7 @@ describe("gateInputOf", () => {
       confirmed: ["S9"],
       added: [],
       deleted: ["S9"],
+      answers: {},
     };
 
     const input = gateInputOf({ ...PARTS, blocks: ["S1"] }, decisions);
@@ -460,6 +479,18 @@ describe("approveAll", () => {
     expect(
       needsNewWords(PARTS, decide(checked, { kind: "meets", requirementId: "R2", ticked: true })),
     ).toBe(false);
+  });
+
+  it("needs no new words for a must-have the owner does not meet once a line of theirs answers it", () => {
+    const checked = decide(NO_DECISIONS, { kind: "check_flag", flag: F });
+    expect(needsNewWords(PARTS, checked)).toBe(true);
+
+    let lined = decide(checked, { kind: "add", after: "S3", text: "I do not hold that." });
+    lined = decide(lined, { kind: "answers", blockId: "N1", requirementId: "R2" });
+
+    expect(needsNewWords(PARTS, lined)).toBe(false);
+    // Deleted, the line answers nothing.
+    expect(needsNewWords(PARTS, decide(lined, { kind: "delete", blockId: "N1" }))).toBe(true);
   });
 
   it("names what Approve & send marks: the sentences and flags the gate holds that it may settle", () => {

@@ -17,14 +17,16 @@ import { type ReviewDecisions, shortHash } from "./decisions";
  * is a factual one (ledger spec, "Factual edits").
  */
 
-type Owners = Pick<ReviewDecisions, "edits" | "added" | "deleted">;
+type Owners = Pick<ReviewDecisions, "edits" | "added" | "deleted"> &
+  Partial<Pick<ReviewDecisions, "answers">>;
 
 /**
  * The email as it stands: the draft's, with the owner's words for each
  * sentence they edited, the sentences they added where they put them, and
  * none they deleted; the draft's own while they changed nothing. Their
  * words are marked as theirs (`owner`), which validate checks for what
- * they say, never against facts.
+ * they say, never against facts; one they marked as answering a must-have
+ * is its gap line.
  */
 export function editedKit(kit: EmailKit, decisions: Owners): EmailKit {
   const { edits, added, deleted } = decisions;
@@ -57,8 +59,33 @@ export function listedSentences(
   }));
 }
 
+/**
+ * The draft's sentences with the owner's words for each they edited, and
+ * theirs where they added them; each of theirs they marked as answering a
+ * must-have its gap line.
+ */
+function withOwnersWords(kit: EmailKit, decisions: Owners): KitBlock[] {
+  const answers = decisions.answers ?? {};
+  return placed(kit, decisions).map((block) =>
+    block.owner && Object.hasOwn(answers, block.id)
+      ? {
+          ...block,
+          class: "gap",
+          factIds: [],
+          fields: [],
+          gap: {
+            requirementId: answers[block.id]!,
+            knownLineId: "",
+            templateId: "",
+            relatedFactId: "",
+          },
+        }
+      : block,
+  );
+}
+
 /** The draft's sentences with the owner's words for each they edited, and theirs where they added them. */
-function withOwnersWords(kit: EmailKit, { edits, added }: Owners): KitBlock[] {
+function placed(kit: EmailKit, { edits, added }: Owners): KitBlock[] {
   const blocks: KitBlock[] = kit.blocks.map((block) =>
     Object.hasOwn(edits, block.id) ? { ...block, text: edits[block.id]!, owner: true } : block,
   );

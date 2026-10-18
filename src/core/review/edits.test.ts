@@ -99,6 +99,25 @@ describe("editedKit", () => {
     expect(editedKit(KIT, decisions).blocks.map((each) => each.id)).toEqual(["S1", "N1", "S4"]);
   });
 
+  it("makes a sentence the owner marked as answering a requirement its gap line", () => {
+    const shown = editedKit(KIT, {
+      edits: { S2: "I have not used Kubernetes." },
+      added: [{ id: "N1", after: "S4", text: "Nor Terraform." }],
+      deleted: [],
+      answers: { S2: "R5", N1: "R6" },
+    });
+
+    expect(shown.blocks.find((each) => each.id === "S2")).toMatchObject({
+      class: "gap",
+      factIds: [],
+      gap: { requirementId: "R5", knownLineId: "", templateId: "", relatedFactId: "" },
+    });
+    expect(shown.blocks.find((each) => each.id === "N1")).toMatchObject({
+      class: "gap",
+      gap: { requirementId: "R6" },
+    });
+  });
+
   it("keeps the place of a sentence added after one the owner then deleted", () => {
     const shown = editedKit(KIT, {
       edits: {},

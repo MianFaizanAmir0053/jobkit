@@ -63,6 +63,12 @@ export interface ReviewDecisions {
   added: AddedSentence[];
   /** The drafted sentences the owner deleted, by block ID; kept with the draft. */
   deleted: string[];
+  /**
+   * The owner's sentences they marked as answering a must-have, by block
+   * ID: the requirement's ID, whose gap line the sentence then is; kept with
+   * the draft.
+   */
+  answers: Record<string, string>;
 }
 
 /** A sentence the owner added: "N1" and on, after the sentence `after` names, or first (""). */
@@ -84,6 +90,7 @@ export const NO_DECISIONS: ReviewDecisions = {
   confirmed: [],
   added: [],
   deleted: [],
+  answers: {},
 };
 
 const addressCheckSchema = z.object({
@@ -111,6 +118,7 @@ export const decisionsSchema = z.object({
   // Kept from before sentences could be added or deleted: none.
   added: z.array(z.object({ id: z.string(), after: z.string(), text: z.string() })).default([]),
   deleted: z.array(z.string()).default([]),
+  answers: z.record(z.string(), z.string()).default({}),
 });
 
 /** The most characters an edited or added sentence holds. */
@@ -160,6 +168,12 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
     text: z.string().trim().min(1).max(MAX_SENTENCE),
   }),
   z.strictObject({ kind: z.literal("delete"), blockId: z.string().min(1).max(20) }),
+  // A sentence of the owner's as the line about a must-have, or as none ("").
+  z.strictObject({
+    kind: z.literal("answers"),
+    blockId: z.string().min(1).max(20),
+    requirementId: z.union([z.literal(""), z.string().regex(/^R\d{1,4}$/)]),
+  }),
 ]);
 
 export type ReviewAction = z.infer<typeof reviewActionSchema>;
@@ -313,12 +327,13 @@ export function decide(
           }
         : { ...anew, edits: { ...decisions.edits, [action.blockId]: text } };
     }
-    // Drafting's words again, for a sentence edited or deleted.
+    // Drafting's words again, for a sentence edited or deleted: they answer nothing the owner marked.
     case "revert":
       return {
         ...decisions,
         edits: withoutKey(decisions.edits, action.blockId),
         deleted: without(decisions.deleted, action.blockId),
+        answers: withoutKey(decisions.answers, action.blockId),
         confirmed: without(decisions.confirmed, action.blockId),
         flagsChecked: notAt(decisions.flagsChecked, action.blockId),
       };
@@ -336,6 +351,7 @@ export function decide(
         ...decisions,
         confirmed: without(decisions.confirmed, action.blockId),
         flagsChecked: notAt(decisions.flagsChecked, action.blockId),
+        answers: withoutKey(decisions.answers, action.blockId),
       };
       const gone = decisions.added.find((each) => each.id === action.blockId);
       // An added sentence goes outright, and one added after it takes its place.
@@ -353,6 +369,14 @@ export function decide(
         deleted: withOne(decisions.deleted, action.blockId),
       };
     }
+    case "answers":
+      return {
+        ...decisions,
+        answers:
+          action.requirementId === ""
+            ? withoutKey(decisions.answers, action.blockId)
+            : { ...decisions.answers, [action.blockId]: action.requirementId },
+      };
     case "confirm":
       return { ...decisions, confirmed: withOne(decisions.confirmed, action.blockId) };
   }
@@ -440,17 +464,24 @@ export const NEEDS_NEW_WORDS: ReadonlySet<KitFlagKind> = new Set([
 /** Whether the kit's words must change before it goes, so Approve & send cannot send it. */
 export function needsNewWords(
   parts: Pick<KitParts, "flags" | "mustHaves">,
-  decisions: Pick<ReviewDecisions, "flagsChecked" | "meets"> = NO_DECISIONS,
+  decisions: Pick<ReviewDecisions, "flagsChecked" | "meets"> &
+    Partial<Pick<ReviewDecisions, "answers">> = NO_DECISIONS,
 ): boolean {
   const checked = new Set(decisions.flagsChecked);
   const meets = new Set(decisions.meets);
   const musts = new Set(parts.mustHaves ?? []);
+  // The must-haves a sentence of the owner's answers: their line about each.
+  const lined = new Set(Object.values(decisions.answers ?? {}));
   return parts.flags.some(
     (flag) =>
       NEEDS_NEW_WORDS.has(flag.kind) ||
       // A must-have checked by an owner who did not say they meet it: the email must not claim it,
-      // and needs a line saying so.
-      (isMeetable(flag) && musts.has(flag.at) && checked.has(flagKey(flag)) && !meets.has(flag.at)),
+      // and needs a line saying so, until one of theirs answers it.
+      (isMeetable(flag) &&
+        musts.has(flag.at) &&
+        checked.has(flagKey(flag)) &&
+        !meets.has(flag.at) &&
+        !lined.has(flag.at)),
   );
 }
 

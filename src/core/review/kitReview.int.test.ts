@@ -142,6 +142,7 @@ describe("recordReview", () => {
         confirmed: [],
         added: [],
         deleted: [],
+        answers: {},
       },
       gate: typed.ok ? typed.gate : [],
     });
@@ -232,6 +233,36 @@ describe("recordReview", () => {
 
     const flags = (await jobView({ db, clock }, id))!.kitParts!.flags;
     expect(flags.map((flag) => [flag.kind, flag.at])).toContainEqual(["missing_gap_line", "R5"]);
+  });
+
+  it("takes a sentence of the owner's, marked as answering a must-have, as its line (drafting AC13)", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      record: askingForKubernetes,
+    });
+    const missing = async () =>
+      (await jobView({ db, clock }, id))!.kitParts!.flags.some(
+        (flag) => flag.kind === "missing_gap_line" && flag.at === "R5",
+      );
+    expect(await missing()).toBe(true);
+    await recordReview(deps(), id, {
+      kind: "add",
+      after: "S1",
+      text: "I have not run Kubernetes in production; I deploy containers with Docker.",
+    });
+    expect(await missing()).toBe(true);
+
+    await recordReview(deps(), id, { kind: "answers", blockId: "N1", requirementId: "R5" });
+
+    expect(await missing()).toBe(false);
+    // A requirement the post does not ask for as a must-have, or drafting's own words: refused.
+    expect(
+      await recordReview(deps(), id, { kind: "answers", blockId: "N1", requirementId: "R4" }),
+    ).toEqual({ ok: false, reason: "not-in-kit" });
+    expect(
+      await recordReview(deps(), id, { kind: "answers", blockId: "S1", requirementId: "R5" }),
+    ).toEqual({ ok: false, reason: "not-in-kit" });
+    await recordReview(deps(), id, { kind: "answers", blockId: "N1", requirementId: "" });
+    expect(await missing()).toBe(true);
   });
 
   it("runs validate again on the email as the owner edited it", async () => {

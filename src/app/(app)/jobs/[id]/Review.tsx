@@ -173,6 +173,70 @@ export function SentenceEdit({
 }
 
 /**
+ * "Your line about", on a sentence in the owner's own words (drafting spec,
+ * "Owner edits"): the must-have it answers, as its gap line, which a
+ * missing line then no longer holds the email for; or none.
+ */
+export function AnswersPick({
+  jobId,
+  kit,
+  blockId,
+  value,
+  options,
+}: {
+  jobId: string;
+  kit: string;
+  blockId: string;
+  /** The requirement the sentence answers now; "" for none. */
+  value: string;
+  /** The must-haves it may answer, each with its words. */
+  options: { id: string; text: string }[];
+}) {
+  const router = useRouter();
+  const [picked, setPicked] = useState(value);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function change(next: string) {
+    setPicked(next);
+    setBusy(true);
+    const { error, answered } = await decide(jobId, kit, {
+      kind: "answers",
+      blockId,
+      requirementId: next,
+    });
+    setBusy(false);
+    setError(error);
+    if (error !== null) setPicked(value);
+    if (answered) router.refresh();
+  }
+
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-muted-foreground">Your line about</span>
+      <select
+        value={picked}
+        disabled={busy}
+        onChange={(event) => void change(event.currentTarget.value)}
+        className="min-h-11 w-full rounded-md border border-border bg-background px-2"
+      >
+        <option value="">No requirement</option>
+        {options.map((option) => (
+          <option key={option.id} value={option.id}>
+            {option.text}
+          </option>
+        ))}
+      </select>
+      {error && (
+        <span role="alert" className="text-destructive">
+          {error}
+        </span>
+      )}
+    </label>
+  );
+}
+
+/**
  * "Add a sentence", below the email (review spec, "Job page"): a box for a
  * sentence in the owner's own words, put after the sentence they choose,
  * the last by default, or first; it waits, as an edit does, until they
