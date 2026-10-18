@@ -10,7 +10,9 @@ import type { AgreementProblem } from "@/core/extraction/addressRead";
 import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
 import { flagRank, judgeMessage } from "@/core/review/canHandOff";
+import { type ChecklistStatus, checklistOf } from "@/core/review/checklist";
 import { flagKey, NEEDS_NEW_WORDS, needsNewWords, NO_DECISIONS } from "@/core/review/decisions";
+import { fitTableOf } from "@/core/review/fitTable";
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { DraftChoice, JobView, Step } from "@/core/review/jobView";
 import { showsFor } from "@/core/review/kitSends";
@@ -20,6 +22,7 @@ import {
   gmailForViewer,
   jobForViewer,
   kitCvForViewer,
+  kitFactsForViewer,
   postImagesForViewer,
   requestTime,
   requireSession,
@@ -35,7 +38,7 @@ import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
 import { CROP_KEY } from "./imageUrls";
 import { PostImage } from "./PostImage";
-import { AttachTick, RetypeField } from "./Review";
+import { AttachTick, FitTick, RetypeField } from "./Review";
 
 export const metadata: Metadata = { title: "Job · jobkit" };
 
@@ -49,6 +52,19 @@ const ROUTE_WORDS: Readonly<Record<Role["route"]["kind"], string>> = {
   linkedin_comment: "by commenting on the post",
   other: "another way the post describes",
   unknown: "a way the post does not say",
+};
+
+const CHECKLIST_WORDS: Readonly<Record<ChecklistStatus, string>> = {
+  applied: "Applied",
+  not_applied: "Not applied",
+  not_followed: "Not followed: addressed to AI",
+  not_answered: "Not answered",
+};
+
+const VERDICT_WORDS: Readonly<Record<"met" | "partial" | "gap", string>> = {
+  met: "Met",
+  partial: "Partial",
+  gap: "Gap",
 };
 
 const STEP_WORDS: Readonly<Record<Step["status"], string>> = {
@@ -110,6 +126,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
   const readable = ready && view.draft && view.role && view.kitParts && view.kitKey;
   const gmail = readable ? await gmailForViewer() : null;
   const cv = readable ? await kitCvForViewer(view.draft!.profileVersion) : null;
+  const facts = readable ? await kitFactsForViewer(view.draft!.profileVersion) : {};
   // The contact's crop beside it, and the screenshots when the owner must type it from them.
   const images = view.images ? await postImagesForViewer(view.id, view.images) : null;
   const now = await requestTime();
@@ -147,7 +164,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
       {record && <ScamPanel view={view} />}
       {readable && <DuplicatePanel view={view} timeZone={timeZone} />}
       {readable && <EligibilityBanner view={view} />}
-      {record && <PostPanel view={view} />}
+      {record && <PostPanel view={view} withAiLines={!readable} />}
       {readable ? (
         <KitPanel
           view={view}
@@ -158,6 +175,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
               : { state: "not-connected", email: null }
           }
           cvFile={cv}
+          facts={facts}
           images={images}
           onLaptop={session.kind === "google"}
           now={now}
@@ -472,10 +490,15 @@ function EligibilityBanner({ view }: { view: JobView }) {
 }
 
 /** What extract read that the owner should see before the kit: lines aimed at AI, and its flags. */
-function PostPanel({ view }: { view: JobView }) {
+/**
+ * What the post says before there is a kit to check it against: the lines
+ * aimed at AI tools, which a kit's checklist shows in their place, and
+ * what extract asks the owner to check.
+ */
+function PostPanel({ view, withAiLines }: { view: JobView; withAiLines: boolean }) {
   const extraction = view.extraction!;
   // From every role, once each: the model may record a line about the whole post under one role.
-  const lines = extraction.record.roles.flatMap((role) => [
+  const lines = (withAiLines ? extraction.record.roles : []).flatMap((role) => [
     ...role.instructions.filter((line) => line.addressed_to_ai).map((line) => line.text),
     ...role.screening_questions.filter((line) => line.addressed_to_ai).map((line) => line.text),
   ]);
@@ -522,6 +545,7 @@ function KitPanel({
   account,
   gmail,
   cvFile,
+  facts,
   images,
   onLaptop,
   now,
@@ -533,6 +557,8 @@ function KitPanel({
   gmail: { state: "connected" | "not-connected" | "refused"; email: string | null };
   /** The CV Approve & send attaches, as the recruiter sees its name. */
   cvFile: string | null;
+  /** The statements of the facts the draft's profile version holds, by ID, for the fit table. */
+  facts: Readonly<Record<string, string>>;
   /** The contact's crop and the post's screenshots, signed for 60 seconds; null for none. */
   images: PostImages | null;
   /** Whether this device can open Devices: a paired phone cannot. */
@@ -562,7 +588,11 @@ function KitPanel({
   const flags = [...draft.flags.entries()].sort(
     ([, a], [, b]) => flagRank(a.kind) - flagRank(b.kind),
   );
-  const instructions = role.instructions.filter((line) => !line.addressed_to_ai);
+  // What the post asks of applicants, each line marked as drafting dealt with it.
+  const checklist = checklistOf(view.extraction!.record, role, draft);
+  // Each requirement with its verdict, its cited facts, and the owner's tick where only they can.
+  const fitRows = fitTableOf(role, draft);
+  const tickable = new Set(fitRows.flatMap((row) => (row.tick && row.flag ? [row.flag] : [])));
   const unchecked = view.steps
     .filter((step) => step.status === "not_checked")
     .map((step) => step.label.toLowerCase());
@@ -883,31 +913,39 @@ function KitPanel({
                 <li key={key}>
                   {flag.message}
                   {about && <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>}
-                  {!locked && (
-                    <div className="mt-1 flex items-center gap-2">
-                      {flagsChecked.has(key) ? (
-                        <>
-                          <span className="text-muted-foreground">
-                            {inGmail ? `You will fix it ${where}.` : "You checked this."}
-                          </span>
+                  {tickable.has(key) ? (
+                    <p className="mt-1 text-muted-foreground">
+                      {flagsChecked.has(key)
+                        ? "You said you meet it, under How you fit."
+                        : "Tick it under How you fit if you meet it."}
+                    </p>
+                  ) : (
+                    !locked && (
+                      <div className="mt-1 flex items-center gap-2">
+                        {flagsChecked.has(key) ? (
+                          <>
+                            <span className="text-muted-foreground">
+                              {inGmail ? `You will fix it ${where}.` : "You checked this."}
+                            </span>
+                            <ActionButton
+                              url={reviewUrl}
+                              gateOf={view.id}
+                              label="Undo"
+                              variant="outline"
+                              body={decision({ kind: "uncheck_flag", flag: key })}
+                            />
+                          </>
+                        ) : (
                           <ActionButton
                             url={reviewUrl}
                             gateOf={view.id}
-                            label="Undo"
+                            label={inGmail ? `I will fix it ${where}` : "I checked this"}
                             variant="outline"
-                            body={decision({ kind: "uncheck_flag", flag: key })}
+                            body={decision({ kind: "check_flag", flag: key })}
                           />
-                        </>
-                      ) : (
-                        <ActionButton
-                          url={reviewUrl}
-                          gateOf={view.id}
-                          label={inGmail ? `I will fix it ${where}` : "I checked this"}
-                          variant="outline"
-                          body={decision({ kind: "check_flag", flag: key })}
-                        />
-                      )}
-                    </div>
+                        )}
+                      </div>
+                    )
                   )}
                 </li>
               );
@@ -916,14 +954,36 @@ function KitPanel({
         </Panel>
       )}
 
-      {(instructions.length > 0 || role.required_attachments.length > 0) && (
+      {(checklist.length > 0 || role.required_attachments.length > 0) && (
         <Panel title="What the post asks of applicants">
-          {instructions.length > 0 && (
-            <ul className="list-disc pl-5 text-sm [overflow-wrap:anywhere]">
-              {instructions.map((line, i) => (
-                <li key={`i${i}`}>{withoutContacts(line.text, typing(view))}</li>
+          {checklist.length > 0 && (
+            <ul className="flex flex-col gap-2 text-sm [overflow-wrap:anywhere]">
+              {checklist.map((item, i) => (
+                <li key={`i${i}`}>
+                  {item.status === "not_followed" || item.status === "not_answered" ? (
+                    <>&ldquo;{withoutContacts(item.text, typing(view))}&rdquo;</>
+                  ) : (
+                    withoutContacts(item.text, typing(view))
+                  )}
+                  <span
+                    className={
+                      item.status === "applied"
+                        ? "block text-muted-foreground"
+                        : "block font-medium"
+                    }
+                  >
+                    {CHECKLIST_WORDS[item.status]}
+                  </span>
+                </li>
               ))}
             </ul>
+          )}
+          {checklist.some(
+            (item) => item.status === "not_followed" || item.status === "not_answered",
+          ) && (
+            <p className="text-sm text-muted-foreground">
+              jobkit never follows lines aimed at AI tools; the checks on the email say if it did.
+            </p>
           )}
           {cv.length > 0 && (
             <p className="text-sm [overflow-wrap:anywhere]">
@@ -947,23 +1007,50 @@ function KitPanel({
       )}
 
       <Panel title="How you fit">
-        <table className="text-sm">
-          <tbody>
-            {role.requirements.map((requirement) => {
-              const row = draft.fit.find((entry) => entry.requirementId === requirement.id);
-              return (
-                <tr key={requirement.id} className="border-b border-border align-top">
-                  <td className="py-1 pr-3 [overflow-wrap:anywhere]">
-                    {withoutContacts(requirement.text, typing(view))}
-                    {requirement.priority === "must" ? "" : " (nice to have)"}
-                  </td>
-                  <td className="py-1 pr-3 font-medium">{row?.verdict ?? "not weighed"}</td>
-                  <td className="py-1 text-muted-foreground">{row?.note}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <ul className="flex flex-col gap-3 text-sm">
+          {fitRows.map((row) => {
+            // The facts the row cites, as the profile version the draft was written with holds them.
+            const cited = row.factIds.flatMap((id) => (facts[id] ? [facts[id]] : []));
+            const resolved = row.flag !== null && flagsChecked.has(row.flag);
+            return (
+              <li key={row.id} className="border-b border-border pb-2 [overflow-wrap:anywhere]">
+                <p>
+                  {withoutContacts(row.text, typing(view))}
+                  {row.must ? "" : " (nice to have)"}
+                </p>
+                {row.verdict === null ? (
+                  <p className="font-medium">Not weighed</p>
+                ) : (
+                  <details>
+                    <summary className="min-h-11 cursor-pointer py-2 font-medium">
+                      {VERDICT_WORDS[row.verdict]}
+                    </summary>
+                    {cited.length > 0 ? (
+                      <ul className="list-disc pl-5 text-muted-foreground">
+                        {cited.map((statement, i) => (
+                          <li key={i}>{statement}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-muted-foreground">It cites no fact from your profile.</p>
+                    )}
+                  </details>
+                )}
+                {row.note && <p className="text-muted-foreground">{row.note}</p>}
+                {row.why && !resolved && <p className="text-destructive">{row.why}</p>}
+                {row.tick && row.flag && (
+                  <FitTick
+                    jobId={view.id}
+                    kit={kitKey}
+                    flag={row.flag}
+                    ticked={resolved}
+                    disabled={locked}
+                  />
+                )}
+              </li>
+            );
+          })}
+        </ul>
       </Panel>
 
       <Panel title="Send it">

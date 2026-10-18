@@ -122,7 +122,7 @@ function isLeast(text: string, at: number, length: number): boolean {
  * value and text that is not a least ("Min 50 words, max 120 words" is
  * 120). None when nothing is left, so the limit stays on the checklist.
  */
-function wordLimitOf(instruction: Instruction): number | null {
+export function wordLimitOf(instruction: Instruction): number | null {
   const { value, text } = instruction;
   const bare = BARE_NUMBER.exec(value)?.[1];
   if (bare !== undefined) {

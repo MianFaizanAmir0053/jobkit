@@ -146,6 +146,21 @@ export async function postImagesForViewer(
 }
 
 /**
+ * The facts a kit's fit table cites, by ID: the statements of the profile
+ * version the draft was written with (review spec, "Job page", item 4).
+ * Paired phones see them too: they are what the kit itself claims, not the
+ * fixed answers the Profile view keeps to Google sessions.
+ */
+export const kitFactsForViewer = cache(
+  async (versionId: string): Promise<Readonly<Record<string, string>>> => {
+    await requireSession();
+    const { db } = await getContainer();
+    const profile = await getProfileVersion(db, versionId);
+    return Object.fromEntries((profile?.facts ?? []).map((fact) => [fact.id, fact.statement]));
+  },
+);
+
+/**
  * The CV "Approve & send" attaches, as the recruiter sees its name: the one
  * of the profile version the email was written with; null when that version,
  * or its CV in storage, is gone.

@@ -88,6 +88,54 @@ export function RetypeField({
 }
 
 /**
+ * "I meet this requirement", on a requirement only the owner can confirm
+ * they meet (review spec, "Job page", item 4): it clears that row's flag,
+ * named by its place among the kit's flags, as "I checked this" did.
+ */
+export function FitTick({
+  jobId,
+  kit,
+  flag,
+  ticked,
+  disabled = false,
+}: {
+  jobId: string;
+  kit: string;
+  flag: string;
+  ticked: boolean;
+  disabled?: boolean;
+}) {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function toggle(next: boolean) {
+    setBusy(true);
+    setError(await decide(jobId, kit, { kind: next ? "check_flag" : "uncheck_flag", flag }));
+    setBusy(false);
+    router.refresh();
+  }
+
+  return (
+    <label className="flex min-h-11 items-center gap-2 text-sm">
+      <input
+        type="checkbox"
+        className="size-5"
+        checked={ticked}
+        disabled={busy || disabled}
+        onChange={(event) => void toggle(event.currentTarget.checked)}
+      />
+      I meet this requirement
+      {error && (
+        <span role="alert" className="text-destructive">
+          {error}
+        </span>
+      )}
+    </label>
+  );
+}
+
+/**
  * A required attachment other than the CV: the owner ticks it to say they
  * will attach it where they send the kit, in Gmail, which opens before
  * anything can be attached, or where they apply.
