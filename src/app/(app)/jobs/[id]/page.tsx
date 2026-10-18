@@ -56,8 +56,11 @@ const ROUTE_WORDS: Readonly<Record<Role["route"]["kind"], string>> = {
 
 const CHECKLIST_WORDS: Readonly<Record<ChecklistStatus, string>> = {
   applied: "Applied",
+  applied_missed: "Applied, but the email misses it: see the checks above",
+  attachment: "The files the post asks for are below",
   not_applied: "Not applied",
   not_followed: "Not followed: addressed to AI",
+  followed: "Addressed to AI, and the email repeats it: see the checks above",
   not_answered: "Not answered",
 };
 
@@ -126,7 +129,9 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
   const readable = ready && view.draft && view.role && view.kitParts && view.kitKey;
   const gmail = readable ? await gmailForViewer() : null;
   const cv = readable ? await kitCvForViewer(view.draft!.profileVersion) : null;
-  const facts = readable ? await kitFactsForViewer(view.draft!.profileVersion) : {};
+  const facts = readable
+    ? await kitFactsForViewer(view.draft!.profileVersion)
+    : new Map<string, string>();
   // The contact's crop beside it, and the screenshots when the owner must type it from them.
   const images = view.images ? await postImagesForViewer(view.id, view.images) : null;
   const now = await requestTime();
@@ -491,7 +496,6 @@ function EligibilityBanner({ view }: { view: JobView }) {
   );
 }
 
-/** What extract read that the owner should see before the kit: lines aimed at AI, and its flags. */
 /**
  * What the post says before there is a kit to check it against: the lines
  * aimed at AI tools, which a kit's checklist shows in their place, and
@@ -560,7 +564,7 @@ function KitPanel({
   /** The CV Approve & send attaches, as the recruiter sees its name. */
   cvFile: string | null;
   /** The statements of the facts the draft's profile version holds, by ID, for the fit table. */
-  facts: Readonly<Record<string, string>>;
+  facts: ReadonlyMap<string, string>;
   /** The contact's crop and the post's screenshots, signed for 60 seconds; null for none. */
   images: PostImages | null;
   /** Whether this device can open Devices: a paired phone cannot. */
@@ -580,10 +584,12 @@ function KitPanel({
   const address = role.route.address.trim();
   const blockText = new Map(kit.blocks.map((block) => [block.id, block.text]));
   const requirementText = new Map(role.requirements.map((entry) => [entry.id, entry.text]));
-  const aboutFlag = (flag: KitFlag) =>
-    ABOUT_A_REQUIREMENT.has(flag.kind)
-      ? requirementText.get(flag.at)
-      : (blockText.get(flag.at) ?? undefined);
+  // A requirement's words are the post's, so a contact in them is hidden while it is typed.
+  const aboutFlag = (flag: KitFlag) => {
+    if (!ABOUT_A_REQUIREMENT.has(flag.kind)) return blockText.get(flag.at) ?? undefined;
+    const text = requirementText.get(flag.at);
+    return text === undefined ? undefined : withoutContacts(text, typing(view));
+  };
   // The separate check's findings, a sentence it never weighed included.
   const judged = parts.verdicts.filter(isBlocking);
   // validate's flags, most serious first, each with its place among the kit's.
@@ -594,7 +600,12 @@ function KitPanel({
   const checklist = checklistOf(view.extraction!.record, role, draft);
   // Each requirement with its verdict, its cited facts, and the owner's tick where only they can.
   const fitRows = fitTableOf(role, draft);
-  const tickable = new Set(fitRows.flatMap((row) => (row.tick && row.flag ? [row.flag] : [])));
+  // The flags "I meet this requirement" clears, each with its requirement.
+  const meetable = new Map(
+    fitRows.flatMap((row): [string, string][] =>
+      row.tick && row.flag ? [[row.flag, row.id]] : [],
+    ),
+  );
   const unchecked = view.steps
     .filter((step) => step.status === "not_checked")
     .map((step) => step.label.toLowerCase());
@@ -610,6 +621,7 @@ function KitPanel({
     address !== "";
   // The outbound gate: every outbound control opens only when no reason holds it back.
   const decisions = view.review?.decisions ?? NO_DECISIONS;
+  const meets = new Set(decisions.meets);
   const gate = view.review?.gate ?? [];
   const open = view.review !== null && gate.length === 0;
   const sent = parts.sent;
@@ -934,11 +946,9 @@ function KitPanel({
                 <li key={key}>
                   {flag.message}
                   {about && <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>}
-                  {tickable.has(key) ? (
+                  {meets.has(meetable.get(key) ?? "") ? (
                     <p className="mt-1 text-muted-foreground">
-                      {flagsChecked.has(key)
-                        ? "You said you meet it, under How you fit."
-                        : "Tick it under How you fit if you meet it."}
+                      You said you meet it, under How you fit.
                     </p>
                   ) : (
                     !locked && (
@@ -967,6 +977,12 @@ function KitPanel({
                         )}
                       </div>
                     )
+                  )}
+                  {meetable.has(key) && !meets.has(meetable.get(key)!) && !locked && (
+                    <p className="mt-1 text-muted-foreground">
+                      If you meet it, tick &ldquo;I meet this requirement&rdquo; under How you fit;
+                      if not, &ldquo;I checked this&rdquo; sends the email as it stands.
+                    </p>
                   )}
                 </li>
               );
@@ -1003,7 +1019,8 @@ function KitPanel({
             (item) => item.status === "not_followed" || item.status === "not_answered",
           ) && (
             <p className="text-sm text-muted-foreground">
-              jobkit never follows lines aimed at AI tools; the checks on the email say if it did.
+              jobkit was told not to follow the lines aimed at AI tools; the checks on the email say
+              if it did.
             </p>
           )}
           {cv.length > 0 && (
@@ -1029,22 +1046,34 @@ function KitPanel({
 
       <Panel title="How you fit">
         <ul className="flex flex-col gap-3 text-sm">
-          {fitRows.map((row) => {
+          {fitRows.map((row, i) => {
             // The facts the row cites, as the profile version the draft was written with holds them.
-            const cited = row.factIds.flatMap((id) => (facts[id] ? [facts[id]] : []));
-            const resolved = row.flag !== null && flagsChecked.has(row.flag);
+            const cited = row.factIds.flatMap((id) => {
+              const statement = facts.get(id);
+              return statement === undefined ? [] : [statement];
+            });
+            const met = row.tick && meets.has(row.id);
+            const resolved = met || (row.flag !== null && flagsChecked.has(row.flag));
+            const requirement = withoutContacts(row.text, typing(view));
             return (
-              <li key={row.id} className="border-b border-border pb-2 [overflow-wrap:anywhere]">
+              // Two rows of one ID, as extract flags, still draw apart.
+              <li
+                key={`${row.id}-${i}`}
+                className="border-b border-border pb-2 [overflow-wrap:anywhere]"
+              >
                 <p>
-                  {withoutContacts(row.text, typing(view))}
+                  {requirement}
                   {row.must ? "" : " (nice to have)"}
                 </p>
-                {row.verdict === null ? (
+                {row.counted === null ? (
                   <p className="font-medium">Not weighed</p>
                 ) : (
                   <details>
                     <summary className="min-h-11 cursor-pointer py-2 font-medium">
-                      {VERDICT_WORDS[row.verdict]}
+                      {row.counted !== row.verdict && row.verdict !== null
+                        ? `${VERDICT_WORDS[row.counted]}, though the draft says ${VERDICT_WORDS[row.verdict].toLowerCase()}`
+                        : VERDICT_WORDS[row.counted]}
+                      <span className="sr-only">: {requirement}</span>
                     </summary>
                     {cited.length > 0 ? (
                       <ul className="list-disc pl-5 text-muted-foreground">
@@ -1057,14 +1086,21 @@ function KitPanel({
                     )}
                   </details>
                 )}
-                {row.note && <p className="text-muted-foreground">{row.note}</p>}
-                {row.why && !resolved && <p className="text-destructive">{row.why}</p>}
-                {row.tick && row.flag && (
+                {row.note && (
+                  <p className="text-muted-foreground">{withoutContacts(row.note, typing(view))}</p>
+                )}
+                {row.why && (
+                  <p className={resolved ? "text-muted-foreground" : "text-destructive"}>
+                    {row.why}
+                  </p>
+                )}
+                {row.tick && (
                   <FitTick
                     jobId={view.id}
                     kit={kitKey}
-                    flag={row.flag}
-                    ticked={resolved}
+                    requirementId={row.id}
+                    requirement={requirement}
+                    ticked={met}
                     disabled={locked}
                   />
                 )}

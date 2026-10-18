@@ -67,6 +67,7 @@ describe("decide", () => {
       attached: ["A2"],
       continueAnyway: true,
       lookups: [{ address: "jobs@example.com", version: ADDRESS_CHECKS_VERSION, checks: [] }],
+      meets: [],
     });
     expect(decide(decisions, { kind: "uncheck", blockId: "S2" }).checked).toEqual([]);
     expect(decide(decisions, { kind: "uncheck_flag", flag: "F1" }).flagsChecked).toEqual([]);
@@ -84,6 +85,17 @@ describe("decide", () => {
     expect(reviewActionSchema.safeParse({ kind: "attach", id: "A1", ticked: true }).success).toBe(
       true,
     );
+  });
+
+  it('records that the owner meets a requirement, by its ID, apart from "I checked this"', () => {
+    const meets = decide(NO_DECISIONS, { kind: "meets", requirementId: "R2", ticked: true });
+
+    expect(meets).toEqual({ ...NO_DECISIONS, meets: ["R2"] });
+    expect(decide(meets, { kind: "meets", requirementId: "R2", ticked: true })).toEqual(meets);
+    expect(decide(meets, { kind: "meets", requirementId: "R2", ticked: false }).meets).toEqual([]);
+    expect(
+      reviewActionSchema.safeParse({ kind: "meets", requirementId: "F1", ticked: true }).success,
+    ).toBe(false);
   });
 
   it("names a flag by its place among the kit's, so two alike are told apart", () => {
@@ -180,6 +192,7 @@ describe("gateInputOf", () => {
       attached: ["A9"],
       continueAnyway: false,
       lookups: [],
+      meets: ["R9"],
     };
 
     const input = gateInputOf({ ...PARTS, blocks: ["S1"] }, decisions);
@@ -193,6 +206,21 @@ describe("gateInputOf", () => {
 });
 
 describe("approveAll", () => {
+  it('clears a requirement only the owner can confirm once they say they meet it, as "I checked this" does', () => {
+    const reasons = (decisions: ReviewDecisions) =>
+      canHandOff(gateInputOf(PARTS, decisions)).filter((reason) => reason.kind === "flag");
+
+    expect(reasons(NO_DECISIONS)).toHaveLength(1);
+    expect(
+      reasons(decide(NO_DECISIONS, { kind: "meets", requirementId: "R2", ticked: true })),
+    ).toEqual([]);
+    expect(reasons(decide(NO_DECISIONS, { kind: "check_flag", flag: "F1" }))).toEqual([]);
+    // Another requirement's word clears nothing here.
+    expect(
+      reasons(decide(NO_DECISIONS, { kind: "meets", requirementId: "R9", ticked: true })),
+    ).toHaveLength(1);
+  });
+
   it('marks "I checked this" on every flagged sentence and flag, and no other decision', () => {
     const approved = approveAll(PARTS, decide(NO_DECISIONS, { kind: "check", blockId: "S2" }));
 

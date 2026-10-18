@@ -96,19 +96,23 @@ export function RetypeField({
 
 /**
  * "I meet this requirement", on a requirement only the owner can confirm
- * they meet (review spec, "Job page", item 4): it clears that row's flag,
- * named by its place among the kit's flags, as "I checked this" did.
+ * they meet (review spec, "Job page", item 4): their word, kept by the
+ * requirement's ID apart from "I checked this", which clears the row's
+ * flag as that does; Approve & send never gives it for them.
  */
 export function FitTick({
   jobId,
   kit,
-  flag,
+  requirementId,
+  requirement,
   ticked,
   disabled = false,
 }: {
   jobId: string;
   kit: string;
-  flag: string;
+  requirementId: string;
+  /** The requirement's words, which name the tick for a screen reader. */
+  requirement: string;
   ticked: boolean;
   disabled?: boolean;
 }) {
@@ -119,8 +123,9 @@ export function FitTick({
   async function toggle(next: boolean) {
     setBusy(true);
     const { error, answered } = await decide(jobId, kit, {
-      kind: next ? "check_flag" : "uncheck_flag",
-      flag,
+      kind: "meets",
+      requirementId,
+      ticked: next,
     });
     setError(error);
     setBusy(false);
@@ -128,21 +133,24 @@ export function FitTick({
   }
 
   return (
-    <label className="flex min-h-11 items-center gap-2 text-sm">
-      <input
-        type="checkbox"
-        className="size-5"
-        checked={ticked}
-        disabled={busy || disabled}
-        onChange={(event) => void toggle(event.currentTarget.checked)}
-      />
-      I meet this requirement
+    <div className="text-sm">
+      <label className="flex min-h-11 items-center gap-2">
+        <input
+          type="checkbox"
+          className="size-5"
+          checked={ticked}
+          disabled={busy || disabled}
+          onChange={(event) => void toggle(event.currentTarget.checked)}
+        />
+        I meet this requirement
+        <span className="sr-only">: {requirement}</span>
+      </label>
       {error && (
-        <span role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive">
           {error}
-        </span>
+        </p>
       )}
-    </label>
+    </div>
   );
 }
 
@@ -182,20 +190,22 @@ export function AttachTick({
   }
 
   return (
-    <label className="flex min-h-11 items-center gap-2 text-sm">
-      <input
-        type="checkbox"
-        className="size-5"
-        checked={ticked}
-        disabled={busy || disabled}
-        onChange={(event) => void toggle(event.currentTarget.checked)}
-      />
-      I will attach {name || "the file the post asks for"} {where}
+    <div className="text-sm">
+      <label className="flex min-h-11 items-center gap-2">
+        <input
+          type="checkbox"
+          className="size-5"
+          checked={ticked}
+          disabled={busy || disabled}
+          onChange={(event) => void toggle(event.currentTarget.checked)}
+        />
+        I will attach {name || "the file the post asks for"} {where}
+      </label>
       {error && (
-        <span role="alert" className="text-destructive">
+        <p role="alert" className="text-destructive">
           {error}
-        </span>
+        </p>
       )}
-    </label>
+    </div>
   );
 }

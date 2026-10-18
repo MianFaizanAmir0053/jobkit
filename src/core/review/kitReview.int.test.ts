@@ -94,6 +94,7 @@ describe("recordReview", () => {
         attached: [],
         continueAnyway: false,
         lookups: expect.any(Array),
+        meets: [],
       },
       gate: typed.ok ? typed.gate : [],
     });
@@ -348,6 +349,49 @@ describe("recordReview", () => {
     ]);
   });
 
+  it('takes the owner\'s word that they meet a requirement only they can confirm, apart from "I checked this"', async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      // A language the draft marks met: only the owner can confirm it.
+      record: (record) => {
+        const role = record.roles[0]!;
+        role.requirements[3] = {
+          ...role.requirements[3]!,
+          kind: "language",
+          text: "Fluent English",
+          skills: [],
+        };
+        return record;
+      },
+      draft: {
+        ...KIT_DRAFT,
+        fit: KIT_DRAFT.fit.map((row) =>
+          row.requirement_id === "R4" ? { ...row, verdict: "met" as const } : row,
+        ),
+      },
+    });
+    const meetable = (await jobView({ db, clock }, id))!.review!.gate.filter(
+      (reason) => reason.kind === "flag" && reason.flag.at === "R4",
+    );
+    expect(meetable).toHaveLength(1);
+
+    const said = await recordReview(deps(), id, {
+      kind: "meets",
+      requirementId: "R4",
+      ticked: true,
+    });
+
+    expect(
+      said.ok && said.gate.filter((reason) => reason.kind === "flag" && reason.flag.at === "R4"),
+    ).toEqual([]);
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.review?.decisions.meets).toEqual(["R4"]);
+    expect(view.review?.decisions.flagsChecked).toEqual([]);
+    // A requirement the owner's word does not settle takes none.
+    expect(
+      await recordReview(deps(), id, { kind: "meets", requirementId: "R1", ticked: true }),
+    ).toEqual({ ok: false, reason: "not-in-kit" });
+  });
+
   it("refuses a decision the kit has no place for", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
     // The pasted post gives the address the record has: nothing to type.
@@ -362,6 +406,7 @@ describe("recordReview", () => {
       { kind: "continue_anyway" },
       { kind: "retype", value: "other@example.com" },
       { kind: "check_flag", flag: "F1" },
+      { kind: "meets", requirementId: "R1", ticked: true },
     ] as const) {
       expect(await recordReview(deps(), id, action), action.kind).toEqual({
         ok: false,

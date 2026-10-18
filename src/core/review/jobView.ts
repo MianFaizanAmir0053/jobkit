@@ -756,8 +756,9 @@ export async function decisionsOf(
   );
   const parsed = storedDecisionsSchema.safeParse(rows[0]?.decisions);
   if (parsed.success && parsed.data.kit === kitKey) {
-    const { checked, flagsChecked, retyped, attached, continueAnyway, lookups } = parsed.data;
-    return { checked, flagsChecked, retyped, attached, continueAnyway, lookups };
+    const { checked, flagsChecked, retyped, attached, continueAnyway, lookups, meets } =
+      parsed.data;
+    return { checked, flagsChecked, retyped, attached, continueAnyway, lookups, meets };
   }
   // A draft the owner moved away from keeps its sentence and flag decisions aside, by its key, as
   // when the page falls back to it: those count again (draftChoice.ts).

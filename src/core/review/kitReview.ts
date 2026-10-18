@@ -14,6 +14,7 @@ import {
   decide,
   emailKey,
   flagKey,
+  isMeetable,
   keptLookup,
   type KitParts,
   NO_DECISIONS,
@@ -70,6 +71,8 @@ function fits(action: ReviewAction, parts: KitParts): boolean {
       return parts.attachments.some((attachment) => attachment.id === action.id);
     case "continue_anyway":
       return parts.scamSignals.length > 0;
+    case "meets":
+      return parts.flags.some((flag) => isMeetable(flag) && flag.at === action.requirementId);
   }
 }
 

@@ -77,7 +77,8 @@ export const jobForViewer = cache(async (id: string): Promise<JobView | null> =>
 
 /**
  * The time zone the owner reads times in: the active profile's, or UTC
- * before there is one. Paired phones see times too, but no other profile data.
+ * before there is one. Paired phones see times too, and the facts a kit's
+ * fit table cites, but no other profile data.
  */
 export const viewerTimeZone = cache(async (): Promise<string> => {
   await requireSession();
@@ -145,18 +146,25 @@ export async function postImagesForViewer(
   return postImages({ db, storage }, jobId, wanted);
 }
 
+/** The profile version a kit was written with, read once however many parts of its page ask. */
+const kitProfile = cache(async (versionId: string) => {
+  await requireSession();
+  const { db } = await getContainer();
+  return getProfileVersion(db, versionId);
+});
+
 /**
- * The facts a kit's fit table cites, by ID: the statements of the profile
- * version the draft was written with (review spec, "Job page", item 4).
- * Paired phones see them too: they are what the kit itself claims, not the
- * fixed answers the Profile view keeps to Google sessions.
+ * The statements of the approved facts of the profile version a kit was
+ * written with, by ID, for the fit table's cited facts (review spec, "Job
+ * page", item 4), which paired phones see as the job page shows them; the
+ * Profile view, with every fact and the fixed answers, stays with Google
+ * sessions (platform spec B5). A Map, since a fact ID a model wrote is
+ * looked up in it.
  */
 export const kitFactsForViewer = cache(
-  async (versionId: string): Promise<Readonly<Record<string, string>>> => {
-    await requireSession();
-    const { db } = await getContainer();
-    const profile = await getProfileVersion(db, versionId);
-    return Object.fromEntries((profile?.facts ?? []).map((fact) => [fact.id, fact.statement]));
+  async (versionId: string): Promise<ReadonlyMap<string, string>> => {
+    const profile = await kitProfile(versionId);
+    return new Map((profile?.facts ?? []).map((fact) => [fact.id, fact.statement]));
   },
 );
 
@@ -166,9 +174,8 @@ export const kitFactsForViewer = cache(
  * or its CV in storage, is gone.
  */
 export const kitCvForViewer = cache(async (versionId: string): Promise<string | null> => {
-  await requireSession();
-  const { db, storage } = await getContainer();
-  const profile = await getProfileVersion(db, versionId);
+  const profile = await kitProfile(versionId);
+  const { storage } = await getContainer();
   if (!profile || !(await storage.stat(profile.cv.path))) return null;
   return cvFileName(profile.owner.name);
 });

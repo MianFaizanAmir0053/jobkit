@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { KitFlag, KitFlagKind } from "@/core/drafting/validate";
+import { type KitFlag, type KitFlagKind, ONLY_YOU_CAN_CONFIRM } from "@/core/drafting/validate";
 import { type BlockVerdict, isBlocking } from "@/core/drafting/verdict";
 import { isStrictAddress } from "@/core/extraction/contacts";
 
@@ -12,8 +12,9 @@ import type { GateInput } from "./canHandOff";
  * as one row per job and role in kit_reviews, for the kit they were made on:
  * the sentences and the flags marked "I checked this", the address or
  * number typed in place of a disputed or missing one, with an address's
- * own checks, the required attachments the owner will attach, and
- * "Continue anyway" on a scam warning. "Apply again" stays on the
+ * own checks, the required attachments the owner will attach, the
+ * requirements they say they meet, and "Continue anyway" on a scam
+ * warning. "Apply again" stays on the
  * application, where the ledger keeps it. With what the kit holds, they
  * make the gate's input; a decision the kit has no place for counts for
  * nothing.
@@ -49,6 +50,11 @@ export interface ReviewDecisions {
   continueAnyway: boolean;
   /** Every address the owner typed, with its checks as first found. */
   lookups: AddressLookup[];
+  /**
+   * The requirements the owner says they meet ("I meet this requirement"),
+   * by ID: a decision on the post, which goes with a draft pick.
+   */
+  meets: string[];
 }
 
 export const NO_DECISIONS: ReviewDecisions = {
@@ -58,6 +64,7 @@ export const NO_DECISIONS: ReviewDecisions = {
   attached: [],
   continueAnyway: false,
   lookups: [],
+  meets: [],
 };
 
 const addressCheckSchema = z.object({
@@ -77,6 +84,8 @@ export const decisionsSchema = z.object({
   lookups: z.array(
     z.object({ address: z.string(), version: z.number(), checks: z.array(addressCheckSchema) }),
   ),
+  // Kept from before the fit tick: none.
+  meets: z.array(z.string()).default([]),
 });
 
 /** One decision, as the page posts it. A typed contact fits RFC 5321's 254 characters with room. */
@@ -92,6 +101,11 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
     ticked: z.boolean(),
   }),
   z.strictObject({ kind: z.literal("continue_anyway") }),
+  z.strictObject({
+    kind: z.literal("meets"),
+    requirementId: z.string().regex(/^R\d{1,4}$/),
+    ticked: z.boolean(),
+  }),
 ]);
 
 export type ReviewAction = z.infer<typeof reviewActionSchema>;
@@ -104,6 +118,17 @@ export type ReviewAction = z.infer<typeof reviewActionSchema>;
  */
 export function flagKey(index: number): string {
   return `F${index + 1}`;
+}
+
+/**
+ * Whether the owner's "I meet this requirement" clears a flag: one for a
+ * requirement only they can confirm they meet, as validate words it (a
+ * language or "other" one marked met, or a must-have the templates could
+ * not weigh). Its "I checked this" clears it too, as for an owner who does
+ * not meet it and sends the kit as it stands.
+ */
+export function isMeetable(flag: KitFlag): boolean {
+  return flag.kind === "fit_unverified" && flag.message === ONLY_YOU_CAN_CONFIRM;
 }
 
 /** An email address without surrounding space or case, which change nothing about where it goes. */
@@ -168,6 +193,13 @@ export function decide(
       };
     case "continue_anyway":
       return { ...decisions, continueAnyway: true };
+    case "meets":
+      return {
+        ...decisions,
+        meets: action.ticked
+          ? withOne(decisions.meets, action.requirementId)
+          : without(decisions.meets, action.requirementId),
+      };
   }
 }
 
@@ -268,13 +300,17 @@ export function gateInputOf(parts: KitParts, decisions: ReviewDecisions): GateIn
   const blocks = new Set(parts.blocks);
   const flagsChecked = new Set(decisions.flagsChecked);
   const attached = new Set(decisions.attached);
+  const meets = new Set(decisions.meets);
   return {
     sent: parts.sent,
     byEmail: parts.byEmail,
     submitted: parts.submitted,
     sending: parts.sending,
     skipped: parts.skipped,
-    flags: parts.flags.filter((_, place) => !flagsChecked.has(flagKey(place))),
+    flags: parts.flags.filter(
+      (flag, place) =>
+        !flagsChecked.has(flagKey(place)) && !(isMeetable(flag) && meets.has(flag.at)),
+    ),
     verdicts: parts.verdicts.filter((verdict) => blocks.has(verdict.blockId)),
     checked: decisions.checked.filter((id) => blocks.has(id)),
     // Confirming a changed sentence comes with the block editor (Task 29).

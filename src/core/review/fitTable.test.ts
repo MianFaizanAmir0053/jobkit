@@ -41,6 +41,7 @@ describe("fitTableOf", () => {
         text: "4+ years with React",
         must: true,
         verdict: "met",
+        counted: "met",
         factIds: ["F-react"],
         note: "Five years.",
         why: null,
@@ -52,6 +53,7 @@ describe("fitTableOf", () => {
         text: "AWS",
         must: false,
         verdict: null,
+        counted: null,
         factIds: [],
         note: "",
         why: null,
@@ -82,16 +84,26 @@ describe("fitTableOf", () => {
       { fit: [fit("R1", "met", ["F-node"]), fit("R2", "met")], flags },
     );
 
-    // Each flag named by its place among the kit's flags, as the review decisions name flags.
-    expect(rows.map(({ id, why, flag, tick }) => ({ id, why, flag, tick }))).toEqual([
+    // Each flag named by its place among the kit's flags, as the review decisions name flags; a met
+    // verdict its facts do not bear out counts as partial, as the fit check counts it.
+    expect(
+      rows.map(({ id, counted, why, flag, tick }) => ({ id, counted, why, flag, tick })),
+    ).toEqual([
       {
         id: "R1",
+        counted: "partial",
         why: "Marked as met, but no cited fact shows every skill named.",
         flag: "F2",
         tick: false,
       },
-      { id: "R2", why: ONLY_YOU_CAN_CONFIRM, flag: "F3", tick: true },
-      { id: "R3", why: "The draft did not weigh this requirement.", flag: "F4", tick: false },
+      { id: "R2", counted: "met", why: ONLY_YOU_CAN_CONFIRM, flag: "F3", tick: true },
+      {
+        id: "R3",
+        counted: null,
+        why: "The draft did not weigh this requirement.",
+        flag: "F4",
+        tick: false,
+      },
     ]);
   });
 });
