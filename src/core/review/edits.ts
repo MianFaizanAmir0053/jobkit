@@ -1,3 +1,4 @@
+import { acceptedInstructions, BODY_WORD_LIMIT, subjectFor } from "@/core/drafting/build";
 import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { BlockClass, EmailKit, KitBlock } from "@/core/drafting/kit";
 import { templateFlags } from "@/core/drafting/templateDrafts";
@@ -6,7 +7,7 @@ import type { JobRecord, Role } from "@/core/extraction/record";
 import type { Db } from "@/core/ports";
 import { getProfileVersion } from "@/core/profile/profile";
 
-import { type ReviewDecisions, shortHash } from "./decisions";
+import { type Declinable, type ReviewDecisions, shortHash } from "./decisions";
 
 /**
  * The owner's edits to a kit's sentences (drafting spec, "Owner edits";
@@ -127,38 +128,68 @@ export function wordsKey(kit: EmailKit): string {
 }
 
 /**
- * validate's flags on the email as the owner edited it, as drafting ran it:
- * the draft's fit, limit, keyword, subject format and markers, the profile
- * version it was written with, and, for a template's draft, what only the
- * owner can confirm. With the profile version gone, drafting's flags stand.
+ * The post's instructions drafting applied to a draft, which the owner may
+ * decline: its subject format (the one the post gave, for a draft from
+ * before drafting kept it), a word limit tighter than the body's own, and
+ * its keyword.
  */
-export async function flagsOfEdited(
+export function appliedInstructions(draft: DraftOutput, role: Role): Declinable[] {
+  const subjectFormat =
+    draft.subjectFormat === undefined
+      ? acceptedInstructions(role).subjectFormat
+      : draft.subjectFormat;
+  return [
+    ...(subjectFormat !== null ? (["subject_format"] as const) : []),
+    ...(draft.wordLimit < BODY_WORD_LIMIT ? (["word_limit"] as const) : []),
+    ...(draft.keyword !== null ? (["keyword"] as const) : []),
+  ];
+}
+
+/**
+ * The email as it stands and validate's flags on it: the owner's edits,
+ * their sentences and deletions (editedKit), and the default subject in
+ * place of a subject format they declined; validate runs again on it, as
+ * drafting ran it (the draft's fit, limit, keyword, subject format and
+ * markers, the profile version it was written with, and for a template's
+ * draft what only the owner can confirm), but without the instructions
+ * they declined. Drafting's own, kit and flags, while they changed and
+ * declined nothing; with the profile version gone, drafting's flags stand.
+ */
+export async function asItStands(
   db: Db,
   input: {
     draft: DraftOutput;
-    kit: EmailKit;
     record: JobRecord;
     role: Role;
     template: boolean;
+    decisions: Pick<ReviewDecisions, "edits" | "added" | "deleted" | "answers" | "declined">;
   },
-): Promise<KitFlag[]> {
-  const profile = await getProfileVersion(db, input.draft.profileVersion);
-  if (!profile) return input.draft.flags;
-  const found = validateEmailKit(input.kit, {
-    record: input.record,
-    role: input.role,
+): Promise<{ kit: EmailKit; flags: KitFlag[] }> {
+  const { draft, record, role } = input;
+  const applied = appliedInstructions(draft, role);
+  const declined = new Set(input.decisions.declined.filter((each) => applied.includes(each)));
+  const edited = editedKit(draft.kit, input.decisions);
+  if (edited === draft.kit && declined.size === 0) return { kit: draft.kit, flags: draft.flags };
+  const profile = await getProfileVersion(db, draft.profileVersion);
+  if (!profile) return { kit: edited, flags: draft.flags };
+  const kit = declined.has("subject_format")
+    ? { ...edited, subject: subjectFor(null, profile.owner.name, role.title) }
+    : edited;
+  const found = validateEmailKit(kit, {
+    record,
+    role,
     profile: {
       facts: profile.facts,
       knownGaps: profile.knownGaps,
       gapTemplates: profile.gapTemplates,
     },
-    fit: input.draft.fit,
-    wordLimit: input.draft.wordLimit,
-    keyword: input.draft.keyword,
-    subjectFormat: input.draft.subjectFormat ?? null,
-    markers: input.draft.markers,
+    fit: draft.fit,
+    wordLimit: declined.has("word_limit") ? BODY_WORD_LIMIT : draft.wordLimit,
+    keyword: declined.has("keyword") ? null : draft.keyword,
+    subjectFormat: declined.has("subject_format") ? null : (draft.subjectFormat ?? null),
+    markers: draft.markers,
   });
-  return input.template ? templateFlags(found, input.record, input.role) : found;
+  return { kit, flags: input.template ? templateFlags(found, record, role) : found };
 }
 
 /** The classes of sentence whose edit is a factual one (ledger spec, "Factual edits"). */

@@ -81,6 +81,9 @@ function fits(action: ReviewAction, parts: KitParts, decisions: ReviewDecisions)
       );
     case "delete":
       return parts.blocks.includes(action.blockId) && !isDeleted(decisions, action.blockId);
+    // Declining an instruction drafting applied; taking a decline back goes on any draft.
+    case "decline":
+      return !action.declined || (parts.applied ?? []).includes(action.instruction);
     // A sentence of the owner's, as the line about one of the post's must-haves, or as none.
     case "answers":
       return (

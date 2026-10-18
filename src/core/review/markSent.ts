@@ -164,8 +164,11 @@ async function marking(
           (block) => Object.hasOwn(edits, block.id) || deleted.includes(block.id),
         );
         const address = typed && !sameAddress(to, role.route.address);
+        // The default subject in place of the post's format, which the owner declined.
+        const subject = view.kit!.subject !== view.draft!.kit.subject;
         const changed = [
           ...(address ? ["address"] : []),
+          ...(subject ? ["subject"] : []),
           ...edited.map((block) => `sentence:${block.id}`),
           ...added.map((sentence) => `sentence:${sentence.id}`),
         ];
@@ -177,7 +180,7 @@ async function marking(
           const now = deleted.includes(block.id) ? "" : (edits[block.id] ?? block.text);
           return names.some((name) => block.text.includes(name) !== now.includes(name));
         };
-        const factual = address || added.length > 0 || edited.some(factualChange);
+        const factual = address || subject || added.length > 0 || edited.some(factualChange);
         await tx.query(
           `insert into {{schema}}.draft_outcomes
            (application_id, job_id, kind, changed, changed_in_gmail, factual_edit, recorded_at,

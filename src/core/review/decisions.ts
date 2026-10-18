@@ -69,7 +69,21 @@ export interface ReviewDecisions {
    * the draft.
    */
   answers: Record<string, string>;
+  /**
+   * The post's instructions the owner declined: the email is held to none of
+   * them, and a declined subject format gives the default subject. A
+   * decision on the post, which goes with a draft pick.
+   */
+  declined: Declinable[];
 }
+
+/**
+ * The post's instructions the owner may decline once drafting applied them
+ * (drafting spec, "Accepted instructions"): its subject format, its word
+ * limit and its keyword.
+ */
+export const DECLINABLE = ["subject_format", "word_limit", "keyword"] as const;
+export type Declinable = (typeof DECLINABLE)[number];
 
 /** A sentence the owner added: "N1" and on, after the sentence `after` names, or first (""). */
 export interface AddedSentence {
@@ -91,6 +105,7 @@ export const NO_DECISIONS: ReviewDecisions = {
   added: [],
   deleted: [],
   answers: {},
+  declined: [],
 };
 
 const addressCheckSchema = z.object({
@@ -119,6 +134,8 @@ export const decisionsSchema = z.object({
   added: z.array(z.object({ id: z.string(), after: z.string(), text: z.string() })).default([]),
   deleted: z.array(z.string()).default([]),
   answers: z.record(z.string(), z.string()).default({}),
+  // Kept from before the owner could decline an instruction: none.
+  declined: z.array(z.enum(DECLINABLE)).default([]),
 });
 
 /** The most characters an edited or added sentence holds. */
@@ -194,6 +211,12 @@ export const reviewActionSchema = z.discriminatedUnion("kind", [
     kind: z.literal("answers"),
     blockId: z.string().min(1).max(20),
     requirementId: z.union([z.literal(""), z.string().regex(/^R\d{1,4}$/)]),
+  }),
+  // One of the post's instructions declined, or the decline taken back.
+  z.strictObject({
+    kind: z.literal("decline"),
+    instruction: z.enum(DECLINABLE),
+    declined: z.boolean(),
   }),
 ]);
 
@@ -403,6 +426,10 @@ export function decide(
         deleted: withOne(decisions.deleted, action.blockId),
       };
     }
+    case "decline": {
+      const others = decisions.declined.filter((each) => each !== action.instruction);
+      return { ...decisions, declined: action.declined ? [...others, action.instruction] : others };
+    }
     case "answers":
       return {
         ...decisions,
@@ -443,6 +470,8 @@ export function isOwners(
 
 /** What the gate reads from a kit, besides the owner's decisions. */
 export interface KitParts {
+  /** The post's instructions drafting applied, which the owner may decline. */
+  applied?: Declinable[];
   /** The kit's sentences by ID: the draft's, those the owner deleted included, then those they added. */
   blocks: readonly string[];
   flags: readonly KitFlag[];

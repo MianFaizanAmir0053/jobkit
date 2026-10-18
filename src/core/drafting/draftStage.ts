@@ -23,8 +23,9 @@ import { hasWord, type KitFlag, validateEmailKit } from "./validate";
  * then writes the subject, greeting, gap lines and closing, and runs the
  * checks; the kit is kept with its flags for the owner to review. On the
  * thin path every route gets an email kit (form and message kits, the
- * kit-type pick and topic questions come later), and the declined
- * instructions are always none, since the review checklist does not exist yet.
+ * kit-type pick and topic questions come later). The instructions the owner
+ * declines on the review page apply to the email as it stands, never to a
+ * draft, so the declined instructions given here are always none.
  */
 
 export const DRAFT = {

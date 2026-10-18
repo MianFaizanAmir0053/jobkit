@@ -82,6 +82,7 @@ describe("decide", () => {
       added: [],
       deleted: [],
       answers: {},
+      declined: [],
     });
     expect(decide(decisions, { kind: "uncheck", blockId: "S2" }).checked).toEqual([]);
     expect(decide(decisions, { kind: "uncheck_flag", flag: F }).flagsChecked).toEqual([]);
@@ -268,10 +269,33 @@ describe("decide", () => {
   });
 
   it("reads decisions kept before sentences were added or deleted as adding and deleting none", () => {
-    const { added, deleted, answers, ...before } = NO_DECISIONS;
+    const { added, deleted, answers, declined, ...before } = NO_DECISIONS;
 
-    expect([added, deleted, answers]).toEqual([[], [], {}]);
-    expect(decisionsSchema.parse(before)).toMatchObject({ added: [], deleted: [], answers: {} });
+    expect([added, deleted, answers, declined]).toEqual([[], [], {}, []]);
+    expect(decisionsSchema.parse(before)).toMatchObject({
+      added: [],
+      deleted: [],
+      answers: {},
+      declined: [],
+    });
+  });
+
+  it("declines an applied subject format, word limit or keyword, and takes the decline back", () => {
+    let decisions = decide(NO_DECISIONS, {
+      kind: "decline",
+      instruction: "word_limit",
+      declined: true,
+    });
+    decisions = decide(decisions, { kind: "decline", instruction: "keyword", declined: true });
+
+    expect(decisions.declined).toEqual(["word_limit", "keyword"]);
+    expect(
+      decide(decisions, { kind: "decline", instruction: "word_limit", declined: false }).declined,
+    ).toEqual(["keyword"]);
+    expect(
+      reviewActionSchema.safeParse({ kind: "decline", instruction: "deadline", declined: true })
+        .success,
+    ).toBe(false);
   });
 
   it("names a flag by what it found, so it keeps its name when validate runs again", () => {
@@ -423,6 +447,7 @@ describe("gateInputOf", () => {
       added: [],
       deleted: ["S9"],
       answers: {},
+      declined: [],
     };
 
     const input = gateInputOf({ ...PARTS, blocks: ["S1"] }, decisions);

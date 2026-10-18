@@ -62,11 +62,30 @@ describe("checklistOf", () => {
         draft({ subjectFormat: "{role} - {name}", wordLimit: 150, keyword: "blue whale" }),
       ),
     ).toEqual([
-      { text: "Use the subject 'Role - Name'.", status: "applied" },
-      { text: "Keep it under 150 words.", status: "applied" },
-      { text: "Mention 'blue whale'.", status: "applied" },
+      { text: "Use the subject 'Role - Name'.", status: "applied", decline: "subject_format" },
+      { text: "Keep it under 150 words.", status: "applied", decline: "word_limit" },
+      { text: "Mention 'blue whale'.", status: "applied", decline: "keyword" },
       { text: "Apply by Friday.", status: "not_applied" },
       { text: "Attach a portfolio.", status: "attachment" },
+    ]);
+  });
+
+  it("names the lines the owner may decline, and marks those they declined", () => {
+    const { post, role } = postWith([
+      line("subject_format", "Use the subject 'Role - Name'.", "{role} - {name}"),
+      line("word_limit", "Keep it under 150 words.", "150"),
+      line("include_keyword", "Mention 'blue whale'.", "blue whale"),
+    ]);
+    const drafted = draft({
+      subjectFormat: "{role} - {name}",
+      wordLimit: 150,
+      keyword: "blue whale",
+    });
+
+    expect(checklistOf(post, role, drafted, ["word_limit"])).toEqual([
+      { text: "Use the subject 'Role - Name'.", status: "applied", decline: "subject_format" },
+      { text: "Keep it under 150 words.", status: "declined", decline: "word_limit" },
+      { text: "Mention 'blue whale'.", status: "applied", decline: "keyword" },
     ]);
   });
 
@@ -87,11 +106,11 @@ describe("checklistOf", () => {
         draft({ subjectFormat: "First {name}", wordLimit: 180, keyword: "blue whale" }),
       ),
     ).toEqual([
-      { text: "Subject: first.", status: "applied" },
+      { text: "Subject: first.", status: "applied", decline: "subject_format" },
       { text: "Or subject: second.", status: "not_applied" },
       { text: "Write at least 100 words.", status: "not_applied" },
       { text: "Keep it under 120 words.", status: "not_applied" },
-      { text: "Mention 'blue whale'.", status: "applied" },
+      { text: "Mention 'blue whale'.", status: "applied", decline: "keyword" },
     ]);
   });
 

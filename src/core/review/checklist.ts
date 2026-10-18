@@ -4,6 +4,8 @@ import { bodyWords } from "@/core/drafting/kit";
 import { hasWord, isCheckable, type KitFlag } from "@/core/drafting/validate";
 import type { JobRecord, Role } from "@/core/extraction/record";
 
+import type { Declinable } from "./decisions";
+
 /**
  * The checklist of what the post asks of applicants (review spec, "Job
  * page", item 3): each of the chosen role's instructions, marked applied
@@ -16,13 +18,15 @@ import type { JobRecord, Role } from "@/core/extraction/record";
  * every role once, since the model may record a line about the whole post
  * under one role: an instruction not followed, or followed when the
  * email's body repeats its words as validate looks for them; a screening
- * question not answered. Declining an applied line comes with the block
- * editor (Task 29), which runs validate again.
+ * question not answered. A subject format, word limit or keyword drafting
+ * applied names what declining it declines; one the owner declined is
+ * marked so, and the email is no longer held to it.
  */
 
 export type ChecklistStatus =
   | "applied"
   | "applied_missed"
+  | "declined"
   | "left_out"
   | "attachment"
   | "not_applied"
@@ -33,6 +37,8 @@ export type ChecklistStatus =
 export interface ChecklistItem {
   text: string;
   status: ChecklistStatus;
+  /** For a line drafting applied, the decision that declines it. */
+  decline?: Declinable;
 }
 
 /** What drafting applied, the flags validate raised on it, and the email, as the draft keeps them. */
@@ -44,7 +50,19 @@ const MISSED: Partial<Record<Role["instructions"][number]["kind"], KitFlag["kind
   include_keyword: "keyword_missing",
 };
 
-export function checklistOf(record: JobRecord, role: Role, drafted: Drafted): ChecklistItem[] {
+/** Each declinable line's decision, by the kind of instruction it is. */
+const DECLINES: Partial<Record<Role["instructions"][number]["kind"], Declinable>> = {
+  subject_format: "subject_format",
+  word_limit: "word_limit",
+  include_keyword: "keyword",
+};
+
+export function checklistOf(
+  record: JobRecord,
+  role: Role,
+  drafted: Drafted,
+  declined: readonly Declinable[] = [],
+): ChecklistItem[] {
   const raised = new Set(drafted.flags.map((flag) => flag.kind));
   const accepted = acceptedInstructions(role);
   // A draft from before drafting kept its subject format applied the accepted one.
@@ -78,10 +96,10 @@ export function checklistOf(record: JobRecord, role: Role, drafted: Drafted): Ch
         line.kind === "word_limit"
           ? limit !== null && words > limit
           : flagged !== undefined && raised.has(flagged);
-      return {
-        text: line.text,
-        status: !applied ? "not_applied" : missed ? "applied_missed" : "applied",
-      };
+      if (!applied) return { text: line.text, status: "not_applied" };
+      const decline = DECLINES[line.kind]!;
+      if (declined.includes(decline)) return { text: line.text, status: "declined", decline };
+      return { text: line.text, status: missed ? "applied_missed" : "applied", decline };
     });
   // Looked for in the body only, as validate looks: the subject, greeting and closing are jobkit's.
   const body = drafted.kit.blocks.map((block) => block.text).join("\n");

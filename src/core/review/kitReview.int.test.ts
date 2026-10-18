@@ -143,6 +143,7 @@ describe("recordReview", () => {
         added: [],
         deleted: [],
         answers: {},
+        declined: [],
       },
       gate: typed.ok ? typed.gate : [],
     });
@@ -339,6 +340,78 @@ describe("recordReview", () => {
       ),
     ).toBe(false);
     expect(await outcome("I am applying for the engineering role at Northwind.")).toBe(true);
+  });
+
+  it("declines the post's subject format, word limit and keyword: the subject falls back, and the flags they caused clear (review AC4)", async () => {
+    const asking = (record: JobRecord): JobRecord => ({
+      ...record,
+      roles: record.roles.map((role) => ({
+        ...role,
+        instructions: [
+          ...role.instructions,
+          {
+            kind: "word_limit",
+            text: "Keep it under 5 words.",
+            value: "5",
+            addressed_to_ai: false,
+          },
+          {
+            kind: "include_keyword",
+            text: "Mention Kubernetes.",
+            value: "Kubernetes",
+            addressed_to_ai: false,
+          },
+        ],
+      })),
+    });
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      record: asking,
+      verdicts: [{ blockId: "S1", verdict: "supported", companyClaim: false, note: "" }],
+    });
+    const shown = async () => (await jobView({ db, clock }, id))!;
+    const drafted = await shown();
+    expect(drafted.kitParts!.flags.map((flag) => flag.kind)).toEqual(
+      expect.arrayContaining(["over_limit", "keyword_missing"]),
+    );
+    expect(drafted.kit!.subject).toBe("Application - Senior Full-Stack Engineer - Sam Rivera");
+
+    for (const instruction of ["word_limit", "keyword", "subject_format"] as const) {
+      await recordReview(deps(), id, { kind: "decline", instruction, declined: true });
+    }
+
+    const declined = await shown();
+    expect(declined.kitParts!.flags.map((flag) => flag.kind)).not.toContain("over_limit");
+    expect(declined.kitParts!.flags.map((flag) => flag.kind)).not.toContain("keyword_missing");
+    expect(declined.kit!.subject).toBe("Application: Senior Full-Stack Engineer – Sam Rivera");
+    // Taken back: the post's format again.
+    await recordReview(deps(), id, {
+      kind: "decline",
+      instruction: "subject_format",
+      declined: false,
+    });
+    expect((await shown()).kit!.subject).toBe(drafted.kit!.subject);
+    await recordReview(deps(), id, {
+      kind: "decline",
+      instruction: "subject_format",
+      declined: true,
+    });
+    // Sent with the subject jobkit wrote in place of the post's: a factual edit (ledger spec).
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+    const { rows } = await db.query(
+      "select changed, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ changed: ["subject"], factual_edit: true }]);
+  });
+
+  it("refuses to decline an instruction drafting did not apply", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+
+    expect(
+      await recordReview(deps(), id, { kind: "decline", instruction: "keyword", declined: true }),
+    ).toEqual({ ok: false, reason: "not-in-kit" });
   });
 
   it("runs validate again on the email as the owner edited it", async () => {

@@ -70,6 +70,7 @@ const ROUTE_WORDS: Readonly<Record<Role["route"]["kind"], string>> = {
 const CHECKLIST_WORDS: Readonly<Record<ChecklistStatus, string>> = {
   applied: "Applied",
   applied_missed: "Applied, but the email misses it: see the checks above",
+  declined: "You chose not to apply it: the email is no longer held to it",
   left_out: "Left out: it repeats a line aimed at AI",
   attachment: "For you to attach",
   not_applied: "Not applied",
@@ -614,11 +615,12 @@ function KitPanel({
   // validate's flags, most serious first; each named by what it found (flagKey).
   const flags = [...parts.flags].sort((a, b) => flagRank(a.kind) - flagRank(b.kind));
   // What the post asks of applicants, each line marked as drafting dealt with it.
-  const checklist = checklistOf(view.extraction!.record, role, {
-    ...draft,
-    kit,
-    flags: [...parts.flags],
-  });
+  const checklist = checklistOf(
+    view.extraction!.record,
+    role,
+    { ...draft, kit, flags: [...parts.flags] },
+    view.review?.decisions.declined ?? [],
+  );
   // Each requirement with its verdict, its cited facts, and the owner's tick where only they can.
   const fitRows = fitTableOf(role, { fit: draft.fit, flags: [...parts.flags] });
   // The flags "I meet this requirement" clears, each with its requirement.
@@ -1242,6 +1244,23 @@ function KitPanel({
                   >
                     {CHECKLIST_WORDS[item.status]}
                   </span>
+                  {/* A subject format, word limit or keyword drafting applied: the owner may decline it. */}
+                  {item.decline && !locked && (
+                    <div className="mt-1">
+                      <ActionButton
+                        url={reviewUrl}
+                        gateOf={view.id}
+                        label={item.status === "declined" ? "Apply it again" : "Don't apply it"}
+                        ariaLabel={`${item.status === "declined" ? "Apply it again" : "Don't apply it"}: ${withoutContacts(item.text, typing(view))}`}
+                        variant="outline"
+                        body={decision({
+                          kind: "decline",
+                          instruction: item.decline,
+                          declined: item.status !== "declined",
+                        })}
+                      />
+                    </div>
+                  )}
                 </li>
               ))}
             </ul>

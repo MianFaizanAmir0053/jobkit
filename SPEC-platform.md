@@ -282,7 +282,7 @@ Modules register stages; the runner owns their order, the job's state and the bo
 | `extract_questions` | form image hashes; model, effort and prompt version |
 | `eligibility` | the record's output hash; the chosen role; the profile version; the owner's eligibility decision; the role's zone's offset from UTC that day, on which the overlap turns |
 | `templates` | the record's output hash; the chosen role; the profile version; the build's version |
-| `draft` | the record's output hash; the chosen role; the profile version; the kit type; the owner's declined instructions; model, effort and prompt version |
+| `draft` | the record's output hash; the chosen role; the profile version; the kit type; the owner's declined instructions (always none: the review page applies a decline to the email as it stands, never to a draft); model, effort and prompt version |
 | `draft_answers` | the IDs and texts of questions not yet answered; the profile version; model, effort and prompt version |
 | `address_read` | the contact and its kind, which the output is for; from a screenshot, the crop's hash, by the screenshot's hash, the box and the crop's rules it is made from, with the model, whether this machine has it, effort, the token limit and the prompt version; from pasted text, the text's hash and the matching's version |
 | `address_checks` | the address as it now stands (extracted or typed by the owner), the company's name the name check reads, and the checks' version |

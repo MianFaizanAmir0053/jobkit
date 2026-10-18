@@ -54,7 +54,7 @@ import {
   uncertainSend,
   uncertainWhere,
 } from "./kitSends";
-import { editedKit, flagsOfEdited, wordsKey } from "./edits";
+import { appliedInstructions, asItStands, editedKit, wordsKey } from "./edits";
 import type { ImagesWanted } from "./postImages";
 
 /**
@@ -332,21 +332,22 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const kitKey = hasKit ? chosen!.kitKey : null;
   const decisions =
     kitKey && role ? await decisionsOf(deps.db, id, role.id, kitKey, chosen!.draft.flags) : null;
-  // The email as it stands, with the owner's edits, the sentences they added and none they deleted;
-  // validate runs again on a changed one (drafting spec, "Owner edits"), and an unchanged one keeps
-  // drafting's flags.
+  // The email as it stands, with the owner's edits, the sentences they added and none they deleted,
+  // and the instructions they declined; validate runs again on a changed one (drafting spec, "Owner
+  // edits"), and an unchanged one keeps drafting's flags.
   const owners = decisions ?? NO_DECISIONS;
-  const kit = chosen ? editedKit(chosen.draft.kit, owners) : null;
-  const flags =
-    chosen && role && extraction && kit && kit !== chosen.draft.kit
-      ? await flagsOfEdited(deps.db, {
+  const standing =
+    chosen && role && extraction
+      ? await asItStands(deps.db, {
           draft: chosen.draft,
-          kit,
           record: extraction.record,
           role,
           template: chosen.choice.source === "template",
+          decisions: owners,
         })
-      : (chosen?.draft.flags ?? []);
+      : null;
+  const kit = standing?.kit ?? (chosen ? editedKit(chosen.draft.kit, owners) : null);
+  const flags = standing?.flags ?? chosen?.draft.flags ?? [];
   const latest = role ? await latestSend(deps.db, id, role.id) : null;
   const now = deps.clock.now();
   const sentByJobkit = role ? await anySent(deps.db, id, role.id) : false;
@@ -748,6 +749,7 @@ function kitPartsOf(parts: {
   const { kind } = parts.role.route;
   return {
     blocks: [...parts.draft.kit.blocks.map((block) => block.id), ...parts.added],
+    applied: appliedInstructions(parts.draft, parts.role),
     flags: parts.draft.flags,
     verdicts: parts.verdicts,
     attachments: parts.role.required_attachments.flatMap((attachment, i) =>
