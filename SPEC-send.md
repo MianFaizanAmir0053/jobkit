@@ -25,7 +25,7 @@ The Devices page connects Gmail once, through a consent flow of jobkit's own bes
 
 ### Where Part 1 differs from the requirements below
 
-- No trust gate, passkey or content-bound approval: the owner's press and the confirmation approve it (amendment A20). The press names the kit and the address, which delivery checks again.
+- No trust gate, passkey or content-bound approval: the owner's press and the confirmation approve it (amendment A20). The press names the kit and the address, which delivery checks again, and gives a key of the sentences and flags its confirmation listed, so it marks only those.
 - Ten seconds to undo, not fifteen (amendment A20).
 - The server sends when the countdown ends though the page is closed, where the requirements below had the page commit, so a closed page sent nothing (Claude's choice, 2026-10-14, so a phone that sleeps still sends; the owner can change it).
 - No daily cap and no deliverability test yet.

@@ -4,6 +4,7 @@ import { ADDRESS_CHECKS_VERSION, type AddressCheck } from "./addressChecks";
 import { canHandOff } from "./canHandOff";
 import {
   approvals,
+  approvalsKey,
   approveAll,
   approvable,
   decide,
@@ -146,8 +147,39 @@ describe("decide", () => {
     expect(reviewActionSchema.safeParse({ kind: "check_flag", flag: flagKey(over) }).success).toBe(
       true,
     );
-    // A place among the kit's flags, as decisions named them before, is no name now.
-    expect(reviewActionSchema.safeParse({ kind: "check_flag", flag: "F12" }).success).toBe(false);
+    // A place among the kit's flags, as a page drawn before flags were named posts it, is read,
+    // to be refused as no flag the kit has (recordReview); anything else is not a name.
+    expect(reviewActionSchema.safeParse({ kind: "check_flag", flag: "F12" }).success).toBe(true);
+    for (const flag of ["F12x", "over_limit@body", "over_limit@body~1A2B3C4D"]) {
+      expect(reviewActionSchema.safeParse({ kind: "check_flag", flag }).success).toBe(false);
+    }
+  });
+
+  it('takes back "I checked this" on a sentence\'s flags when the owner edits it, or takes the edit back', () => {
+    const named = (kind: "sensitive_topic_drafted" | "keyword_missing", at: string) =>
+      flagKey({ kind, at, message: "Check this." });
+    const onS3 = named("sensitive_topic_drafted", "S3");
+    const onS30 = named("sensitive_topic_drafted", "S30");
+    const onBody = named("keyword_missing", "body");
+    const checked = [onS3, onS30, onBody, F].reduce(
+      (decisions, flag) => decide(decisions, { kind: "check_flag", flag }),
+      NO_DECISIONS,
+    );
+
+    const edited = decide(checked, { kind: "edit", blockId: "S3", text: "New words." });
+    expect(edited.flagsChecked).toEqual([onS30, onBody, F]);
+    // Checked again on the owner's words, then the edit taken back: the drafted words are back.
+    const again = decide(edited, { kind: "check_flag", flag: onS3 });
+    expect(decide(again, { kind: "revert", blockId: "S3" }).flagsChecked).toEqual([
+      onS30,
+      onBody,
+      F,
+    ]);
+    // The separate check's verdict on S3 weighed the drafted words, which a revert brings back.
+    const judged = decide(checked, { kind: "check", blockId: "S3" });
+    expect(decide(judged, { kind: "edit", blockId: "S3", text: "New words." }).checked).toEqual([
+      "S3",
+    ]);
   });
 
   it("names a decision kept by a flag's place among drafting's as what that flag found", () => {
@@ -378,11 +410,34 @@ describe("approveAll", () => {
       { key: `flag:${flagKey(over!)}`, flag: over },
       { key: `flag:${flagKey(keyword!)}`, flag: keyword },
     ]);
-    // Two flags of one name are one mark, as approvable names it once.
+    // Two flags of one name are both listed, and the press names them once.
     const twice: KitParts = { ...parts, flags: [over!, { ...over! }] };
-    expect(approvals(twice, NO_DECISIONS).map((each) => each.key)).toEqual(
-      approvable(twice, NO_DECISIONS),
-    );
+    expect(approvals(twice, NO_DECISIONS).filter((each) => "flag" in each)).toHaveLength(2);
+    expect(approvable(twice, NO_DECISIONS)).toEqual(["sentence:S2", `flag:${flagKey(over!)}`]);
+  });
+
+  it("keys what Approve & send marks, as short with sixty marks as with one, and in any order", () => {
+    const parts: KitParts = {
+      ...PARTS,
+      flags: [FLAG, { kind: "over_limit", at: "body", message: "Too long." }],
+    };
+    const key = approvalsKey(parts, NO_DECISIONS);
+
+    expect(key).toMatch(/^[0-9a-f]{8}$/);
+    expect(approvalsKey({ ...parts, flags: [...parts.flags].reverse() }, NO_DECISIONS)).toBe(key);
+    // A decision made after the page was drawn, then taken back.
+    const checked = decide(NO_DECISIONS, { kind: "check", blockId: "S2" });
+    expect(approvalsKey(parts, checked)).not.toBe(key);
+    expect(approvalsKey(parts, decide(checked, { kind: "uncheck", blockId: "S2" }))).toBe(key);
+    const many: KitParts = {
+      ...parts,
+      flags: Array.from({ length: 60 }, (_, i) => ({
+        kind: "sensitive_topic_drafted" as const,
+        at: `S${i + 10}`,
+        message: "Check this.",
+      })),
+    };
+    expect(approvalsKey(many, NO_DECISIONS)).toMatch(/^[0-9a-f]{8}$/);
   });
 
   it("reads decisions kept before the fit tick as saying the owner meets nothing", () => {

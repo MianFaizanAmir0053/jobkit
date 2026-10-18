@@ -181,6 +181,52 @@ describe("pickDraft", () => {
     expect(kinds(again)).toEqual([]);
   });
 
+  it("names as now a draft's flag decisions set aside before flags were named, and keeps them so", async () => {
+    const id = await readyKit(NO_ADDRESS, { templates: true, record: askingForADegree });
+    const first = await view(id);
+    const flag = flagKey(first.kitParts!.flags[0]!);
+    await pickDraft({ db, clock }, id, "T-ai-features", { kit: first.kitKey! });
+    // As a pick kept the first draft's decisions before: its flag by its place among drafting's.
+    await db.query("update {{schema}}.kit_reviews set draft_checks = $2::jsonb where job_id = $1", [
+      id,
+      JSON.stringify({
+        [first.kitKey!]: { checked: [], flagsChecked: ["F1"], edits: {}, confirmed: [] },
+      }),
+    ]);
+
+    await pickDraft({ db, clock }, id, "T-full-stack", { kit: (await view(id)).kitKey! });
+
+    const { rows } = await db.query<{ decisions: { flagsChecked: string[] } }>(
+      "select decisions from {{schema}}.kit_reviews where job_id = $1",
+      [id],
+    );
+    expect(rows[0]!.decisions.flagsChecked).toEqual([flag]);
+    expect((await view(id)).review!.decisions.flagsChecked).toEqual([flag]);
+  });
+
+  it("keeps every other flag's name, and the owner's decision on it, when they edit a sentence of a template's draft", async () => {
+    const id = await readyKit(NO_ADDRESS, { templates: true, record: askingForADegree });
+    const first = await view(id);
+    const named = first.kitParts!.flags.map(flagKey);
+    expect(named.length).toBeGreaterThan(0);
+    const decide = { db, clock, dns: mail };
+    await recordReview(decide, id, { kind: "retype", value: "jobs@example.com" });
+    for (const flag of named) await recordReview(decide, id, { kind: "check_flag", flag });
+    const last = first.draft!.kit.blocks.at(-1)!;
+
+    await recordReview(decide, id, {
+      kind: "edit",
+      blockId: last.id,
+      text: `${last.text} Thanks.`,
+    });
+
+    const after = await view(id);
+    expect(after.kit!.blocks.at(-1)!.text).toBe(`${last.text} Thanks.`);
+    expect(after.kitParts!.flags.map(flagKey)).toEqual(named);
+    // Held only by the owner's words, until they confirm them.
+    expect(kinds(after)).toEqual(["unconfirmed_edit"]);
+  });
+
   it("keeps the draft shown when picked, and refuses a pick from another kit's page, of a draft the kit lacks, or while it sends", async () => {
     const id = await readyKit(POST, { templates: true });
     const shown = await view(id);

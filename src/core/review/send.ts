@@ -5,7 +5,7 @@ import { isUuid } from "@/lib/uuid";
 import { within } from "@/lib/within";
 
 import { canHandOff } from "./canHandOff";
-import { approvable, approveAll, gateInputOf, needsNewWords, NO_DECISIONS } from "./decisions";
+import { approvalsKey, approveAll, gateInputOf, needsNewWords, NO_DECISIONS } from "./decisions";
 import type { JobView } from "./jobView";
 import {
   BEGIN_WITHIN_MS,
@@ -94,10 +94,10 @@ export interface Pressed {
   to: string;
   uncertain: string | null;
   /**
-   * The sentences and flags the confirmation listed, which the press marks
-   * (approvable); the route refuses a press that names none.
+   * The key of the sentences and flags the confirmation listed, which the
+   * press marks (approvalsKey); the route refuses a press that gives none.
    */
-  approved?: readonly string[];
+  approved?: string;
   sessionId: string | null;
 }
 
@@ -122,12 +122,11 @@ export async function scheduleSend(
     if (needsNewWords(view.kitParts, before)) return { ok: false, reason: "words" };
     // The press marks only what its confirmation listed: one drawn before a decision was made or
     // taken back, here or on the other device, is refused, and the page is drawn again.
-    if (pressed.approved !== undefined) {
-      const listed = new Set(pressed.approved);
-      const marks = approvable(view.kitParts, before);
-      if (marks.length !== listed.size || marks.some((key) => !listed.has(key))) {
-        return { ok: false, reason: "changed" };
-      }
+    if (
+      pressed.approved !== undefined &&
+      pressed.approved !== approvalsKey(view.kitParts, before)
+    ) {
+      return { ok: false, reason: "changed" };
     }
     const decisions = approveAll(view.kitParts, before);
     if (canHandOff(gateInputOf(view.kitParts, decisions)).length > 0) {

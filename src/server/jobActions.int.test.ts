@@ -512,6 +512,10 @@ describe("the job page's routes", () => {
     expect(
       (await review(post(`/api/jobs/${ready}/review`, nowhere, cookie), deps(), ready)).status,
     ).toBe(409);
+    // A page drawn before flags were named posts a flag's place: drawn again, as for a stale page.
+    const placed = JSON.stringify({ action: { kind: "check_flag", flag: "F1" }, kit });
+    const old = await review(post(`/api/jobs/${ready}/review`, placed, cookie), deps(), ready);
+    expect(old.status).toBe(409);
     expect(
       (
         await review(

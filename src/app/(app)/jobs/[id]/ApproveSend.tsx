@@ -101,8 +101,8 @@ export function ApproveSend({
   cv: string | null;
   /** What the press marks "I checked this": each flagged sentence and flag the page lists. */
   approvals: string[];
-  /** The same, as the press names them, so it never marks what the confirmation did not list. */
-  approved: readonly string[];
+  /** Their key, which the press gives, so it never marks what the confirmation did not list. */
+  approved: string;
   /** Why Approve & send cannot send it now, in the owner's words; null when it can. */
   held: string | null;
   /** The earlier send that may have gone, which the confirmation repeats and the press names. */

@@ -193,6 +193,11 @@ describe("recordReview", () => {
       gate.some((reason) => reason.kind === "flag" && reason.flag.kind === "invalid_citation");
     expect(open(view.review!.gate)).toBe(true);
 
+    // A page drawn before flags were named posts the flag's place: no flag has that name now.
+    expect(await recordReview(deps(), id, { kind: "check_flag", flag: "F1" })).toEqual({
+      ok: false,
+      reason: "not-in-kit",
+    });
     const checked = await recordReview(deps(), id, {
       kind: "check_flag",
       flag: flagKey(citation),

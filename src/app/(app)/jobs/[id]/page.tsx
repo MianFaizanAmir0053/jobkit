@@ -13,6 +13,7 @@ import { flagRank, judgeMessage } from "@/core/review/canHandOff";
 import { type ChecklistStatus, checklistOf } from "@/core/review/checklist";
 import {
   approvals,
+  approvalsKey,
   flagKey,
   isMeetable,
   needsNewWords,
@@ -657,7 +658,7 @@ function KitPanel({
   // but for those only new words resolve and those only the owner can answer. The confirmation
   // lists them and the press names them, so it never marks what the page did not list.
   const marks = approvals(parts, decisions);
-  const approved = marks.map((mark) => mark.key);
+  const approved = approvalsKey(parts, decisions);
   const approvalLines = marks.map((mark) => {
     if ("blockId" in mark) {
       const reason = reasons.find((each) => each.kind === "judge" && each.blockId === mark.blockId);
@@ -966,8 +967,10 @@ function KitPanel({
                 )}
               </li>
             ))}
-            {flags.map((flag) => {
+            {flags.map((flag, i) => {
               const key = flagKey(flag);
+              // Two flags of one name, as two lines aimed at AI may hash alike, are two items still.
+              const twin = flags.slice(0, i).filter((each) => flagKey(each) === key).length;
               const about = aboutFlag(flag);
               // A requirement only the owner can confirm: for one they do not meet, the email must
               // not claim it, so it is fixed where they send it.
@@ -985,7 +988,7 @@ function KitPanel({
                     ? `${flag.message} (the greeting)`
                     : flag.message);
               return (
-                <li key={key}>
+                <li key={twin > 0 ? `${key}#${twin}` : key}>
                   {flag.message}
                   {about && <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>}
                   {meetsIt && !met && !locked && (

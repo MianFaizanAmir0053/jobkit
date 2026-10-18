@@ -100,15 +100,20 @@ export const decisionsSchema = z.object({
 /** The most characters an edited sentence holds. */
 export const MAX_SENTENCE = 1500;
 
-/** A flag's name (flagKey): its kind, its place, and eight hex digits of its words. */
-const FLAG_KEY = /^[a-z_]{1,40}@[^@~\s]{1,40}~[0-9a-f]{8}$/;
+/**
+ * A flag's name (flagKey): its kind, its place, and eight hex digits of its
+ * words; or its place among the kit's flags ("F2"), as a page drawn before
+ * flags were named posts it, which no flag has now: the decision is refused
+ * as not in the kit, and the page drawn again.
+ */
+const FLAG_NAME = /^(?:[a-z_]{1,40}@[^@~\s]{1,40}~[0-9a-f]{8}|F\d{1,4})$/;
 
 /** One decision, as the page posts it. A typed contact fits RFC 5321's 254 characters with room. */
 export const reviewActionSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("check"), blockId: z.string().min(1).max(20) }),
   z.strictObject({ kind: z.literal("uncheck"), blockId: z.string().min(1).max(20) }),
-  z.strictObject({ kind: z.literal("check_flag"), flag: z.string().regex(FLAG_KEY) }),
-  z.strictObject({ kind: z.literal("uncheck_flag"), flag: z.string().regex(FLAG_KEY) }),
+  z.strictObject({ kind: z.literal("check_flag"), flag: z.string().regex(FLAG_NAME) }),
+  z.strictObject({ kind: z.literal("uncheck_flag"), flag: z.string().regex(FLAG_NAME) }),
   z.strictObject({ kind: z.literal("retype"), value: z.string().max(320) }),
   z.strictObject({
     kind: z.literal("attach"),
@@ -138,7 +143,12 @@ export type ReviewAction = z.infer<typeof reviewActionSchema>;
  * a short hash of its words ("over_limit@body~1a2b3c4d"), so it keeps its
  * name when validate runs again after an edit, and two at one place, as two
  * lines aimed at AI the email repeats, are told apart. A finding whose
- * words change is a new flag, which an earlier "I checked this" did not see.
+ * words change is a new flag, which an earlier "I checked this" did not see:
+ * one whose words count, as an email's length does, is named again when the
+ * count changes, and validate's wording of a finding, changed, names every
+ * such flag anew, so the owner checks each again. A flag at a sentence
+ * keeps its name through the sentence's edits, so an edit takes back the
+ * checks on its flags (decide).
  */
 export function flagKey(flag: Pick<KitFlag, "kind" | "at" | "message">): string {
   return `${flag.kind}@${flag.at}~${shortHash(flag.message)}`;
@@ -199,6 +209,9 @@ export function keptLookup(decisions: ReviewDecisions, address: string): Address
 }
 
 const without = (list: readonly string[], item: string) => list.filter((each) => each !== item);
+/** The flags' names but those at one sentence, whose "I checked this" weighed other words. */
+const notAt = (names: readonly string[], blockId: string) =>
+  names.filter((name) => name.slice(name.indexOf("@") + 1, name.lastIndexOf("~")) !== blockId);
 const withOne = (list: readonly string[], item: string) =>
   list.includes(item) ? [...list] : [...list, item];
 
@@ -253,11 +266,14 @@ export function decide(
           : without(decisions.meets, action.requirementId),
       };
     // An edit needs the owner's confirmation again, as new words.
+    // New words for a sentence, the owner's or drafting's again: confirmed and checked anew, but the
+    // separate check's verdict, which weighed the drafted words and stands aside meanwhile.
     case "edit":
       return {
         ...decisions,
         edits: { ...decisions.edits, [action.blockId]: action.text.trim() },
         confirmed: without(decisions.confirmed, action.blockId),
+        flagsChecked: notAt(decisions.flagsChecked, action.blockId),
       };
     case "revert":
       return {
@@ -266,6 +282,7 @@ export function decide(
           Object.entries(decisions.edits).filter(([blockId]) => blockId !== action.blockId),
         ),
         confirmed: without(decisions.confirmed, action.blockId),
+        flagsChecked: notAt(decisions.flagsChecked, action.blockId),
       };
     case "confirm":
       return { ...decisions, confirmed: withOne(decisions.confirmed, action.blockId) };
@@ -354,17 +371,15 @@ export type Approval = { key: string; blockId: string } | { key: string; flag: K
 /**
  * What Approve & send marks "I checked this" on, of what the gate now
  * holds: the separate check's sentences ("sentence:S2"), then validate's
- * flags ("flag:" and its name), but those only new words resolve and those only the
- * owner can answer, each with the sentence or flag it marks. The
- * confirmation lists them and the press names them, so a press never marks
- * what its page did not list, as when a decision was taken back on the
- * other device after the page was drawn.
+ * flags ("flag:" and its name), but those only new words resolve and those
+ * only the owner can answer, each with the sentence or flag it marks, for
+ * the confirmation to list: every flag, though two share a name.
  */
 export function approvals(parts: KitParts, decisions: ReviewDecisions): Approval[] {
   const blocks = new Set(parts.blocks);
   const checked = new Set(decisions.checked);
   const flagsChecked = new Set(decisions.flagsChecked);
-  const sentences = parts.verdicts
+  const held = parts.verdicts
     .filter(
       (verdict) =>
         isBlocking(verdict) &&
@@ -372,21 +387,35 @@ export function approvals(parts: KitParts, decisions: ReviewDecisions): Approval
         !checked.has(verdict.blockId) &&
         !isEdited(decisions, verdict.blockId),
     )
-    .map((verdict): Approval => ({ key: `sentence:${verdict.blockId}`, blockId: verdict.blockId }));
+    .map((verdict) => verdict.blockId);
+  const sentences = [...new Set(held)].map((blockId): Approval => ({
+    key: `sentence:${blockId}`,
+    blockId,
+  }));
   const flags = parts.flags.flatMap((flag): Approval[] => {
     const key = flagKey(flag);
     return flagsChecked.has(key) || NEEDS_NEW_WORDS.has(flag.kind) || isMeetable(flag)
       ? []
       : [{ key: `flag:${key}`, flag }];
   });
-  // Each once: two flags of one name, as validate may give, are one mark.
-  const named = new Map([...sentences, ...flags].map((each) => [each.key, each]));
-  return [...named.values()];
+  return [...sentences, ...flags];
 }
 
-/** The names of what Approve & send marks (approvals), as its press gives them. */
+/** The names of what Approve & send marks (approvals), each once. */
 export function approvable(parts: KitParts, decisions: ReviewDecisions): string[] {
-  return approvals(parts, decisions).map((each) => each.key);
+  return [...new Set(approvals(parts, decisions).map((each) => each.key))];
+}
+
+/**
+ * What Approve & send marks (approvable) as one short key, its names in
+ * order: the page's press gives the key of what its confirmation listed,
+ * and the server sends only while it would mark what has that key, so a
+ * press never marks what its page did not list, as when a decision was
+ * taken back on the other device after the page was drawn. A key, not the
+ * names, so a press is as short with sixty marks as with one.
+ */
+export function approvalsKey(parts: KitParts, decisions: ReviewDecisions): string {
+  return shortHash(approvable(parts, decisions).sort().join("\n"));
 }
 
 /**

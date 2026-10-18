@@ -13,7 +13,7 @@ import { cryptoRandom } from "@/adapters/random";
 import { issueSession } from "@/core/platform/sessions";
 import type { Db, QueryResult, Row } from "@/core/ports";
 import { LATE_MS } from "@/core/review/kitSends";
-import { approvable } from "@/core/review/decisions";
+import { approvalsKey } from "@/core/review/decisions";
 import { jobView } from "@/core/review/jobView";
 import { readyKit, resetKitBed } from "@/core/review/testKit";
 import type { AppConfig } from "@/server/config";
@@ -108,7 +108,7 @@ async function pressedOn(id: string) {
     kit: view.kitKey!,
     to: view.handoff!.to,
     uncertain: view.uncertain?.id ?? null,
-    approved: approvable(view.kitParts!, view.review!.decisions),
+    approved: approvalsKey(view.kitParts!, view.review!.decisions),
   };
 }
 
@@ -208,6 +208,21 @@ describe("POST /api/jobs/<id>/send", () => {
     await drain();
 
     expect(gmail.sent).toHaveLength(1);
+  });
+
+  it("refuses as changed a press from a page that listed its marks rather than giving their key", async () => {
+    const cookie = await signedIn();
+    await connectGmail();
+    const id = await readyKit({ db, clock, storage }, POST);
+
+    const response = await send(
+      post(`/api/jobs/${id}/send`, { ...(await pressedOn(id)), approved: ["sentence:S1"] }, cookie),
+      deps(),
+      id,
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "changed" });
   });
 
   it("refuses a press from a page drawn on another kit", async () => {

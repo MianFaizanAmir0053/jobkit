@@ -111,15 +111,16 @@ async function deliverWhenDue(
 }
 
 /**
- * The kit, the address, the send that may have gone, and the sentences and
- * flags the confirmation listed, as the page showed them at the press; a
- * page from before it named them is refused as changed, and drawn again.
+ * The kit, the address, the send that may have gone, and the key of the
+ * sentences and flags the confirmation listed (approvalsKey), as the page
+ * showed them at the press; a page from before it gave the key, which gave
+ * none or listed them, is refused as changed, and drawn again.
  */
 const sendBody = z.object({
   kit: z.string().min(1).max(100),
   to: z.string().max(400),
   uncertain: z.uuid().nullable(),
-  approved: z.array(z.string().min(1).max(40)).max(500).optional(),
+  approved: z.union([z.string().regex(/^[0-9a-f]{8}$/), z.array(z.unknown())]).optional(),
 });
 
 /**
@@ -138,12 +139,14 @@ export async function send(
   if (!isUuid(jobId)) return refusal(404, "not-found");
   const body = await bodyOf(request, sendBody);
   if (!body.ok) return body.response;
-  if (body.data.approved === undefined) return refusal(409, "changed");
+  const { approved } = body.data;
+  if (typeof approved !== "string") return refusal(409, "changed");
   const connection = await gmailConnection(deps.db);
   if (!connection) return refusal(409, "gmail-not-connected");
   if (connection.refusedAt) return refusal(409, "gmail-refused");
   const scheduled = await scheduleSend(deps, jobId, {
     ...body.data,
+    approved,
     sessionId: actor.session.id,
   });
   if (!scheduled.ok) {

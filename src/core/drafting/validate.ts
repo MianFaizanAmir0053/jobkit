@@ -134,8 +134,14 @@ function without(text: string, name: string): string {
 
 export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] {
   const flags: KitFlag[] = [];
-  const flag = (kind: KitFlagKind, at: string, message: string) =>
+  // Each finding once: two lines aimed at AI that read alike as the message quotes them are one,
+  // and its name (flagKey) is one flag's.
+  const flag = (kind: KitFlagKind, at: string, message: string) => {
+    if (flags.some((each) => each.kind === kind && each.at === at && each.message === message)) {
+      return;
+    }
     flags.push({ kind, at, message });
+  };
   const { role, profile } = context;
   const factIds = new Set(profile.facts.map((fact) => fact.id));
   const names = [context.record.company.name, role.title];

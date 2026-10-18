@@ -17,7 +17,7 @@ import { issueSession } from "@/core/platform/sessions";
 import { createTestDb } from "@/server/db/testDb";
 
 import { openForJob } from "./applications";
-import { approvable, flagKey, NO_DECISIONS } from "./decisions";
+import { approvalsKey, flagKey, NO_DECISIONS } from "./decisions";
 import { storedDecisions } from "./jobView";
 import { type JobView, jobView } from "./jobView";
 import { recordReview } from "./kitReview";
@@ -89,7 +89,7 @@ const pressed = (shown: JobView, sessionId: string | null = null) => ({
   kit: shown.kitKey!,
   to: shown.handoff!.to,
   uncertain: shown.uncertain?.id ?? null,
-  approved: approvable(shown.kitParts!, shown.review!.decisions),
+  approved: approvalsKey(shown.kitParts!, shown.review!.decisions),
   sessionId,
 });
 
@@ -151,13 +151,14 @@ describe("scheduleSend", () => {
   it("refuses a press whose confirmation listed other sentences and flags than it would mark", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
     const shown = await view(id);
-    const listed = pressed(shown).approved;
-    expect(listed.length).toBeGreaterThan(0);
+    // The owner checks the sentence on the other device after this page was drawn.
+    await recordReview({ db, clock, dns: offlineDns() }, id, { kind: "check", blockId: "S1" });
 
-    expect(
-      await scheduleSend({ db, clock }, id, { ...pressed(shown), approved: listed.slice(1) }),
-    ).toEqual({ ok: false, reason: "changed" });
-    expect((await scheduleSend({ db, clock }, id, pressed(shown))).ok).toBe(true);
+    expect(await scheduleSend({ db, clock }, id, pressed(shown))).toEqual({
+      ok: false,
+      reason: "changed",
+    });
+    expect((await scheduleSend({ db, clock }, id, pressed(await view(id)))).ok).toBe(true);
   });
 
   it("approves every flagged sentence and flag shown, and sends ten seconds later", async () => {

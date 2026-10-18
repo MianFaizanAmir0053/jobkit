@@ -3,7 +3,7 @@ import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
 import type { GateReason } from "./canHandOff";
-import { NO_DECISIONS, type ReviewDecisions } from "./decisions";
+import { NO_DECISIONS, type ReviewDecisions, withFlagNames } from "./decisions";
 import { type DraftChecks, draftChecksSchema, jobView } from "./jobView";
 import { type DecisionMade, keep, lockedKit } from "./kitReview";
 
@@ -68,12 +68,8 @@ export async function pickDraft(
     if (!picked?.kitKey) throw new Error(`The draft picked for job ${jobId} made no kit.`);
     const decisions = view.review?.decisions ?? NO_DECISIONS;
     const aside = await draftChecksOf(tx, jobId, roleId);
-    const back = aside[picked.kitKey] ?? {
-      checked: [],
-      flagsChecked: [],
-      edits: {},
-      confirmed: [],
-    };
+    // Its flags named as now, though kept by their place among drafting's before flags were named.
+    const back = withFlagNames({ ...NO_DECISIONS, ...aside[picked.kitKey] }, picked.draft!.flags);
     const kept: DraftChecks = {
       ...Object.fromEntries(Object.entries(aside).filter(([kit]) => kit !== picked.kitKey)),
       [view.kitKey]: {
@@ -88,7 +84,13 @@ export async function pickDraft(
         where job_id = $1 and role_id = $2`,
       [jobId, roleId, JSON.stringify(kept)],
     );
-    const carried: ReviewDecisions = { ...decisions, ...back };
+    const carried: ReviewDecisions = {
+      ...decisions,
+      checked: back.checked,
+      flagsChecked: back.flagsChecked,
+      edits: back.edits,
+      confirmed: back.confirmed,
+    };
     const outcome = await keep(at, jobId, roleId, picked.kitKey, carried);
     return outcome.ok ? { ok: true, gate: outcome.gate } : outcome;
   });
