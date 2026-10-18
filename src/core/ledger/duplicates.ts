@@ -31,9 +31,10 @@ export interface DuplicateMatch {
   bounced: boolean;
   /**
    * The match itself: the earlier row, the reason, and for an earlier kit
-   * whether it was sent. The banner sends the keys it showed back with the
-   * owner's tap, and a match with any other key holds the application
-   * again, a drafted kit that is later sent included.
+   * whether it was sent, and whether its email bounced. The banner sends the
+   * keys it showed back with the owner's tap, and a match with any other key
+   * holds the application again, a drafted kit that is later sent, and a
+   * bounce that is later taken back, included.
    */
   key: string;
 }
@@ -88,7 +89,7 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
   const add = (match: Omit<DuplicateMatch, "key">, id: string) =>
     matches.push({
       ...match,
-      key: `${match.source}:${id}:${match.reason}${match.applied ? "" : ":unsent"}`,
+      key: `${match.source}:${id}:${match.reason}${match.applied ? (match.bounced ? ":bounced" : "") : ":unsent"}`,
     });
 
   // Every application that got as far as a kit: sent, submitted, bounced,

@@ -135,6 +135,7 @@ describe("duplicatesOf", () => {
         source: "application",
         applied: true,
         bounced: true,
+        key: expect.stringMatching(/^application:[0-9a-f-]{36}:company-role:bounced$/),
       }),
     ]);
   });

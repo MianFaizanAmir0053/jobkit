@@ -20,7 +20,7 @@ import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
-import { changeStatus, openApplication } from "@/core/ledger/statuses";
+import { changeStatus, openApplication, undoStatus } from "@/core/ledger/statuses";
 import { loadJob } from "@/core/platform/jobs";
 import type { ModelCallDeps } from "@/core/platform/models";
 import { issueSession } from "@/core/platform/sessions";
@@ -204,7 +204,7 @@ const failingOn = (inner: Db, table: string): Db => ({
 });
 
 /** An application sent before, to this company and role. */
-async function sentEarlier(company: string, title: string): Promise<void> {
+async function sentEarlier(company: string, title: string): Promise<string> {
   const earlier = "44444444-4444-4444-8444-444444444444";
   await insertTestJobs(db, [earlier]);
   const id = await openApplication(
@@ -224,6 +224,7 @@ async function sentEarlier(company: string, title: string): Promise<void> {
   );
   await changeStatus({ db, clock }, id, "kit_ready", null);
   await changeStatus({ db, clock }, id, "sent", null);
+  return id;
 }
 
 beforeAll(async () => {
@@ -733,6 +734,40 @@ describe("the job page's routes", () => {
     expect((await applyAgain(JSON.stringify({ keys }))).status).toBe(400);
     expect((await applyAgain(JSON.stringify({ keys, kit }))).status).toBe(200);
     expect((await jobView({ db, clock }, ready))!.duplicates[0]!.covered).toBe(true);
+  });
+
+  it("hold a kit again once the bounce of an earlier email that Apply again went past is taken back", async () => {
+    await seedSample();
+    const cookie = await signedIn();
+    const record = fixture("S01-email-simple");
+    const earlier = await sentEarlier(record.company.name, record.roles[0]!.title);
+    clock.advance(60_000);
+    await changeStatus({ db, clock }, earlier, "bounced", null);
+    const ready = await settled([answer(record), answer(DRAFT)]);
+    const keys = (await jobView({ db, clock }, ready))!.duplicates.map((match) => match.key);
+    expect(keys).toEqual([expect.stringMatching(/:bounced$/)]);
+    const kit = await kitOf(ready);
+    const applyAgain = () =>
+      applyAgainRoute(
+        post(`/api/jobs/${ready}/apply-again`, JSON.stringify({ keys, kit }), cookie),
+        deps(),
+        ready,
+      );
+    expect((await applyAgain()).status).toBe(200);
+    expect((await jobView({ db, clock }, ready))!.duplicates[0]!.covered).toBe(true);
+
+    // The earlier email reached them after all: its bounce is taken back.
+    const { rows } = await db.query<{ bounced_at: Date }>(
+      "select bounced_at from {{schema}}.applications where id = $1",
+      [earlier],
+    );
+    await undoStatus({ db, clock }, earlier, { status: "bounced", at: rows[0]!.bounced_at }, null);
+
+    const view = (await jobView({ db, clock }, ready))!;
+    expect(view.duplicates).toEqual([expect.objectContaining({ bounced: false, covered: false })]);
+    expect(view.review?.gate.map((reason) => reason.kind)).toContain("duplicate");
+    // A tap from a page that still showed the bounce is refused.
+    expect((await applyAgain()).status).toBe(409);
   });
 
   it("pick a draft, ask Gemini for one beside the templates', and go back when it fails", async () => {

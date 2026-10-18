@@ -3,7 +3,7 @@ import { changeStatus, undoStatus } from "@/core/ledger/statuses";
 import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
-import { lockReview } from "./markSent";
+import { keepGate, lockReview } from "./markSent";
 
 /**
  * "Mark bounced" on a sent email (review spec, "Handoffs": on sent jobs;
@@ -40,6 +40,8 @@ export async function markBounced(
     }
     const bounced = await changeStatus(at, application.id, "bounced", sessionId);
     if (!bounced.ok) return { ok: false, reason: "not-sent" };
+    // The gate kept with the decisions, as every move of the kit's keeps it.
+    if (bounced.changed) await keepGate(at, jobId, role.id);
     return { ok: true, changed: bounced.changed };
   });
 }
@@ -75,6 +77,7 @@ export async function takeBackBounced(
     if (!undone.ok || !undone.changed) {
       return { ok: false as const, reason: "not-bounced" as const };
     }
+    await keepGate(at, jobId, role.id);
     return { ok: true as const };
   });
 }

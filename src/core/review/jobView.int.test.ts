@@ -1111,6 +1111,19 @@ describe("markBounced", () => {
     expect((await jobView({ db, clock }, id))!.application?.status).toBe("kit_ready");
   });
 
+  it("keeps the gate in the kit's review row as it marks an email bounced, as the other moves do", async () => {
+    const { id, sentAt } = await sentKit();
+    // A review row made afresh, as for a kit no decision was made on before.
+    await db.query("delete from {{schema}}.kit_reviews where job_id = $1", [id]);
+
+    await markBounced({ db, clock }, id, null, sentAt);
+    const { rows } = await db.query<{ gate: { kind: string }[] }>(
+      "select gate from {{schema}}.kit_reviews where job_id = $1",
+      [id],
+    );
+    expect(rows.map((row) => row.gate.map((reason) => reason.kind))).toEqual([["sent"]]);
+  });
+
   it("refuses a bounce of an email not sent, or from a page that showed another Mark sent", async () => {
     const { id, sentAt } = await sentKit();
     clock.advance(60_000);
