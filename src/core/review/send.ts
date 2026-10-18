@@ -113,7 +113,9 @@ export async function scheduleSend(
     // jobkit attaches the CV alone: a post asking for another file goes through Gmail.
     if (view.kitParts.attachments.length > 0) return { ok: false, reason: "attachment" };
     // It sends the words as they stand: one that must change goes through Gmail too.
-    if (needsNewWords(view.kitParts)) return { ok: false, reason: "words" };
+    if (needsNewWords(view.kitParts, view.review?.decisions ?? NO_DECISIONS)) {
+      return { ok: false, reason: "words" };
+    }
     const decisions = approveAll(view.kitParts, view.review?.decisions ?? NO_DECISIONS);
     if (canHandOff(gateInputOf(view.kitParts, decisions)).length > 0) {
       return { ok: false, reason: "held" };

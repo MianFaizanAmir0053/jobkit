@@ -252,15 +252,26 @@ export const NEEDS_NEW_WORDS: ReadonlySet<KitFlagKind> = new Set([
 ]);
 
 /** Whether the kit's words must change before it goes, so Approve & send cannot send it. */
-export function needsNewWords(parts: Pick<KitParts, "flags">): boolean {
-  return parts.flags.some((flag) => NEEDS_NEW_WORDS.has(flag.kind));
+export function needsNewWords(
+  parts: Pick<KitParts, "flags">,
+  decisions: Pick<ReviewDecisions, "flagsChecked" | "meets"> = NO_DECISIONS,
+): boolean {
+  const checked = new Set(decisions.flagsChecked);
+  const meets = new Set(decisions.meets);
+  return parts.flags.some(
+    (flag, place) =>
+      NEEDS_NEW_WORDS.has(flag.kind) ||
+      // Checked by an owner who did not say they meet it: the email must not claim it.
+      (isMeetable(flag) && checked.has(flagKey(place)) && !meets.has(flag.at)),
+  );
 }
 
 /**
  * "Approve & send" (decisions A20): "I checked this" on every sentence the
  * separate check holds and every one of validate's flags, as the page shows
- * them above the button, but for those only new words resolve. Nothing
- * else: the hard stops hold the kit until the owner acts on each.
+ * them above the button, but for those only new words resolve and those
+ * only the owner can answer: whether they meet a requirement. Nothing else:
+ * the hard stops hold the kit until the owner acts on each.
  */
 export function approveAll(parts: KitParts, decisions: ReviewDecisions): ReviewDecisions {
   const held = parts.verdicts.filter(isBlocking).map((verdict) => verdict.blockId);
@@ -268,7 +279,9 @@ export function approveAll(parts: KitParts, decisions: ReviewDecisions): ReviewD
     ...decisions,
     checked: held.reduce(withOne, decisions.checked),
     flagsChecked: parts.flags
-      .flatMap((flag, place) => (NEEDS_NEW_WORDS.has(flag.kind) ? [] : [flagKey(place)]))
+      .flatMap((flag, place) =>
+        NEEDS_NEW_WORDS.has(flag.kind) || isMeetable(flag) ? [] : [flagKey(place)],
+      )
       .reduce(withOne, decisions.flagsChecked),
   };
 }

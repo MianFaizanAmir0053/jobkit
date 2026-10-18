@@ -386,10 +386,14 @@ describe("recordReview", () => {
     const view = (await jobView({ db, clock }, id))!;
     expect(view.review?.decisions.meets).toEqual(["R4"]);
     expect(view.review?.decisions.flagsChecked).toEqual([]);
-    // A requirement the owner's word does not settle takes none.
+    // A requirement the owner's word does not settle takes none, though withdrawing one always
+    // goes, as one carried by a pick to a draft whose row takes no tick.
     expect(
       await recordReview(deps(), id, { kind: "meets", requirementId: "R1", ticked: true }),
     ).toEqual({ ok: false, reason: "not-in-kit" });
+    expect(
+      await recordReview(deps(), id, { kind: "meets", requirementId: "R1", ticked: false }),
+    ).toMatchObject({ ok: true });
   });
 
   it("refuses a decision the kit has no place for", async () => {

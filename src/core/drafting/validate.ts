@@ -205,14 +205,17 @@ export function validateEmailKit(kit: EmailKit, context: KitContext): KitFlag[] 
   }
   // From every role: a line aimed at AI that the model recorded under another role still counts.
   // Looked for in the body only: the subject, greeting and closing are the app's words.
-  const followed = context.record.roles
-    .flatMap((each) => each.instructions)
-    .filter((instruction) => instruction.addressed_to_ai)
-    .map((instruction) => oneLine(instruction.value))
-    // A value under three characters ("OK") is matched in its own case, so "ok" in a sentence is not it.
-    .find((value) => isCheckable(value) && hasWord(body, value, [...value].length < 3));
-  if (followed !== undefined) {
-    const shown = [...followed].slice(0, 60).join("");
+  // Each value once, however many roles record its line, so taking one out never hides another.
+  const followed = new Set(
+    context.record.roles
+      .flatMap((each) => each.instructions)
+      .filter((instruction) => instruction.addressed_to_ai)
+      .map((instruction) => oneLine(instruction.value))
+      // A value under three characters ("OK") is matched in its own case, so "ok" in a sentence is not it.
+      .filter((value) => isCheckable(value) && hasWord(body, value, [...value].length < 3)),
+  );
+  for (const value of followed) {
+    const shown = [...value].slice(0, 60).join("");
     flag(
       "ai_instruction_followed",
       "kit",

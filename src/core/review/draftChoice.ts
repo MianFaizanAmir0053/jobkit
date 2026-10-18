@@ -13,7 +13,8 @@ import { type DecisionMade, keep, lockedKit } from "./kitReview";
  * sentences and flags counts for that draft alone: it is kept aside when
  * they pick another, by the draft's kit key, and comes back when they pick
  * it again. What they decided on the post (a typed address, an attachment's
- * tick, "Continue anyway") goes with the pick. Asking Gemini for a draft
+ * tick, a requirement they say they meet, "Continue anyway") goes with the
+ * pick. Asking Gemini for a draft
  * beside the templates' keeps the draft shown, so the kit and the decisions
  * on it stand when Gemini's arrives, and starts a new round of attempts, as
  * Retry does; should it fail, the owner can go back to the templates'

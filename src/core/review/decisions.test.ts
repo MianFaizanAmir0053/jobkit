@@ -5,6 +5,7 @@ import { canHandOff } from "./canHandOff";
 import {
   approveAll,
   decide,
+  decisionsSchema,
   flagKey,
   gateInputOf,
   keptLookup,
@@ -222,17 +223,45 @@ describe("approveAll", () => {
   });
 
   it('marks "I checked this" on every flagged sentence and flag, and no other decision', () => {
-    const approved = approveAll(PARTS, decide(NO_DECISIONS, { kind: "check", blockId: "S2" }));
+    const parts: KitParts = {
+      ...PARTS,
+      flags: [{ kind: "over_limit", at: "body", message: "The email runs past the limit." }],
+    };
+    const approved = approveAll(parts, decide(NO_DECISIONS, { kind: "check", blockId: "S2" }));
 
     expect(approved).toEqual({ ...NO_DECISIONS, checked: ["S2"], flagsChecked: ["F1"] });
     // The hard stops still hold the kit: the scam warning, the possible repeat, the contact, the
     // attachment.
-    expect(canHandOff(gateInputOf(PARTS, approved)).map((reason) => reason.kind)).toEqual([
+    expect(canHandOff(gateInputOf(parts, approved)).map((reason) => reason.kind)).toEqual([
       "scam",
       "duplicate",
       "contact",
       "attachment",
     ]);
+  });
+
+  it("leaves to the owner a requirement only they can confirm, said or not", () => {
+    // FLAG is one: Approve & send neither says they meet it nor checks it for them.
+    expect(approveAll(PARTS, NO_DECISIONS).flagsChecked).toEqual([]);
+    const said = decide(NO_DECISIONS, { kind: "meets", requirementId: "R2", ticked: true });
+    expect(approveAll(PARTS, said)).toMatchObject({ flagsChecked: [], meets: ["R2"] });
+  });
+
+  it("asks for new words when the owner checked a requirement only they can confirm without saying they meet it", () => {
+    const checked = decide(NO_DECISIONS, { kind: "check_flag", flag: "F1" });
+
+    expect(needsNewWords(PARTS, NO_DECISIONS)).toBe(false);
+    expect(needsNewWords(PARTS, checked)).toBe(true);
+    expect(
+      needsNewWords(PARTS, decide(checked, { kind: "meets", requirementId: "R2", ticked: true })),
+    ).toBe(false);
+  });
+
+  it("reads decisions kept before the fit tick as saying the owner meets nothing", () => {
+    const { meets, ...before } = NO_DECISIONS;
+
+    expect(meets).toEqual([]);
+    expect(decisionsSchema.parse(before).meets).toEqual([]);
   });
 
   it("checks only the sentences the gate holds: one about the company, not a supported one", () => {
@@ -262,8 +291,9 @@ describe("approveAll", () => {
       ],
     };
 
-    expect(approveAll(parts, NO_DECISIONS).flagsChecked).toEqual(["F2", "F6"]);
-    expect(needsNewWords(parts)).toBe(true);
+    // FLAG, the second, is a requirement only the owner can confirm: left to them too.
+    expect(approveAll(parts, NO_DECISIONS).flagsChecked).toEqual(["F6"]);
+    expect(needsNewWords(parts, NO_DECISIONS)).toBe(true);
     expect(needsNewWords({ flags: [FLAG, words("keyword_missing")] })).toBe(false);
   });
 });

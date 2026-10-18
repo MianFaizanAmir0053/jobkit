@@ -53,6 +53,7 @@ describe("checklistOf", () => {
       line("deadline", "Apply by Friday.", "Friday"),
       line("attach_document", "Attach a portfolio.", "portfolio"),
     ]);
+    role.required_attachments = [{ name: "Portfolio", is_cv: false }];
 
     expect(
       checklistOf(
@@ -78,23 +79,54 @@ describe("checklistOf", () => {
       line("include_keyword", "Mention 'blue whale'.", "blue whale"),
     ]);
 
-    // Drafted before the post's limit was read: the draft kept 180. The keyword repeats a line
-    // aimed at AI, so drafting left it out.
+    // Drafted before the post's limit was read: the draft kept 180.
     expect(
-      checklistOf(post, role, draft({ subjectFormat: "First {name}", wordLimit: 180 })),
+      checklistOf(
+        post,
+        role,
+        draft({ subjectFormat: "First {name}", wordLimit: 180, keyword: "blue whale" }),
+      ),
     ).toEqual([
       { text: "Subject: first.", status: "applied" },
       { text: "Or subject: second.", status: "not_applied" },
       { text: "Write at least 100 words.", status: "not_applied" },
       { text: "Keep it under 120 words.", status: "not_applied" },
-      { text: "Mention 'blue whale'.", status: "not_applied" },
+      { text: "Mention 'blue whale'.", status: "applied" },
     ]);
   });
 
-  it("says when the email misses a line drafting applied, as its flags show", () => {
+  it("says drafting left out a keyword that repeats a line aimed at AI", () => {
+    const { post, role } = postWith([line("include_keyword", "Mention 'banana'.", "banana")]);
+
+    expect(checklistOf(post, role, draft({ keyword: null }))).toEqual([
+      { text: "Mention 'banana'.", status: "left_out" },
+    ]);
+  });
+
+  it("leaves a file the post asks for not applied when it lists none to attach", () => {
+    // As in S16: "Send me a DM here with your portfolio", with no file listed.
+    const { post, role } = postWith([
+      line("attach_document", "Send me a DM with your portfolio.", "portfolio"),
+    ]);
+    role.required_attachments = [];
+
+    expect(checklistOf(post, role, draft({})).map((item) => item.status)).toEqual(["not_applied"]);
+  });
+
+  it("reads the subject format an older draft applied, which it did not keep", () => {
+    const { post, role } = postWith([
+      line("subject_format", "Use the subject 'Role - Name'.", "{role} - {name}"),
+    ]);
+    const older = { ...draft({}), subjectFormat: undefined as unknown as string | null };
+
+    expect(checklistOf(post, role, older).map((item) => item.status)).toEqual(["applied"]);
+  });
+
+  it("says when the email misses a line drafting applied, as its flags and its length show", () => {
     const { post, role } = postWith([
       line("subject_format", "Use the subject 'Role - {name}'.", "Role - {name}"),
       line("word_limit", "Keep it under 150 words.", "150"),
+      line("word_limit", "Keep it under 300 words.", "300"),
       line("include_keyword", "Mention 'blue whale'.", "blue whale"),
     ]);
     const flags: KitFlag[] = [
@@ -102,14 +134,20 @@ describe("checklistOf", () => {
       { kind: "over_limit", at: "body", message: "Too long." },
       { kind: "keyword_missing", at: "body", message: "No keyword." },
     ];
+    // 200 words: past the post's 150, within its 300.
+    const body = Array.from({ length: 200 }, () => "word").join(" ");
 
     expect(
       checklistOf(
         post,
         role,
-        draft({ subjectFormat: "Role - {name}", wordLimit: 150, keyword: "blue whale" }, flags),
+        draft(
+          { subjectFormat: "Role - {name}", wordLimit: 150, keyword: "blue whale" },
+          flags,
+          body,
+        ),
       ).map((item) => item.status),
-    ).toEqual(["applied_missed", "applied_missed", "applied_missed"]);
+    ).toEqual(["applied_missed", "applied_missed", "applied", "applied_missed"]);
   });
 
   it("marks lines aimed at AI not followed, or followed when the email repeats them, and their questions not answered, from every role once", () => {

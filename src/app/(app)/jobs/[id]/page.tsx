@@ -11,7 +11,13 @@ import { isStrictAddress } from "@/core/extraction/contacts";
 import type { Role } from "@/core/extraction/record";
 import { flagRank, judgeMessage } from "@/core/review/canHandOff";
 import { type ChecklistStatus, checklistOf } from "@/core/review/checklist";
-import { flagKey, NEEDS_NEW_WORDS, needsNewWords, NO_DECISIONS } from "@/core/review/decisions";
+import {
+  flagKey,
+  isMeetable,
+  NEEDS_NEW_WORDS,
+  needsNewWords,
+  NO_DECISIONS,
+} from "@/core/review/decisions";
 import { fitTableOf } from "@/core/review/fitTable";
 import { gmailComposeUrl } from "@/core/review/gmail";
 import type { DraftChoice, JobView, Step } from "@/core/review/jobView";
@@ -57,10 +63,11 @@ const ROUTE_WORDS: Readonly<Record<Role["route"]["kind"], string>> = {
 const CHECKLIST_WORDS: Readonly<Record<ChecklistStatus, string>> = {
   applied: "Applied",
   applied_missed: "Applied, but the email misses it: see the checks above",
-  attachment: "The files the post asks for are below",
+  left_out: "Left out: it repeats a line aimed at AI",
+  attachment: "See the files below",
   not_applied: "Not applied",
   not_followed: "Not followed: addressed to AI",
-  followed: "Addressed to AI, and the email repeats it: see the checks above",
+  followed: "Addressed to AI, and the email repeats it: take it out",
   not_answered: "Not answered",
 };
 
@@ -622,6 +629,8 @@ function KitPanel({
   // The outbound gate: every outbound control opens only when no reason holds it back.
   const decisions = view.review?.decisions ?? NO_DECISIONS;
   const meets = new Set(decisions.meets);
+  // The facts the email's own sentences cite, which a paired phone may show.
+  const stated = new Set(kit.blocks.flatMap((block) => block.factIds));
   const gate = view.review?.gate ?? [];
   const open = view.review !== null && gate.length === 0;
   const sent = parts.sent;
@@ -640,12 +649,16 @@ function KitPanel({
   // The countdown says jobkit is sending it; the list says what else holds it.
   const reasons = gate.filter((reason) => reason.kind !== "sending");
   // Approve & send marks every flagged sentence and flag checked, but for those only new words
-  // resolve; the other reasons need the owner.
+  // resolve and those only the owner can answer; the other reasons need the owner.
   const approvals = reasons.flatMap((reason) => {
     if (reason.kind === "judge") {
       return [`${reason.message} — "${blockText.get(reason.blockId) ?? ""}"`];
     }
-    if (reason.kind === "flag" && !NEEDS_NEW_WORDS.has(reason.flag.kind)) {
+    if (
+      reason.kind === "flag" &&
+      !NEEDS_NEW_WORDS.has(reason.flag.kind) &&
+      !isMeetable(reason.flag)
+    ) {
       const about = aboutFlag(reason.flag);
       return [about ? `${reason.message} — "${about}"` : reason.message];
     }
@@ -656,11 +669,13 @@ function KitPanel({
   const held =
     parts.attachments.length > 0
       ? "This post asks for a file besides your CV, which jobkit cannot attach: send it yourself with Open in Gmail, and attach the file there."
-      : needsNewWords(parts)
+      : needsNewWords(parts, decisions)
         ? "Some of this email's words must change before it goes, which jobkit cannot do: send it yourself with Open in Gmail, and change them there."
-        : reasons.some((reason) => reason.kind !== "judge" && reason.kind !== "flag")
-          ? "Approve & send marks the sentences and flags above as checked, but the other reasons listed need you first."
-          : null;
+        : reasons.some((reason) => reason.kind === "flag" && isMeetable(reason.flag))
+          ? "Only you can say whether you meet a requirement above: tick it under How you fit, or say you will fix the email, first."
+          : reasons.some((reason) => reason.kind !== "judge" && reason.kind !== "flag")
+            ? "Approve & send marks the sentences and flags above as checked, but the other reasons listed need you first."
+            : null;
   const needsRetype = parts.contact?.needsRetype ?? false;
   // The post's screenshots the page could sign: the one the contact was read on first, when its
   // box lies on one; the rest open on a tap, so a phone fetches them only then.
@@ -941,11 +956,25 @@ function KitPanel({
             {flags.map(([place, flag]) => {
               const key = flagKey(place);
               const about = aboutFlag(flag);
-              const inGmail = FIXED_IN_GMAIL.has(flag.kind);
+              // A requirement only the owner can confirm: for one they do not meet, the email must
+              // not claim it, so it is fixed where they send it.
+              const meetsIt = meetable.has(key);
+              const inGmail = FIXED_IN_GMAIL.has(flag.kind) || meetsIt;
+              const named = about ?? flag.message;
               return (
                 <li key={key}>
                   {flag.message}
                   {about && <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>}
+                  {meetsIt &&
+                    !meets.has(meetable.get(key)!) &&
+                    !flagsChecked.has(key) &&
+                    !locked && (
+                      <p className="mt-1 text-muted-foreground">
+                        If you meet it, tick &ldquo;I meet this requirement&rdquo; under How you
+                        fit. If not, take out what the email says about it {where}, and for a
+                        must-have say you do not meet it.
+                      </p>
+                    )}
                   {meets.has(meetable.get(key) ?? "") ? (
                     <p className="mt-1 text-muted-foreground">
                       You said you meet it, under How you fit.
@@ -962,6 +991,7 @@ function KitPanel({
                               url={reviewUrl}
                               gateOf={view.id}
                               label="Undo"
+                              ariaLabel={`Undo: ${named}`}
                               variant="outline"
                               body={decision({ kind: "uncheck_flag", flag: key })}
                             />
@@ -971,18 +1001,13 @@ function KitPanel({
                             url={reviewUrl}
                             gateOf={view.id}
                             label={inGmail ? `I will fix it ${where}` : "I checked this"}
+                            ariaLabel={`${inGmail ? `I will fix it ${where}` : "I checked this"}: ${named}`}
                             variant="outline"
                             body={decision({ kind: "check_flag", flag: key })}
                           />
                         )}
                       </div>
                     )
-                  )}
-                  {meetable.has(key) && !meets.has(meetable.get(key)!) && !locked && (
-                    <p className="mt-1 text-muted-foreground">
-                      If you meet it, tick &ldquo;I meet this requirement&rdquo; under How you fit;
-                      if not, &ldquo;I checked this&rdquo; sends the email as it stands.
-                    </p>
                   )}
                 </li>
               );
@@ -1026,7 +1051,10 @@ function KitPanel({
           {cv.length > 0 && (
             <p className="text-sm [overflow-wrap:anywhere]">
               Attach your CV {where}. The post asks for:{" "}
-              {cv.map((attachment) => attachment.name || "a CV").join("; ")}.
+              {cv
+                .map((attachment) => withoutContacts(attachment.name, typing(view)) || "a CV")
+                .join("; ")}
+              .
             </p>
           )}
           {parts.attachments.map((attachment) => (
@@ -1035,7 +1063,7 @@ function KitPanel({
               jobId={view.id}
               kit={kitKey}
               id={attachment.id}
-              name={attachment.name}
+              name={withoutContacts(attachment.name, typing(view))}
               ticked={decisions.attached.includes(attachment.id)}
               where={where}
               disabled={locked}
@@ -1046,43 +1074,50 @@ function KitPanel({
 
       <Panel title="How you fit">
         <ul className="flex flex-col gap-3 text-sm">
-          {fitRows.map((row, i) => {
-            // The facts the row cites, as the profile version the draft was written with holds them.
-            const cited = row.factIds.flatMap((id) => {
-              const statement = facts.get(id);
-              return statement === undefined ? [] : [statement];
-            });
+          {fitRows.map((row) => {
+            // The facts the row cites, as the profile version the draft was written with holds them;
+            // on a paired phone, only those the email's own sentences cite (platform spec B5).
+            const known = row.factIds.filter((id) => facts.has(id));
+            const shown = onLaptop ? known : known.filter((id) => stated.has(id));
             const met = row.tick && meets.has(row.id);
-            const resolved = met || (row.flag !== null && flagsChecked.has(row.flag));
+            const checked = row.flag !== null && flagsChecked.has(row.flag);
+            // Checked by an owner who did not say they meet it: the fit check counts it short.
+            const unconfirmed = row.tick && checked && !met;
+            const counted = unconfirmed && row.counted === "met" ? "partial" : row.counted;
             const requirement = withoutContacts(row.text, typing(view));
             return (
-              // Two rows of one ID, as extract flags, still draw apart.
-              <li
-                key={`${row.id}-${i}`}
-                className="border-b border-border pb-2 [overflow-wrap:anywhere]"
-              >
+              <li key={row.id} className="border-b border-border pb-2 [overflow-wrap:anywhere]">
                 <p>
                   {requirement}
                   {row.must ? "" : " (nice to have)"}
                 </p>
-                {row.counted === null ? (
+                {counted === null ? (
                   <p className="font-medium">Not weighed</p>
                 ) : (
                   <details>
                     <summary className="min-h-11 cursor-pointer py-2 font-medium">
-                      {row.counted !== row.verdict && row.verdict !== null
-                        ? `${VERDICT_WORDS[row.counted]}, though the draft says ${VERDICT_WORDS[row.verdict].toLowerCase()}`
-                        : VERDICT_WORDS[row.counted]}
+                      {counted !== row.verdict && row.verdict !== null
+                        ? `${VERDICT_WORDS[counted]}, though the draft says ${VERDICT_WORDS[row.verdict].toLowerCase()}`
+                        : VERDICT_WORDS[counted]}
                       <span className="sr-only">: {requirement}</span>
                     </summary>
-                    {cited.length > 0 ? (
+                    {shown.length > 0 && (
                       <ul className="list-disc pl-5 text-muted-foreground">
-                        {cited.map((statement, i) => (
-                          <li key={i}>{statement}</li>
+                        {shown.map((id) => (
+                          <li key={id}>{facts.get(id)}</li>
                         ))}
                       </ul>
-                    ) : (
-                      <p className="text-muted-foreground">It cites no fact from your profile.</p>
+                    )}
+                    {(row.factIds.length === 0 ||
+                      known.length === 0 ||
+                      shown.length < known.length) && (
+                      <p className="text-muted-foreground">
+                        {row.factIds.length === 0
+                          ? "It cites no fact from your profile."
+                          : known.length === 0
+                            ? "It cites facts this profile version does not have."
+                            : `${shown.length === 0 ? "The facts it cites" : "The other facts it cites"} show on the laptop, since the email does not state them.`}
+                      </p>
                     )}
                   </details>
                 )}
@@ -1090,11 +1125,17 @@ function KitPanel({
                   <p className="text-muted-foreground">{withoutContacts(row.note, typing(view))}</p>
                 )}
                 {row.why && (
-                  <p className={resolved ? "text-muted-foreground" : "text-destructive"}>
-                    {row.why}
+                  <p className={met || checked ? "text-muted-foreground" : "text-destructive"}>
+                    {met
+                      ? "You said you meet it."
+                      : unconfirmed
+                        ? `You will fix the email ${where}, since you did not say you meet it.`
+                        : checked
+                          ? `You checked this: ${row.why}`
+                          : row.why}
                   </p>
                 )}
-                {row.tick && (
+                {(row.tick || meets.has(row.id)) && (
                   <FitTick
                     jobId={view.id}
                     kit={kitKey}
