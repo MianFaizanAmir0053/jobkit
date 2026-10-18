@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { DraftOutput } from "@/core/drafting/draftStage";
+import { draftKitOf, type DraftOutput } from "@/core/drafting/draftStage";
 import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { bodyWords } from "@/core/drafting/kit";
 import type { TemplatesOutput } from "@/core/drafting/templatesStage";
@@ -72,9 +72,18 @@ export interface Step {
   /**
    * "not_checked": a stage whose output is from before its check was built;
    * "skipped": Gemini's draft and its check, when the owner's templates
-   * drafted the kit; "none_fit": the templates, when none fits the role.
+   * drafted the kit; "none_fit": the templates, when none fits the role;
+   * "not_email": the templates, for a route whose kit is no email.
    */
-  status: "done" | "running" | "failed" | "waiting" | "not_checked" | "skipped" | "none_fit";
+  status:
+    | "done"
+    | "running"
+    | "failed"
+    | "waiting"
+    | "not_checked"
+    | "skipped"
+    | "none_fit"
+    | "not_email";
 }
 
 /** Gemini's draft among the kit's, by the name a pick gives it; a template's draft goes by its ID. */
@@ -415,6 +424,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     steps: await stepsOf(deps.db, job, unchecked, {
       drafted: round.templatesCurrent && (templates?.drafts.length ?? 0) > 0,
       noneFit: (templates?.drafts.length ?? 0) === 0,
+      notEmail: role !== null && draftKitOf(role.route.kind) !== "email",
       geminiCurrent,
       askedGemini: round.askedGemini,
     }),
@@ -526,7 +536,9 @@ async function candidatesOf(
     Object.fromEntries([...outputs].filter(([stage]) => stages.includes(stage)));
   const candidates: Candidate[] = [];
   for (const draft of templates?.drafts ?? []) {
-    if (draft.roleId !== role.id) continue;
+    // Templates are emails: one kept from before a message's or a form's route drafted its own kit
+    // is no draft of it.
+    if (draft.roleId !== role.id || draftKitOf(role.route.kind) !== "email") continue;
     const verdicts = templateVerdicts(draft.kit);
     candidates.push({
       choice: choiceOf(draft, verdicts, {
@@ -908,6 +920,8 @@ async function stepsOf(
     drafted: boolean;
     /** The templates' latest run drafted nothing. */
     noneFit: boolean;
+    /** The chosen role's route takes a message or a form, which the templates never draft. */
+    notEmail: boolean;
     geminiCurrent: boolean;
     askedGemini: boolean;
   },
@@ -947,8 +961,9 @@ async function stepsOf(
                 ? "failed"
                 : "waiting";
         } else if (outcome === "ok" || outcome === "reused") {
-          if (stage === "templates") status = drafting.noneFit ? "none_fit" : "done";
-          else status = unchecked.has(stage) ? "not_checked" : "done";
+          if (stage === "templates") {
+            status = drafting.notEmail ? "not_email" : drafting.noneFit ? "none_fit" : "done";
+          } else status = unchecked.has(stage) ? "not_checked" : "done";
         }
         return { stage, label, status };
       })

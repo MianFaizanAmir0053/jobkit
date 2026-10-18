@@ -88,8 +88,8 @@ const ROUTE_WORDS: Readonly<Record<Role["route"]["kind"], string>> = {
 
 const CHECKLIST_WORDS: Readonly<Record<ChecklistStatus, string>> = {
   applied: "Applied",
-  applied_missed: "Applied, but the email misses it: see the checks above",
-  declined: "You chose not to apply it: the email is no longer held to it",
+  applied_missed: "Applied, but missed: see the checks above",
+  declined: "You chose not to apply it: the kit is no longer held to it",
   left_out: "Left out: it repeats a line aimed at AI",
   attachment: "For you to attach",
   not_applied: "Not applied",
@@ -112,6 +112,7 @@ const STEP_WORDS: Readonly<Record<Step["status"], string>> = {
   not_checked: "Not checked yet",
   skipped: "Not needed",
   none_fit: "None fits this role",
+  not_email: "Not for this kit: your templates are emails",
 };
 
 /** Flags that point at one of the role's requirements rather than a sentence. */
@@ -1168,6 +1169,18 @@ function KitPanel({
                         />
                       )}
                     </div>
+                  )}
+                  {/* A merged line in a message answers several must-haves: each is named. */}
+                  {block.alsoAnswers && block.alsoAnswers.length > 0 && !locked && (
+                    <p className="mt-1 text-muted-foreground">
+                      One line for{" "}
+                      {[block.gap?.requirementId ?? "", ...block.alsoAnswers]
+                        .map((id) => requirementText.get(id))
+                        .filter((text) => text !== undefined)
+                        .map((text) => `“${withoutContacts(text, typing(view))}”`)
+                        .join(" and ")}
+                      : keep each in it when you change it.
+                    </p>
                   )}
                   {(edited || added) && !locked && lineFor.length > 0 && (
                     <div className="mt-1">

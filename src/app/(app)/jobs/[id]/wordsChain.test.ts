@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { decided, forget, wordsAfter } from "./wordsChain";
+import { decided, drawnWith, forget, wordsAfter } from "./wordsChain";
 
 /* The words a page's own decisions left: review spec, "The outbound gate". */
 
@@ -41,5 +41,19 @@ describe("wordsAfter", () => {
     decided("job-5", "a", "b");
     forget("job-4");
     expect(wordsAfter("job-5", "a")).toBe("b");
+  });
+
+  it("keeps, drawn again, what its own decisions left from the words drawn, as when quick taps outrun the drawing", () => {
+    // Three quick edits, a to b to c to d; the page is drawn with b, then with d.
+    decided("job-6", "a", "b");
+    decided("job-6", "b", "c");
+    decided("job-6", "c", "d");
+    drawnWith("job-6", "b");
+
+    expect(wordsAfter("job-6", "b")).toBe("d");
+    // The words before the drawing are spent: shown again, as after an Undo elsewhere, they are the page's own.
+    expect(wordsAfter("job-6", "a")).toBe("a");
+    drawnWith("job-6", "d");
+    expect(wordsAfter("job-6", "b")).toBe("b");
   });
 });

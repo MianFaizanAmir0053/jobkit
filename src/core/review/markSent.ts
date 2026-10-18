@@ -170,14 +170,18 @@ function partsChanged(view: JobView): {
   };
 }
 
-/** The parts of the email a handoff gives the owner: Open in Gmail both, a copy button one. */
-export type HandedOff = "subject" | "body";
+/**
+ * The parts of the email a handoff gives the owner: Open in Gmail the
+ * address, the subject and the body; a copy button the subject or the body.
+ */
+export type HandedOff = "address" | "subject" | "body";
 
 /**
  * What Mark sent records from the owner's last handoffs (ledger spec,
- * "Factual edits"): the address they last showed, and each part as last
- * handed off, a part never handed off as it stands at the tap; the draft
- * that went is the body's, then the subject's, then the one the page shows.
+ * "Factual edits"): the address Open in Gmail last handed off, else the one
+ * the page shows, and each part as last handed off, a part never handed off
+ * as it stands at the tap; the draft that went is the body's, as last
+ * handed off or as it stands.
  */
 function recordedFrom(
   view: JobView,
@@ -195,24 +199,25 @@ function recordedFrom(
     typed,
     changed: [...(address ? ["address"] : []), ...subject, ...body.changed],
     factual: address || body.factual,
-    draft: handoff.body?.draft ?? handoff.subject?.draft ?? view.picked,
+    draft: handoff.body?.draft ?? view.picked,
   };
 }
 
 /**
  * A handoff from the page (Open in Gmail, a copy button), posted right after
- * the click (review spec, "The outbound gate"): the address the page showed
- * and, for each part it handed off (Open in Gmail both, Copy subject the
- * subject, Copy email the body), the draft, the words and what they
- * changed, kept for the job whichever draft shows later, which Mark sent
- * then records rather than the email as it stands at its tap. Refused for a
- * page that showed another kit or other words, whose words the server
- * cannot name, as for a kit sent or skipped, or one jobkit is sending.
+ * the click (review spec, "The outbound gate"): for each part it handed off
+ * (Open in Gmail the address, the subject and the body; Copy subject the
+ * subject; Copy email the body), the draft, the words and what they
+ * changed, and the address Open in Gmail composed to, kept for the job
+ * whichever draft shows later, which Mark sent then records rather than
+ * the email as it stands at its tap. Refused for a page that showed
+ * another kit, other words or another address, which the server cannot
+ * name, as for a kit sent or skipped, or one jobkit is sending.
  */
 export async function recordHandoff(
   deps: { db: Db; clock: Clock },
   jobId: string,
-  shown: { kit: string; words: string; parts?: readonly HandedOff[] },
+  shown: { kit: string; words: string; to?: string; parts?: readonly HandedOff[] },
 ): Promise<{ ok: true } | Extract<ReviewOutcome, { ok: false }>> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   return deps.db.tx(async (tx) => {
@@ -222,8 +227,13 @@ export async function recordHandoff(
     const { view } = locked;
     // While jobkit sends the email, no decision is kept, a handoff's included (decisions A20).
     if (view.kitParts.sending) return { ok: false, reason: "sending" };
+    // A page that showed another address, as one drawn before it was typed again elsewhere.
+    if (shown.to !== undefined && shown.to !== (view.handoff?.to ?? "")) {
+      return { ok: false, reason: "changed" };
+    }
     const before = view.review?.decisions ?? NO_DECISIONS;
-    const parts = shown.parts ?? ["subject", "body"];
+    const parts = shown.parts ?? ["address", "subject", "body"];
+    const addressed = parts.includes("address");
     const { subject, body } = partsChanged(view);
     const part = (changed: string[], factual: boolean): HandoffPart => ({
       draft: view.picked,
@@ -233,8 +243,8 @@ export async function recordHandoff(
       at: deps.clock.now().toISOString(),
     });
     const handoff: Handoff = {
-      to: view.handoff?.to ?? "",
-      typed: Boolean(view.handoff?.typed),
+      to: addressed ? (view.handoff?.to ?? "") : (before.handoff?.to ?? ""),
+      typed: addressed ? Boolean(view.handoff?.typed) : (before.handoff?.typed ?? false),
       subject: parts.includes("subject") ? part(subject, false) : (before.handoff?.subject ?? null),
       body: parts.includes("body")
         ? part(body.changed, body.factual)
@@ -263,6 +273,9 @@ async function marking(
   // Sending another way is Mark submitted, for form and message kits.
   if ((await kitRouteOf(deps.db, jobId, role)) !== "email")
     return { ok: false, reason: "not-email" };
+  // An email's kit alone, whatever the application's route says: a message or a form is no email.
+  const shownKit = (await jobView(deps, jobId))?.kit;
+  if (shownKit && shownKit.kind !== "email") return { ok: false, reason: "not-email" };
   try {
     return await deps.db.tx(async (tx): Promise<MarkSent> => {
       const at = { ...deps, db: tx };

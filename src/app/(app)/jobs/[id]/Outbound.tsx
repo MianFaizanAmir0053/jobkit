@@ -16,6 +16,7 @@ import {
 } from "../polling";
 
 import { CopyButton } from "./CopyButton";
+import { inFlight } from "./handoffs";
 
 /**
  * The kit's outbound controls (review spec, "The outbound gate"): Open in
@@ -118,21 +119,32 @@ export function Outbound({
   );
 
   const enabled = open && confirmed === shown && !held;
-  // A handoff jobkit could not record: Mark sent would record other words than went.
-  const [unrecorded, setUnrecorded] = useState(false);
-  // Each handoff posts the words and the parts it handed off, right after the click, which Mark
-  // sent records; the handoff never waits for it (review spec, "The outbound gate"). An email's
-  // alone: factual edits count for email handoffs only (ledger spec).
-  const handedOff = (parts: ("subject" | "body")[]) => () => {
+  // The parts whose last handoff jobkit could not record: Mark sent would record other words than
+  // went, until that part is handed off again.
+  const [unrecorded, setUnrecorded] = useState<ReadonlySet<string>>(new Set());
+  // Each handoff posts the words, the address the page showed and the parts it handed off, right
+  // after the click, which Mark sent records; the handoff never waits for it (review spec, "The
+  // outbound gate"). An email's alone: factual edits count for email handoffs only (ledger spec).
+  const handedOff = (parts: ("address" | "subject" | "body")[]) => () => {
     if (words === null || !email) return;
-    void fetch(`/api/jobs/${jobId}/handoff`, {
+    const recorded = (ok: boolean) =>
+      setUnrecorded((was) => {
+        const now = new Set(was);
+        for (const part of parts) {
+          if (ok) now.delete(part);
+          else now.add(part);
+        }
+        return now;
+      });
+    const posted = fetch(`/api/jobs/${jobId}/handoff`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ kit, words, parts }),
+      body: JSON.stringify({ kit, words, to: to ?? "", parts }),
       keepalive: true,
     })
-      .then((response) => setUnrecorded(!response.ok))
-      .catch(() => setUnrecorded(true));
+      .then((response) => recorded(response.ok))
+      .catch(() => recorded(false));
+    inFlight(posted);
   };
   const waiting = !open
     ? ""
@@ -153,7 +165,7 @@ export function Outbound({
               target="_blank"
               rel="noopener noreferrer"
               className={`${buttonVariants()} min-h-11`}
-              onClick={handedOff(["subject", "body"])}
+              onClick={handedOff(["address", "subject", "body"])}
             >
               Open in Gmail
             </a>
@@ -239,7 +251,7 @@ export function Outbound({
       <p role="status" className="min-h-5 text-sm text-muted-foreground">
         {waiting}
       </p>
-      {unrecorded && (
+      {unrecorded.size > 0 && (
         <p role="alert" className="text-sm font-medium">
           jobkit could not record what you just handed off, as the email changed meanwhile or the
           connection dropped. If you send it, answer Yes when jobkit asks whether you changed

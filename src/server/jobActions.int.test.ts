@@ -877,6 +877,7 @@ describe("the job page's routes", () => {
       signOff: expect.stringMatching(/^Sam Rivera/),
     });
     expect(view.kitRoute).toBe("message");
+    expect(view.steps.find((step) => step.stage === "templates")?.status).toBe("not_email");
     await clearedOnPage(ready, cookie, "0300 0000000");
     const shown = (await jobView({ db, clock }, ready))!;
     expect(shown.review?.gate).toEqual([]);

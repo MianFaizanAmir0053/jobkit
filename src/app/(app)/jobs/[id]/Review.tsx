@@ -8,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { gateChanged, holdOutbound } from "../polling";
 
 import { messageFor } from "./ActionButton";
-import { decided, forget, wordsAfter } from "./wordsChain";
+import { decided, drawnWith, forget, wordsAfter } from "./wordsChain";
 
 /**
  * Posts one of the owner's decisions on the kit the page shows; the page is
@@ -50,13 +50,14 @@ async function decide(
 }
 
 /**
- * Forgets what this page's decisions left once it is drawn with new words
- * (wordsChain): what it shows is then the server's, and words that come
- * back later, as after an Undo on the other device, are its own again.
+ * Keeps, once this page is drawn with new words, only what its decisions
+ * left from them (wordsChain): what it shows is then the server's, and
+ * words that come back later, as after an Undo on the other device, are its
+ * own again.
  */
 export function WordsDrawn({ jobId, words }: { jobId: string; words: string }) {
   useEffect(() => {
-    forget(jobId);
+    drawnWith(jobId, words);
   }, [jobId, words]);
   return null;
 }
@@ -389,9 +390,19 @@ export function AddSentence({
   const [open, setOpen] = useState(false);
   const [typed, setTyped] = useState("");
   const [after, setAfter] = useState(defaultAfter);
+  // The sentences as last drawn: a kit drawn anew that lacks the one chosen puts it back to the
+  // default, and a draft now full closes the box, which would otherwise hold the handoffs unseen.
+  const ids = sentences.map((sentence) => sentence.id).join(" ");
+  const [drawnIds, setDrawnIds] = useState(ids);
+  if (ids !== drawnIds) {
+    setDrawnIds(ids);
+    if (after !== "" && !sentences.some((sentence) => sentence.id === after))
+      setAfter(defaultAfter);
+  }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, startRefresh] = useTransition();
+  if (full && open && !busy) setOpen(false);
   const shown = open || refreshing;
   const held = busy || refreshing;
 

@@ -202,8 +202,9 @@ export const decisionsSchema = z.object({
         subject: handoffPartSchema.nullable(),
         body: handoffPartSchema.nullable(),
       }),
-      // Kept as one whole email, before handoffs were kept part by part: its body, at the address
-      // Mark sent finds.
+      // Kept as one whole email, before handoffs were kept part by part, which counted the
+      // address and the subject in with the body: not read, so Mark sent finds the email as it
+      // stands.
       z
         .object({
           words: z.string(),
@@ -211,12 +212,7 @@ export const decisionsSchema = z.object({
           factual: z.boolean(),
           at: z.string(),
         })
-        .transform((whole): Handoff => ({
-          to: "",
-          typed: false,
-          subject: null,
-          body: { draft: null, ...whole },
-        })),
+        .transform((): null => null),
     ])
     .nullable()
     .default(null),
@@ -407,9 +403,9 @@ const withOne = (list: readonly string[], item: string) =>
 /**
  * The decisions after one action; the same action twice changes nothing
  * more. A retype keeps the checks the caller made on the typed address, or
- * none. An edit of a line about must-haves (`lines`, the requirements the
- * sentence answers as it stands) takes back the checks on them too: they
- * weighed the email with the line's old words.
+ * none. An edit, a revert or a deletion of a line about must-haves
+ * (`lines`, the requirements the sentence answers as it stands) takes back
+ * the checks on them too: they weighed the email with the line's old words.
  */
 export function decide(
   decisions: ReviewDecisions,
@@ -497,7 +493,10 @@ export function decide(
         edits: withoutKey(decisions.edits, action.blockId),
         answers: withoutKey(decisions.answers, action.blockId),
         confirmed: without(decisions.confirmed, action.blockId),
-        flagsChecked: notAt(decisions.flagsChecked, action.blockId),
+        flagsChecked: lines.reduce(
+          (names, line) => notAt(names, line),
+          notAt(decisions.flagsChecked, action.blockId),
+        ),
       };
     case "add": {
       // Named after the highest: "N1", "N2" and on.
@@ -519,7 +518,10 @@ export function decide(
         return {
           ...decisions,
           confirmed: without(decisions.confirmed, action.blockId),
-          flagsChecked: notAt(decisions.flagsChecked, action.blockId),
+          flagsChecked: lines.reduce(
+            (names, line) => notAt(names, line),
+            notAt(decisions.flagsChecked, action.blockId),
+          ),
           answers: withoutKey(decisions.answers, action.blockId),
           added: decisions.added
             .filter((each) => each !== gone)
@@ -529,7 +531,10 @@ export function decide(
       // A drafted one leaves the email, the owner's words for it kept for Undo delete.
       return {
         ...decisions,
-        flagsChecked: notAt(decisions.flagsChecked, action.blockId),
+        flagsChecked: lines.reduce(
+          (names, line) => notAt(names, line),
+          notAt(decisions.flagsChecked, action.blockId),
+        ),
         deleted: withOne(decisions.deleted, action.blockId),
       };
     }

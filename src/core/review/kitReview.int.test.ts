@@ -16,6 +16,7 @@ import { createTestDb } from "@/server/db/testDb";
 
 import type { GateReason } from "./canHandOff";
 import { flagKey, NO_DECISIONS } from "./decisions";
+import { pickDraft } from "./draftChoice";
 import { jobView, storedDecisions } from "./jobView";
 import { applyAgainForJob, recordReview } from "./kitReview";
 import { markSent, recordHandoff, takeBackSent } from "./markSent";
@@ -345,6 +346,13 @@ describe("recordReview", () => {
     const after = (await jobView({ db, clock }, id))!;
     expect(after.review!.decisions.flagsChecked).not.toContain(await germanFlag());
     expect(kinds(after.review!.gate)).toEqual(["flag"]);
+
+    // Checked again, then the line deleted: the check weighed the email with it, and goes.
+    await recordReview(deps(), id, { kind: "check_flag", flag: await germanFlag() });
+    await recordReview(deps(), id, { kind: "delete", blockId: "N1" });
+    expect((await jobView({ db, clock }, id))!.review!.decisions.flagsChecked).not.toContain(
+      await germanFlag(),
+    );
   });
 
   it("refuses a choice from a page that showed another, though the words are the same", async () => {
@@ -688,6 +696,85 @@ describe("recordReview", () => {
       [id],
     );
     expect(rows[0]).toEqual({ changed: ["sentence:S2"], factual_edit: true });
+  });
+
+  it("keeps the address Open in Gmail handed off, never a copy's, and refuses a page that showed another", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply on our site.", {
+      verdicts: [{ blockId: "S1", verdict: "supported", companyClaim: false, note: "" }],
+    });
+    await recordReview(deps(), id, { kind: "retype", value: "jobs@example.com" });
+    const first = (await jobView({ db, clock }, id))!;
+    const shown = { kit: first.kitKey!, words: first.wordsKey! };
+    expect(
+      await recordHandoff({ db, clock }, id, {
+        ...shown,
+        to: "jobs@example.com",
+        parts: ["address", "subject", "body"],
+      }),
+    ).toEqual({ ok: true });
+    await recordReview(deps(), id, { kind: "retype", value: "hr@example.org" });
+
+    // A page still showing the first address is refused; the copy names the new one, and keeps
+    // Open in Gmail's address as the one it went to.
+    expect(
+      await recordHandoff({ db, clock }, id, {
+        ...shown,
+        to: "jobs@example.com",
+        parts: ["subject"],
+      }),
+    ).toEqual({ ok: false, reason: "changed" });
+    expect(
+      await recordHandoff({ db, clock }, id, {
+        ...shown,
+        to: "hr@example.org",
+        parts: ["subject"],
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      await markSent({ db, clock }, id, null, { changedInGmail: false }, { to: "hr@example.org" }),
+    ).toMatchObject({ ok: true });
+    const { rows } = await db.query<{ address: string }>(
+      "select address from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows[0]?.address).toBe("jobs@example.com");
+  });
+
+  it("records the draft the body was, the subject alone handed off counting as the draft shown", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      templates: true,
+    });
+    const first = (await jobView({ db, clock }, id))!;
+    await recordHandoff({ db, clock }, id, {
+      kit: first.kitKey!,
+      words: first.wordsKey!,
+      parts: ["subject"],
+    });
+    await pickDraft({ db, clock }, id, "T-ai-features", { kit: first.kitKey! });
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+    const { rows } = await db.query<{ draft: string }>(
+      "select draft from {{schema}}.draft_outcomes where job_id = $1",
+      [id],
+    );
+    expect(rows[0]?.draft).toBe("T-ai-features");
+  });
+
+  it("reads no handoff kept as one whole email, before handoffs were kept part by part", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    const shown = (await jobView({ db, clock }, id))!;
+    const whole = {
+      ...JSON.parse(storedDecisions(shown.kitKey!, NO_DECISIONS)),
+      handoff: { words: "00000000", changed: ["address", "subject"], factual: true, at: "x" },
+    };
+    await db.query("update {{schema}}.kit_reviews set decisions = $2::jsonb where job_id = $1", [
+      id,
+      JSON.stringify(whole),
+    ]);
+
+    expect((await jobView({ db, clock }, id))!.review!.decisions.handoff).toBeNull();
   });
 
   it("refuses a handoff from a page that showed other words, or another kit", async () => {

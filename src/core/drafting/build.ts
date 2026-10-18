@@ -272,6 +272,16 @@ function madeLine(
   return { made: "template", text: filled(template.text, [lacking], related), skill: lacking };
 }
 
+/**
+ * Whether a template's line can name several skills: one {skill}, so the
+ * list stands in one place, and no "neither", whose list wants "nor".
+ * Another template keeps a line for each must-have, as an email's does.
+ */
+function listable(template: string): boolean {
+  const places = template.split("{skill}");
+  return places.length === 2 && !/\bneither\b/i.test(places[0]!);
+}
+
 /** Words that make what follows them a negation: "I haven't used {skill}" lists skills with "or". */
 const NEGATION = /\b(?:not|never|no)\b|n['’]t\b/i;
 
@@ -430,7 +440,13 @@ function merged(blocks: readonly KitBlock[], role: Role, profile: ProfileParts):
   for (const block of blocks) {
     const requirement = role.requirements.find((entry) => entry.id === block.gap?.requirementId);
     const line = block.gap && requirement ? madeLine(requirement, block.gap, profile) : null;
-    if (!block.gap || !requirement || line?.made !== "template") {
+    const template = profile.gapTemplates.find((entry) => entry.id === block.gap?.templateId);
+    if (
+      !block.gap ||
+      !requirement ||
+      line?.made !== "template" ||
+      !listable(template?.text ?? "")
+    ) {
       kept.push(block);
       continue;
     }

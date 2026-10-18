@@ -136,6 +136,32 @@ describe("checklistOf", () => {
     ]);
   });
 
+  it("applies no word limit to a message, whose 600 characters hold it instead", () => {
+    const { post, role } = postWith([
+      line("word_limit", "Keep your message under 250 words.", "250 words"),
+    ]);
+    const message = {
+      ...draft({}),
+      kit: { kind: "message", blocks: [], signOff: "Sam" } as unknown as EmailKit,
+    };
+
+    expect(checklistOf(post, role, message)).toEqual([
+      { text: "Keep your message under 250 words.", status: "not_applied" },
+    ]);
+  });
+
+  it("marks each word limit the email was held to declined once the owner declines the limit", () => {
+    const { post, role } = postWith([
+      line("word_limit", "Max 150 words.", "150"),
+      line("word_limit", "Keep it under 120 words.", "120"),
+    ]);
+
+    expect(checklistOf(post, role, draft({ wordLimit: 120 }), ["word_limit"])).toEqual([
+      { text: "Max 150 words.", status: "declined", decline: "word_limit" },
+      { text: "Keep it under 120 words.", status: "declined", decline: "word_limit" },
+    ]);
+  });
+
   it("says drafting left out a keyword that repeats a line aimed at AI", () => {
     const { post, role } = postWith([line("include_keyword", "Mention 'banana'.", "banana")]);
 

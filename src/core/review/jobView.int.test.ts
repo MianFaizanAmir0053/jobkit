@@ -32,7 +32,7 @@ import { approvalsKey, flagKey } from "./decisions";
 import { draftWithGemini, pickDraft } from "./draftChoice";
 import { jobView, listJobViews } from "./jobView";
 import { applyAgainForJob, recordReview } from "./kitReview";
-import { trackApplications, skippedForJob } from "./applications";
+import { trackApplications, skippedForJob, openForJob } from "./applications";
 import { STUCK_MS } from "./kitSends";
 import { markBounced, takeBackBounced } from "./markBounced";
 import { markSubmitted, takeBackSubmitted } from "./markSubmitted";
@@ -1390,6 +1390,17 @@ describe("markSubmitted", () => {
     expect(await takeBackSubmitted({ db, clock }, id, null, submittedAt)).toEqual({
       ok: false,
       reason: "not-submitted",
+    });
+  });
+
+  it("leaves Mark sent to an email's kit, though the application's route says email", async () => {
+    const { id, kit } = await readyFor("S16-linkedin-dm");
+    const applicationId = await openForJob({ db, clock }, id, null);
+    await setRoute({ db }, applicationId!, "email");
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false }, { kit })).toEqual({
+      ok: false,
+      reason: "not-email",
     });
   });
 

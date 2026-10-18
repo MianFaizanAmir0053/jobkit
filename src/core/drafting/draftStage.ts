@@ -27,6 +27,7 @@ import {
   type Kit,
   kitTypeOf,
   MESSAGE_LIMIT,
+  visibleLength,
 } from "./kit";
 import {
   DRAFT_LAYOUT_VERSION,
@@ -124,7 +125,7 @@ type DraftKit = "email" | "message" | "form";
  * the message as it stands.
  */
 function messageBudget(signOff: string): number {
-  return Math.max(100, MESSAGE_LIMIT - [...signOff.trim()].length - 2);
+  return Math.max(100, MESSAGE_LIMIT - visibleLength(signOff.trim()) - 2);
 }
 
 export const NO_PROFILE =

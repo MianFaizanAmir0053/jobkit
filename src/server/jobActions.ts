@@ -484,10 +484,11 @@ const bouncedBody = z.object({ sentAt: z.iso.datetime() });
 const handoffBody = z.object({
   kit: kitShown,
   words: wordsShown,
+  to: z.string().max(320).optional(),
   parts: z
-    .array(z.enum(["subject", "body"]))
+    .array(z.enum(["address", "subject", "body"]))
     .min(1)
-    .max(2)
+    .max(3)
     .optional(),
 });
 

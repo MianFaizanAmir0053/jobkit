@@ -303,9 +303,12 @@ export async function recordReview(
       cleanSentence(action.text) === cleanSentence(drafted.text)
         ? { kind: "revert", blockId: action.blockId }
         : action;
-    // The must-haves an edited sentence answers as it stands: their checks weighed its old words.
+    // The must-haves a sentence edited, reverted or deleted answers as it stands: their checks
+    // weighed its words as they were.
     const edited = view.kit!.blocks.find(
-      (block) => taken.kind === "edit" && block.id === taken.blockId,
+      (block) =>
+        (taken.kind === "edit" || taken.kind === "revert" || taken.kind === "delete") &&
+        block.id === taken.blockId,
     );
     const decisions = decide(before, taken, checks, edited ? answersOf(edited) : []);
     if (action.kind === "retype" && view.kitParts.contact) {

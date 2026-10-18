@@ -218,7 +218,8 @@ export function kitTypeOf(route: Role["route"]["kind"]): "email" | "form" | "mes
     case "linkedin_dm":
     case "linkedin_comment":
       return "message";
-    default:
+    case "other":
+    case "unknown":
       return null;
   }
 }
@@ -280,9 +281,20 @@ export function formText(kit: FormKit): string {
   ].join("\n\n");
 }
 
+const GRAPHEMES = new Intl.Segmenter("en", { granularity: "grapheme" });
+
+/**
+ * A text's length in the characters a reader sees: an emoji is one, with
+ * its skin tone, its variation selector or the parts a joiner joins, as a
+ * flag is.
+ */
+export function visibleLength(text: string): number {
+  return [...GRAPHEMES.segment(text)].length;
+}
+
 /** The message's length as its limit counts it: in characters, so an emoji is one. */
 export function messageLength(kit: MessageKit): number {
-  return [...messageText(kit)].length;
+  return visibleLength(messageText(kit));
 }
 
 /** Words in the body's blocks, as the word limit counts them. */

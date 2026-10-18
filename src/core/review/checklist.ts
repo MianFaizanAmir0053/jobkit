@@ -83,6 +83,10 @@ export function checklistOf(
       ) {
         return { text: line.text, status: "left_out" };
       }
+      // No word limit applies to a message: its 600 characters do (drafting spec, "Draft structure").
+      if (line.kind === "word_limit" && drafted.kit.kind === "message") {
+        return { text: line.text, status: "not_applied" };
+      }
       const applied =
         line.kind === "subject_format"
           ? subjectFormat !== null && line.value === subjectFormat
@@ -97,6 +101,10 @@ export function checklistOf(
           ? limit !== null && words > limit
           : flagged !== undefined && raised.has(flagged);
       if (!applied) return { text: line.text, status: "not_applied" };
+      // Declined, every word limit goes: each line the email was held to reads declined.
+      if (line.kind === "word_limit" && declined.includes("word_limit")) {
+        return { text: line.text, status: "declined", decline: "word_limit" };
+      }
       // A word limit is declined on the line that set the email's limit, under its own 180: any
       // other the email is held to tightens nothing, so declining it would do nothing.
       const decline =

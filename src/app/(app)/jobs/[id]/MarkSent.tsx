@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { gateChanged, holdOutbound } from "../polling";
 
 import { messageFor } from "./ActionButton";
+import { handoffsLanded } from "./handoffs";
 
 /** How long after "Mark sent" a tap on Yes or No is the same double tap, not an answer. */
 const SETTLE_MS = 500;
@@ -40,6 +41,8 @@ export function MarkSent({ jobId, kit, to }: { jobId: string; kit: string; to: s
     setError(null);
     const release = holdOutbound();
     try {
+      // What was handed off last is what Mark sent records: a handoff still in flight lands first.
+      await handoffsLanded();
       const response = await fetch(`/api/jobs/${jobId}/sent`, {
         method: "POST",
         headers: { "content-type": "application/json" },
