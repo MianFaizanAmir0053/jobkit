@@ -1224,7 +1224,11 @@ function KitPanel({
           {kit.kind === "message" && (
             <>
               <p className="mt-3 whitespace-pre-wrap">{kit.signOff}</p>
-              <p className="mt-1 text-muted-foreground">Your sign-off, from your profile.</p>
+              <p className="mt-1 text-muted-foreground">
+                {role.route.kind === "linkedin_comment"
+                  ? "Your name alone: a comment is public, so your contacts stay out of it."
+                  : "Your sign-off, from your profile."}
+              </p>
             </>
           )}
         </div>

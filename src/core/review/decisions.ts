@@ -647,18 +647,21 @@ export interface KitParts {
 /**
  * validate's flags that make the email wrong to send as it stands: a line
  * the owner must write, a placeholder in the subject, a reference's
- * details, or a line written for an AI tool. Approve & send sends the
- * words as they stand, so a kit with one goes through Gmail, where the
- * owner changes them. Other flags new words would resolve (a missing
- * keyword, the length, a must-have with no gap line, no claims) leave the
- * email whole, and the press takes them as they are, as the confirmation
- * lists them.
+ * details, a line written for an AI tool, or a must-have the owner does not
+ * fully meet with no honest line about it. Approve & send sends the words
+ * as they stand, so a kit with one goes through Gmail, where the owner
+ * changes them. Other flags new words would resolve (a missing keyword, the
+ * length, no claims) leave the email whole, and the press takes them as
+ * they are, as the confirmation lists them.
  */
 export const NEEDS_NEW_WORDS: ReadonlySet<KitFlagKind> = new Set([
   "needs_your_line",
   "subject_placeholder",
   "reference_leak",
   "ai_instruction_followed",
+  // A must-have the owner does not fully meet with no honest line about it, as when they deleted
+  // "Needs your line": the owner's choice, 2026-10-19.
+  "missing_gap_line",
 ]);
 
 /** Whether the kit's words must change before it goes, so Approve & send cannot send it. */

@@ -33,7 +33,7 @@ Kits:
 
 - **Email kit:** subject, greeting, body blocks, closing. The Gmail app adds the owner's Gmail signature, so jobkit adds none (amendment A14).
 - **Form kit:** cover-note blocks, and one answer per screening question, each marked `fixed` (filled by code) or `drafted`. The cover note is held to the word limit in force, as an email's body is. Each answer keeps its question's ID, which the owner's decisions name, and how it came: from the profile; drafted, a claim citing facts, or the owner's to give when the draft gave none; the owner's choice, with the drafter's answer kept for it when it wrote one; or never, for a question addressed to AI. "Copy all" gives the cover note, then each answered question with its answer, as labelled plain text (Claude's choices, 2026-10-19).
-- **Message kit:** message blocks, at most 600 characters including the sign-off, which code appends from the profile. A message has no subject, and a post's word limit does not apply to it: the review checklist shows both not applied, for the owner to see to (Claude's choice, 2026-10-19).
+- **Message kit:** message blocks, at most 600 characters including the sign-off, which code appends from the profile. A LinkedIn comment is public, so it ends with the owner's name alone, never the sign-off's contacts (the owner's choice, 2026-10-19). A message has no subject, and a post's word limit does not apply to it: the review checklist shows both not applied, for the owner to see to (Claude's choice, 2026-10-19).
 
 References live beside the text, never inside it.
 
@@ -154,7 +154,7 @@ Criteria about what the model writes or notices (classifying tricky sentences, c
 5. Fit check: "Production Kubernetes (must)" marked `met` citing a `learning` fact is `fit_unverified`; "3+ years Kubernetes" marked `met` citing a Docker-only fact is `fit_unverified`; "BSc in Computer Science (must)" is `met` only with a cited education fact; a requirement without a fit row is `fit_missing`.
 6. Gap lines are built by code: a known line appears verbatim; a template uses the skill's display name and the fact's phrase; an untagged must-have gap shows "Needs your line"; a message kit's gaps merge into one line.
 7. The subject follows an accepted format with only `{name}` and `{role}` replaced; a format carrying `\r\n Bcc: x@evil.com` comes out with no line break; a declined format falls back to the default.
-8. Email kits carry no signature; message kits end with the profile's sign-off.
+8. Email kits carry no signature; message kits end with the profile's sign-off, a LinkedIn comment with the owner's name alone.
 9. The judge's input holds blocks and cited fields only inside markers, and no proposed classes. A block either side calls a claim is judged as one; a drafted "Yes" is always a claim; a block missing from the judge's output counts as `unsupported`; praise of the company in a courtesy block raises `company_claim`; `overstated`, `unsupported` and `company_claim` block.
 10. `sensitive_topic_drafted` fires on a drafted block mentioning "USD 4,000" or "visa sponsorship".
 11. `draft_answers` appends answers for new questions only; existing blocks, verdicts and edits are unchanged; `judge` then sees only the new answers.

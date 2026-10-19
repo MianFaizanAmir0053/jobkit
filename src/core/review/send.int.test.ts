@@ -218,10 +218,13 @@ describe("scheduleSend", () => {
   });
 
   it("sends no kit whose words must change: it goes through Gmail, its flags ticked or not", async () => {
-    // A must-have's line left to the owner: "Needs your line".
+    // A must-have's line left to the owner: "Needs your line", for production Node.js they lack.
     const id = await readyKit(POST, {
       draft: {
         ...KIT_DRAFT,
+        fit: KIT_DRAFT.fit.map((row) =>
+          row.requirement_id === "R2" ? { ...row, verdict: "gap", fact_ids: [] } : row,
+        ),
         blocks: [
           ...KIT_DRAFT.blocks,
           {
@@ -260,6 +263,21 @@ describe("scheduleSend", () => {
       reason: "words",
     });
     expect((await view(id)).send).toBeNull();
+
+    // The placeholder deleted, the must-have has no line at all: still no send.
+    await recordReview({ db, clock, dns: offlineDns() }, id, { kind: "delete", blockId: "S2" });
+    const deleted = await view(id);
+    expect(deleted.kitParts!.flags.map((flag) => flag.kind)).toContain("missing_gap_line");
+    for (const flag of deleted.kitParts!.flags) {
+      await recordReview({ db, clock, dns: offlineDns() }, id, {
+        kind: "check_flag",
+        flag: flagKey(flag),
+      });
+    }
+    expect(await scheduleSend({ db, clock }, id, pressed(await view(id)))).toEqual({
+      ok: false,
+      reason: "words",
+    });
   });
 
   it("refuses a press from a page drawn on another kit, or showing another address", async () => {

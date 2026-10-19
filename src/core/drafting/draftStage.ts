@@ -155,6 +155,8 @@ interface DraftInput {
   role: string;
   profile: string | null;
   kit: DraftKit;
+  /** A LinkedIn comment's sign-off, the owner's name alone; absent for every other kit. */
+  signOff?: "name";
   declined: string[];
   model: string;
   effort: Effort;
@@ -183,6 +185,8 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         role: role.id,
         profile: profile?.versionId ?? null,
         kit,
+        // Named only where it differs, so every other kit's input reads as it always did.
+        ...(role.route.kind === "linkedin_comment" ? { signOff: "name" as const } : {}),
         declined: [],
         model: DRAFT.model,
         effort: DRAFT.effort,
@@ -207,7 +211,10 @@ export function draftStage(deps: DraftDeps): StageDefinition {
       const wordLimit = kitType === "message" ? BODY_WORD_LIMIT : accepted.wordLimit;
       const post = withoutAiLines(extraction.record, role, accepted.keyword);
       const marker = Buffer.from(deps.random.bytes(16)).toString("hex");
-      const budget = messageBudget(profile.signature);
+      // A comment is public: it ends with the owner's name alone, never their contacts (the owner's
+      // choice, 2026-10-19). Every other message ends with the profile's sign-off.
+      const signOff = input.signOff === "name" ? profile.owner.name : profile.signature;
+      const budget = messageBudget(signOff);
       const call = {
         stage: "draft",
         jobId: ctx.job.id,
@@ -251,7 +258,7 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         const answer: DraftAnswer = called.output;
         built =
           kitType === "message"
-            ? buildMessageKit(answer, { role, signOff: profile.signature, profile: parts })
+            ? buildMessageKit(answer, { role, signOff, profile: parts })
             : buildEmailKit(answer, {
                 record: extraction.record,
                 role,

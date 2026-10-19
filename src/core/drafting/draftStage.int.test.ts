@@ -257,6 +257,39 @@ describe("the thin drafting group", () => {
     expect(rows.map((row) => row.stage)).toEqual(["extract", "draft", "judge"]);
   });
 
+  it("ends a LinkedIn comment with the owner's name alone, as a comment is public", async () => {
+    await seedSample();
+    const comment: DraftAnswer = {
+      fit: [{ requirement_id: "R1", verdict: "met", fact_ids: ["F-react-production"], note: "" }],
+      blocks: [
+        {
+          id: "S1",
+          text: "I have built production React and Next.js applications for five years.",
+          paragraph_break: false,
+          class: "claim",
+          fact_ids: ["F-react-production"],
+          fields: [],
+          gap: gapBlock,
+        },
+      ],
+    };
+
+    const id = await run("Freelance Next.js developer wanted: comment below if interested.", [
+      answer(fixture("S13-dm-or-comment")),
+      answer(comment),
+      answer({
+        verdicts: [{ block_id: "S1", verdict: "supported", company_claim: false, note: "" }],
+      }),
+    ]);
+
+    const draft = (await stageOutput(db, id, "draft"))!.output as DraftOutput;
+    expect(draft.kit).toMatchObject({ kind: "message", signOff: "Sam Rivera" });
+    // The budget leaves room for the name alone, and the blank line before it.
+    expect(texts(llm.calls[1]!.content)).toContain(
+      `The message's limit: ${600 - "Sam Rivera".length - 2} characters`,
+    );
+  });
+
   it("drafts a message for a WhatsApp route, ending with the profile's sign-off (drafting AC1, AC8)", async () => {
     await seedSample();
     const message: DraftAnswer = {

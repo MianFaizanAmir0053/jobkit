@@ -688,6 +688,7 @@ describe("approveAll", () => {
         words("subject_placeholder"),
         words("reference_leak"),
         words("ai_instruction_followed"),
+        words("missing_gap_line"),
         words("keyword_missing"),
       ],
     };
@@ -698,5 +699,8 @@ describe("approveAll", () => {
     ]);
     expect(needsNewWords(parts, NO_DECISIONS)).toBe(true);
     expect(needsNewWords({ flags: [FLAG, words("keyword_missing")] })).toBe(false);
+    // A must-have with no honest line about it needs one, whatever was checked (the owner's
+    // choice, 2026-10-19).
+    expect(needsNewWords({ flags: [words("missing_gap_line")] })).toBe(true);
   });
 });
