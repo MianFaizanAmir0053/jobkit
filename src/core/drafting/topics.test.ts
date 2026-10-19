@@ -165,6 +165,156 @@ describe("fixedAnswer", () => {
     });
   });
 
+  it("needs the owner's answer for pay they have had, or pay by another period than the profile gives", () => {
+    for (const question of [
+      "What was your last salary in PKR?",
+      "Previous salary (USD)?",
+      "What are you currently paid in USD?",
+      "Salary at your last job (USD)?",
+      "Last salary drawn in PKR?",
+      "Expected hourly rate in USD?",
+      "Expected salary per annum (PKR)?",
+    ]) {
+      expect(fixedAnswer("salary", question, profile)).toMatchObject({
+        kind: "needs_your_answer",
+      });
+    }
+    expect(fixedAnswer("salary", "Expected salary per month (USD)?", profile)).toEqual({
+      kind: "answer",
+      text: "USD 5,000 a month",
+    });
+  });
+
+  it("reads the currencies it knows by code or sign, and needs the owner's answer for one it cannot read", () => {
+    const held = {
+      home: "PK",
+      answers: {
+        ...ANSWERS,
+        salary_expectation: { ...ANSWERS.salary_expectation, SGD: "SGD 6,500 a month" },
+      },
+    };
+    expect(fixedAnswer("salary", "Expected salary in SGD?", held)).toEqual({
+      kind: "answer",
+      text: "SGD 6,500 a month",
+    });
+    expect(fixedAnswer("salary", "Expected salary in R$?", profile)).toMatchObject({
+      reason: "The profile holds no salary in BRL.",
+    });
+    expect(fixedAnswer("salary", "Expected salary in AR$?", profile)).toMatchObject({
+      reason: "The question names a currency jobkit cannot read.",
+    });
+    // A code that is a word too counts only in capitals: "try" is no lira.
+    expect(
+      fixedAnswer("salary", "Please try to give your expected salary.", profile),
+    ).toMatchObject({ reason: "The question names no currency." });
+  });
+
+  it("answers years only for a skill named as a name is written, and only years with it", () => {
+    for (const question of [
+      "How many years of experience do you have leading React teams?",
+      "How many years have you managed React projects as a team lead?",
+      "How many years of experience will you bring to your next role?",
+      "How many years of professional experience? Three or more is preferred.",
+      "How many years of experience in total? Rest assured, we read every answer.",
+    ]) {
+      expect(fixedAnswer("years_with_skill", question, profile)).toMatchObject({
+        kind: "needs_your_answer",
+      });
+    }
+    expect(
+      fixedAnswer(
+        "years_with_skill",
+        "How many years of professional experience do you have with React?",
+        profile,
+      ),
+    ).toEqual({ kind: "answer", text: "5 years" });
+  });
+
+  it("reads no place that is part of a longer place's name", () => {
+    for (const question of [
+      "Are you authorised to work in New South Wales?",
+      "Can you work in South America without sponsorship?",
+      "Are you authorised to work in New England?",
+      "Are you authorised to work in New Mexico?",
+    ]) {
+      expect(fixedAnswer("work_authorisation", question, profile)).toEqual({
+        kind: "needs_your_answer",
+        reason: "The question names a place jobkit cannot read.",
+      });
+    }
+    // A whole name the table knows is that place, and a qualifier ending the sentence before
+    // qualifies nothing.
+    expect(
+      fixedAnswer("work_authorisation", "Are you authorised to work in South Korea?", profile),
+    ).toMatchObject({ reason: "The profile does not answer for this country." });
+    expect(
+      fixedAnswer(
+        "work_authorisation",
+        "Our offices are in the North. Pakistan: are you authorised to work there?",
+        profile,
+      ),
+    ).toEqual({
+      kind: "answer",
+      text: "Authorised to work in Pakistan, with no sponsorship needed.",
+    });
+  });
+
+  it("never quotes the profile's words for a place when they open with a bare Yes or No", () => {
+    const typed = {
+      home: "PK",
+      answers: { ...ANSWERS, work_authorisation: [{ place: "PK", authorised: true, text: "Yes" }] },
+    };
+    expect(
+      fixedAnswer("sponsorship", "Do you require visa sponsorship to work in Pakistan?", typed),
+    ).toEqual({
+      kind: "answer",
+      text: "Authorised to work in Pakistan, with no sponsorship needed.",
+    });
+  });
+
+  it("prefers a place's own entry to a region's, and names places as a sentence does", () => {
+    const listed = {
+      home: "PK",
+      answers: {
+        ...ANSWERS,
+        work_authorisation: [
+          { place: "EU", authorised: false, sponsorship_needed: true },
+          { place: "DE", authorised: true, text: "I hold a German residence permit." },
+          { place: "NORTH_AMERICA", authorised: false, sponsorship_needed: true },
+          { place: "KY", authorised: false, sponsorship_needed: true },
+          { place: "MIDDLE_EAST", authorised: false, sponsorship_needed: true },
+        ],
+      },
+    };
+    expect(
+      fixedAnswer("work_authorisation", "Are you authorised to work in Germany?", listed),
+    ).toEqual({ kind: "answer", text: "I hold a German residence permit." });
+    for (const [where, said] of [
+      ["North America", "North America"],
+      ["the Cayman Islands", "the Cayman Islands"],
+      ["the Middle East", "the Middle East"],
+    ] as const) {
+      expect(
+        fixedAnswer("sponsorship", `Do you need sponsorship to work in ${where}?`, listed),
+      ).toEqual({
+        kind: "answer",
+        text: `Not authorised to work in ${said}; would need sponsorship.`,
+      });
+    }
+  });
+
+  it("needs the owner's answer to a question about more than one thing, or not about starting", () => {
+    expect(
+      fixedAnswer("eeo", "Do you have a disability, or are you a protected veteran?", profile),
+    ).toEqual({
+      kind: "needs_your_answer",
+      reason: "The question asks about more than one thing.",
+    });
+    expect(
+      fixedAnswer("availability", "What is your availability for an interview next week?", profile),
+    ).toMatchObject({ kind: "needs_your_answer" });
+  });
+
   it("needs the owner's answer when the question names no place, or one the profile does not list", () => {
     expect(fixedAnswer("sponsorship", "Do you need sponsorship?", profile)).toMatchObject({
       kind: "needs_your_answer",

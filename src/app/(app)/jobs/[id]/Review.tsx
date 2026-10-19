@@ -379,11 +379,14 @@ export function AddSentence({
   defaultAfter,
   maxLength,
   full,
+  first,
 }: {
   jobId: string;
   kit: string;
   /** The email's words as the page shows them (wordsKey), which each decision names. */
   words: string;
+  /** How the first place reads: after an email's greeting, or first in a message or a cover note. */
+  first: string;
   /** The email's sentences as they stand, in order: each one the new sentence may follow. */
   sentences: { id: string; text: string }[];
   /** The sentence it follows unless the owner chooses another: the last before the sign-off. */
@@ -491,7 +494,7 @@ export function AddSentence({
           }}
           className="min-h-11 w-full rounded-md border border-border bg-background px-2"
         >
-          <option value="">The greeting: first in the email</option>
+          <option value="">{first}</option>
           {sentences.map((sentence) => (
             <option key={sentence.id} value={sentence.id}>
               {sentence.text.length > 60 ? `${sentence.text.slice(0, 59)}…` : sentence.text}

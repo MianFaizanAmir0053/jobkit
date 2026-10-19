@@ -26,6 +26,13 @@ describe("whatsAppLink", () => {
 });
 
 describe("applicationLink", () => {
+  it("opens the address as shown, but for the case of its host and a closing slash", () => {
+    expect(applicationLink("https://Jobs.Example.com/Apply")).toBe(
+      "https://jobs.example.com/Apply",
+    );
+    expect(applicationLink("https://jobs.example.com")).toBe("https://jobs.example.com/");
+  });
+
   it("gives the post's link to apply through only when it is https", () => {
     expect(applicationLink(" https://jobs.example.com/apply?id=7 ")).toBe(
       "https://jobs.example.com/apply?id=7",
@@ -42,6 +49,11 @@ describe("applicationLink", () => {
       `https://jobs.acme.com${String.fromCharCode(10)}.evil.io/apply`,
       "https://jobs.acme.com .evil.io/apply",
       `https://jobs.acme.com${String.fromCharCode(0)}.evil.io/apply`,
+      // A look-alike slash or dot, or one written with a percent sign, opens another host.
+      `https://careers.google.com${String.fromCharCode(0x2044)}apply.evil.example/`,
+      `https://boards.greenhouse.io${String.fromCharCode(0x3002)}evil.example/jobs`,
+      "https://boards.greenhouse.io%2eevil.example/jobs",
+      "https://jobs.example.com\\@evil.example/",
     ]) {
       expect(applicationLink(address)).toBeNull();
     }

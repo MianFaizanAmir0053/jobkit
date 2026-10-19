@@ -13,6 +13,7 @@ import {
   type BlockVerdict,
   citedFacts,
   JUDGE_LAYOUT_VERSION,
+  FORM_JUDGE_RULES,
   JUDGE_RULES,
   judgeAnswerSchema,
   judgeContent,
@@ -48,7 +49,7 @@ const PROMPT = sha256Hex(
 const FORM_PROMPT = sha256Hex(
   canonicalJson({
     kit: "form",
-    rules: JUDGE_RULES,
+    rules: FORM_JUDGE_RULES,
     layout: JUDGE_LAYOUT_VERSION,
     formLayout: 2,
     schema: z.toJSONSchema(judgeAnswerSchema),
@@ -111,7 +112,7 @@ export function judgeStage(deps: JudgeDeps): StageDefinition {
         stage: "judge",
         jobId: ctx.job.id,
         model: input.model,
-        system: JUDGE_RULES,
+        system: draft.kit.kind === "form" ? FORM_JUDGE_RULES : JUDGE_RULES,
         content: judgeContent(
           draft.kit,
           citedFacts(draft.kit, profile.facts),

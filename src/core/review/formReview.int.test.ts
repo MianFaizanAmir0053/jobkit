@@ -198,6 +198,42 @@ describe("a form kit's answers", () => {
     expect(await gateOf(id)).toEqual(before);
   });
 
+  it("answers a stored kit's topic questions as the code answers them now, as for a kit drafted before a fix", async () => {
+    const id = await readyForm();
+    // Kept as a build from before might have: Q2 answered from the profile, though it names no currency.
+    await db.query(
+      `update {{schema}}.job_stage_runs
+          set output = jsonb_set(output, '{kit,answers,1}', $2::jsonb)
+        where job_id = $1 and stage = 'draft'`,
+      [
+        id,
+        JSON.stringify({
+          id: "Q2",
+          question: "What are your salary expectations?",
+          topic: "salary",
+          source: "profile",
+          text: "USD 5,000 a month",
+          factIds: [],
+        }),
+      ],
+    );
+
+    expect((await view(id)).kit).toMatchObject({
+      answers: [
+        {},
+        {
+          id: "Q2",
+          source: "needs_your_answer",
+          text: "",
+          reason: "The question names no currency.",
+        },
+        {},
+        {},
+      ],
+    });
+    expect(await gateOf(id)).toContain("needs_your_answer@Q2");
+  });
+
   it("refuses to delete an answer, add a sentence after one, mark one as a line, or choose where there is no choice", async () => {
     const id = await readyForm();
     const refused = { ok: false, reason: "not-in-kit" };

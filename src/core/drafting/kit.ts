@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-import type { Role } from "@/core/extraction/record";
 import { caseless } from "@/core/platform/caseless";
 
 import { type FixedAnswer, type Topic, TOPICS } from "./topics";
@@ -202,27 +201,7 @@ export function asEmailKit(kit: Kit): EmailKit {
   return kit;
 }
 
-/**
- * The kit a route takes (drafting spec, "Kit type"); none for a route the
- * owner must name.
- */
-export function kitTypeOf(route: Role["route"]["kind"]): "email" | "form" | "message" | null {
-  switch (route) {
-    case "email":
-      return "email";
-    case "ats_form":
-    case "easy_apply":
-    case "careers_page":
-      return "form";
-    case "whatsapp":
-    case "linkedin_dm":
-    case "linkedin_comment":
-      return "message";
-    case "other":
-    case "unknown":
-      return null;
-  }
-}
+export { kitTypeOf } from "@/core/extraction/record";
 
 /** The must-haves a gap block answers: its own, and those a merged line answers too. */
 export function answersOf(block: KitBlock): string[] {

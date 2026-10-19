@@ -232,9 +232,10 @@ export async function asItStands(
   const applied = appliedInstructions(draft, role);
   const declined = new Set(input.decisions.declined.filter((each) => applied.includes(each)));
   const edited = editedKit(draft.kit, input.decisions);
-  // A message is weighed again even unchanged, so its count of 600 and its flags agree as the
-  // count is read now.
-  if (edited === draft.kit && declined.size === 0 && draft.kit.kind !== "message") {
+  // A message or a form is weighed again even unchanged: a message's count of 600 as it is read
+  // now, and a form's answers from the profile as code builds them now (withCodeParts), so the
+  // flags are those of the kit the page shows.
+  if (edited === draft.kit && declined.size === 0 && draft.kit.kind === "email") {
     return { kit: draft.kit, flags: draft.flags };
   }
   const profile = await getProfileVersion(db, draft.profileVersion);

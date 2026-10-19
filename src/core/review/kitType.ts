@@ -17,6 +17,11 @@ import { lockReview } from "./markSent";
  * moment waits for it; and the job goes on to drafting. It is taken only
  * from the page that showed the job waiting since that time: a second tap,
  * or a page drawn before the job moved on, changes nothing.
+ *
+ * A ready kit whose application names no route, drafted before the pick
+ * existed or as an email while no kit was known, takes the same pick: it
+ * records how the owner applies, so Mark sent or Mark submitted can record
+ * the application, and the kit stays as drafted.
  */
 export async function pickKitType(
   deps: { db: Db; clock: Clock },
@@ -27,7 +32,11 @@ export async function pickKitType(
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
   const job = await loadJob(deps.db, jobId);
   if (!job) return { ok: false, reason: "not-found" };
-  if (job.state !== "needs_kit_type" || job.stateChangedAt.getTime() !== pick.since.getTime()) {
+  const ready = job.state === "kit_ready";
+  if (
+    (job.state !== "needs_kit_type" && !ready) ||
+    job.stateChangedAt.getTime() !== pick.since.getTime()
+  ) {
     return { ok: false, reason: "not-waiting" };
   }
   try {
@@ -36,10 +45,24 @@ export async function pickKitType(
       const role = await chosenRole(tx, jobId);
       if (!role) return { ok: false as const, reason: "not-waiting" as const };
       await lockReview(at, jobId, role.id);
+      if (ready) {
+        // As it stands under the lock: still ready since that time, and still naming no route.
+        const now = await loadJob(tx, jobId);
+        if (
+          now?.state !== "kit_ready" ||
+          now.stateChangedAt.getTime() !== pick.since.getTime() ||
+          (await kitRouteOf(tx, jobId, role)) !== null
+        ) {
+          return { ok: false as const, reason: "not-waiting" as const };
+        }
+      }
       const applicationId =
         (await applicationIdOf(tx, jobId, role.id)) ?? (await openForJob(at, jobId, sessionId));
       if (!applicationId) return { ok: false as const, reason: "not-waiting" as const };
-      await setRoute(at, applicationId, pick.kit);
+      const set = await setRoute(at, applicationId, pick.kit);
+      // A ready kit stays as drafted; one skipped meanwhile records nothing.
+      if (ready)
+        return set ? { ok: true as const } : { ok: false as const, reason: "not-waiting" as const };
       const moved = await moveJob(tx, jobId, {
         from: "needs_kit_type",
         to: "drafting",

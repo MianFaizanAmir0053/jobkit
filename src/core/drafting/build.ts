@@ -11,6 +11,7 @@ import type {
   FormDraftAnswer,
   FormKit,
   GapChoice,
+  Kit,
   KitBlock,
   MessageKit,
 } from "./kit";
@@ -283,10 +284,21 @@ function listable(template: string): boolean {
   const places = template.split("{skill}");
   if (places.length === 1) return true;
   if (places.length > 2) return false;
-  // The clause the skill sits in, from the last break before it.
-  const clause = places[0]!.split(/[,;:.()]/).at(-1)!;
-  return NEGATION.test(clause) && !/\bneither\b/i.test(clause);
+  // The clause the skill sits in, from the last break before it; a word after it that refers back
+  // to it would refer to the list ("…at work, but I use it daily").
+  const clause = places[0]!.split(CLAUSE_BREAK).at(-1)!;
+  return NEGATION.test(clause) && !/\bneither\b/i.test(clause) && !BACK_REFERENCE.test(places[1]!);
 }
+
+/**
+ * Where one clause ends and the next begins: a mark, a dash, or a word that
+ * joins two clauses ("No production use yet but I have used {skill}").
+ */
+const CLAUSE_BREAK =
+  /[,;:.()!?—–]|\s-\s|\b(?:but|and|so|though|although|while|whereas|because|since|unless|yet(?!\s+to\b))\b/i;
+
+/** Words that refer back to what came before, as to a skill a list would stand in for. */
+const BACK_REFERENCE = /\b(?:it|its|them|they|their|this|that|these|those)\b/i;
 
 /** Words that deny what follows them in a clause: "I haven't used {skill}", "I cannot claim {skill}". */
 const NEGATION = /\b(?:not|never|no|cannot|without|lack|lacking|yet to)\b|n['’]t\b/i;
@@ -447,9 +459,41 @@ export function buildFormKit(
 }
 
 /**
+ * A stored kit with the parts code builds from the profile built again by
+ * the code as it stands, so a kit drafted before a fix to them reads as the
+ * fixed code builds it: a form's answers from the profile (each topic
+ * question's, and a choice's profile answer, as fixedAnswer gives them now),
+ * and a public comment's sign-off, the owner's name alone. The drafter's
+ * words, and an answer code never took from the profile, stay as they were.
+ */
+export function withCodeParts(
+  kit: Kit,
+  context: { route: Role["route"]["kind"]; owner: string; topics: TopicProfile },
+): Kit {
+  if (kit.kind === "message") {
+    return context.route === "linkedin_comment" ? { ...kit, signOff: context.owner } : kit;
+  }
+  if (kit.kind !== "form") return kit;
+  const answers = kit.answers.map((answer): FormAnswer => {
+    if (answer.topic === null) return answer;
+    const fixed = fixedAnswer(answer.topic, answer.question, context.topics);
+    if (answer.source === "choice") return { ...answer, profile: fixed };
+    if (answer.source !== "profile" && answer.source !== "needs_your_answer") return answer;
+    // A reason belongs to an answer the owner must give alone.
+    const rest = { ...answer };
+    delete rest.reason;
+    return fixed.kind === "answer"
+      ? { ...rest, source: "profile", text: fixed.text }
+      : { ...rest, source: "needs_your_answer", text: "", reason: fixed.reason };
+  });
+  return { ...kit, answers };
+}
+
+/**
  * A message's gap lines merged: the lines one template and one related fact
- * build become one, in the first one's place, naming each skill once and
- * answering each of their must-haves. A known line, the owner's line and a
+ * build (any related fact, for a template that names none) become one, in
+ * the first one's place, naming each skill once and answering each of their
+ * must-haves. A known line, the owner's line and a
  * line of another template or related fact keep their own words. Where a
  * merged line ended a paragraph, the sentence before it ends it instead.
  */
@@ -469,7 +513,9 @@ function merged(blocks: readonly KitBlock[], role: Role, profile: ProfileParts):
       kept.push(block);
       continue;
     }
-    const key = JSON.stringify([block.gap.templateId, block.gap.relatedFactId]);
+    // The related fact tells lines apart only where the template names it.
+    const related = template!.text.includes("{related}") ? block.gap.relatedFactId : "";
+    const key = JSON.stringify([block.gap.templateId, related]);
     const group = groups.get(key);
     if (!group) {
       groups.set(key, { at: kept.length, skills: [line.skill], also: [] });

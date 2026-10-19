@@ -434,6 +434,7 @@ describe("the thin drafting group", () => {
     const [, inside] = sent.split(/BEGIN POST DATA [0-9a-f]+/);
     expect(inside).toContain('"text": "Why do you want to join Fabrikam?"');
     // The judge weighs the drafted answer with its question, and no profile answer, told it is a form.
+    expect(llm.calls[2]!.system).toContain("You check an application through a job's form");
     const judging = texts(llm.calls[2]!.content);
     expect(judging).toContain("The job seeker's facts the form cites:");
     expect(judging).toContain("The cover note's blocks, in order:");

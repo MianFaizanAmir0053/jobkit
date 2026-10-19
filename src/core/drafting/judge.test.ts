@@ -9,7 +9,9 @@ import type { Fact } from "@/core/profile/schema";
 
 import {
   citedFacts,
+  FORM_JUDGE_RULES,
   isBlocking,
+  JUDGE_RULES,
   judgeContent,
   type JudgeAnswer,
   mergeVerdicts,
@@ -120,6 +122,19 @@ describe("mergeVerdicts", () => {
     const merged = mergeVerdicts(kit, { verdicts: [verdict("S2", "not_a_claim")] });
 
     expect(merged.find((entry) => entry.blockId === "S2")?.verdict).toBe("unsupported");
+  });
+});
+
+describe("the judge's rules", () => {
+  it("tell the check it weighs a form's cover note and answers, an email's as they always read", () => {
+    expect(JUDGE_RULES.startsWith("You check an application email that someone else drafted")).toBe(
+      true,
+    );
+    expect(
+      FORM_JUDGE_RULES.startsWith(
+        "You check an application through a job's form, its cover note and its answers, that someone else drafted",
+      ),
+    ).toBe(true);
   });
 });
 

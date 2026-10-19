@@ -1573,6 +1573,70 @@ describe("markSubmitted", () => {
     });
   });
 
+  it("asks how the owner applied on a ready kit whose application names no route, and records it as the kit stands", async () => {
+    await seedSample();
+    const id = await pasted();
+    // As drafting ran before the pick: an email while no kit was known, for a post that names no route.
+    const before = async () => "email" as const;
+    const stages = trackApplications(
+      {
+        ...pipeline(),
+        eligibility: eligibilityStage({ db, clock, kitOf: before }),
+        draft: draftStage({ db, random, models: models(), kitOf: before }),
+      },
+      { db, clock },
+    );
+    await run(id, [answer(fixture("S18-no-route")), answer(DRAFT)], stages);
+    const ready = (await jobView({ db, clock }, id))!;
+    expect(ready.kitRoute).toBeNull();
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toEqual({
+      ok: false,
+      reason: "not-email",
+    });
+
+    expect(await pickKitType({ db, clock }, id, null, { kit: "form", since: new Date(0) })).toEqual(
+      { ok: false, reason: "not-waiting" },
+    );
+    expect(
+      await pickKitType({ db, clock }, id, null, { kit: "form", since: ready.stateChangedAt }),
+    ).toEqual({ ok: true });
+    expect(
+      await pickKitType({ db, clock }, id, null, { kit: "email", since: ready.stateChangedAt }),
+    ).toEqual({ ok: false, reason: "not-waiting" });
+
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.state).toBe("kit_ready");
+    expect(view.kitRoute).toBe("form");
+    expect(view.kit?.kind).toBe("email");
+    expect(view.kitKey).toBe(ready.kitKey);
+    await cleared(id);
+    // As the page names them: the kit, and where it goes.
+    const shown = (await jobView({ db, clock }, id))!;
+    expect(
+      await markSubmitted({ db, clock }, id, null, {
+        kit: shown.kitKey!,
+        to: shown.handoff?.to ?? "",
+      }),
+    ).toEqual({ ok: true, changed: true });
+  });
+
+  it("ends a public comment kept from before with the owner's name alone, as the code builds it now", async () => {
+    await seedSample();
+    const id = await pasted("Freelance Next.js developer wanted: comment below if interested.");
+    await run(id, [answer(fixture("S13-dm-or-comment")), answer(DRAFT)]);
+    // Kept as a draft from before comments ended with the name: the sign-off with its contacts.
+    await db.query(
+      `update {{schema}}.job_stage_runs set output = jsonb_set(output, '{kit,signOff}', to_jsonb($2::text))
+        where job_id = $1 and stage = 'draft'`,
+      [id, ["Sam Rivera", "WhatsApp: +1 202 555 0143"].join(String.fromCharCode(10))],
+    );
+
+    expect((await jobView({ db, clock }, id))!.kit).toMatchObject({
+      kind: "message",
+      signOff: "Sam Rivera",
+    });
+  });
+
   it("asks for the address of an email the owner picked for a post that gives none", async () => {
     await seedSample();
     const id = await pasted();

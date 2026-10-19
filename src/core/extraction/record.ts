@@ -175,6 +175,31 @@ export const jobRecordSchema = z.strictObject({
 export type JobRecord = z.infer<typeof jobRecordSchema>;
 export type Role = JobRecord["roles"][number];
 
+/** The kinds of kit (drafting spec, "Kit type"). */
+export type KitType = "email" | "form" | "message";
+
+/**
+ * The kit a route takes, by drafting's route table (drafting spec, "Kit
+ * type"); none for a route the owner must name.
+ */
+export function kitTypeOf(route: Role["route"]["kind"]): KitType | null {
+  switch (route) {
+    case "email":
+      return "email";
+    case "ats_form":
+    case "easy_apply":
+    case "careers_page":
+      return "form";
+    case "whatsapp":
+    case "linkedin_dm":
+    case "linkedin_comment":
+      return "message";
+    case "other":
+    case "unknown":
+      return null;
+  }
+}
+
 export type RecordFlagKind =
   "address" | "no_address" | "number" | "box" | "duplicate_id" | "too_long" | "no_roles";
 

@@ -15,17 +15,20 @@ export function whatsAppLink(number: string, message: string): string | null {
 }
 
 /**
- * "Open application link" for a form kit: the post's link, as the URL parser
- * reads it, only when it is https, names no user or password (which can
- * make a link read as another site's), and holds no space or control
- * character, which the parser drops. Any other link is shown as text with
- * a warning, never opened.
+ * "Open application link" for a form kit: the post's link, only when it is
+ * https, names no user or password (which can make a link read as another
+ * site's), and opens exactly the address the page shows: printable ASCII
+ * alone, which the URL parser reads as written, but for the case of its
+ * scheme and host and a closing slash. A space, a control character, a
+ * look-alike slash or dot, or one written with a percent sign would open
+ * another site. Any other link is shown as text with a warning, never
+ * opened.
  */
 export function applicationLink(address: string): string | null {
   const trimmed = address.trim();
-  // The parser drops a space, a tab or a line break inside, opening a site other than the one shown.
-  if (/[\s\p{Cc}]/u.test(trimmed) || !URL.canParse(trimmed)) return null;
+  if (!/^[\x21-\x7e]+$/.test(trimmed) || !URL.canParse(trimmed)) return null;
   const url = new URL(trimmed);
   if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return null;
-  return url.href;
+  const shown = trimmed.replace(/^https:\/\/[^/?#]*/i, (head) => head.toLowerCase());
+  return url.href === shown || url.href === `${shown}/` ? url.href : null;
 }

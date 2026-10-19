@@ -1,4 +1,4 @@
-import { kitTypeOf } from "@/core/drafting/kit";
+import { kitTypeOf } from "@/core/extraction/record";
 import { isStrictAddress, normaliseWhatsAppNumber } from "@/core/extraction/contacts";
 import { chosenRole, currentExtraction } from "@/core/extraction/owner";
 import type { Role } from "@/core/extraction/record";

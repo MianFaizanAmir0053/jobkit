@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { withCodeParts } from "@/core/drafting/build";
 import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { bodyWords } from "@/core/drafting/kit";
@@ -577,14 +578,25 @@ async function candidatesOf(
   if (gemini && gemini.roleId === role.id) {
     const profile = await getProfileVersion(db, gemini.profileVersion);
     const verdicts = verdictsOf(gemini, judge);
+    // The parts code builds from the profile, as the code builds them now.
+    const draft: DraftOutput = profile
+      ? {
+          ...gemini,
+          kit: withCodeParts(gemini.kit, {
+            route: role.route.kind,
+            owner: profile.owner.name,
+            topics: { home: profile.owner.location.country, answers: profile.fixedAnswers },
+          }),
+        }
+      : gemini;
     candidates.push({
-      choice: choiceOf(gemini, verdicts, {
+      choice: choiceOf(draft, verdicts, {
         id: GEMINI_DRAFT,
         source: "gemini",
         name: "",
         coverage: profile ? mustHaveCoverage(kit.visible, gemini.fit, profile.facts) : 0,
       }),
-      draft: gemini,
+      draft,
       verdicts,
       kitKey: sha256Hex(
         canonicalJson({ role: role.id, outputs: of([...POST_STAGES, ...GEMINI_STAGES]) }),

@@ -1258,6 +1258,13 @@ function KitPanel({
                 jobId={view.id}
                 kit={kitKey}
                 words={words}
+                first={
+                  kit.kind === "email"
+                    ? "The greeting: first in the email"
+                    : kit.kind === "message"
+                      ? "First in the message"
+                      : "First in the cover note"
+                }
                 sentences={kit.blocks.map((block) => ({ id: block.id, text: block.text }))}
                 // Before the sign-off by default: after the last sentence that is not courtesy.
                 defaultAfter={
@@ -1277,7 +1284,9 @@ function KitPanel({
               <p className="mt-1 text-muted-foreground">
                 {role.route.kind === "linkedin_comment"
                   ? "Your name alone: a comment is public, so your contacts stay out of it."
-                  : "Your sign-off, from your profile."}
+                  : role.route.kind === "other" || role.route.kind === "unknown"
+                    ? "Your sign-off, from your profile, your contacts included: if this goes in a public comment, take them out where you post it."
+                    : "Your sign-off, from your profile."}
               </p>
             </>
           )}
@@ -1937,9 +1946,32 @@ function KitPanel({
             </p>
           )
         ) : view.kitRoute === null ? (
-          <p className="text-sm text-muted-foreground">
-            Choosing how to apply, and recording it once sent, comes with the kit-type pick.
-          </p>
+          <div className="flex flex-col gap-2 text-sm">
+            <p>
+              How do you apply for this one? The post does not say, and this kit was drafted as an
+              email before jobkit asked. Your answer lets jobkit record the application once it
+              goes; the kit stays as it is.
+            </p>
+            {!locked && (
+              <div className="flex flex-wrap gap-2">
+                {(
+                  [
+                    ["email", "By email"],
+                    ["form", "Through an application form"],
+                    ["message", "By message"],
+                  ] as const
+                ).map(([route, label]) => (
+                  <ActionButton
+                    key={route}
+                    url={`/api/jobs/${view.id}/kit-type`}
+                    label={label}
+                    variant="outline"
+                    body={{ kit: route, since: view.stateChangedAt.toISOString() }}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
         ) : open ? (
           <div className="flex flex-col gap-2 text-sm">
             <p className="text-muted-foreground">

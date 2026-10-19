@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 import { readExtractOutput } from "@/core/extraction/extract";
-import type { JobRecord, Role } from "@/core/extraction/record";
-import { chosenRole, type KitOf } from "@/core/extraction/owner";
+import type { JobRecord, KitType, Role } from "@/core/extraction/record";
+import { chosenRole, kitByRoute, type KitOf } from "@/core/extraction/owner";
 import { callModel, type ModelCallDeps, type ModelCallFailure } from "@/core/platform/models";
 import type { StageDefinition, StageResult, Transition } from "@/core/platform/runner";
 import type { Db, Effort, Random } from "@/core/ports";
@@ -25,7 +25,6 @@ import {
   type FitRow,
   formAnswerSchema,
   type Kit,
-  kitTypeOf,
   MESSAGE_LIMIT,
   visibleLength,
 } from "./kit";
@@ -47,8 +46,9 @@ import { hasWord, type KitFlag, validateKit } from "./validate";
  * message the profile's sign-off, and runs the checks; the kit is kept with
  * its flags for the owner to review. WhatsApp and LinkedIn routes get a
  * message kit, a form's routes a form kit, its questions answered as the
- * two classifiers decide; every other route an email kit for now (the
- * kit-type pick comes later). The instructions the owner
+ * two classifiers decide, and the email's route an email kit; a post that
+ * does not say how to apply takes the kit the owner picks (KitOf), and an
+ * email while none is known. The instructions the owner
  * declines on the review page apply to the kit as it stands, never to a
  * draft, so the declined instructions given here are always none.
  */
@@ -61,13 +61,15 @@ export const DRAFT = {
 } as const;
 
 /**
- * What a stored kit holds beyond the model's answer: the parts code builds,
- * the flags it raises, and what the call is shown. Raise it when any of
- * these change: build.ts, validate.ts, fit.ts, bodyWords in kit.ts, the
- * skill lookup in skills.ts (skillTag and its key), or withoutAiLines
- * below, so an output kept from before is not reused. The skills table's
- * data is hashed whole. The templates stage builds its drafts with the same
- * code, so its input carries this too.
+ * What a stored email kit holds beyond the model's answer: the parts code
+ * builds, the flags it raises, and what the call is shown. Raise it when
+ * any of these change for an email: build.ts, validate.ts, fit.ts,
+ * bodyWords in kit.ts, the skill lookup in skills.ts (skillTag and its
+ * key), or withoutAiLines below, so an output kept from before is not
+ * reused. The skills table's data is hashed whole. The templates stage
+ * builds its drafts with the same code, so its input carries this too. A
+ * message's and a form's builds have versions of their own (PROMPTS); a
+ * change that leaves an email's kit as it was raises theirs alone.
  */
 export const BUILD_VERSION = 9;
 
@@ -112,17 +114,6 @@ const PROMPTS = {
 } as const;
 
 /**
- * The kit `draft` writes for a route: a message for WhatsApp and LinkedIn, a
- * form for a form's routes, an email for the rest for now.
- */
-export function draftKitOf(route: Role["route"]["kind"]): DraftKit {
-  const kit = kitTypeOf(route);
-  return kit === "message" || kit === "form" ? kit : "email";
-}
-
-type DraftKit = "email" | "message" | "form";
-
-/**
  * A message's budget for the model's sentences and the gap lines: its 600
  * characters less the sign-off and the blank line before it, and never under
  * 100, so a long sign-off leaves the model room to write in. validate counts
@@ -158,7 +149,7 @@ interface DraftInput {
   record: string;
   role: string;
   profile: string | null;
-  kit: DraftKit;
+  kit: KitType;
   /** A LinkedIn comment's sign-off, the owner's name alone; absent for every other kit. */
   signOff?: "name";
   declined: string[];
@@ -184,9 +175,8 @@ export async function draftKitFor(
   deps: { db: Db; kitOf?: KitOf },
   jobId: string,
   role: Role,
-): Promise<DraftKit> {
-  const kit = deps.kitOf ? await deps.kitOf(deps.db, jobId, role) : kitTypeOf(role.route.kind);
-  return kit === "message" || kit === "form" ? kit : "email";
+): Promise<KitType> {
+  return (await (deps.kitOf ?? kitByRoute)(deps.db, jobId, role)) ?? "email";
 }
 
 export function draftStage(deps: DraftDeps): StageDefinition {

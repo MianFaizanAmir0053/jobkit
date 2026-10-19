@@ -3,10 +3,13 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { kitByRoute } from "@/core/extraction/owner";
 import type { JobRecord, Role } from "@/core/extraction/record";
+import type { Db } from "@/core/ports";
 import type { Fact } from "@/core/profile/schema";
 
 import { buildMessageKit, NEEDS_YOUR_LINE, type ProfileParts } from "./build";
+import { draftKitFor } from "./draftStage";
 import {
   type DraftAnswer,
   type FitRow,
@@ -190,6 +193,71 @@ describe("buildMessageKit", () => {
       "Not in production yet, but I have used Kubernetes in side projects.",
       "Not in production yet, but I have used Terraform in side projects.",
     ]);
+  });
+
+  it("keeps a line for each must-have where a denial stands in another clause, or a word after the skill refers back to it", () => {
+    const templates = [
+      "No production experience yet but I have used {skill} in side projects.",
+      "Not in production yet — I have used {skill} in side projects.",
+      "Not in production yet - I have used {skill} in side projects.",
+      "Not at work! I use {skill} daily at home.",
+      "I haven't used it at work and I am learning {skill} now.",
+      "I haven't used {skill} at work, but I use it daily in side projects.",
+    ];
+    for (const text of templates) {
+      const kit = buildMessageKit(
+        {
+          fit: [],
+          blocks: [gap("R5", { template_id: "G-x" }), gap("R6", { template_id: "G-x" })],
+        },
+        {
+          role: role(),
+          signOff: SIGN_OFF,
+          profile: { ...profile, gapTemplates: [{ id: "G-x", text }] },
+        },
+      ).kit;
+      expect(kit.blocks, text).toHaveLength(2);
+    }
+  });
+
+  it("merges a template's lines that name neither a skill nor a related fact, whatever facts the drafter gave", () => {
+    const plain: ProfileParts = {
+      ...profile,
+      gapTemplates: [{ id: "G-ramp", text: "I would need a little ramp-up time here." }],
+    };
+
+    const kit = buildMessageKit(
+      {
+        fit: [],
+        blocks: [
+          gap("R5", { template_id: "G-ramp", related_fact_id: "F-docker" }),
+          gap("R6", { template_id: "G-ramp", related_fact_id: "F-scripts" }),
+        ],
+      },
+      { role: role(), signOff: SIGN_OFF, profile: plain },
+    ).kit;
+
+    expect(kit.blocks.map((block) => [block.text, block.alsoAnswers])).toEqual([
+      ["I would need a little ramp-up time here.", ["R6"]],
+    ]);
+  });
+
+  it("drafts the kit drafting's route table gives a route when no pick is known", async () => {
+    const withRoute = (kind: Role["route"]["kind"]): Role => ({
+      ...role(),
+      route: { ...role().route, kind },
+    });
+    const db = {} as Db;
+    for (const [kind, kit] of [
+      ["whatsapp", "message"],
+      ["linkedin_comment", "message"],
+      ["ats_form", "form"],
+      ["email", "email"],
+      ["unknown", "email"],
+    ] as const) {
+      expect(await draftKitFor({ db }, "job", withRoute(kind))).toBe(kit);
+      expect(await draftKitFor({ db, kitOf: kitByRoute }, "job", withRoute(kind))).toBe(kit);
+    }
   });
 
   it("lists the skills with or where their clause denies them, by cannot, without or lack too", () => {

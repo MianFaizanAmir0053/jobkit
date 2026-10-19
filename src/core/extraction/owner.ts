@@ -3,7 +3,7 @@ import { stageOutput } from "@/core/platform/runner";
 import type { Clock, Db } from "@/core/ports";
 
 import { type ExtractOutput, readExtractOutput, stopReasonOf } from "./extract";
-import type { Role } from "./record";
+import { type KitType, kitTypeOf, type Role } from "./record";
 
 /**
  * The owner's answers to extraction (extraction spec, "Stage extract" and
@@ -20,11 +20,10 @@ import type { Role } from "./record";
  * the application the pick is kept with (review); without it, the route
  * alone answers.
  */
-export type KitOf = (db: Db, jobId: string, role: Role) => Promise<string | null>;
+export type KitOf = (db: Db, jobId: string, role: Role) => Promise<KitType | null>;
 
-/** The route alone: none for a post that does not say how to apply. */
-export const kitByRoute: KitOf = async (_db, _jobId, role) =>
-  role.route.kind === "other" || role.route.kind === "unknown" ? null : role.route.kind;
+/** The route alone, by drafting's route table: none for a post that does not say how to apply. */
+export const kitByRoute: KitOf = async (_db, _jobId, role) => kitTypeOf(role.route.kind);
 
 type Deps = { db: Db; clock: Clock; kitOf?: KitOf };
 type Outcome<Reason extends string> = { ok: true } | { ok: false; reason: Reason };
