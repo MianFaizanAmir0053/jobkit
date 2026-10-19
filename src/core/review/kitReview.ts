@@ -9,7 +9,7 @@ import { isUuid } from "@/lib/uuid";
 
 import { type AddressCheck, checkAddress } from "./addressChecks";
 import type { AddressChecksOutput } from "./addressChecksStage";
-import { applicationIdOf, contactForLedger, kitReadyForJob } from "./applications";
+import { applicationIdOf, contactForLedger, kitReadyForJob, kitRouteOf } from "./applications";
 import type { GateReason } from "./canHandOff";
 import {
   cleanSentence,
@@ -263,7 +263,14 @@ async function typedChecks(
   const typed = value.trim();
   const role = await chosenRole(deps.db, jobId);
   const extraction = await currentExtraction(deps.db, jobId);
-  if (role?.route.kind !== "email" || !extraction || !isStrictAddress(typed)) return null;
+  if (
+    !role ||
+    (await kitRouteOf(deps.db, jobId, role)) !== "email" ||
+    !extraction ||
+    !isStrictAddress(typed)
+  ) {
+    return null;
+  }
   const decisions = (await jobView(deps, jobId))?.review?.decisions ?? NO_DECISIONS;
   return (
     (await postedChecks(deps.db, jobId, typed)) ??

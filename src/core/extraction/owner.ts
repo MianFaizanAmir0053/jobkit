@@ -13,7 +13,20 @@ import type { Role } from "./record";
  * in, so two taps never act twice; the caller then starts the pipeline.
  */
 
-type Deps = { db: Db; clock: Clock };
+/**
+ * The kind of kit a job's chosen role takes (drafting spec, "Kit type"):
+ * its route's, or the owner's pick of one; null while a post that does not
+ * say how to apply waits for the pick. The app's pipeline gives it, from
+ * the application the pick is kept with (review); without it, the route
+ * alone answers.
+ */
+export type KitOf = (db: Db, jobId: string, role: Role) => Promise<string | null>;
+
+/** The route alone: none for a post that does not say how to apply. */
+export const kitByRoute: KitOf = async (_db, _jobId, role) =>
+  role.route.kind === "other" || role.route.kind === "unknown" ? null : role.route.kind;
+
+type Deps = { db: Db; clock: Clock; kitOf?: KitOf };
 type Outcome<Reason extends string> = { ok: true } | { ok: false; reason: Reason };
 
 /** The job's current extraction: extract's latest output, or null. */
@@ -158,10 +171,13 @@ export async function draftAnyway(
   const role = await chosenRole(deps.db, jobId);
   if (!extraction || !role) return { ok: false, reason: "not-waiting" };
   return deps.db.tx(async (tx) => {
+    // On to drafting, once the kit's kind is known: a post that does not say how to apply waits
+    // for the owner to name it first.
+    const known = (await (deps.kitOf ?? kitByRoute)(tx, jobId, role)) !== null;
     const moved = await moveJob(tx, jobId, {
       from: "needs_eligibility_decision",
-      to: "drafting",
-      pending: "templates",
+      to: known ? "drafting" : "needs_kit_type",
+      pending: known ? "templates" : null,
       at: deps.clock.now(),
       ifChangedAt: job.stateChangedAt,
     });

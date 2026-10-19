@@ -35,6 +35,7 @@ import { applyAgainForJob, recordReview } from "./kitReview";
 import { trackApplications, skippedForJob, openForJob } from "./applications";
 import { STUCK_MS } from "./kitSends";
 import { markBounced, takeBackBounced } from "./markBounced";
+import { kitOfJob, pickKitType } from "./kitType";
 import { markSubmitted, takeBackSubmitted } from "./markSubmitted";
 import { markSent, markSentByJobkit, takeBackSent } from "./markSent";
 import { scheduleSend } from "./send";
@@ -81,9 +82,10 @@ function models(): ModelCallDeps {
 
 const pipeline = () => ({
   extract: extractStage({ db, storage, random, models: models() }),
-  eligibility: eligibilityStage({ db, clock }),
+  // As the app's pipeline: the kit the job takes, the owner's pick of one included.
+  eligibility: eligibilityStage({ db, clock, kitOf: kitOfJob }),
   templates: noTemplateDrafts(),
-  draft: draftStage({ db, random, models: models() }),
+  draft: draftStage({ db, random, models: models(), kitOf: kitOfJob }),
   // The judge has its own tests; here it passes every kit.
   judge: {
     callsModel: false,
@@ -1500,14 +1502,15 @@ describe("markSubmitted", () => {
     expect(rows).toEqual([{ address: "+1 202 555 0199", status: "submitted" }]);
   });
 
-  it("refuses a kit whose route waits for the owner to name it", async () => {
+  it("waits for the owner to name the kit of a post that does not say how to apply (drafting AC1)", async () => {
+    await seedSample();
     for (const post of ["S18-no-route", "S19-walk-in"]) {
-      const { id, kit } = await readyFor(post);
+      const id = await pasted();
+      await run(id, [answer(fixture(post))]);
 
-      expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
-        ok: false,
-        reason: "not-form-or-message",
-      });
+      const view = (await jobView({ db, clock }, id))!;
+      expect(view.state).toBe("needs_kit_type");
+      expect(view.kitKey).toBeNull();
     }
   });
 
@@ -1539,33 +1542,59 @@ describe("markSubmitted", () => {
     expect((await jobView({ db, clock }, id))!.application?.status).toBe("kit_ready");
   });
 
-  it("marks submitted a kit whose route the owner picked as a form", async () => {
+  it("drafts the kit the owner picked for a post that does not say how to apply, and marks it submitted", async () => {
     await seedSample();
     const id = await pasted();
-    await run(
-      id,
-      [answer(fixture("S18-no-route")), answer(DRAFT)],
-      trackApplications(pipeline(), { db, clock }),
+    const stages = trackApplications(pipeline(), { db, clock });
+    await run(id, [answer(fixture("S18-no-route"))], stages);
+    const waiting = (await jobView({ db, clock }, id))!;
+    expect(waiting.state).toBe("needs_kit_type");
+
+    // A page drawn before the job moved on changes nothing; the page's own pick drafts a form.
+    expect(await pickKitType({ db, clock }, id, null, { kit: "form", since: new Date(0) })).toEqual(
+      { ok: false, reason: "not-waiting" },
     );
+    expect(
+      await pickKitType({ db, clock }, id, null, { kit: "form", since: waiting.stateChangedAt }),
+    ).toEqual({ ok: true });
+    expect(
+      await pickKitType({ db, clock }, id, null, { kit: "email", since: waiting.stateChangedAt }),
+    ).toEqual({ ok: false, reason: "not-waiting" });
+    await run(id, [answer({ ...DRAFT, answers: [] })], stages);
+
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.state).toBe("kit_ready");
+    expect(view.kit?.kind).toBe("form");
+    expect(view.kitRoute).toBe("form");
     await cleared(id);
-    const kit = (await jobView({ db, clock }, id))!.kitKey!;
-    expect((await jobView({ db, clock }, id))!.kitRoute).toBeNull();
-    expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
-      ok: false,
-      reason: "not-form-or-message",
-    });
-
-    // As the owner's kit-type pick will record it.
-    const { rows } = await db.query<{ id: string }>(
-      "select id from {{schema}}.applications where job_id = $1",
-      [id],
-    );
-    await setRoute({ db }, rows[0]!.id, "form");
-
-    expect((await jobView({ db, clock }, id))!.kitRoute).toBe("form");
-    expect(await markSubmitted({ db, clock }, id, null, { kit, to: "" })).toEqual({
+    expect(await markSubmitted({ db, clock }, id, null, { kit: view.kitKey!, to: "" })).toEqual({
       ok: true,
       changed: true,
+    });
+  });
+
+  it("asks for the address of an email the owner picked for a post that gives none", async () => {
+    await seedSample();
+    const id = await pasted();
+    const stages = trackApplications(pipeline(), { db, clock });
+    await run(id, [answer(fixture("S19-walk-in"))], stages);
+    const since = (await jobView({ db, clock }, id))!.stateChangedAt;
+    await pickKitType({ db, clock }, id, null, { kit: "email", since });
+    await run(id, [answer(DRAFT)], stages);
+
+    const view = (await jobView({ db, clock }, id))!;
+    expect(view.kit?.kind).toBe("email");
+    expect(view.kitParts?.contact).toEqual({ kind: "email", needsRetype: true });
+    expect(view.review?.gate.map((reason) => reason.kind)).toContain("contact");
+    expect(view.handoff).toEqual({ to: "", typed: true });
+
+    await recordReview({ db, clock, dns: offlineDns() }, id, {
+      kind: "retype",
+      value: "jobs@example.com",
+    });
+    expect((await jobView({ db, clock }, id))!.handoff).toEqual({
+      to: "jobs@example.com",
+      typed: true,
     });
   });
 

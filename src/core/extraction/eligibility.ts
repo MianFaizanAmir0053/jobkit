@@ -4,7 +4,7 @@ import { getActiveProfile, getProfileVersion } from "@/core/profile/profile";
 
 import { checkEligibility, type Eligibility, offsetMinutes } from "./eligibilityCheck";
 import { readExtractOutput } from "./extract";
-import { chosenRole, draftedAnyway } from "./owner";
+import { chosenRole, draftedAnyway, kitByRoute, type KitOf } from "./owner";
 
 /**
  * The `eligibility` stage (extraction spec, "Stage eligibility"):
@@ -33,7 +33,7 @@ interface EligibilityInput {
   zoneOffset: number | null;
 }
 
-export function eligibilityStage(deps: { db: Db; clock: Clock }): StageDefinition {
+export function eligibilityStage(deps: { db: Db; clock: Clock; kitOf?: KitOf }): StageDefinition {
   return {
     callsModel: false,
 
@@ -78,7 +78,12 @@ export function eligibilityStage(deps: { db: Db; clock: Clock }): StageDefinitio
       if (output.result === "likely_ineligible" && !(await draftedAnyway(deps.db, ctx.job.id))) {
         return { state: "needs_eligibility_decision", pending: null };
       }
-      // The owner's templates come first (decisions A22).
+      // A post that does not say how to apply waits for the owner to name the kit (drafting spec,
+      // "Kit type"); then the owner's templates come first (decisions A22).
+      const role = await chosenRole(deps.db, ctx.job.id);
+      if (role && (await (deps.kitOf ?? kitByRoute)(deps.db, ctx.job.id, role)) === null) {
+        return { state: "needs_kit_type", pending: null };
+      }
       return { state: "drafting", pending: "templates" };
     },
   };

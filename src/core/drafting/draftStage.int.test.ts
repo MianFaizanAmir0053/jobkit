@@ -584,6 +584,18 @@ describe("the thin drafting group", () => {
     expect(await draftAnyway({ db, clock }, id)).toEqual({ ok: false, reason: "not-waiting" });
   });
 
+  it("goes from Draft anyway to the kit-type pick for a post that does not say how to apply", async () => {
+    await seedSample();
+    const record = fixture("S02-us-only");
+    record.roles[0]!.route = { ...record.roles[0]!.route, kind: "unknown", address: "" };
+    const id = await run("Contoso Health - Backend Engineer (Remote - US only)", [answer(record)]);
+    expect(await loadJob(db, id)).toMatchObject({ state: "needs_eligibility_decision" });
+
+    expect(await draftAnyway({ db, clock }, id)).toEqual({ ok: true });
+
+    expect(await loadJob(db, id)).toMatchObject({ state: "needs_kit_type", pendingStage: null });
+  });
+
   it("counts Draft anyway only for the role and the reading of the post it answered", async () => {
     await seedSample();
     const id = await run("Contoso Health - Backend Engineer (Remote - US only)", [

@@ -10,6 +10,7 @@ import type { StageName } from "@/core/platform/jobStates";
 import type { Pipeline } from "@/core/platform/runner";
 import { addressChecksStage } from "@/core/review/addressChecksStage";
 import { trackApplications } from "@/core/review/applications";
+import { kitOfJob } from "@/core/review/kitType";
 import type { Container } from "@/server/container";
 import { modelCallDeps } from "@/server/models";
 
@@ -33,13 +34,13 @@ function stagesOf(container: Container, models: ReturnType<typeof modelCallDeps>
       random: container.random,
       models,
     }),
-    eligibility: eligibilityStage({ db: container.db, clock: container.clock }),
+    eligibility: eligibilityStage({ db: container.db, clock: container.clock, kitOf: kitOfJob }),
     templates: {
-      ...templatesStage({ db: container.db }),
+      ...templatesStage({ db: container.db, kitOf: kitOfJob }),
       alongside: async (ctx) => besideDraft(await chosenRole(container.db, ctx.job.id)),
     },
     draft: {
-      ...draftStage({ db: container.db, random: container.random, models }),
+      ...draftStage({ db: container.db, random: container.random, models, kitOf: kitOfJob }),
       alongside: async (ctx) => besideDraft(await chosenRole(container.db, ctx.job.id)),
     },
     judge: judgeStage({ db: container.db, random: container.random, models }),

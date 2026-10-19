@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { draftKitOf, type DraftOutput } from "@/core/drafting/draftStage";
+import type { DraftOutput } from "@/core/drafting/draftStage";
 import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import { bodyWords } from "@/core/drafting/kit";
 import type { TemplatesOutput } from "@/core/drafting/templatesStage";
@@ -327,6 +327,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     contact?.kind === "email" ? addressChecksOf(contact.contact, checks, read) : null;
   const ready = job.state === "kit_ready";
   const application = role ? await applicationOf(deps.db, id, role.id) : null;
+  // As kitRouteOf decides, so the page offers what Mark sent and Mark submitted accept.
+  const kitRoute = application ? application.route : role ? routeOf(role.route.kind) : null;
   const candidates =
     role && extraction
       ? await candidatesOf(deps.db, {
@@ -336,6 +338,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
           templates: round.templatesCurrent ? templates : undefined,
           gemini: geminiCurrent ? draft! : null,
           judge,
+          // Templates are emails: a kit of another kind takes none of their drafts.
+          emailKit: (kitRoute ?? "email") === "email",
         })
       : [];
   const picked = role ? await pickedDraftOf(deps.db, id, role.id) : null;
@@ -366,8 +370,6 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const sentByJobkit = role ? await anySent(deps.db, id, role.id) : false;
   // jobkit sent it, though the ledger may not have recorded it: it went.
   const went = Boolean(application && WENT.has(application.status)) || sentByJobkit;
-  // As kitRouteOf decides, so the page offers what Mark sent and Mark submitted accept.
-  const kitRoute = application ? application.route : role ? routeOf(role.route.kind) : null;
   // The screenshot the contact's box lies on, from the post's reading, which a purge leaves.
   const contactScreenshot =
     role && extraction ? (mapBox(role.route.box, extraction.tiles)?.image ?? null) : null;
@@ -382,17 +384,24 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     settled.cropPath === null;
   // An address or number the owner typed stands once it passes, even where the kit would no
   // longer ask for one, as after an update that reads the post's as agreed: never the post's.
-  const needsRetype = role
-    ? needsRetypeOf(role, settled, addressChecks, noCrop) ||
-      typedPasses(role, decisions ?? NO_DECISIONS)
+  // An email the owner picked for a post that does not say how to apply goes to an address it
+  // does not give: the owner types it, as for an email post with none.
+  const contactRole =
+    role && kitRoute === "email" && role.route.kind !== "email" && role.route.kind !== "whatsapp"
+      ? { ...role, route: { ...role.route, kind: "email" as const, address: "" } }
+      : role;
+  const needsRetype = contactRole
+    ? needsRetypeOf(contactRole, settled, addressChecks, noCrop) ||
+      typedPasses(contactRole, decisions ?? NO_DECISIONS)
     : false;
-  const handoff = hasKit && role ? handoffOf(role, needsRetype, decisions ?? NO_DECISIONS) : null;
+  const handoff =
+    hasKit && contactRole ? handoffOf(contactRole, needsRetype, decisions ?? NO_DECISIONS) : null;
   // A kit that ran before its application opened with it is weighed against every earlier one
   // too, at the address it goes to.
   const duplicates = application
     ? await kitDuplicatesOf(deps.db, application.id)
-    : ready && role && extraction
-      ? await unopenedDuplicates(deps.db, role, extraction, handoff)
+    : ready && contactRole && extraction
+      ? await unopenedDuplicates(deps.db, contactRole, extraction, handoff)
       : [];
   const kitParts =
     chosen && role && extraction
@@ -403,6 +412,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
           ownLines: (kit?.blocks ?? []).flatMap((block) => (block.owner ? answersOf(block) : [])),
           verdicts: verdictsAsItStands(kit, chosen.verdicts),
           role,
+          contactKind: contactKindOf(contactRole!),
           extraction,
           needsRetype,
           addressChecks,
@@ -424,7 +434,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     steps: await stepsOf(deps.db, job, unchecked, {
       drafted: round.templatesCurrent && (templates?.drafts.length ?? 0) > 0,
       noneFit: (templates?.drafts.length ?? 0) === 0,
-      notEmail: role !== null && draftKitOf(role.route.kind) !== "email",
+      notEmail: (kitRoute ?? "email") !== "email",
       geminiCurrent,
       askedGemini: round.askedGemini,
     }),
@@ -529,6 +539,8 @@ async function candidatesOf(
     /** Gemini's draft, written and judged in the current round; null otherwise. */
     gemini: DraftOutput | null;
     judge: JudgeOutput | PassedThrough | undefined;
+    /** Whether the job takes an email's kit, which alone the templates draft. */
+    emailKit: boolean;
   },
 ): Promise<Candidate[]> {
   const { role, outputs, templates, gemini, judge } = kit;
@@ -538,7 +550,7 @@ async function candidatesOf(
   for (const draft of templates?.drafts ?? []) {
     // Templates are emails: one kept from before a message's or a form's route drafted its own kit
     // is no draft of it.
-    if (draft.roleId !== role.id || draftKitOf(role.route.kind) !== "email") continue;
+    if (draft.roleId !== role.id || !kit.emailKit) continue;
     const verdicts = templateVerdicts(draft.kit);
     candidates.push({
       choice: choiceOf(draft, verdicts, {
@@ -730,6 +742,12 @@ function handoffOf(
   return { to: typedPasses(role, decisions) ? decisions.retyped!.value : "", typed: true };
 }
 
+/** The kind of contact a role's route gives, an email or a WhatsApp number; none for another. */
+function contactKindOf(role: Role): "email" | "whatsapp" | null {
+  const { kind } = role.route;
+  return kind === "email" || kind === "whatsapp" ? kind : null;
+}
+
 /**
  * The matches of a kit with no application yet, from what extract read and
  * the address it goes to, the owner's typed one included; none is covered.
@@ -758,6 +776,8 @@ function kitPartsOf(parts: {
   ownLines: string[];
   verdicts: KitParts["verdicts"];
   role: Role;
+  /** The kind of contact the kit goes to, the owner's typed address for an email they picked. */
+  contactKind: "email" | "whatsapp" | null;
   extraction: ExtractOutput;
   needsRetype: boolean;
   addressChecks: AddressCheck[] | null;
@@ -768,7 +788,6 @@ function kitPartsOf(parts: {
   sending: boolean;
   skipped: boolean;
 }): KitParts {
-  const { kind } = parts.role.route;
   // A form's answers but those never given, which the owner types or checks like sentences.
   const answers =
     parts.draft.kit.kind === "form"
@@ -789,8 +808,7 @@ function kitPartsOf(parts: {
     attachments: parts.role.required_attachments.flatMap((attachment, i) =>
       attachment.is_cv ? [] : [{ id: `A${i + 1}`, name: attachment.name }],
     ),
-    contact:
-      kind === "email" || kind === "whatsapp" ? { kind, needsRetype: parts.needsRetype } : null,
+    contact: parts.contactKind && { kind: parts.contactKind, needsRetype: parts.needsRetype },
     addressChecks: parts.addressChecks ?? [],
     scamSignals: [...parts.extraction.record.scam_signals, ...parts.extraction.backstop].map(
       (signal) => signal.quote || signal.kind,

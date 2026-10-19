@@ -18,7 +18,7 @@ Write the kit for the route the post asks for, so that every statement about the
 | `email` | email kit |
 | `ats_form`, `easy_apply`, `careers_page` | form kit |
 | `whatsapp`, `linkedin_dm`, `linkedin_comment` | message kit |
-| `other`, `unknown` | the job waits in `needs_kit_type` for the owner's pick |
+| `other`, `unknown` | the job waits in `needs_kit_type` for the owner's pick, which is kept as the application's route; drafting and the page then follow it, and an email picked for such a post goes to an address the owner types (Claude's choices, 2026-10-19) |
 
 ## Draft structure
 

@@ -1,5 +1,5 @@
 import { readExtractOutput } from "@/core/extraction/extract";
-import { chosenRole } from "@/core/extraction/owner";
+import { chosenRole, type KitOf } from "@/core/extraction/owner";
 import type { StageDefinition, StageResult, Transition } from "@/core/platform/runner";
 import type { Db } from "@/core/ports";
 import { getActiveProfile, getProfileVersion } from "@/core/profile/profile";
@@ -7,7 +7,7 @@ import { SKILLS } from "@/core/shared/skills";
 import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 
-import { BUILD_VERSION, draftKitOf, NO_PROFILE } from "./draftStage";
+import { BUILD_VERSION, draftKitFor, NO_PROFILE } from "./draftStage";
 import {
   MAX_ADDED_FACTS,
   MAX_TEMPLATE_DRAFTS,
@@ -49,9 +49,11 @@ interface TemplatesInput {
   role: string;
   profile: string | null;
   build: string;
+  /** The kit the job takes, named only when it is no email, which the templates never draft. */
+  kit?: "message" | "form";
 }
 
-export function templatesStage(deps: { db: Db }): StageDefinition {
+export function templatesStage(deps: { db: Db; kitOf?: KitOf }): StageDefinition {
   return {
     callsModel: false,
 
@@ -61,11 +63,13 @@ export function templatesStage(deps: { db: Db }): StageDefinition {
       const role = await chosenRole(deps.db, ctx.job.id);
       if (!extract || !role) throw new Error("templates runs only after extract has chosen a role");
       const profile = await getActiveProfile(deps.db);
+      const kit = await draftKitFor(deps, ctx.job.id, role);
       return {
         record: extract.outputHash,
         role: role.id,
         profile: profile?.versionId ?? null,
         build: BUILD,
+        ...(kit === "email" ? {} : { kit }),
       };
     },
 
@@ -80,7 +84,7 @@ export function templatesStage(deps: { db: Db }): StageDefinition {
       }
       const output: TemplatesOutput = {
         drafts:
-          draftKitOf(role.route.kind) === "email"
+          input.kit === undefined
             ? templateDrafts({ record: extraction.record, role, profile })
             : [],
       };

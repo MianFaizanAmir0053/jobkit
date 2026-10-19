@@ -7,6 +7,7 @@ import { JOB_STATES } from "@/core/platform/jobStates";
 import type { RunnerDeps } from "@/core/platform/runner";
 import type { Dns, Storage } from "@/core/ports";
 import { openForJob } from "@/core/review/applications";
+import { kitOfJob, pickKitType } from "@/core/review/kitType";
 import { reviewActionSchema } from "@/core/review/decisions";
 import {
   backToDrafts as backToDraftsCore,
@@ -208,8 +209,39 @@ export async function draftAnyway(
   const actor = await sessionForChange(request, deps);
   if (!actor.ok) return actor.response;
   if (!isUuid(jobId)) return refusal(404, "not-found");
-  const decided = await draftAnywayCore(deps, jobId);
+  const decided = await draftAnywayCore({ ...deps, kitOf: kitOfJob }, jobId);
   if (!decided.ok) return refusal(decided.reason === "not-found" ? 404 : 409, decided.reason);
+  await startPipeline(deps, jobId, startedAt);
+  return ok(202);
+}
+
+/** The kind of kit the owner picked, and when the page showed the job waiting for it. */
+const kitTypeBody = z.object({
+  kit: z.enum(["email", "form", "message"]),
+  since: z.iso.datetime(),
+});
+
+/**
+ * POST /api/jobs/<id>/kit-type: the owner names the kind of kit for a post
+ * that does not say how to apply (drafting spec, "Kit type"), and drafting
+ * starts; refused once the job moved on from the wait the page showed.
+ */
+export async function kitType(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+  startedAt: Date = deps.clock.now(),
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await bodyOf(request, kitTypeBody);
+  if (!body.ok) return body.response;
+  const picked = await pickKitType(deps, jobId, actor.session.id, {
+    kit: body.data.kit,
+    since: new Date(body.data.since),
+  });
+  if (!picked.ok) return refusal(picked.reason === "not-found" ? 404 : 409, picked.reason);
   await startPipeline(deps, jobId, startedAt);
   return ok(202);
 }

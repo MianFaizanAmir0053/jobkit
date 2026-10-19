@@ -25,6 +25,7 @@ import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 
 import { addressChecksStage } from "./addressChecksStage";
+import { kitOfJob } from "./kitType";
 
 /**
  * Review tests' ready kits: a job pasted as text and run through every
@@ -160,13 +161,13 @@ export async function runKit(
           run: async () => ({ ok: false as const, reason: "Eligibility failed.", retry: false }),
           next: () => ({ state: "drafting" as const, pending: "templates" as const }),
         }
-      : eligibilityStage({ db, clock }),
+      : eligibilityStage({ db, clock, kitOf: kitOfJob }),
     templates: {
-      ...(opts.templates ? templatesStage({ db }) : noTemplateDrafts()),
+      ...(opts.templates ? templatesStage({ db, kitOf: kitOfJob }) : noTemplateDrafts()),
       alongside: beside,
     },
     draft: {
-      ...draftStage({ db, random, models }),
+      ...draftStage({ db, random, models, kitOf: kitOfJob }),
       alongside: beside,
     },
     address_read: addressReadStage({ db, storage, random, models }),

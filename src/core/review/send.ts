@@ -114,7 +114,7 @@ export async function scheduleSend(
     const roleId = view.role!.id;
     // Approve & send sends an email kit, on a route that takes one.
     const standing = view.kit ?? view.draft!.kit;
-    if (view.role!.route.kind !== "email" || standing.kind !== "email") {
+    if (view.kitRoute !== "email" || standing.kind !== "email") {
       return { ok: false, reason: "not-email" };
     }
     if (view.kitParts.sending) return { ok: false, reason: "sending" };

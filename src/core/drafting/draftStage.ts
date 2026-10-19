@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import { readExtractOutput } from "@/core/extraction/extract";
 import type { JobRecord, Role } from "@/core/extraction/record";
-import { chosenRole } from "@/core/extraction/owner";
+import { chosenRole, type KitOf } from "@/core/extraction/owner";
 import { callModel, type ModelCallDeps, type ModelCallFailure } from "@/core/platform/models";
 import type { StageDefinition, StageResult, Transition } from "@/core/platform/runner";
 import type { Db, Effort, Random } from "@/core/ports";
@@ -167,6 +167,22 @@ export interface DraftDeps {
   db: Db;
   random: Random;
   models: ModelCallDeps;
+  /** The kind of kit the job takes, its route's or the owner's pick (KitOf); by the route otherwise. */
+  kitOf?: KitOf;
+}
+
+/**
+ * The kit `draft` writes for a job: the one it takes, as the owner picked it
+ * for a post that does not say how to apply, and an email while none is
+ * known.
+ */
+export async function draftKitFor(
+  deps: { db: Db; kitOf?: KitOf },
+  jobId: string,
+  role: Role,
+): Promise<DraftKit> {
+  const kit = deps.kitOf ? await deps.kitOf(deps.db, jobId, role) : kitTypeOf(role.route.kind);
+  return kit === "message" || kit === "form" ? kit : "email";
 }
 
 export function draftStage(deps: DraftDeps): StageDefinition {
@@ -179,7 +195,7 @@ export function draftStage(deps: DraftDeps): StageDefinition {
       const role = await chosenRole(deps.db, ctx.job.id);
       if (!extract || !role) throw new Error("draft runs only after extract has chosen a role");
       const profile = await getActiveProfile(deps.db);
-      const kit = draftKitOf(role.route.kind);
+      const kit = await draftKitFor(deps, ctx.job.id, role);
       return {
         record: extract.outputHash,
         role: role.id,

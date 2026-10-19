@@ -358,6 +358,33 @@ function StatePanel({ view }: { view: JobView }) {
           </div>
         </Panel>
       );
+    case "needs_kit_type":
+      return (
+        <Panel title="How do you apply for this one?">
+          <p className="text-sm">
+            jobkit could not tell from the post how it wants applications. Choose the kind of kit to
+            draft: an email, the answers for an application form, or a short message for WhatsApp or
+            LinkedIn.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                ["email", "An email"],
+                ["form", "An application form"],
+                ["message", "A message"],
+              ] as const
+            ).map(([kit, label]) => (
+              <ActionButton
+                key={kit}
+                url={`${base}/kit-type`}
+                label={label}
+                body={{ kit, since: view.stateChangedAt.toISOString() }}
+              />
+            ))}
+            {skip}
+          </div>
+        </Panel>
+      );
     case "upload_failed":
       return (
         <Panel title="The upload did not finish">
@@ -876,16 +903,26 @@ function KitPanel({
               </>
             ) : !byEmail ? (
               <>
-                <span>
-                  The post asks you to apply {ROUTE_WORDS[role.route.kind]}
-                  {role.route.kind !== "whatsapp" &&
-                    role.route.address &&
-                    !needsRetype &&
-                    `: ${role.route.address}`}
-                  {kit.kind === "email"
-                    ? ". The text below is drafted as an email: adapt it there."
-                    : "."}
-                </span>
+                {role.route.kind === "other" || role.route.kind === "unknown" ? (
+                  // A kit the owner picked for a post that does not say how to apply.
+                  <span>
+                    You chose {kit.kind === "form" ? "an application form" : "a message"} for this
+                    post, which does not say where to send it
+                    {role.route.address ? `: it says ${role.route.address}` : ""}. Find out before
+                    you apply.
+                  </span>
+                ) : (
+                  <span>
+                    The post asks you to apply {ROUTE_WORDS[role.route.kind]}
+                    {role.route.kind !== "whatsapp" &&
+                      role.route.address &&
+                      !needsRetype &&
+                      `: ${role.route.address}`}
+                    {kit.kind === "email"
+                      ? ". The text below is drafted as an email: adapt it there."
+                      : "."}
+                  </span>
+                )}
                 {/* A link to apply through that is not https is shown, never opened (review spec, "Handoffs"). */}
                 {form && address !== "" && applyAt === null && (
                   <span className="mt-1 block text-destructive">
@@ -900,6 +937,12 @@ function KitPanel({
               </>
             ) : !needsRetype ? (
               <span className="text-xl font-medium">{address}</span>
+            ) : role.route.kind !== "email" ? (
+              // An email the owner picked for a post that does not say how to apply.
+              <span className="text-destructive">
+                You chose to apply by email, and the post gives no address: type the one you will
+                send it to.
+              </span>
             ) : address === "" ? (
               <span className="text-destructive">
                 The post asks you to apply by email, but jobkit found no address in it. Find it in
