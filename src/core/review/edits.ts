@@ -59,6 +59,23 @@ export function editedKit<K extends Kit>(kit: K, decisions: Owners): K {
 }
 
 /**
+ * The words Undo edit brings back to a sentence or a form's answer: the
+ * drafted sentence's; an answer's as the owner's choice leaves it, without
+ * their own words; none for a sentence the draft does not have.
+ */
+export function wordsWithoutEdit(
+  draft: Kit,
+  id: string,
+  decisions: Pick<Owners, "choices">,
+): string | undefined {
+  const block = draft.blocks.find((each) => each.id === id);
+  if (block) return block.text;
+  if (draft.kind !== "form") return undefined;
+  const answer = draft.answers.find((each) => each.id === id);
+  return answer && answerAsItStands(answer, {}, decisions.choices ?? {}).text;
+}
+
+/**
  * A form's answer as it stands: the owner's words, typed as an edit of the
  * answer; for a choice, the profile's answer or the drafted one as they
  * chose, or theirs to give when the one chosen has none; else as built.
@@ -215,7 +232,11 @@ export async function asItStands(
   const applied = appliedInstructions(draft, role);
   const declined = new Set(input.decisions.declined.filter((each) => applied.includes(each)));
   const edited = editedKit(draft.kit, input.decisions);
-  if (edited === draft.kit && declined.size === 0) return { kit: draft.kit, flags: draft.flags };
+  // A message is weighed again even unchanged, so its count of 600 and its flags agree as the
+  // count is read now.
+  if (edited === draft.kit && declined.size === 0 && draft.kit.kind !== "message") {
+    return { kit: draft.kit, flags: draft.flags };
+  }
   const profile = await getProfileVersion(db, draft.profileVersion);
   if (!profile) return { kit: edited, flags: draft.flags };
   const kit =

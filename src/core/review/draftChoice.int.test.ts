@@ -10,6 +10,7 @@ import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import type { BlockVerdict } from "@/core/drafting/verdict";
 import type { JobRecord } from "@/core/extraction/record";
+import { setRoute } from "@/core/ledger/statuses";
 import { moveJob } from "@/core/platform/jobs";
 import { stageOutput } from "@/core/platform/runner";
 import type { Dns } from "@/core/ports";
@@ -17,6 +18,7 @@ import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 import { createTestDb } from "@/server/db/testDb";
 
+import { openForJob } from "./applications";
 import { approvalsKey, flagKey } from "./decisions";
 import { backToDrafts, draftWithGemini, pickDraft } from "./draftChoice";
 import { type JobView, jobView, listJobViews } from "./jobView";
@@ -358,6 +360,35 @@ describe("draftWithGemini", () => {
     expect((await view(id)).draft!.kit.blocks.map((block) => block.text)).toEqual([
       "I have built production React applications for five years.",
     ]);
+  });
+
+  it("keeps a message's job's template drafts from before templates drafted emails alone, while Gemini drafted none or one stays picked", async () => {
+    const opts = { templates: true, verdicts: SUPPORTED };
+    const id = await readyKit(POST, opts);
+    // Templates drafted for every route then: this one's application goes by a message.
+    await setRoute({ db }, (await openForJob({ db, clock }, id, null))!, "message");
+
+    const kept = await view(id);
+    expect(kept.kit?.kind).toBe("email");
+    expect(kept.drafts.map((draft) => draft.id)).toEqual(["T-full-stack", "T-ai-features"]);
+    expect(steps(kept).slice(2)).toEqual([
+      ["templates", "done"],
+      ["draft", "skipped"],
+      ["judge", "skipped"],
+    ]);
+
+    // Gemini's draft, a message, beside the template the owner had: theirs stays shown.
+    expect(await ask(id)).toEqual({ ok: true });
+    await runKit(bed(), id, [answer(KIT_DRAFT)], opts);
+    const both = await view(id);
+    expect(both.kitKey).toBe(kept.kitKey);
+    expect(both.drafts.map((draft) => draft.id).sort()).toEqual(["T-full-stack", "gemini"]);
+
+    // Gemini's picked: the templates' emails are no drafts of a message.
+    await pickDraft({ db, clock }, id, "gemini", { kit: both.kitKey! });
+    const message = await view(id);
+    expect(message.kit?.kind).toBe("message");
+    expect(message.drafts.map((draft) => draft.id)).toEqual(["gemini"]);
   });
 
   it("is refused on a kit Gemini drafted, and from a page drawn on another kit", async () => {

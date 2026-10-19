@@ -219,6 +219,31 @@ describe("decide", () => {
     ).toBe(false);
   });
 
+  it("takes back the checks on every must-have a line answers when the owner marks it, or brings it back", () => {
+    const onR5 = flagKey({ kind: "fit_unverified", at: "R5", message: "Only you can confirm." });
+    const onR6 = flagKey({ kind: "fit_unverified", at: "R6", message: "Only you can confirm." });
+    // A merged line answering R5 and R6, rewritten, then both must-haves checked.
+    let decisions = decide(NO_DECISIONS, { kind: "edit", blockId: "S2", text: "My words." });
+    decisions = decide(decisions, { kind: "check_flag", flag: onR5 });
+    decisions = decide(decisions, { kind: "check_flag", flag: onR6 });
+
+    // Marked as answering nothing: each check weighed the email with the line answering its must-have.
+    const unmarked = decide(
+      decisions,
+      { kind: "answers", blockId: "S2", requirementId: "" },
+      null,
+      ["R5", "R6"],
+    );
+    expect(unmarked.flagsChecked).toEqual([]);
+    // Deleted, R5 checked again with no line for it, then the deletion taken back: the line is back.
+    let deleted = decide(decisions, { kind: "delete", blockId: "S2" }, null, ["R5", "R6"]);
+    deleted = decide(deleted, { kind: "check_flag", flag: onR5 });
+    expect(deleted.flagsChecked).toEqual([onR5]);
+    expect(
+      decide(deleted, { kind: "revert", blockId: "S2" }, null, ["R5", "R6"]).flagsChecked,
+    ).toEqual([]);
+  });
+
   it("deletes a drafted sentence with its edit and checks, until the owner takes the deletion back", () => {
     const onS2 = flagKey({ kind: "sensitive_topic_drafted", at: "S2", message: "Check this." });
     let decisions = decide(NO_DECISIONS, { kind: "edit", blockId: "S2", text: "New words." });

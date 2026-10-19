@@ -329,6 +329,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const application = role ? await applicationOf(deps.db, id, role.id) : null;
   // As kitRouteOf decides, so the page offers what Mark sent and Mark submitted accept.
   const kitRoute = application ? application.route : role ? routeOf(role.route.kind) : null;
+  const picked = role ? await pickedDraftOf(deps.db, id, role.id) : null;
   const candidates =
     role && extraction
       ? await candidatesOf(deps.db, {
@@ -338,11 +339,10 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
           templates: round.templatesCurrent ? templates : undefined,
           gemini: geminiCurrent ? draft! : null,
           judge,
-          // Templates are emails: a kit of another kind takes none of their drafts.
           emailKit: (kitRoute ?? "email") === "email",
+          picked,
         })
       : [];
-  const picked = role ? await pickedDraftOf(deps.db, id, role.id) : null;
   const chosen =
     candidates.find((candidate) => candidate.choice.id === picked) ?? candidates[0] ?? null;
   const hasKit = Boolean(chosen && role && extraction);
@@ -541,6 +541,8 @@ async function candidatesOf(
     judge: JudgeOutput | PassedThrough | undefined;
     /** Whether the job takes an email's kit, which alone the templates draft. */
     emailKit: boolean;
+    /** The draft the owner picked, if they did. */
+    picked: string | null;
   },
 ): Promise<Candidate[]> {
   const { role, outputs, templates, gemini, judge } = kit;
@@ -548,9 +550,11 @@ async function candidatesOf(
     Object.fromEntries([...outputs].filter(([stage]) => stages.includes(stage)));
   const candidates: Candidate[] = [];
   for (const draft of templates?.drafts ?? []) {
-    // Templates are emails: one kept from before a message's or a form's route drafted its own kit
-    // is no draft of it.
-    if (draft.roleId !== role.id || !kit.emailKit) continue;
+    if (draft.roleId !== role.id) continue;
+    // Templates draft emails alone now. One a message's or a form's job kept from before (when
+    // templates drafted for every route) stays its kit while Gemini has drafted none, and while the
+    // owner keeps it picked: it is what they reviewed, and may be what went.
+    if (!kit.emailKit && gemini?.roleId === role.id && kit.picked !== draft.templateId) continue;
     const verdicts = templateVerdicts(draft.kit);
     candidates.push({
       choice: choiceOf(draft, verdicts, {
@@ -980,7 +984,9 @@ async function stepsOf(
                 : "waiting";
         } else if (outcome === "ok" || outcome === "reused") {
           if (stage === "templates") {
-            status = drafting.notEmail ? "not_email" : drafting.noneFit ? "none_fit" : "done";
+            // Drafts a message's or a form's job kept from before templates drafted emails alone
+            // were drafted all the same.
+            status = !drafting.noneFit ? "done" : drafting.notEmail ? "not_email" : "none_fit";
           } else status = unchecked.has(stage) ? "not_checked" : "done";
         }
         return { stage, label, status };

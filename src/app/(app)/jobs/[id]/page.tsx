@@ -695,6 +695,12 @@ function KitPanel({
     const text = requirementText.get(flag.at);
     return text === undefined ? undefined : withoutContacts(text, typing(view));
   };
+  // A finding's sentence, quoted; an answer with its question, as two answers may read alike ("Yes").
+  const quoted = (blockId: string): string => {
+    const words = `“${blockText.get(blockId) ?? ""}”`;
+    const question = questionText.get(blockId);
+    return question === undefined ? words : `${words}, your answer to “${question}”`;
+  };
   // validate's flags, most serious first; each named by what it found (flagKey).
   const flags = [...parts.flags].sort((a, b) => flagRank(a.kind) - flagRank(b.kind));
   // What the post asks of applicants, each line marked as drafting dealt with it.
@@ -1223,6 +1229,7 @@ function KitPanel({
                         .map((text) => `“${withoutContacts(text, typing(view))}”`)
                         .join(" and ")}
                       : keep each in it when you change it.
+                      {edited && " Picking one below makes it your line about that one alone."}
                     </p>
                   )}
                   {(edited || added) && !locked && lineFor.length > 0 && (
@@ -1295,8 +1302,8 @@ function KitPanel({
                     ) : answer.source === "choice" && !edited ? (
                       <div className="flex flex-col gap-2">
                         <p className="text-muted-foreground">
-                          Only one check took this for a question your profile answers. Which answer
-                          goes in the form?
+                          jobkit&apos;s two checks did not agree that your profile answers this.
+                          Which answer goes in the form?
                         </p>
                         <p>
                           Your profile:{" "}
@@ -1357,7 +1364,7 @@ function KitPanel({
                             ? `Needs your answer${answer.reason ? `: ${answer.reason}` : "."}`
                             : undefined
                         }
-                        answer
+                        answer={question}
                       />
                     )}
                     {answer.source === "profile" && !answer.owner && (
@@ -1453,10 +1460,7 @@ function KitPanel({
             {judged.map((verdict) => (
               <li key={`judge-${verdict.blockId}`}>
                 {judgeWords(verdict)}
-                <span className="text-muted-foreground">
-                  {" "}
-                  — &ldquo;{blockText.get(verdict.blockId)}&rdquo;
-                </span>
+                <span className="text-muted-foreground"> — {quoted(verdict.blockId)}</span>
                 {!locked && (
                   <div className="mt-1 flex items-center gap-2">
                     {checked.has(verdict.blockId) ? (
@@ -1466,7 +1470,7 @@ function KitPanel({
                           url={reviewUrl}
                           gateOf={view.id}
                           label="Undo"
-                          ariaLabel={`Undo: ${blockText.get(verdict.blockId) ?? ""}`}
+                          ariaLabel={`Undo: ${quoted(verdict.blockId)}`}
                           variant="outline"
                           body={decision({ kind: "uncheck", blockId: verdict.blockId })}
                         />
@@ -1476,7 +1480,7 @@ function KitPanel({
                         url={reviewUrl}
                         gateOf={view.id}
                         label="I checked this"
-                        ariaLabel={`I checked this: ${blockText.get(verdict.blockId) ?? ""}`}
+                        ariaLabel={`I checked this: ${quoted(verdict.blockId)}`}
                         variant="outline"
                         body={decision({ kind: "check", blockId: verdict.blockId })}
                       />
@@ -1521,15 +1525,15 @@ function KitPanel({
                     <p className="mt-1 text-muted-foreground">
                       {flagsChecked.has(key)
                         ? hasLine
-                          ? "You checked this: your line says you do not meet it, and the email claims nothing more."
+                          ? `You checked this: your line says you do not meet it, and the ${kitNoun} claims nothing more.`
                           : must
-                            ? `You will fix it ${where}: take out what the email says about it, and add a line saying you do not meet it.`
-                            : "You checked this: the email must not claim it."
+                            ? `You will fix it ${where}: take out what the ${kitNoun} says about it, and add a line saying you do not meet it.`
+                            : `You checked this: the ${kitNoun} must not claim it.`
                         : hasLine
-                          ? "If you meet it, tick “I meet this requirement” under How you fit. If not, make sure the email claims nothing about it beyond your line, and press “I checked this”."
+                          ? `If you meet it, tick “I meet this requirement” under How you fit. If not, make sure the ${kitNoun} claims nothing about it beyond your line, and press “I checked this”.`
                           : must
-                            ? `If you meet it, tick “I meet this requirement” under How you fit. If not, take out what the email says about it and add a line saying you do not meet it: above, with Add a sentence, marked as your line about it, or ${where}, pressing “I will fix it ${where}”.`
-                            : "If you meet it, tick “I meet this requirement” under How you fit. If not, make sure the email does not claim it, and press “I checked this”."}
+                            ? `If you meet it, tick “I meet this requirement” under How you fit. If not, take out what the ${kitNoun} says about it and add a line saying you do not meet it: above, with Add a sentence, marked as your line about it, or ${where}, pressing “I will fix it ${where}”.`
+                            : `If you meet it, tick “I meet this requirement” under How you fit. If not, make sure the ${kitNoun} does not claim it, and press “I checked this”.`}
                     </p>
                   )}
                   {met ? (
@@ -1725,9 +1729,9 @@ function KitPanel({
                       : unconfirmed
                         ? row.must
                           ? lined.has(row.id)
-                            ? "You checked this: your line says you do not meet it, and the email claims nothing more."
-                            : `You will fix the email ${where}: take out what it says about this, and add a line saying you do not meet it.`
-                          : "You checked this: the email must not claim it."
+                            ? `You checked this: your line says you do not meet it, and the ${kitNoun} claims nothing more.`
+                            : `You will fix the ${kitNoun} ${where}: take out what it says about this, and add a line saying you do not meet it.`
+                          : `You checked this: the ${kitNoun} must not claim it.`
                         : checked
                           ? `You checked this: ${row.why}`
                           : row.why}
@@ -1785,11 +1789,13 @@ function KitPanel({
               <ul className="mt-1 list-disc pl-5 [overflow-wrap:anywhere]">
                 {reasons.map((reason, i) => {
                   // A sentence's finding names the sentence, so two findings never read alike.
+                  const flagAbout = reason.kind === "flag" ? aboutFlag(reason.flag) : undefined;
                   const about =
-                    reason.kind === "judge" || reason.kind === "unconfirmed_edit"
-                      ? blockText.get(reason.blockId)
-                      : reason.kind === "flag"
-                        ? aboutFlag(reason.flag)
+                    (reason.kind === "judge" || reason.kind === "unconfirmed_edit") &&
+                    blockText.has(reason.blockId)
+                      ? quoted(reason.blockId)
+                      : flagAbout
+                        ? `“${flagAbout}”`
                         : undefined;
                   // A flag on the subject or the greeting says so, as two may read alike.
                   const place =
@@ -1802,9 +1808,7 @@ function KitPanel({
                     <li key={i}>
                       {withoutContacts(reason.message, typing(view))}
                       {!about && place}
-                      {about && (
-                        <span className="text-muted-foreground"> — &ldquo;{about}&rdquo;</span>
-                      )}
+                      {about && <span className="text-muted-foreground"> — {about}</span>}
                     </li>
                   );
                 })}

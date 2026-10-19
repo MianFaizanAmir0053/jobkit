@@ -1,5 +1,5 @@
 import type { FixedAnswers } from "@/core/profile/schema";
-import { placeCode, placeContains } from "@/core/shared/regions";
+import { isCountryCode, placeCode, placeContains, placeName } from "@/core/shared/regions";
 import { skillTag } from "@/core/shared/skills";
 
 /**
@@ -111,26 +111,44 @@ const SHORT_PLACE = /^[\p{Lu}\d]+$/u;
 const SHORT_SKILL = /^\p{Lu}/u;
 
 /**
- * The first name in the text the lookup knows, trying three words, then
- * two, then one at each place; a word of three letters or fewer counts
- * alone only when `short` takes it.
+ * Every name in the text the lookup knows, each once, in order: at each
+ * place it tries three words, then two, then one, and goes on after the
+ * longest name found; a word of three letters or fewer counts alone only
+ * when `short` takes it.
  */
-function firstKnown(
-  text: string,
-  lookup: (name: string) => string | null,
-  short: RegExp,
-): string | null {
+function allKnown(text: string, lookup: (name: string) => string | null, short: RegExp): string[] {
   const words = wordsOf(text).map((word) => word.replace(/[.-]+$/, ""));
-  for (let start = 0; start < words.length; start++) {
+  const found: string[] = [];
+  for (let start = 0; start < words.length;) {
+    let step = 1;
     for (let size = 3; size >= 1; size--) {
       const parts = words.slice(start, start + size);
       if (parts.length < size) continue;
       if (size === 1 && parts[0]!.length <= 3 && !short.test(parts[0]!)) continue;
-      const found = lookup(parts.join(" "));
-      if (found) return found;
+      const known = lookup(parts.join(" "));
+      if (known) {
+        if (!found.includes(known)) found.push(known);
+        step = size;
+        break;
+      }
     }
+    start += step;
   }
-  return null;
+  return found;
+}
+
+/**
+ * The one name in the text the lookup knows; null for none, and "several"
+ * for a question about more than one, which one answer from the profile
+ * cannot give.
+ */
+function oneKnown(
+  text: string,
+  lookup: (name: string) => string | null,
+  short: RegExp,
+): string | null | "several" {
+  const found = allKnown(text, lookup, short);
+  return found.length > 1 ? "several" : (found[0] ?? null);
 }
 
 /** Currencies as a question may name them: a code, or a symbol. */
@@ -154,15 +172,69 @@ const CURRENCY_SIGNS: Readonly<Record<string, string>> = {
   "₨": "PKR",
 };
 
+/** Dollars written with a country's letters before the sign: "A$" is Australian, never US. */
+const PREFIXED_DOLLARS: Readonly<Record<string, string>> = {
+  US: "USD",
+  A: "AUD",
+  AU: "AUD",
+  C: "CAD",
+  CA: "CAD",
+  NZ: "NZD",
+  S: "SGD",
+  SG: "SGD",
+  HK: "HKD",
+};
+
 function currencyOf(question: string): string | null {
   for (const word of wordsOf(question)) {
     const code = word.toUpperCase();
     if (CURRENCY_CODES.has(code)) return code;
   }
+  const prefixed = /\b([A-Z]{1,2})\$/.exec(question)?.[1];
+  if (prefixed && PREFIXED_DOLLARS[prefixed]) return PREFIXED_DOLLARS[prefixed];
   for (const [sign, code] of Object.entries(CURRENCY_SIGNS)) {
     if (question.includes(sign)) return code;
   }
   return null;
+}
+
+/** Pay the owner has now, which the profile does not hold: it holds what they expect. */
+const CURRENT_PAY = /\b(?:current|present|existing|last drawn|now earning|earn now)\b/i;
+
+/** A place's name as a sentence says it: "the United Kingdom", "Pakistan". */
+function inWords(code: string): string {
+  const name = placeName(code);
+  return !isCountryCode(code) ||
+    /^United\b|\b(?:Kingdom|Republic|Union|Emirates|Netherlands|Philippines|Bahamas|Gambia|Maldives)\b/.test(
+      name,
+    )
+    ? `the ${name}`
+    : name;
+}
+
+/**
+ * Where the owner stands on working in a place, as a statement, never a bare
+ * Yes or No, which a question worded the other way ("…without
+ * sponsorship?") would turn false: the profile's own words for the place
+ * when it gives them; null where it does not say whether sponsorship is
+ * needed and the question is about sponsorship.
+ */
+function standing(
+  topic: "work_authorisation" | "sponsorship",
+  place: string,
+  entry: FixedAnswers["work_authorisation"][number] | undefined,
+): string | null {
+  if (entry?.text) return entry.text;
+  const where = inWords(place);
+  if (!entry || entry.authorised)
+    return `Authorised to work in ${where}, with no sponsorship needed.`;
+  if (entry.sponsorship_needed === true) {
+    return `Not authorised to work in ${where}; would need sponsorship.`;
+  }
+  if (entry.sponsorship_needed === false) {
+    return `Not authorised to work in ${where}; would not need sponsorship.`;
+  }
+  return topic === "work_authorisation" ? `Not authorised to work in ${where}.` : null;
 }
 
 /** The profile's entry for a place: the place itself, or a listed region that takes it in. */
@@ -184,6 +256,9 @@ export function fixedAnswer(topic: Topic, question: string, profile: TopicProfil
   const { answers, home } = profile;
   switch (topic) {
     case "salary": {
+      if (CURRENT_PAY.test(question)) {
+        return needs("The profile holds the salary you expect, not your current one.");
+      }
       const currency = currencyOf(question);
       if (!currency) return needs("The question names no currency.");
       const text = answers.salary_expectation[currency];
@@ -195,28 +270,34 @@ export function fixedAnswer(topic: Topic, question: string, profile: TopicProfil
       return answer(answers.availability);
     case "time_zone":
       return answer(answers.working_window.text);
-    case "relocation":
-      return answer(answers.relocation.text);
+    case "relocation": {
+      // A place the profile does not list: whether the owner would move there is theirs to say.
+      const place = oneKnown(question, placeCode, SHORT_PLACE);
+      if (place === "several") return needs("The question names more than one place.");
+      const listed =
+        place === null ||
+        !answers.relocation.open ||
+        answers.relocation.places.some((each) => placeContains(each, place) === true);
+      return listed
+        ? answer(answers.relocation.text)
+        : needs("The profile does not say whether you would relocate there.");
+    }
     case "work_authorisation":
     case "sponsorship": {
-      const place = firstKnown(question, placeCode, SHORT_PLACE);
+      const place = oneKnown(question, placeCode, SHORT_PLACE);
+      if (place === "several") return needs("The question names more than one country.");
       if (!place) return needs("The question names no country.");
       const entry = authorisationFor(place, answers);
-      if (!entry) {
-        // Home needs no entry: the owner may work there, with no sponsor.
-        if (place !== home) return needs("The profile does not answer for this country.");
-        return answer(topic === "work_authorisation" ? "Yes" : "No");
-      }
-      if (topic === "work_authorisation")
-        return answer(entry.text ?? (entry.authorised ? "Yes" : "No"));
-      if (entry.authorised) return answer("No");
-      if (entry.sponsorship_needed === undefined) {
-        return needs("The profile does not say whether sponsorship is needed there.");
-      }
-      return answer(entry.text ?? (entry.sponsorship_needed ? "Yes" : "No"));
+      // Home needs no entry: the owner may work there, with no sponsor.
+      if (!entry && place !== home) return needs("The profile does not answer for this country.");
+      const stated = standing(topic, place, entry);
+      return stated === null
+        ? needs("The profile does not say whether sponsorship is needed there.")
+        : answer(stated);
     }
     case "years_with_skill": {
-      const skill = firstKnown(question, skillTag, SHORT_SKILL);
+      const skill = oneKnown(question, skillTag, SHORT_SKILL);
+      if (skill === "several") return needs("The question names more than one skill.");
       if (!skill) return needs("The question names no skill.");
       const years = answers.years_per_stack[skill];
       if (years === undefined) return needs("The profile holds no years for this skill.");

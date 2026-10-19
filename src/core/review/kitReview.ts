@@ -26,6 +26,7 @@ import {
   type ReviewAction,
   type ReviewDecisions,
 } from "./decisions";
+import { wordsWithoutEdit } from "./edits";
 import { type JobView, jobView, storedDecisions } from "./jobView";
 
 /**
@@ -132,6 +133,34 @@ function fits(action: ReviewAction, parts: KitParts, decisions: ReviewDecisions)
       );
   }
 }
+
+/** The must-haves a sentence answers: as it stands, as drafted, and as the owner marked it. */
+function linesOf(
+  standing: Kit,
+  drafted: Kit,
+  decisions: ReviewDecisions,
+  blockId: string,
+): string[] {
+  const block = (kit: Kit) => kit.blocks.find((each) => each.id === blockId);
+  const marked = decisions.answers[blockId];
+  return [
+    ...new Set([
+      ...answersOf(block(standing) ?? block(drafted) ?? NO_BLOCK),
+      ...answersOf(block(drafted) ?? NO_BLOCK),
+      ...(marked ? [marked] : []),
+    ]),
+  ];
+}
+
+const NO_BLOCK = {
+  id: "",
+  text: "",
+  paragraphBreak: false,
+  class: "courtesy" as const,
+  factIds: [],
+  fields: [],
+  gap: null,
+};
 
 /**
  * Whether a decision that sets a value names the value the kit holds: the
@@ -300,24 +329,32 @@ export async function recordReview(
     const before = { ...kept, flagsChecked: kept.flagsChecked.filter((name) => names.has(name)) };
     if (!fits(action, view.kitParts, before)) return { ok: false, reason: "not-in-kit" };
     if (!showsAsItStands(action, view.kit!, before)) return { ok: false, reason: "changed" };
-    // Words written back as drafted are no edit.
-    const drafted = view.draft!.kit.blocks.find(
-      (block) => action.kind === "edit" && block.id === action.blockId,
-    );
+    // Words written back as Undo edit would bring them back are no edit, a form's answer's as a
+    // sentence's.
+    const draftKit = view.draft!.kit;
+    const draftedWords =
+      action.kind === "edit" ? wordsWithoutEdit(draftKit, action.blockId, before) : undefined;
     const taken: ReviewAction =
       action.kind === "edit" &&
-      drafted !== undefined &&
-      cleanSentence(action.text) === cleanSentence(drafted.text)
+      draftedWords !== undefined &&
+      draftedWords !== "" &&
+      cleanSentence(action.text) === cleanSentence(draftedWords)
         ? { kind: "revert", blockId: action.blockId }
         : action;
-    // The must-haves a sentence edited, reverted or deleted answers as it stands: their checks
-    // weighed its words as they were.
-    const edited = view.kit!.blocks.find(
-      (block) =>
-        (taken.kind === "edit" || taken.kind === "revert" || taken.kind === "delete") &&
-        block.id === taken.blockId,
-    );
-    const decisions = decide(before, taken, checks, edited ? answersOf(edited) : []);
+    // The must-haves a sentence answers, as it stands and as drafted, and as the owner marked it:
+    // a check on any of them weighed the email with the sentence's words before this decision.
+    const lines =
+      taken.kind === "edit" ||
+      taken.kind === "revert" ||
+      taken.kind === "delete" ||
+      taken.kind === "answers"
+        ? linesOf(view.kit!, draftKit, before, taken.blockId)
+        : [];
+    const decided = decide(before, taken, checks, lines);
+    const decisions =
+      action.kind === "retype" && decided.handoff
+        ? { ...decided, handoff: { ...decided.handoff, to: "", typed: false } }
+        : decided;
     if (action.kind === "retype" && view.kitParts.contact) {
       const contact = contactForLedger(view.kitParts.contact.kind, action.value);
       const applicationId = await applicationIdOf(tx, jobId, view.role!.id);

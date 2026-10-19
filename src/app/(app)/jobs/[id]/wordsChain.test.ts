@@ -30,6 +30,16 @@ describe("wordsAfter", () => {
     expect(wordsAfter("job-3", "y")).toBe("z");
   });
 
+  it("ends at the latest decision's words when two undo each other before the page is drawn again", () => {
+    // An edit and its undoing, x to y and back; the first one's drawing lands late, with y.
+    decided("job-7", "x", "y");
+    decided("job-7", "y", "x");
+    drawnWith("job-7", "y");
+
+    // The server has x: the next tap names it.
+    expect(wordsAfter("job-7", "y")).toBe("x");
+  });
+
   it("forgets the page's decisions once it is drawn again, so words that come back are its own", () => {
     // The phone edits (a to b) and is drawn with b; the laptop's Undo brings a back.
     decided("job-4", "a", "b");

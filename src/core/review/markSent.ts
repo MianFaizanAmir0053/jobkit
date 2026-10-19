@@ -149,7 +149,11 @@ function partsChanged(view: JobView): {
   // The sentences the separate check weighed as claims, whatever the drafter called them.
   const judgedClaims = new Set(
     (view.kitParts?.verdicts ?? [])
-      .filter((verdict) => verdict.verdict !== "not_a_claim" && verdict.note !== NEVER_WEIGHED)
+      .filter(
+        (verdict) =>
+          (verdict.verdict !== "not_a_claim" || verdict.companyClaim) &&
+          verdict.note !== NEVER_WEIGHED,
+      )
       .map((verdict) => verdict.blockId),
   );
   const factualChange = (block: KitBlock) => {
@@ -273,15 +277,14 @@ async function marking(
   // Sending another way is Mark submitted, for form and message kits.
   if ((await kitRouteOf(deps.db, jobId, role)) !== "email")
     return { ok: false, reason: "not-email" };
-  // An email's kit alone, whatever the application's route says: a message or a form is no email.
-  const shownKit = (await jobView(deps, jobId))?.kit;
-  if (shownKit && shownKit.kind !== "email") return { ok: false, reason: "not-email" };
   try {
     return await deps.db.tx(async (tx): Promise<MarkSent> => {
       const at = { ...deps, db: tx };
       await lockReview(at, jobId, role.id);
       const view = await jobView(at, jobId);
       if (view?.state !== "kit_ready" || !view.review) return { ok: false, reason: "not-ready" };
+      // An email's kit alone, whatever the application's route says: a message or a form is no email.
+      if (view.kit && view.kit.kind !== "email") return { ok: false, reason: "not-email" };
       const shownTo = view.handoff?.to ?? "";
       // The owner's tap records what they last handed off, which may be what went though they
       // changed the email or picked another draft since; jobkit's send, what it sent.

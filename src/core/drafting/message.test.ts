@@ -158,15 +158,88 @@ describe("buildMessageKit", () => {
     });
   });
 
-  it("lists the skills with and where the template's words before the skill hold no negation", () => {
-    const kit = build([
-      gap("R5", { template_id: "G-learning" }),
-      gap("R6", { template_id: "G-learning" }),
-    ]);
+  it("keeps a line for each must-have where the clause naming the skill does not deny it", () => {
+    const affirming: ProfileParts = {
+      ...profile,
+      gapTemplates: [
+        ...profile.gapTemplates,
+        { id: "G-not-at-work", text: "{skill} is not something I have used at work." },
+        { id: "G-side", text: "Not in production yet, but I have used {skill} in side projects." },
+      ],
+    };
+    const lines = (templateId: string) =>
+      buildMessageKit(
+        {
+          fit: [],
+          blocks: [gap("R5", { template_id: templateId }), gap("R6", { template_id: templateId })],
+        },
+        { role: role(), signOff: SIGN_OFF, profile: affirming },
+      ).kit.blocks.map((block) => block.text);
 
-    expect(kit.blocks.map((block) => block.text)).toEqual([
-      "I am learning Kubernetes and Terraform now.",
+    // "Kubernetes and Terraform" would claim both; "or" would claim one: each keeps its own line.
+    expect(lines("G-learning")).toEqual([
+      "I am learning Kubernetes now.",
+      "I am learning Terraform now.",
     ]);
+    expect(lines("G-not-at-work")).toEqual([
+      "Kubernetes is not something I have used at work.",
+      "Terraform is not something I have used at work.",
+    ]);
+    // A negation in another clause denies nothing the skill's clause says.
+    expect(lines("G-side")).toEqual([
+      "Not in production yet, but I have used Kubernetes in side projects.",
+      "Not in production yet, but I have used Terraform in side projects.",
+    ]);
+  });
+
+  it("lists the skills with or where their clause denies them, by cannot, without or lack too", () => {
+    const denying: ProfileParts = {
+      ...profile,
+      gapTemplates: [
+        { id: "G-cannot", text: "I cannot claim {skill} experience yet." },
+        { id: "G-without", text: "I come without {skill} experience, though I learn fast." },
+      ],
+    };
+    const lines = (templateId: string) =>
+      buildMessageKit(
+        {
+          fit: [],
+          blocks: [gap("R5", { template_id: templateId }), gap("R6", { template_id: templateId })],
+        },
+        { role: role(), signOff: SIGN_OFF, profile: denying },
+      ).kit.blocks.map((block) => block.text);
+
+    expect(lines("G-cannot")).toEqual(["I cannot claim Kubernetes or Terraform experience yet."]);
+    expect(lines("G-without")).toEqual([
+      "I come without Kubernetes or Terraform experience, though I learn fast.",
+    ]);
+  });
+
+  it("merges the lines of a template that names no skill, which read alike", () => {
+    const plain: ProfileParts = {
+      ...profile,
+      gapTemplates: [
+        { id: "G-plain", text: "I am still building this; the closest is {related}." },
+      ],
+    };
+
+    const kit = buildMessageKit(
+      {
+        fit: [],
+        blocks: [
+          gap("R5", { template_id: "G-plain", related_fact_id: "F-docker" }),
+          gap("R6", { template_id: "G-plain", related_fact_id: "F-docker" }),
+        ],
+      },
+      { role: role(), signOff: SIGN_OFF, profile: plain },
+    ).kit;
+
+    expect(kit.blocks).toHaveLength(1);
+    expect(kit.blocks[0]).toMatchObject({
+      text: "I am still building this; the closest is Docker deployments on managed platforms.",
+      gap: { requirementId: "R5" },
+      alsoAnswers: ["R6"],
+    });
   });
 
   it("names a skill once when two must-haves lack the same one", () => {
@@ -246,14 +319,20 @@ describe("buildMessageKit", () => {
 
   it("keeps a paragraph's end where a merged line leaves its place", () => {
     const kit = build([
-      gap("R5", { template_id: "G-learning" }),
+      gap("R5", { template_id: "G-not-professional", related_fact_id: "F-docker" }),
       sentence("I have built production React applications for five years."),
-      { ...gap("R6", { template_id: "G-learning" }), paragraph_break: true },
+      {
+        ...gap("R6", { template_id: "G-not-professional", related_fact_id: "F-docker" }),
+        paragraph_break: true,
+      },
       sentence("Thank you.", { class: "courtesy", fact_ids: [] }),
     ]);
 
     expect(kit.blocks.map((block) => [block.text, block.paragraphBreak])).toEqual([
-      ["I am learning Kubernetes and Terraform now.", false],
+      [
+        "I haven't used Kubernetes or Terraform professionally; the closest is Docker deployments on managed platforms.",
+        false,
+      ],
       ["I have built production React applications for five years.", true],
       ["Thank you.", false],
     ]);

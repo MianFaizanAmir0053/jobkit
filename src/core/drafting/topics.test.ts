@@ -105,7 +105,63 @@ describe("fixedAnswer", () => {
       fixedAnswer("sponsorship", "Will you need sponsorship to work in Germany?", profile),
     ).toEqual({
       kind: "answer",
-      text: "No",
+      text: "Not authorised to work in Germany; would not need sponsorship.",
+    });
+  });
+
+  it("states where the owner stands, never a bare Yes or No, so a question worded either way is answered truly", () => {
+    const home = "Authorised to work in Pakistan, with no sponsorship needed.";
+    for (const question of [
+      "Are you authorised to work in Pakistan without sponsorship?",
+      "Can you work in Pakistan without sponsorship?",
+      "Would you need a work permit to work in Pakistan?",
+    ]) {
+      expect(fixedAnswer("sponsorship", question, profile)).toEqual({ kind: "answer", text: home });
+      expect(fixedAnswer("work_authorisation", question, profile)).toEqual({
+        kind: "answer",
+        text: home,
+      });
+    }
+    const usa = {
+      home: "PK",
+      answers: {
+        ...ANSWERS,
+        work_authorisation: [{ place: "US", authorised: false, sponsorship_needed: true }],
+      },
+    };
+    expect(
+      fixedAnswer("sponsorship", "Are you able to work in the US without visa sponsorship?", usa),
+    ).toEqual({
+      kind: "answer",
+      text: "Not authorised to work in the United States; would need sponsorship.",
+    });
+  });
+
+  it("needs the owner's answer to a question it could answer only in part", () => {
+    for (const [topic, question] of [
+      ["work_authorisation", "Do you have the right to work in Pakistan or the UK?"],
+      ["years_with_skill", "How many years of experience do you have with React and TypeScript?"],
+      ["salary", "What is your current salary in USD?"],
+      ["salary", "Current CTC (PKR)?"],
+      ["relocation", "Are you willing to relocate to Germany?"],
+    ] as const) {
+      expect(fixedAnswer(topic, question, profile)).toMatchObject({ kind: "needs_your_answer" });
+    }
+    // A place the profile lists, or none named, is answered as before.
+    expect(fixedAnswer("relocation", "Would you relocate to Dubai?", profile)).toEqual({
+      kind: "answer",
+      text: "Open to relocating to the UAE",
+    });
+  });
+
+  it("reads a currency written with a prefixed dollar sign as that currency, not US dollars", () => {
+    expect(fixedAnswer("salary", "Expected salary in A$?", profile)).toMatchObject({
+      kind: "needs_your_answer",
+      reason: "The profile holds no salary in AUD.",
+    });
+    expect(fixedAnswer("salary", "Expected salary (US$)?", profile)).toEqual({
+      kind: "answer",
+      text: "USD 5,000 a month",
     });
   });
 
@@ -126,7 +182,10 @@ describe("fixedAnswer", () => {
   it("answers work authorisation, the home country without an entry counting as authorised", () => {
     expect(
       fixedAnswer("work_authorisation", "Are you authorised to work in Pakistan?", profile),
-    ).toEqual({ kind: "answer", text: "Yes" });
+    ).toEqual({
+      kind: "answer",
+      text: "Authorised to work in Pakistan, with no sponsorship needed.",
+    });
     expect(
       fixedAnswer("work_authorisation", "Are you authorised to work in the UK?", profile),
     ).toEqual({ kind: "answer", text: "I would need a Skilled Worker visa." });
@@ -135,7 +194,10 @@ describe("fixedAnswer", () => {
         home: "PK",
         answers: { ...ANSWERS, work_authorisation: [] },
       }),
-    ).toEqual({ kind: "answer", text: "Yes" });
+    ).toEqual({
+      kind: "answer",
+      text: "Authorised to work in Pakistan, with no sponsorship needed.",
+    });
   });
 
   it("needs the owner's answer for a salary with no currency, or one the profile does not hold", () => {

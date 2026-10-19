@@ -119,7 +119,11 @@ export function checklistOf(
       return { text: line.text, status: missed ? "applied_missed" : "applied", decline };
     });
   // Looked for in the body only, as validate looks: the subject, greeting and closing are jobkit's.
-  const body = drafted.kit.blocks.map((block) => block.text).join("\n");
+  // A form's answers are its words too, as validate looks.
+  const body = [
+    ...drafted.kit.blocks.map((block) => block.text),
+    ...(drafted.kit.kind === "form" ? drafted.kit.answers.map((answer) => answer.text) : []),
+  ].join("\n");
   const repeats = (value: string) => {
     const words = oneLine(value);
     return isCheckable(words) && hasWord(body, words, [...words].length < 3);

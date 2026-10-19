@@ -177,6 +177,27 @@ describe("a form kit's answers", () => {
     expect(await gateOf(id)).toEqual(["topic_choice_needed@Q1", "needs_your_answer@Q2"]);
   });
 
+  it("takes an answer typed back as Undo edit would bring it as no edit, the check's finding kept", async () => {
+    const id = await readyForm();
+    await recordReview(deps(), id, { kind: "choose", questionId: "Q1", use: "drafted", was: "" });
+    const before = await gateOf(id);
+    expect(before).toContain("judge@Q1");
+
+    await recordReview(deps(), id, {
+      kind: "edit",
+      blockId: "Q1",
+      text: "Yes, in two React shops.",
+    });
+    await recordReview(deps(), id, {
+      kind: "edit",
+      blockId: "Q3",
+      text: "I shipped Carder, a React app used in production.",
+    });
+
+    expect((await view(id)).review!.decisions.edits).toEqual({});
+    expect(await gateOf(id)).toEqual(before);
+  });
+
   it("refuses to delete an answer, add a sentence after one, mark one as a line, or choose where there is no choice", async () => {
     const id = await readyForm();
     const refused = { ok: false, reason: "not-in-kit" };

@@ -20,8 +20,8 @@ import {
  * text, a line only the owner can write, sensitive topics in drafted
  * sentences and the email's subject and greeting, a placeholder left in the
  * subject, and a body that says nothing about the owner. Pure: it only
- * flags, never rewrites, so it runs again after each edit. Topic questions,
- * short answers and form kits come later. An email's flags read as they
+ * flags, never rewrites, so it runs again after each edit. A form's answers
+ * have their own flags, and its cover note the email body's. An email's flags read as they
  * always have, since a flag's name holds its message (flagKey).
  */
 
@@ -81,7 +81,7 @@ const MESSAGES = {
     "The subject still holds a placeholder from the post. Fill it in before you send.",
   no_claims: "The email says nothing about you yet. Write at least one sentence from your profile.",
   topic_choice_needed:
-    "Only one check took this for a question your profile answers: use your profile's answer, or a drafted one.",
+    "jobkit's two checks did not agree that your profile answers this: use your profile's answer, or a drafted one.",
   fixed_answer_drafted:
     "The draft answered this itself; jobkit put your profile's answer in its place. Check it.",
   short_answer_unconfirmed:

@@ -82,7 +82,7 @@ export function SentenceEdit({
   prompt,
   added = false,
   last = false,
-  answer = false,
+  answer,
 }: {
   jobId: string;
   kit: string;
@@ -102,8 +102,8 @@ export function SentenceEdit({
   added?: boolean;
   /** Whether it is the email's last sentence, which the email keeps: no Delete. */
   last?: boolean;
-  /** Whether it is a form's answer, which the owner types over, never deletes. */
-  answer?: boolean;
+  /** For a form's answer, which the owner types over and never deletes: its question. */
+  answer?: string;
 }) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
@@ -121,8 +121,9 @@ export function SentenceEdit({
   const changedElsewhere = open && !busy && !refreshing && openedOn !== text;
   const held = busy || refreshing || changedElsewhere;
   const editButton = useRef<HTMLButtonElement>(null);
-  // What the box's buttons name, so two open boxes are told apart.
-  const named = prompt ?? openedOn;
+  // What the box's buttons name, so two open boxes are told apart: an answer's question, as two
+  // answers may read alike ("Yes").
+  const named = answer ?? prompt ?? openedOn;
 
   // While the box is open, the handoffs wait: the page shows words not saved yet.
   useEffect(() => {
@@ -180,7 +181,13 @@ export function SentenceEdit({
           type="button"
           variant="ghost"
           className="min-h-11 shrink-0 underline"
-          aria-label={prompt === undefined ? `Edit: ${text}` : `Write it: ${prompt}`}
+          aria-label={
+            answer !== undefined
+              ? `${prompt === undefined ? "Edit your answer to" : "Write your answer to"}: ${answer}`
+              : prompt === undefined
+                ? `Edit: ${text}`
+                : `Write it: ${prompt}`
+          }
           onClick={() => {
             setTyped(start);
             setOpenedOn(text);
@@ -197,7 +204,7 @@ export function SentenceEdit({
     <form onSubmit={(event) => void save(event)} className="flex flex-col gap-2">
       <label className="flex flex-col gap-1">
         <span className="text-muted-foreground">
-          {prompt ?? (answer ? "Your answer" : "Your words for this sentence")}
+          {prompt ?? (answer !== undefined ? "Your answer" : "Your words for this sentence")}
         </span>
         <textarea
           autoFocus
@@ -235,7 +242,7 @@ export function SentenceEdit({
         >
           Cancel
         </Button>
-        {!last && !answer && (
+        {!last && answer === undefined && (
           <Button
             type="button"
             variant="outline"
@@ -394,10 +401,14 @@ export function AddSentence({
   // default, and a draft now full closes the box, which would otherwise hold the handoffs unseen.
   const ids = sentences.map((sentence) => sentence.id).join(" ");
   const [drawnIds, setDrawnIds] = useState(ids);
+  // Whether the sentence the owner chose to put theirs after is gone, so it goes by default instead.
+  const [moved, setMoved] = useState(false);
   if (ids !== drawnIds) {
     setDrawnIds(ids);
-    if (after !== "" && !sentences.some((sentence) => sentence.id === after))
+    if (after !== "" && !sentences.some((sentence) => sentence.id === after)) {
       setAfter(defaultAfter);
+      setMoved(true);
+    }
   }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -445,6 +456,7 @@ export function AddSentence({
           className="min-h-11"
           onClick={() => {
             setAfter(defaultAfter);
+            setMoved(false);
             setError(null);
             setOpen(true);
           }}
@@ -473,7 +485,10 @@ export function AddSentence({
         <select
           value={after}
           disabled={held}
-          onChange={(event) => setAfter(event.currentTarget.value)}
+          onChange={(event) => {
+            setAfter(event.currentTarget.value);
+            setMoved(false);
+          }}
           className="min-h-11 w-full rounded-md border border-border bg-background px-2"
         >
           <option value="">The greeting: first in the email</option>
@@ -484,6 +499,12 @@ export function AddSentence({
           ))}
         </select>
       </label>
+      {moved && (
+        <p role="status" className="font-medium">
+          The sentence you chose to put yours after is gone, as after a change on your other device:
+          yours goes where Put it after shows now. Choose again if you like.
+        </p>
+      )}
       <div className="flex flex-wrap gap-2">
         <Button type="submit" className="min-h-11" disabled={held || typed.trim() === ""}>
           {held ? "Saving…" : "Add it"}

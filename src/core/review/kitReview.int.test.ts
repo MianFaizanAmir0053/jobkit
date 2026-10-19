@@ -77,6 +77,48 @@ const WITH_GAP_LINE: DraftAnswer = {
   ],
 };
 
+/** Fluent German as a must-have only the owner can confirm, the drafter calling it met. */
+const askingForGerman = (record: JobRecord): JobRecord => ({
+  ...record,
+  roles: record.roles.map((role) => ({
+    ...role,
+    requirements: [
+      ...role.requirements,
+      {
+        id: "R5",
+        text: "Fluent German",
+        priority: "must",
+        kind: "language",
+        skills: [],
+        depth: "any",
+        years: -1,
+      },
+    ],
+  })),
+});
+
+const NO_GAP = { requirement_id: "", known_line_id: "", template_id: "", related_fact_id: "" };
+
+/** The draft with a second sentence, and the fit table given. */
+const withSecond = (
+  second: DraftAnswer["blocks"][number],
+  fit: DraftAnswer["fit"] = KIT_DRAFT.fit,
+): DraftAnswer => ({ ...KIT_DRAFT, fit, blocks: [...KIT_DRAFT.blocks, second] });
+
+/** S2: the drafter's line about German, a must-have it called met. */
+const WITH_GERMAN_LINE = withSecond(
+  {
+    id: "S2",
+    text: "I am learning German at B1 level.",
+    paragraph_break: false,
+    class: "gap",
+    fact_ids: [],
+    fields: [],
+    gap: { ...NO_GAP, requirement_id: "R5" },
+  },
+  [...KIT_DRAFT.fit, { requirement_id: "R5", verdict: "met", fact_ids: [], note: "" }],
+);
+
 /** The post sent with an address; its record carries a subject format, which drafting applies. */
 const POSTED = "Northwind Analytics is hiring. Apply to jobs@example.com.";
 /** A DNS where these domains take mail, and no other does. */
@@ -353,6 +395,86 @@ describe("recordReview", () => {
     expect((await jobView({ db, clock }, id))!.review!.decisions.flagsChecked).not.toContain(
       await germanFlag(),
     );
+  });
+
+  it("takes back a check on a must-have when Undo delete brings back a line about it", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      record: askingForGerman,
+      draft: withSecond(
+        {
+          id: "S2",
+          text: "Thank you for considering my application.",
+          paragraph_break: false,
+          class: "courtesy",
+          fact_ids: [],
+          fields: [],
+          gap: NO_GAP,
+        },
+        [...KIT_DRAFT.fit, { requirement_id: "R5", verdict: "met", fact_ids: [], note: "" }],
+      ),
+      verdicts: [
+        { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
+        { blockId: "S2", verdict: "not_a_claim", companyClaim: false, note: "" },
+      ],
+    });
+    const german = async () =>
+      flagKey(
+        (await jobView({ db, clock }, id))!.kitParts!.flags.find(
+          (flag) => flag.kind === "fit_unverified" && flag.at === "R5",
+        )!,
+      );
+    const checked = async () =>
+      (await jobView({ db, clock }, id))!.review!.decisions.flagsChecked.includes(await german());
+    // The owner's line about German in place of the courtesy sentence, then deleted.
+    await recordReview(deps(), id, { kind: "edit", blockId: "S2", text: "I am fluent in German." });
+    await recordReview(deps(), id, { kind: "answers", blockId: "S2", requirementId: "R5" });
+    await recordReview(deps(), id, { kind: "confirm", blockId: "S2" });
+    await recordReview(deps(), id, { kind: "delete", blockId: "S2" });
+    // Checked while the email says nothing about German.
+    await recordReview(deps(), id, { kind: "check_flag", flag: await german() });
+    expect(await checked()).toBe(true);
+
+    await recordReview(deps(), id, { kind: "revert", blockId: "S2" });
+
+    expect(await checked()).toBe(false);
+    expect(kinds((await jobView({ db, clock }, id))!.review!.gate)).toEqual(["flag"]);
+  });
+
+  it("takes back a check on a must-have its drafted line answered, when the owner marks the line as answering none", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      record: askingForGerman,
+      draft: WITH_GERMAN_LINE,
+      verdicts: [
+        { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
+        { blockId: "S2", verdict: "supported", companyClaim: false, note: "" },
+      ],
+    });
+    const german = async () =>
+      flagKey(
+        (await jobView({ db, clock }, id))!.kitParts!.flags.find(
+          (flag) => flag.kind === "fit_unverified" && flag.at === "R5",
+        )!,
+      );
+    const checked = async () =>
+      (await jobView({ db, clock }, id))!.review!.decisions.flagsChecked.includes(await german());
+    await recordReview(deps(), id, { kind: "edit", blockId: "S2", text: "I speak fluent German." });
+    await recordReview(deps(), id, { kind: "confirm", blockId: "S2" });
+    await recordReview(deps(), id, { kind: "check_flag", flag: await german() });
+    expect(await checked()).toBe(true);
+
+    // The rewritten line answers no must-have now: the check weighed it as German's line.
+    await recordReview(deps(), id, {
+      kind: "answers",
+      blockId: "S2",
+      requirementId: "",
+      was: "R5",
+    });
+    expect(await checked()).toBe(false);
+
+    // Checked again with no line about German, then Undo edit brings drafting's line back.
+    await recordReview(deps(), id, { kind: "check_flag", flag: await german() });
+    await recordReview(deps(), id, { kind: "revert", blockId: "S2" });
+    expect(await checked()).toBe(false);
   });
 
   it("refuses a choice from a page that showed another, though the words are the same", async () => {
@@ -638,17 +760,27 @@ describe("recordReview", () => {
     ).toEqual({ changed: ["subject"], factual_edit: false });
   });
 
-  it("records the address last handed off, though another was typed since", async () => {
+  it("records the address the owner typed after Open in Gmail, their last word on where it goes", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply on our site.", {
       verdicts: [{ blockId: "S1", verdict: "supported", companyClaim: false, note: "" }],
     });
-    await recordReview(deps(), id, { kind: "retype", value: "jobs@example.com" });
+    // A typo handed off to Gmail, seen, and typed again; the second Open in Gmail never lands.
+    await recordReview(deps(), id, { kind: "retype", value: "jobs@exmaple.com" });
     const shown = (await jobView({ db, clock }, id))!;
-    await recordHandoff({ db, clock }, id, { kit: shown.kitKey!, words: shown.wordsKey! });
-    await recordReview(deps(), id, { kind: "retype", value: "hr@example.org" });
+    await recordHandoff({ db, clock }, id, {
+      kit: shown.kitKey!,
+      words: shown.wordsKey!,
+      to: "jobs@exmaple.com",
+      parts: ["address", "subject", "body"],
+    });
+    await recordReview(deps(), id, { kind: "retype", value: "jobs@example.com" });
+    expect((await jobView({ db, clock }, id))!.review!.decisions.handoff).toMatchObject({
+      to: "",
+      typed: false,
+    });
 
     expect(
-      await markSent({ db, clock }, id, null, { changedInGmail: false }, { to: "hr@example.org" }),
+      await markSent({ db, clock }, id, null, { changedInGmail: true }, { to: "jobs@example.com" }),
     ).toMatchObject({ ok: true });
 
     const { rows } = await db.query<{ address: string }>(
@@ -656,6 +788,44 @@ describe("recordReview", () => {
       [id],
     );
     expect(rows[0]?.address).toBe("jobs@example.com");
+  });
+
+  it("counts an edit of a sentence the separate check called a claim about the company as factual", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.", {
+      draft: withSecond({
+        id: "S2",
+        text: "Northwind Analytics is the leading analytics firm in Lahore.",
+        paragraph_break: false,
+        class: "post",
+        fact_ids: [],
+        fields: [],
+        gap: NO_GAP,
+      }),
+      verdicts: [
+        { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
+        {
+          blockId: "S2",
+          verdict: "not_a_claim",
+          companyClaim: true,
+          note: "A claim about the company.",
+        },
+      ],
+    });
+    await recordReview(deps(), id, {
+      kind: "edit",
+      blockId: "S2",
+      text: "Northwind Analytics is the largest analytics firm in Asia, with 40,000 staff.",
+    });
+    await recordReview(deps(), id, { kind: "confirm", blockId: "S2" });
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+    const { rows } = await db.query(
+      "select changed, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+      [id],
+    );
+    expect(rows[0]).toEqual({ changed: ["sentence:S2"], factual_edit: true });
   });
 
   it("counts an edit of a sentence the separate check called a claim as factual, whatever the drafter called it", async () => {
@@ -698,7 +868,7 @@ describe("recordReview", () => {
     expect(rows[0]).toEqual({ changed: ["sentence:S2"], factual_edit: true });
   });
 
-  it("keeps the address Open in Gmail handed off, never a copy's, and refuses a page that showed another", async () => {
+  it("refuses a handoff from a page that showed another address, a copy setting no address of its own", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply on our site.", {
       verdicts: [{ blockId: "S1", verdict: "supported", companyClaim: false, note: "" }],
     });
@@ -714,8 +884,8 @@ describe("recordReview", () => {
     ).toEqual({ ok: true });
     await recordReview(deps(), id, { kind: "retype", value: "hr@example.org" });
 
-    // A page still showing the first address is refused; the copy names the new one, and keeps
-    // Open in Gmail's address as the one it went to.
+    // A page still showing the first address is refused; the copy names the new one, and sets no
+    // address of its own: the one typed after Open in Gmail stands.
     expect(
       await recordHandoff({ db, clock }, id, {
         ...shown,
@@ -737,7 +907,7 @@ describe("recordReview", () => {
       "select address from {{schema}}.applications where job_id = $1",
       [id],
     );
-    expect(rows[0]?.address).toBe("jobs@example.com");
+    expect(rows[0]?.address).toBe("hr@example.org");
   });
 
   it("records the draft the body was, the subject alone handed off counting as the draft shown", async () => {

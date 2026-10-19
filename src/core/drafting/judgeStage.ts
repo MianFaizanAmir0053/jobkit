@@ -41,6 +41,20 @@ const PROMPT = sha256Hex(
   }),
 );
 
+/**
+ * A form's: its user turn has its own layout, which an email's and a
+ * message's must not see change. Raise it when judgeContent changes for a form.
+ */
+const FORM_PROMPT = sha256Hex(
+  canonicalJson({
+    kit: "form",
+    rules: JUDGE_RULES,
+    layout: JUDGE_LAYOUT_VERSION,
+    formLayout: 2,
+    schema: z.toJSONSchema(judgeAnswerSchema),
+  }),
+);
+
 const PASSING: ReadonlySet<ModelCallFailure> = new Set(["timeout", "unavailable"]);
 
 export interface JudgeOutput {
@@ -79,7 +93,7 @@ export function judgeStage(deps: JudgeDeps): StageDefinition {
         facts: sha256Hex(canonicalJson(facts)),
         model: JUDGE.model,
         effort: JUDGE.effort,
-        prompt: PROMPT,
+        prompt: output.kit.kind === "form" ? FORM_PROMPT : PROMPT,
       };
     },
 

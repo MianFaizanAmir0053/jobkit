@@ -6,9 +6,9 @@
  * owner's second tap is not refused for a change they made themselves, while
  * a change from anywhere else still is. Drawn again, the page keeps only
  * what its decisions left from the words it now shows, as when quick taps
- * outrun the drawing, and refused, it keeps nothing: words that come back
- * later, as after an Undo on the other device, are the page's own again,
- * never the ones a decision once left.
+ * outrun the drawing; refused, it keeps nothing. So words that come back
+ * after an Undo on the other device cost one refused tap at most, and are
+ * then the page's own again.
  */
 const after = new Map<string, Map<string, string>>();
 
@@ -24,11 +24,15 @@ export function wordsAfter(jobId: string, words: string): string {
   return current;
 }
 
-/** A decision from this page took the email from these words to those. */
+/**
+ * A decision from this page took the email from these words to those: the
+ * latest decision's words end the chain, though a decision once led on from
+ * them, as when an edit and its undoing come before the page is drawn again.
+ */
 export function decided(jobId: string, from: string, to: string): void {
   const chain = after.get(jobId) ?? new Map<string, string>();
-  if (from === to) chain.delete(from);
-  else chain.set(from, to);
+  chain.delete(to);
+  if (from !== to) chain.set(from, to);
   after.set(jobId, chain);
 }
 

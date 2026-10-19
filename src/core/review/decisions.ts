@@ -483,9 +483,14 @@ export function decide(
     // Drafting's words again, for a sentence edited or deleted: they answer nothing the owner marked.
     // One with drafting's words already is left as it is, its checks with it.
     case "revert":
-      // A deleted sentence back as it was, the owner's words and all; then drafting's words.
+      // A deleted sentence back as it was, the owner's words and all; then drafting's words. A check
+      // on what it answers weighed the email without it.
       if (isDeleted(decisions, action.blockId)) {
-        return { ...decisions, deleted: without(decisions.deleted, action.blockId) };
+        return {
+          ...decisions,
+          deleted: without(decisions.deleted, action.blockId),
+          flagsChecked: lines.reduce((names, line) => notAt(names, line), decisions.flagsChecked),
+        };
       }
       if (!isEdited(decisions, action.blockId)) return decisions;
       return {
@@ -559,7 +564,10 @@ export function decide(
       return {
         ...decisions,
         answers: { ...decisions.answers, [action.blockId]: action.requirementId },
-        flagsChecked: notAt(notAt(decisions.flagsChecked, was), action.requirementId),
+        flagsChecked: [was, action.requirementId, ...lines].reduce(
+          (names, line) => notAt(names, line),
+          decisions.flagsChecked,
+        ),
       };
     }
     case "confirm":

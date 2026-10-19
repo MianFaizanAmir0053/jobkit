@@ -179,17 +179,23 @@ export function judgeContent(
       cites: { facts: each.factIds, fields: [] },
     }),
   );
+  // What the blocks are: an email's (as it always read, for an email and a message alike), or a
+  // form's cover note and answers.
+  const what = kit.kind === "form" ? "form" : "email";
   return [
     {
       type: "text",
-      text: `The job seeker's facts the email cites:\n${factLines.join("\n") || "None."}`,
+      text: `The job seeker's facts the ${what} cites:\n${factLines.join("\n") || "None."}`,
     },
     { type: "text", text: `BEGIN KIT DATA ${marker}` },
     {
       type: "text",
-      text: `The post's fields the email cites:\n${JSON.stringify(citedFields(kit, post.record, post.role), null, 2)}`,
+      text: `The post's fields the ${what} cites:\n${JSON.stringify(citedFields(kit, post.record, post.role), null, 2)}`,
     },
-    { type: "text", text: `The email's blocks, in order:\n${blocks.join("\n")}` },
+    {
+      type: "text",
+      text: `${kit.kind === "form" ? "The cover note's" : "The email's"} blocks, in order:\n${blocks.join("\n")}`,
+    },
     ...(answers.length > 0
       ? [
           {

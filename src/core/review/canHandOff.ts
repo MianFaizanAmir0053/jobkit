@@ -95,10 +95,11 @@ export function judgeMessage(verdict: BlockVerdict): string {
 
 /**
  * validate's flags, most serious first: a line written for an AI tool, or a
- * reference's details, in the email; then what the email claims; then its
- * form. Flags of one kind keep validate's order.
+ * reference's details, in the email; then what the email claims, a form's
+ * answers among it; then its form. Flags of one kind keep validate's order,
+ * and a form's answers' flags the questions' order, as the owner answers them.
  */
-const FLAG_ORDER: readonly KitFlagKind[] = [
+const FLAG_ORDER: readonly (KitFlagKind | readonly KitFlagKind[])[] = [
   "ai_instruction_followed",
   "reference_leak",
   "invalid_citation",
@@ -106,6 +107,7 @@ const FLAG_ORDER: readonly KitFlagKind[] = [
   "fit_unverified",
   "missing_gap_line",
   "needs_your_line",
+  ["topic_choice_needed", "needs_your_answer", "fixed_answer_drafted", "short_answer_unconfirmed"],
   "no_claims",
   "sensitive_topic_drafted",
   "subject_placeholder",
@@ -120,7 +122,9 @@ function passesStrict(kind: "email" | "whatsapp", value: string): boolean {
 
 /** A flag's place in FLAG_ORDER; a kind this code does not know goes last. */
 export function flagRank(kind: string): number {
-  const rank = FLAG_ORDER.indexOf(kind as KitFlagKind);
+  const rank = FLAG_ORDER.findIndex((entry) =>
+    typeof entry === "string" ? entry === kind : entry.includes(kind as KitFlagKind),
+  );
   return rank === -1 ? FLAG_ORDER.length : rank;
 }
 

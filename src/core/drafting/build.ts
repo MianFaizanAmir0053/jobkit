@@ -273,30 +273,33 @@ function madeLine(
 }
 
 /**
- * Whether a template's line can name several skills: one {skill}, so the
- * list stands in one place, and no "neither", whose list wants "nor".
- * Another template keeps a line for each must-have, as an email's does.
+ * Whether a template's line can stand for several must-haves: one naming
+ * no skill, whose lines read alike, or one naming its {skill} once, in a
+ * clause that denies it ("I haven't used {skill}"), where a list joined by
+ * "or" reads true; never with "neither", whose list wants "nor". Another
+ * template keeps a line for each must-have, as an email's does.
  */
 function listable(template: string): boolean {
   const places = template.split("{skill}");
-  return places.length === 2 && !/\bneither\b/i.test(places[0]!);
+  if (places.length === 1) return true;
+  if (places.length > 2) return false;
+  // The clause the skill sits in, from the last break before it.
+  const clause = places[0]!.split(/[,;:.()]/).at(-1)!;
+  return NEGATION.test(clause) && !/\bneither\b/i.test(clause);
 }
 
-/** Words that make what follows them a negation: "I haven't used {skill}" lists skills with "or". */
-const NEGATION = /\b(?:not|never|no)\b|n['’]t\b/i;
+/** Words that deny what follows them in a clause: "I haven't used {skill}", "I cannot claim {skill}". */
+const NEGATION = /\b(?:not|never|no|cannot|without|lack|lacking|yet to)\b|n['’]t\b/i;
 
 /**
  * A template with {skill} as the skills' display names, listed ("A", "A or
- * B", "A, B or C", with "and" where the template's words before the skill
- * hold no negation), and {related} as the related fact's phrase.
+ * B", "A, B or C": only a clause that denies them lists several), and
+ * {related} as the related fact's phrase.
  */
 function filled(template: string, skills: readonly string[], related: Fact | undefined): string {
   const names = skills.map((skill) => oneLine(skillName(skill)));
-  const joiner = NEGATION.test(template.slice(0, template.indexOf("{skill}"))) ? "or" : "and";
   const list =
-    names.length > 1
-      ? `${names.slice(0, -1).join(", ")} ${joiner} ${names.at(-1)!}`
-      : names.join("");
+    names.length > 1 ? `${names.slice(0, -1).join(", ")} or ${names.at(-1)!}` : names.join("");
   return oneLine(
     template.replaceAll("{skill}", () => list).replaceAll("{related}", () => related?.phrase ?? ""),
   );
@@ -360,19 +363,35 @@ export function buildMessageKit(
  */
 export function buildFormKit(
   answer: FormDraftAnswer,
-  context: { role: Role; profile: ProfileParts; topics: TopicProfile },
+  context: {
+    role: Role;
+    profile: ProfileParts;
+    topics: TopicProfile;
+    /** The questions kept from the drafter, as they repeat a line aimed at AI: the owner's to answer. */
+    held?: ReadonlySet<string>;
+  },
 ): { kit: FormKit; fit: FitRow[] } {
   const { role, profile, topics } = context;
   const given = new Map(answer.answers.map((each) => [each.question_id, each]));
   const answers = role.screening_questions.map((question): FormAnswer => {
     const base = { id: question.id, question: oneLine(question.text), factIds: [] as string[] };
+    if (!question.addressed_to_ai && context.held?.has(question.id)) {
+      return {
+        ...base,
+        topic: null,
+        source: "needs_your_answer",
+        text: "",
+        reason: "jobkit kept it from the drafter, as it repeats a line aimed at AI tools.",
+      };
+    }
     const fromModel = given.get(question.id);
     const text = fromModel ? oneLine(fromModel.text) : "";
-    const drafted = text === "" ? null : { text, factIds: fromModel!.fact_ids };
-    const decision = decideTopic(
-      question,
-      fromModel && fromModel.topic !== "none" ? fromModel.topic : null,
-    );
+    const drafterTopic = fromModel && fromModel.topic !== "none" ? fromModel.topic : null;
+    // The drafter's words count only where it took the question as ordinary: it leaves a topic's
+    // answer to code.
+    const drafted =
+      text === "" || drafterTopic !== null ? null : { text, factIds: fromModel!.fact_ids };
+    const decision = decideTopic(question, drafterTopic);
     switch (decision.kind) {
       case "not_answered":
         return { ...base, topic: null, source: "not_answered", text: "" };
@@ -391,7 +410,7 @@ export function buildFormKit(
               topic: decision.topic,
               source: "profile",
               text: fixed.text,
-              ...(drafted ? { replaced: true as const } : {}),
+              ...(text !== "" ? { replaced: true as const } : {}),
             };
       }
       case "choice":

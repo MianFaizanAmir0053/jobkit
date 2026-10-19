@@ -16,13 +16,15 @@ export function whatsAppLink(number: string, message: string): string | null {
 
 /**
  * "Open application link" for a form kit: the post's link, as the URL parser
- * reads it, only when it is https and names no user or password (which can
- * make a link read as another site's). Any other link is shown as text with a
- * warning, never opened.
+ * reads it, only when it is https, names no user or password (which can
+ * make a link read as another site's), and holds no space or control
+ * character, which the parser drops. Any other link is shown as text with
+ * a warning, never opened.
  */
 export function applicationLink(address: string): string | null {
   const trimmed = address.trim();
-  if (!URL.canParse(trimmed)) return null;
+  // The parser drops a space, a tab or a line break inside, opening a site other than the one shown.
+  if (/[\s\p{Cc}]/u.test(trimmed) || !URL.canParse(trimmed)) return null;
   const url = new URL(trimmed);
   if (url.protocol !== "https:" || url.username !== "" || url.password !== "") return null;
   return url.href;

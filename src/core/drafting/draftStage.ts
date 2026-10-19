@@ -86,6 +86,8 @@ const PROMPTS = {
   message: sha256Hex(
     canonicalJson({
       kit: "message",
+      // Raise it when a message's build changes: its merged lines, its count.
+      messageBuild: 2,
       rules: messageSystemPrompt(0),
       layout: DRAFT_LAYOUT_VERSION,
       schema: z.toJSONSchema(draftAnswerSchema),
@@ -97,6 +99,8 @@ const PROMPTS = {
   form: sha256Hex(
     canonicalJson({
       kit: "form",
+      // Raise it when a form's build changes: its answers (topics.ts, regions.ts), its flags.
+      formBuild: 2,
       rules: formSystemPrompt(0),
       layout: DRAFT_LAYOUT_VERSION,
       schema: z.toJSONSchema(formAnswerSchema),
@@ -253,10 +257,17 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         });
         if (!called.ok)
           return { ok: false, reason: called.message, retry: PASSING.has(called.reason) };
+        // The questions the drafter was not shown, as they repeat a line aimed at AI.
+        const shown = new Set(post.role.screening_questions.map((question) => question.id));
         built = buildFormKit(called.output, {
           role,
           profile: parts,
           topics: { home: profile.owner.location.country, answers: profile.fixedAnswers },
+          held: new Set(
+            role.screening_questions
+              .filter((question) => !shown.has(question.id))
+              .map((question) => question.id),
+          ),
         });
       } else {
         const called = await callModel(deps.models, {

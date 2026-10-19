@@ -16,7 +16,7 @@ import {
 } from "../polling";
 
 import { CopyButton } from "./CopyButton";
-import { inFlight } from "./handoffs";
+import { HANDOFF_MS, type HandedOffPart, inFlight, useUnrecorded } from "./handoffs";
 
 /**
  * The kit's outbound controls (review spec, "The outbound gate"): Open in
@@ -120,31 +120,22 @@ export function Outbound({
 
   const enabled = open && confirmed === shown && !held;
   // The parts whose last handoff jobkit could not record: Mark sent would record other words than
-  // went, until that part is handed off again.
-  const [unrecorded, setUnrecorded] = useState<ReadonlySet<string>>(new Set());
+  // went, until that part is handed off again. Mark sent says so too.
+  const unrecorded = useUnrecorded(jobId);
   // Each handoff posts the words, the address the page showed and the parts it handed off, right
   // after the click, which Mark sent records; the handoff never waits for it (review spec, "The
   // outbound gate"). An email's alone: factual edits count for email handoffs only (ledger spec).
-  const handedOff = (parts: ("address" | "subject" | "body")[]) => () => {
+  // One that takes longer than HANDOFF_MS counts as not recorded.
+  const handedOff = (parts: HandedOffPart[]) => () => {
     if (words === null || !email) return;
-    const recorded = (ok: boolean) =>
-      setUnrecorded((was) => {
-        const now = new Set(was);
-        for (const part of parts) {
-          if (ok) now.delete(part);
-          else now.add(part);
-        }
-        return now;
-      });
     const posted = fetch(`/api/jobs/${jobId}/handoff`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ kit, words, to: to ?? "", parts }),
       keepalive: true,
-    })
-      .then((response) => recorded(response.ok))
-      .catch(() => recorded(false));
-    inFlight(posted);
+      signal: AbortSignal.timeout(HANDOFF_MS),
+    }).then((response) => response.ok);
+    inFlight(jobId, parts, posted);
   };
   const waiting = !open
     ? ""

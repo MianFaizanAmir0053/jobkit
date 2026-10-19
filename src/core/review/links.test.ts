@@ -37,6 +37,11 @@ describe("applicationLink", () => {
       "jobs.example.com/apply",
       "https://user:secret@jobs.example.com/apply",
       "",
+      // The parser drops what is inside, opening jobs.acme.com.evil.io, not the address shown.
+      `https://jobs.acme.com${String.fromCharCode(9)}.evil.io/apply`,
+      `https://jobs.acme.com${String.fromCharCode(10)}.evil.io/apply`,
+      "https://jobs.acme.com .evil.io/apply",
+      `https://jobs.acme.com${String.fromCharCode(0)}.evil.io/apply`,
     ]) {
       expect(applicationLink(address)).toBeNull();
     }
