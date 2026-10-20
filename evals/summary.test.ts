@@ -4,10 +4,11 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import type { RunReport } from "./command";
+import type { DraftReport, RunReport, SecondReadReport } from "./command";
 import type { CaseResult } from "./run";
 import { checkMetricsOf, metricsOf } from "./run";
 import type { Renders } from "./synthetic";
+import { wilson } from "./score";
 import { checkSummary, readReports, summaryOf } from "./summary";
 
 /* The aggregate summary: evals AC6. Every name, address and number here is planted, to be kept out. */
@@ -82,6 +83,94 @@ const post = (id: string, matches: CaseResult["matches"], checks: CaseResult["ch
 
 const ids = (count: number) =>
   Array.from({ length: count }, (_, i) => `2026-03-16-${(i + 1).toString(16).padStart(8, "0")}`);
+
+describe("the drafting and second-read runs in the summary", () => {
+  const base = {
+    split: "dev" as const,
+    final: false,
+    startedAt: "2026-10-13T12:00:00.000Z",
+    finishedAt: "2026-10-13T12:00:00.000Z",
+    commit: "0123456789abcdef0123",
+    prompt: "a".repeat(64),
+    effort: "low",
+    renders: null,
+    budgetUsd: 5,
+    stoppedAtBudget: false,
+  };
+
+  it("gives their measures with counts and intervals, compares two second reads, and nothing from a case", () => {
+    const draft: DraftReport = {
+      ...base,
+      stage: "draft",
+      judgePrompt: "b".repeat(64),
+      model: "gemini-3.8-flash",
+      costUsd: 0.2,
+      cases: [
+        {
+          id: "2026-03-16-8282e9a1",
+          split: "dev",
+          route: "email",
+          outcome: "scored",
+          note: "Sam Rivera wrote from jobs@northwind.example.",
+          kit: "email",
+          answered: 1,
+          missing: 1,
+          verdicts: { supported: 2 },
+          checks: [],
+          costUsd: 0.2,
+          seconds: 30,
+        },
+      ],
+      gapCoverage: wilson(1, 2),
+      verdicts: { supported: 2 },
+      checks: {},
+    };
+    const read = (model: string, right: readonly boolean[]): SecondReadReport => ({
+      ...base,
+      stage: "address_read",
+      model,
+      costUsd: 0.12,
+      cases: right.map((secondRight, i) => ({
+        id: ids(12)[i]!,
+        split: "dev",
+        route: "email",
+        outcome: "scored",
+        note: null,
+        firstRight: true,
+        secondRight,
+        agreed: secondRight,
+        costUsd: 0.01,
+        seconds: 2,
+      })),
+      agreesWithLabel: wilson(right.filter(Boolean).length, right.length),
+      caught: wilson(0, 0),
+      falseAlarms: wilson(right.filter((each) => !each).length, right.length),
+    });
+    const stages = {
+      drafts: [draft],
+      reads: [
+        read("gemini-3.6-flash", Array<boolean>(12).fill(true)),
+        read(
+          "gemini-3.1-pro",
+          Array.from({ length: 12 }, (_, i) => i < 2),
+        ),
+      ],
+    };
+
+    const text = summaryOf([], new Date("2026-10-13T15:00:00Z"), [], stages);
+
+    expect(text).toContain("## draft, gemini-3.8-flash, dev");
+    expect(text).toContain("| Must-have gaps answered with a gap line | 1 | 2 | 50% |");
+    expect(text).toContain("| supported | 2 |");
+    expect(text).toContain("| Second read matches the label | 12 | 12 | 100% |");
+    expect(text).toContain(
+      "## address_read: gemini-3.1-pro against gemini-3.6-flash on 12 dev cases",
+    );
+    expect(text).toContain("| 0 | 10 | 0.002 | gemini-3.6-flash |");
+    for (const planted of PLANTED) expect(text).not.toContain(planted);
+    expect(checkSummary(text, [], [], stages)).toEqual([]);
+  });
+});
 
 describe("summaryOf", () => {
   it("gives each run's shares with counts and intervals, its cost and time, and nothing from a case", () => {

@@ -21,11 +21,22 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { cryptoRandom } from "@/adapters/random";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
+import { DRAFT } from "@/core/drafting/draftStage";
+import { S01_DRAFT, S01_JUDGED } from "@/core/drafting/testDrafts";
+import { ADDRESS_READ } from "@/core/extraction/addressReadStage";
 import { EXTRACT } from "@/core/extraction/extract";
 import { createTestDb } from "@/server/db/testDb";
 
 import type { Labels } from "./cases";
-import { evalCommand, type EvalIo, parseEvalArgs, type RunReport } from "./command";
+import {
+  type DraftReport,
+  evalCommand,
+  type EvalIo,
+  GAP_COVERAGE,
+  parseEvalArgs,
+  type RunReport,
+  type SecondReadReport,
+} from "./command";
 import { manifestOf, sourceOf } from "./render";
 import { appendSplitEvents } from "./splitFile";
 import { syntheticPosts } from "./synthetic";
@@ -250,6 +261,62 @@ describe("evalCommand", () => {
       `| ${CASE} | scored |`,
     );
     expect(lines.some((line) => line.includes(CASE))).toBe(true);
+  });
+
+  it("drafts each dev case, past the eligibility decision, checks each draft, and scores gap coverage", async () => {
+    await labelledCase(CASE, "dev");
+    // S01 with AWS a must-have, which the sample profile lacks: the draft's gap line answers it.
+    const read = record() as { roles: { requirements: { id: string; priority: string }[] }[] };
+    read.roles[0]!.requirements.find((requirement) => requirement.id === "R4")!.priority = "must";
+    llm = fakeLlm([answer(read), answer(S01_DRAFT), answer(S01_JUDGED)]);
+
+    expect(await evalCommand(["--stage", "draft", "--yes"], io())).toBeNull();
+
+    const runs = join(dir, "evals", "runs");
+    const [folder] = readdirSync(runs);
+    expect(folder).toBe(`2026-10-13T12-00-00.000Z-draft-${DRAFT.model}`);
+    const saved = JSON.parse(
+      readFileSync(join(runs, folder!, "report.json"), "utf8"),
+    ) as DraftReport;
+    expect(saved).toMatchObject({
+      stage: "draft",
+      gapCoverage: { successes: 1, n: 1 },
+      verdicts: { not_a_claim: 2, supported: 3 },
+      judgePrompt: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect(saved.cases).toMatchObject([
+      { id: CASE, outcome: "scored", kit: "email", answered: 1, missing: 0 },
+    ]);
+    expect(lines).toContain(`${GAP_COVERAGE}: 1 of 1 (100%, 21% to 100%)`);
+    expect(readFileSync(join(runs, folder!, "report.md"), "utf8")).toContain(
+      `| ${CASE} | scored | email | 1 | 0 |`,
+    );
+  });
+
+  it("reads each dev case's contact a second time from its crop, and scores the read against the label", async () => {
+    await labelledCase(CASE, "dev");
+    const read = record() as { roles: { route: { box: unknown } }[] };
+    read.roles[0]!.route.box = { tile: 1, x1: 100, y1: 100, x2: 400, y2: 140 };
+    // The post's reading is right, and the second read misreads a letter: a false alarm.
+    llm = fakeLlm([answer(read), answer({ contact: "jobs@examp1e.com" })]);
+
+    expect(await evalCommand(["--stage", "address_read", "--yes"], io())).toBeNull();
+
+    const runs = join(dir, "evals", "runs");
+    const saved = JSON.parse(
+      readFileSync(join(runs, readdirSync(runs)[0]!, "report.json"), "utf8"),
+    ) as SecondReadReport;
+    expect(saved).toMatchObject({
+      stage: "address_read",
+      model: ADDRESS_READ.model,
+      agreesWithLabel: { successes: 0, n: 1 },
+      caught: { successes: 0, n: 0 },
+      falseAlarms: { successes: 1, n: 1 },
+    });
+    expect(saved.cases).toMatchObject([
+      { id: CASE, outcome: "scored", firstRight: true, secondRight: false, agreed: false },
+    ]);
+    expect(lines).toContain("False alarms on a right first read: 1 of 1 (100%, 21% to 100%)");
   });
 
   it("scores test cases only with --final, which it records, printing none of them", async () => {

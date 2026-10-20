@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 
+import { DRAFT, DRAFT_PROMPT } from "@/core/drafting/draftStage";
 import { JUDGE, JUDGE_PROMPT } from "@/core/drafting/judgeStage";
+import { ADDRESS_READ, ADDRESS_READ_PROMPT } from "@/core/extraction/addressReadStage";
 import { EXTRACT, EXTRACT_PROMPT } from "@/core/extraction/extract";
 import { providerOf } from "@/core/platform/models";
 import { assertLocalOnly } from "@/server/localOnly";
@@ -29,6 +31,17 @@ import {
 } from "./run";
 import type { Proportion } from "./score";
 import type { Split } from "./split";
+import {
+  type DraftCaseResult,
+  type DraftingRun,
+  estimateDraftCase,
+  estimateSecondReadCase,
+  type Outcome,
+  runDrafting,
+  runSecondRead,
+  type SecondReadCaseResult,
+  type SecondReadRun,
+} from "./stageRuns";
 import { type Renders, syntheticCases } from "./synthetic";
 
 /**
@@ -43,7 +56,9 @@ import { type Renders, syntheticCases } from "./synthetic";
  * manifest does not vouch for every screenshot, and records the Chrome that
  * rendered them and each image's hash, so runs on other renders are never
  * compared unawares. Each run writes report.json and report.md under
- * private/evals/runs/<time>-<stage>-<model>/.
+ * private/evals/runs/<time>-<stage>-<model>/. The stages: extract;
+ * draft, with the separate check after each draft; address_read, the
+ * contact's second read; and the judge set.
  */
 
 type Env = Readonly<Record<string, string | undefined>>;
@@ -67,7 +82,7 @@ export interface EvalIo {
 }
 
 export interface EvalArgs {
-  stage: (typeof STAGES_BUILT)[number];
+  stage: EvalStage;
   model: string;
   split: CaseSplit;
   final: boolean;
@@ -75,7 +90,23 @@ export interface EvalArgs {
   budgetUsd: number;
 }
 
-const STAGES_BUILT = ["extract", "judge-set"] as const;
+const STAGES_BUILT = ["extract", "draft", "address_read", "judge-set"] as const;
+export type EvalStage = (typeof STAGES_BUILT)[number];
+
+/** Each stage's model, unless --model names another to compare with it. */
+const STAGE_MODELS: Readonly<Record<EvalStage, string>> = {
+  extract: EXTRACT.model,
+  draft: DRAFT.model,
+  address_read: ADDRESS_READ.model,
+  "judge-set": JUDGE.model,
+};
+
+/** Every model a stage's run calls: the post is read first, and a draft is checked after. */
+function modelsCalled(args: EvalArgs): string[] {
+  if (args.stage === "draft") return [args.model, EXTRACT.model, JUDGE.model];
+  if (args.stage === "address_read") return [args.model, EXTRACT.model];
+  return [args.model];
+}
 
 /** The evaluation key each provider's models run on (platform spec B8). */
 const EVAL_KEYS = {
@@ -114,6 +145,7 @@ export function parseEvalArgs(argv: readonly string[]): EvalArgs {
   if (!(STAGES_BUILT as readonly string[]).includes(stage)) {
     throw new Error(`Only ${STAGES_BUILT.join(", ")} can be evaluated so far.`);
   }
+  const built = stage as EvalStage;
   // The judge set is one frozen set of sentences, run whole: it has no split.
   if (stage === "judge-set") {
     if (args.split !== undefined || args.final) {
@@ -136,8 +168,8 @@ export function parseEvalArgs(argv: readonly string[]): EvalArgs {
   }
   if (split !== "test" && args.final) throw new Error("--final is for the test split.");
   return {
-    stage: "extract",
-    model: args.model ?? EXTRACT.model,
+    stage: built,
+    model: args.model ?? STAGE_MODELS[built],
     split,
     final: args.final ?? false,
     yes: args.yes ?? false,
@@ -181,8 +213,8 @@ export async function evalCases(
   return { cases, unlabelled: inSplit.length - cases.length };
 }
 
-export interface RunReport extends ExtractionRun {
-  stage: "extract";
+/** What every run of a stage over cases records beside its results. */
+interface Versions {
   split: CaseSplit;
   final: boolean;
   startedAt: string;
@@ -193,6 +225,22 @@ export interface RunReport extends ExtractionRun {
   /** For the synthetic posts, the screenshots read: the Chrome that rendered them, and each one's SHA-256. */
   renders: Renders | null;
 }
+
+export interface RunReport extends ExtractionRun, Versions {
+  stage: "extract";
+}
+
+export interface DraftReport extends DraftingRun, Versions {
+  stage: "draft";
+  /** The separate check's prompt version: it weighed every draft. */
+  judgePrompt: string;
+}
+
+export interface SecondReadReport extends SecondReadRun, Versions {
+  stage: "address_read";
+}
+
+export type StageReport = RunReport | DraftReport | SecondReadReport;
 
 /** What the evaluation runs recorded so far have spent in the month of `now`. */
 function spentThisMonth(runs: string, now: Date): number {
@@ -227,6 +275,35 @@ function metricRows(
 
 const HEADER = ["| Field | Right | Of | Share | 95% interval |", "|---|---|---|---|---|"];
 const CHECK_HEADER = ["| Check | Met | Of | Share | 95% interval |", "|---|---|---|---|---|"];
+const MEASURE_HEADER = ["| Measure | Met | Of | Share | 95% interval |", "|---|---|---|---|---|"];
+
+const cell = (text: string) => text.replaceAll("|", "/").replaceAll("\n", " ");
+const shareText = (share: Proportion) =>
+  `${share.successes} of ${share.n} (${percent(share.point)}, ${percent(share.low)} to ${percent(share.high)})`;
+const yesNo = (value: boolean | null) => (value === null ? "–" : value ? "yes" : "no");
+
+/** Gap coverage as the reports and the summary name it. */
+export const GAP_COVERAGE = "Must-have gaps answered with a gap line";
+
+/** The second read's measures, named as the reports and the summary show them. */
+export function secondReadShares(run: SecondReadRun): Record<string, Proportion> {
+  return {
+    "Second read matches the label": run.agreesWithLabel,
+    "First read's misreads caught": run.caught,
+    "False alarms on a right first read": run.falseAlarms,
+  };
+}
+
+/** The separate check's verdicts on the drafts, by verdict. */
+export function verdictLines(verdicts: Readonly<Record<string, number>>): string[] {
+  const rows = Object.entries(verdicts).sort(([a], [b]) => a.localeCompare(b));
+  if (rows.length === 0) return ["The separate check weighed no sentence."];
+  return [
+    "| Verdict | Sentences |",
+    "|---|---|",
+    ...rows.map(([verdict, count]) => `| ${verdict} | ${count} |`),
+  ];
+}
 
 function shareRows(shares: Readonly<Record<string, Proportion | undefined>>) {
   return Object.entries(shares).map(([name, share]) =>
@@ -306,7 +383,6 @@ export function reportMarkdown(report: RunReport): string {
     );
   }
   if (report.split !== "test") {
-    const cell = (text: string) => text.replaceAll("|", "/").replaceAll("\n", " ");
     lines.push(
       "",
       "## Cases",
@@ -320,6 +396,95 @@ export function reportMarkdown(report: RunReport): string {
         .join("; ");
       lines.push(
         `| ${result.id} | ${result.outcome} | ${wrongFields(result)} | ${cell(unmet)} | ${cell(result.note ?? "")} | ${dollars(result.costUsd)} | ${result.seconds.toFixed(1)} |`,
+      );
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/** A drafting run's text: gap coverage, the separate check's verdicts, the checks, and for dev and synthetic each case. */
+export function draftReportMarkdown(report: DraftReport): string {
+  const counts = (outcome: Outcome) =>
+    report.cases.filter((result) => result.outcome === outcome).length;
+  const lines = [
+    `# draft, ${report.model}, ${report.split}${report.final ? " (final)" : ""}`,
+    "",
+    `Run at ${report.startedAt}, commit ${report.commit.slice(0, 12)}, prompt ${report.prompt.slice(0, 12)}, check's prompt ${report.judgePrompt.slice(0, 12)}, effort ${report.effort}.`,
+    `Cases: ${counts("scored")} drafted, ${counts("no kit")} with no kit to draft, ${counts("failed")} failed, ${counts("budget")} not run for the budget. Cost ${dollars(report.costUsd)} of a ${dollars(report.budgetUsd)} budget${report.stoppedAtBudget ? "; stopped at the budget" : ""}.`,
+    ...(report.renders
+      ? [
+          `Screenshots rendered by Chrome ${report.renders.browser}; each image's SHA-256 is in report.json.`,
+        ]
+      : []),
+    "",
+    ...MEASURE_HEADER,
+    ...shareRows({ [GAP_COVERAGE]: report.gapCoverage }),
+    "",
+    "## The separate check's verdicts",
+    "",
+    ...verdictLines(report.verdicts),
+  ];
+  if (Object.keys(report.checks).length > 0) {
+    lines.push(
+      "",
+      "## Checks",
+      "",
+      "What the draft did, on the posts that expect it.",
+      "",
+      ...CHECK_HEADER,
+      ...shareRows(report.checks),
+    );
+  }
+  if (report.split !== "test") {
+    lines.push(
+      "",
+      "## Cases",
+      "",
+      "| Case | Outcome | Kit | Gaps answered | Gaps left | Checks not met | Note | Cost | Seconds |",
+      "|---|---|---|---|---|---|---|---|---|",
+    );
+    for (const result of report.cases) {
+      const unmet = result.checks
+        .filter((check) => check.met === false)
+        .map((check) => `${check.key}: ${check.note}`)
+        .join("; ");
+      lines.push(
+        `| ${result.id} | ${result.outcome} | ${result.kit ?? ""} | ${result.answered} | ${result.missing} | ${cell(unmet)} | ${cell(result.note ?? "")} | ${dollars(result.costUsd)} | ${result.seconds.toFixed(1)} |`,
+      );
+    }
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+/** A second-read run's text: its three measures, and for dev and synthetic each case. */
+export function secondReadReportMarkdown(report: SecondReadReport): string {
+  const counts = (outcome: Outcome) =>
+    report.cases.filter((result) => result.outcome === outcome).length;
+  const lines = [
+    `# address_read, ${report.model}, ${report.split}${report.final ? " (final)" : ""}`,
+    "",
+    `Run at ${report.startedAt}, commit ${report.commit.slice(0, 12)}, prompt ${report.prompt.slice(0, 12)}, effort ${report.effort}.`,
+    `Cases: ${counts("scored")} read a second time by the model, ${counts("not read")} not, ${counts("budget")} not run for the budget. Cost ${dollars(report.costUsd)} of a ${dollars(report.budgetUsd)} budget${report.stoppedAtBudget ? "; stopped at the budget" : ""}.`,
+    ...(report.renders
+      ? [
+          `Screenshots rendered by Chrome ${report.renders.browser}; each image's SHA-256 is in report.json.`,
+        ]
+      : []),
+    "",
+    ...MEASURE_HEADER,
+    ...shareRows(secondReadShares(report)),
+  ];
+  if (report.split !== "test") {
+    lines.push(
+      "",
+      "## Cases",
+      "",
+      "| Case | Outcome | First read right | Second read right | Reads agreed | Note | Cost | Seconds |",
+      "|---|---|---|---|---|---|---|---|",
+    );
+    for (const result of report.cases) {
+      lines.push(
+        `| ${result.id} | ${result.outcome} | ${yesNo(result.firstRight)} | ${yesNo(result.secondRight)} | ${yesNo(result.agreed)} | ${cell(result.note ?? "")} | ${dollars(result.costUsd)} | ${result.seconds.toFixed(1)} |`,
       );
     }
   }
@@ -387,19 +552,80 @@ export async function judgeSetCommand(args: EvalArgs, io: EvalIo): Promise<Judge
   return report;
 }
 
+/** Prints a run's measures and, for dev and synthetic, each case. */
+function logRun(report: StageReport, io: EvalIo): void {
+  const perCase = report.split !== "test";
+  if (report.stage === "draft") {
+    io.log(`${GAP_COVERAGE}: ${shareText(report.gapCoverage)}`);
+    const verdicts = Object.entries(report.verdicts)
+      .map(([verdict, count]) => `${verdict} ${count}`)
+      .join(", ");
+    io.log(`The separate check's verdicts: ${verdicts || "none"}.`);
+    for (const [key, share] of Object.entries(report.checks)) {
+      io.log(`  ${key}: ${shareText(share)}`);
+    }
+    if (perCase) {
+      for (const result of report.cases as DraftCaseResult[]) {
+        const unmet = result.checks.filter((check) => check.met === false);
+        io.log(
+          `  ${result.id}  ${result.outcome}  gaps answered ${result.answered}, left ${result.missing}${unmet.length > 0 ? `  checks not met: ${unmet.map((check) => check.key).join(", ")}` : ""}${result.note ? `  ${result.note}` : ""}`,
+        );
+        for (const check of unmet) io.log(`      ${check.key}: ${check.note}`);
+      }
+    }
+    return;
+  }
+  if (report.stage === "address_read") {
+    for (const [name, share] of Object.entries(secondReadShares(report))) {
+      io.log(`${name}: ${shareText(share)}`);
+    }
+    if (perCase) {
+      for (const result of report.cases as SecondReadCaseResult[]) {
+        io.log(
+          `  ${result.id}  ${result.outcome}${result.outcome === "scored" ? `  first read right: ${yesNo(result.firstRight)}, second: ${yesNo(result.secondRight)}, agreed: ${yesNo(result.agreed)}` : ""}${result.note ? `  ${result.note}` : ""}`,
+        );
+      }
+    }
+    return;
+  }
+  for (const [field, value] of Object.entries(report.metrics)) {
+    io.log(`${field}: ${shareText(value.pooled)}`);
+  }
+  if (Object.keys(report.checks).length > 0) {
+    io.log("Checks on what the model noticed:");
+    for (const [key, share] of Object.entries(report.checks)) {
+      io.log(`  ${key}: ${shareText(share)}`);
+    }
+    const later = laterChecks(report.cases);
+    if (later.length > 0) io.log(`  Left to later stages: ${later.join(", ")}.`);
+  }
+  if (perCase) {
+    for (const result of report.cases) {
+      const wrong = wrongFields(result);
+      const unmet = unmetChecks(result);
+      io.log(
+        `  ${result.id}  ${result.outcome}${wrong ? `  wrong: ${wrong}` : ""}${unmet.length > 0 ? `  checks not met: ${unmet.map((check) => check.key).join(", ")}` : ""}${result.note ? `  ${result.note}` : ""}`,
+      );
+      for (const check of unmet) io.log(`      ${check.key}: ${check.note}`);
+    }
+  }
+}
+
 /**
- * The command. Extraction's report comes back for the caller; the judge
- * set's is written and printed, and none comes back.
+ * The command. Extraction's report comes back for the caller; the other
+ * stages' are written and printed, and none comes back.
  */
 export async function evalCommand(argv: readonly string[], io: EvalIo): Promise<RunReport | null> {
   assertLocalOnly(io.env, "npm run eval");
   assertLocalOnly(io.localEnv, "npm run eval (.env.local)");
   const args = parseEvalArgs(argv);
-  const key = EVAL_KEYS[providerOf(args.model)];
-  if (!(io.localEnv[key] ?? io.env[key])) {
-    throw new Error(
-      `npm run eval needs ${key} in .env.local to run ${args.model}: see docs/runbook/setup.md`,
-    );
+  for (const model of modelsCalled(args)) {
+    const key = EVAL_KEYS[providerOf(model)];
+    if (!(io.localEnv[key] ?? io.env[key])) {
+      throw new Error(
+        `npm run eval needs ${key} in .env.local to run ${model}: see docs/runbook/setup.md`,
+      );
+    }
   }
   if (args.stage === "judge-set") {
     await judgeSetCommand(args, io);
@@ -422,8 +648,14 @@ export async function evalCommand(argv: readonly string[], io: EvalIo): Promise<
     io.log(`${cases.length} synthetic posts to run, rendered by Chrome ${renders.browser}.`);
   }
   const startedAt = io.now();
+  const estimate =
+    args.stage === "draft"
+      ? estimateDraftCase
+      : args.stage === "address_read"
+        ? estimateSecondReadCase
+        : estimateCase;
   let most = 0;
-  for (const item of cases) most += await estimateCase(item, args.model, startedAt);
+  for (const item of cases) most += await estimate(item, args.model, startedAt);
   const runs = join(io.evalsDir, "runs");
   io.log(
     `At most ${dollars(most)} for ${args.stage} with ${args.model}; the run stops before passing its budget of ${dollars(args.budgetUsd)}.`,
@@ -442,28 +674,60 @@ export async function evalCommand(argv: readonly string[], io: EvalIo): Promise<
   const deps = await io.open(
     split === "synthetic" ? join(io.syntheticDir, "profile.sample.yaml") : io.profileFile,
   );
-  let run: ExtractionRun;
-  try {
-    run = await runExtraction(deps, cases, { model: args.model, budgetUsd: args.budgetUsd });
-  } finally {
-    await deps.close();
-  }
-  const report: RunReport = {
-    ...run,
-    stage: "extract",
+  const options = { model: args.model, budgetUsd: args.budgetUsd };
+  const versions = () => ({
     split: args.split,
     final: args.final,
     startedAt: startedAt.toISOString(),
     finishedAt: io.now().toISOString(),
     commit: io.commit,
-    prompt: EXTRACT_PROMPT,
-    effort: EXTRACT.effort,
     renders,
-  };
+  });
+  let report: StageReport;
+  try {
+    if (args.stage === "draft") {
+      const run = await runDrafting(deps, cases, options);
+      report = {
+        ...run,
+        ...versions(),
+        stage: "draft",
+        prompt: DRAFT_PROMPT,
+        judgePrompt: JUDGE_PROMPT,
+        effort: DRAFT.effort,
+      };
+    } else if (args.stage === "address_read") {
+      const run = await runSecondRead(deps, cases, options);
+      report = {
+        ...run,
+        ...versions(),
+        stage: "address_read",
+        prompt: ADDRESS_READ_PROMPT,
+        effort: ADDRESS_READ.effort,
+      };
+    } else {
+      const run: ExtractionRun = await runExtraction(deps, cases, options);
+      report = {
+        ...run,
+        ...versions(),
+        stage: "extract",
+        prompt: EXTRACT_PROMPT,
+        effort: EXTRACT.effort,
+      };
+    }
+  } finally {
+    await deps.close();
+  }
   const folder = join(runs, `${report.startedAt.replaceAll(":", "-")}-${args.stage}-${args.model}`);
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
-  writeFileSync(join(folder, "report.md"), reportMarkdown(report));
+  writeFileSync(
+    join(folder, "report.md"),
+    report.stage === "draft"
+      ? draftReportMarkdown(report)
+      : report.stage === "address_read"
+        ? secondReadReportMarkdown(report)
+        : reportMarkdown(report),
+  );
   if (args.final) {
     const finals = join(io.evalsDir, "final-runs.json");
     const earlier = existsSync(finals)
@@ -479,34 +743,9 @@ export async function evalCommand(argv: readonly string[], io: EvalIo): Promise<
     writeFileSync(finals, `${JSON.stringify([...earlier, entry], null, 2)}\n`);
   }
 
-  for (const [field, value] of Object.entries(run.metrics)) {
-    const share = value.pooled;
-    io.log(
-      `${field}: ${share.successes} of ${share.n} (${percent(share.point)}, ${percent(share.low)} to ${percent(share.high)})`,
-    );
-  }
-  if (Object.keys(run.checks).length > 0) {
-    io.log("Checks on what the model noticed:");
-    for (const [key, share] of Object.entries(run.checks)) {
-      io.log(
-        `  ${key}: ${share.successes} of ${share.n} (${percent(share.point)}, ${percent(share.low)} to ${percent(share.high)})`,
-      );
-    }
-    const later = laterChecks(run.cases);
-    if (later.length > 0) io.log(`  Left to later stages: ${later.join(", ")}.`);
-  }
-  if (split !== "test") {
-    for (const result of run.cases) {
-      const wrong = wrongFields(result);
-      const unmet = unmetChecks(result);
-      io.log(
-        `  ${result.id}  ${result.outcome}${wrong ? `  wrong: ${wrong}` : ""}${unmet.length > 0 ? `  checks not met: ${unmet.map((check) => check.key).join(", ")}` : ""}${result.note ? `  ${result.note}` : ""}`,
-      );
-      for (const check of unmet) io.log(`      ${check.key}: ${check.note}`);
-    }
-  }
+  logRun(report, io);
   io.log(
-    `Cost ${dollars(run.costUsd)}${run.stoppedAtBudget ? ", stopped at the budget" : ""}. Report: ${folder}`,
+    `Cost ${dollars(report.costUsd)}${report.stoppedAtBudget ? ", stopped at the budget" : ""}. Report: ${folder}`,
   );
-  return report;
+  return report.stage === "extract" ? report : null;
 }

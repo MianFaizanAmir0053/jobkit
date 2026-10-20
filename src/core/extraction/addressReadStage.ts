@@ -63,7 +63,7 @@ export const contactReadSchema = z.strictObject({
 });
 
 // The rules, the layout, the schema and the crop's own rules, so a change to any reads again.
-const PROMPT = sha256Hex(
+export const ADDRESS_READ_PROMPT = sha256Hex(
   canonicalJson({
     rules: ADDRESS_READ_RULES,
     layout: LAYOUT_VERSION,
@@ -118,6 +118,8 @@ export interface AddressReadDeps {
   models: ModelCallDeps;
   /** How long one storage call may take; STORAGE_MS unless a test shortens it. */
   storageMs?: number;
+  /** The model to call: ADDRESS_READ.model, unless an evaluation compares another (evals spec). */
+  model?: string;
 }
 
 /**
@@ -165,11 +167,11 @@ export function addressReadStage(deps: AddressReadDeps): StageDefinition {
           image: image.sha256,
           position: box.image,
           box,
-          model: ADDRESS_READ.model,
-          available: hasModel(deps.models, ADDRESS_READ.model),
+          model: deps.model ?? ADDRESS_READ.model,
+          available: hasModel(deps.models, deps.model ?? ADDRESS_READ.model),
           effort: ADDRESS_READ.effort,
           maxTokens: ADDRESS_READ.maxTokens,
-          prompt: PROMPT,
+          prompt: ADDRESS_READ_PROMPT,
         };
       }
       const text = await pastedText(deps.db, ctx.job.id);

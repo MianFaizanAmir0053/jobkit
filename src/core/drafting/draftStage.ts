@@ -119,6 +119,9 @@ const PROMPTS = {
   ),
 } as const;
 
+/** Every kit's prompt version, as one hash, for the evaluation reports (evals spec). */
+export const DRAFT_PROMPT = sha256Hex(canonicalJson(PROMPTS));
+
 /**
  * A message's budget for the model's sentences and the gap lines: its 600
  * characters less the sign-off and the blank line before it, and never under
@@ -170,6 +173,8 @@ export interface DraftDeps {
   models: ModelCallDeps;
   /** The kind of kit the job takes, its route's or the owner's pick (KitOf); by the route otherwise. */
   kitOf?: KitOf;
+  /** The model to call: DRAFT.model, unless an evaluation compares another (evals spec). */
+  model?: string;
 }
 
 /**
@@ -204,7 +209,7 @@ export function draftStage(deps: DraftDeps): StageDefinition {
         // Named only where it differs, so every other kit's input reads as it always did.
         ...(role.route.kind === "linkedin_comment" ? { signOff: "name" as const } : {}),
         declined: [],
-        model: DRAFT.model,
+        model: deps.model ?? DRAFT.model,
         effort: DRAFT.effort,
         prompt: PROMPTS[kit],
       };

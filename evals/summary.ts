@@ -1,7 +1,14 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { RunReport } from "./command";
+import {
+  type DraftReport,
+  GAP_COVERAGE,
+  type RunReport,
+  type SecondReadReport,
+  secondReadShares,
+  verdictLines,
+} from "./command";
 import { compareJudgeRuns, type JudgeSetReport } from "./judgeSet";
 import type { CaseResult } from "./run";
 import { compareModels, type Proportion } from "./score";
@@ -14,7 +21,8 @@ import { compareModels, type Proportion } from "./score";
  * that rendered them; and for two models run on the same cases, McNemar's
  * exact test, on the fields both scored and, for synthetic posts, only
  * those both read from the same screenshot, which names a better model only
- * where it shows one. It is built from
+ * where it shows one; and for drafting and the contact's second read their
+ * measures, two second reads compared by the same test. It is built from
  * numbers and the fields' names alone, never from a case, and checkSummary
  * looks again before it is written: no case ID, extracted value or note,
  * and nothing shaped like an address or a phone number. No commit or prompt
@@ -43,6 +51,128 @@ function median(values: readonly number[]): number | null {
 }
 
 const groupOf = (report: RunReport) => `${report.stage}|${report.split}|${report.final}`;
+
+/** The drafting and second-read runs, beside extraction's. */
+export interface StageRuns {
+  drafts?: readonly DraftReport[];
+  reads?: readonly SecondReadReport[];
+}
+
+/** The latest run of each split and model, among one stage's runs. */
+function latestOf<T extends { split: string; final: boolean; model: string; startedAt: string }>(
+  reports: readonly T[],
+): T[] {
+  const latest = new Map<string, T>();
+  for (const report of reports) {
+    const key = `${report.split}|${report.final}|${report.model}`;
+    const kept = latest.get(key);
+    if (!kept || kept.startedAt < report.startedAt) latest.set(key, report);
+  }
+  return [...latest.values()].sort(
+    (a, b) =>
+      `${a.split}|${a.final}`.localeCompare(`${b.split}|${b.final}`) ||
+      a.model.localeCompare(b.model),
+  );
+}
+
+function secondsLine(cases: readonly { outcome: string; seconds: number }[]): string {
+  const seconds = median(
+    cases.filter((each) => each.outcome === "scored").map((each) => each.seconds),
+  );
+  return seconds === null ? "no case timed" : `${seconds.toFixed(1)} seconds a case (median)`;
+}
+
+const MEASURE_HEADER = ["| Measure | Met | Of | Share | 95% interval |", "|---|---|---|---|---|"];
+
+/** A drafting run: gap coverage, the separate check's verdicts, and the drafts' checks. */
+function draftSection(report: DraftReport): string[] {
+  const count = (outcome: string) =>
+    report.cases.filter((result) => result.outcome === outcome).length;
+  const lines = [
+    `## draft, ${report.model}, ${report.split}${report.final ? " (final)" : ""}`,
+    "",
+    `Run on ${report.startedAt.slice(0, 10)}: ${count("scored")} cases drafted, ${count("no kit")} with no kit to draft, ${count("failed")} failed, ${count("budget")} not run for the budget.`,
+    `Cost ${report.costUsd.toFixed(2)}; ${secondsLine(report.cases)}.`,
+    ...(report.renders ? [`Screenshots rendered by Chrome ${report.renders.browser}.`] : []),
+    "",
+    ...MEASURE_HEADER,
+    shareRow(GAP_COVERAGE, report.gapCoverage),
+    "",
+    "### The separate check's verdicts",
+    "",
+    ...verdictLines(report.verdicts),
+  ];
+  const checks = Object.entries(report.checks).filter(
+    (entry): entry is [string, Proportion] => entry[1] !== undefined,
+  );
+  if (checks.length > 0) {
+    lines.push(
+      "",
+      "### Checks on what the draft did",
+      "",
+      ...CHECK_HEADER,
+      ...checks.map(([key, share]) => shareRow(key, share)),
+    );
+  }
+  return lines;
+}
+
+/** A second-read run: its three measures. */
+function secondReadSection(report: SecondReadReport): string[] {
+  const count = (outcome: string) =>
+    report.cases.filter((result) => result.outcome === outcome).length;
+  return [
+    `## address_read, ${report.model}, ${report.split}${report.final ? " (final)" : ""}`,
+    "",
+    `Run on ${report.startedAt.slice(0, 10)}: ${count("scored")} cases read a second time by the model, ${count("not read")} not, ${count("budget")} not run for the budget.`,
+    `Cost ${report.costUsd.toFixed(2)}; ${secondsLine(report.cases)}.`,
+    ...(report.renders ? [`Screenshots rendered by Chrome ${report.renders.browser}.`] : []),
+    "",
+    ...MEASURE_HEADER,
+    ...Object.entries(secondReadShares(report)).map(([name, share]) => shareRow(name, share)),
+  ];
+}
+
+/**
+ * Two second-read runs on one split: whether each second read matched the
+ * label, on the cases both read from the same screenshot.
+ */
+function secondReadComparison(first: SecondReadReport, second: SecondReadReport): string[] {
+  const scoredIn = (report: SecondReadReport) =>
+    new Map(
+      report.cases
+        .filter((result) => result.outcome === "scored" && result.secondRight !== null)
+        .map((result) => [result.id, result.secondRight!]),
+    );
+  const one = scoredIn(first);
+  const other = scoredIn(second);
+  const image = (report: SecondReadReport, id: string) => report.renders?.images[`${id}.png`];
+  const shared = [...one.keys()].filter(
+    (id) => other.has(id) && image(first, id) === image(second, id),
+  );
+  const lines = [
+    `## address_read: ${first.model} against ${second.model} on ${shared.length} ${first.split} cases`,
+    "",
+  ];
+  if (shared.length === 0) return [...lines, "No case is left to compare."];
+  const compared = compareModels(
+    shared.map((id) => ({ first: one.get(id)!, second: other.get(id)! })),
+  );
+  const better =
+    compared.verdict === "first"
+      ? first.model
+      : compared.verdict === "second"
+        ? second.model
+        : "no difference shown";
+  return [
+    ...lines,
+    "McNemar's exact test on the cases where only one model's second read matched the label; a model is named only below p = 0.05.",
+    "",
+    `| Only ${first.model} | Only ${second.model} | p | Better |`,
+    "|---|---|---|---|",
+    `| ${compared.onlyFirst} | ${compared.onlySecond} | ${formatP(compared.p)} | ${better} |`,
+  ];
+}
 
 /** The latest run of each stage, split and model. */
 function latestRuns(reports: readonly RunReport[]): RunReport[] {
@@ -200,6 +330,7 @@ export function summaryOf(
   reports: readonly RunReport[],
   at: Date,
   judges: readonly JudgeSetReport[] = [],
+  stages: StageRuns = {},
 ): string {
   const runs = latestRuns(reports);
   const lines = [
@@ -211,6 +342,17 @@ export function summaryOf(
   for (const [i, first] of runs.entries()) {
     for (const second of runs.slice(i + 1)) {
       if (groupOf(first) === groupOf(second)) lines.push("", ...comparisonSection(first, second));
+    }
+  }
+  // Drafting runs are compared by their intervals: gap coverage counts gaps, which differ by run.
+  for (const report of latestOf(stages.drafts ?? [])) lines.push("", ...draftSection(report));
+  const reads = latestOf(stages.reads ?? []);
+  for (const report of reads) lines.push("", ...secondReadSection(report));
+  for (const [i, first] of reads.entries()) {
+    for (const second of reads.slice(i + 1)) {
+      if (first.split === second.split && first.final === second.final) {
+        lines.push("", ...secondReadComparison(first, second));
+      }
     }
   }
   const judgeRuns = latestJudgeRuns(judges);
@@ -248,6 +390,7 @@ export function checkSummary(
   text: string,
   reports: readonly RunReport[],
   judges: readonly JudgeSetReport[] = [],
+  stages: StageRuns = {},
 ): string[] {
   // Route and eligibility are a few fixed words, which the summary names; the rest is the case's own.
   const fromCases = [
@@ -262,6 +405,16 @@ export function checkSummary(
     ),
     // A judge's note on a sentence can quote the owner's facts.
     ...judges.flatMap((report) => report.items.map((each) => each.note ?? "")),
+    ...(stages.drafts ?? []).flatMap((report) =>
+      report.cases.flatMap((result) => [
+        result.id,
+        result.note ?? "",
+        ...result.checks.map((check) => check.note),
+      ]),
+    ),
+    ...(stages.reads ?? []).flatMap((report) =>
+      report.cases.flatMap((result) => [result.id, result.note ?? ""]),
+    ),
   ];
   const found = new Set<string>();
   for (const value of fromCases) {
@@ -296,6 +449,32 @@ export function readReports(runs: string): RunReport[] {
     }
   }
   return reports;
+}
+
+/** Every drafting and second-read run's report under `runs`, passing over any that cannot be read as one. */
+export function readStageRuns(runs: string): {
+  drafts: DraftReport[];
+  reads: SecondReadReport[];
+} {
+  const drafts: DraftReport[] = [];
+  const reads: SecondReadReport[] = [];
+  if (!existsSync(runs)) return { drafts, reads };
+  for (const name of readdirSync(runs).sort()) {
+    const file = join(runs, name, "report.json");
+    if (!existsSync(file)) continue;
+    try {
+      const report = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      if (!Array.isArray(report.cases) || typeof report.model !== "string") continue;
+      if (report.stage === "draft" && report.gapCoverage)
+        drafts.push(report as unknown as DraftReport);
+      if (report.stage === "address_read" && report.agreesWithLabel) {
+        reads.push(report as unknown as SecondReadReport);
+      }
+    } catch {
+      // Not a report this version can read.
+    }
+  }
+  return { drafts, reads };
 }
 
 /** Every judge-set run's report under `runs`, passing over any that cannot be read as one. */

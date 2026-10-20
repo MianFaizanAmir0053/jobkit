@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { parse } from "yaml";
 import { z } from "zod";
 
+import type { Kit } from "@/core/drafting/kit";
 import type { EligibilityResult } from "@/core/extraction/eligibilityCheck";
 import type { ExtractOutput } from "@/core/extraction/extract";
 import {
@@ -403,4 +404,49 @@ export function checkExpectations(expect: SyntheticExpect, observed: Observed): 
     }
   }
   return checks.map((each) => (each.met === true ? { ...each, note: "" } : each));
+}
+
+/** The topics a profile key's fixed answer answers: work authorisation answers sponsorship too. */
+const KEY_TOPICS: Readonly<Record<string, readonly string[]>> = {
+  work_authorisation: ["work_authorisation", "sponsorship"],
+  salary_expectation: ["salary"],
+  years_per_stack: ["years_with_skill"],
+  notice_period: ["notice_period"],
+  availability: ["availability"],
+  working_window: ["time_zone"],
+  relocation: ["relocation"],
+  eeo: ["eeo"],
+};
+
+/**
+ * The expectations the draft stage checks: each question named in
+ * `fixed_keys` answered from the profile key's topic, never in the model's
+ * words, and the must-have gaps the draft answers with a gap line.
+ */
+export function checkDraftExpectations(
+  expect: SyntheticExpect,
+  observed: { kit: Kit; gapsAnswered: number },
+): Check[] {
+  const checks: Check[] = [];
+  if (expect.fixed_keys) {
+    const answers = observed.kit.kind === "form" ? observed.kit.answers : [];
+    const notes = Object.entries(expect.fixed_keys).flatMap(([id, key]) => {
+      const answer = answers.find((each) => each.id === id);
+      if (!answer) return [`${id} has no answer`];
+      if (!(KEY_TOPICS[key] ?? []).includes(answer.topic ?? "")) {
+        return [`${id} was read as ${answer.topic ?? "no topic"}`];
+      }
+      return answer.source === "drafted" ? [`${id} was answered in the model's words`] : [];
+    });
+    checks.push({ key: "fixed_keys", met: notes.length === 0, note: notes.join("; ") });
+  }
+  if (expect.must_gaps_expected !== undefined) {
+    const met = observed.gapsAnswered === expect.must_gaps_expected;
+    checks.push({
+      key: "must_gaps_expected",
+      met,
+      note: met ? "" : `${observed.gapsAnswered} answered with a gap line`,
+    });
+  }
+  return checks;
 }

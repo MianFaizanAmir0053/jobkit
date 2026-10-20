@@ -62,7 +62,7 @@ export interface EvalCase {
 }
 
 /** The route a case without one is pooled under. */
-const UNLABELLED = "unlabelled";
+export const UNLABELLED = "unlabelled";
 
 export interface RunDeps {
   /** A local database, migrated, with the profile seeded; nothing else is written. */
@@ -143,7 +143,7 @@ export async function estimateCase(item: EvalCase, model: string, at: Date): Pro
 }
 
 /** What this run has spent in its local database, and a guard refusing any call that could pass the budget. */
-function budgetGuard(db: Db, budgetUsd: number) {
+export function budgetGuard(db: Db, budgetUsd: number) {
   let reached = false;
   const guard: ModelCallGuard = async ({ provisionalCostUsd }) => {
     const { rows } = await db.query<{ spent: string | number }>(
@@ -160,7 +160,7 @@ function budgetGuard(db: Db, budgetUsd: number) {
   return { guard, reached: () => reached };
 }
 
-async function costOf(db: Db, jobId: string): Promise<number> {
+export async function costOf(db: Db, jobId: string): Promise<number> {
   const { rows } = await db.query<{ cost: string | number }>(
     "select coalesce(sum(cost_usd), 0) as cost from {{schema}}.model_calls where job_id = $1",
     [jobId],
@@ -169,7 +169,7 @@ async function costOf(db: Db, jobId: string): Promise<number> {
 }
 
 /** A new job holding the case's screenshots and pasted text, as intake leaves one. */
-async function jobOf(deps: RunDeps, item: EvalCase): Promise<string> {
+export async function jobOf(deps: RunDeps, item: EvalCase): Promise<string> {
   const images = await Promise.all(item.images.map(asSent));
   const metas: ImageMeta[] = images.map((image) => ({
     contentType: image.contentType,
