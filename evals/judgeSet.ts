@@ -16,6 +16,7 @@ import { provisionalCost } from "@/core/platform/prices";
 import type { Clock, Db, Llm, Random } from "@/core/ports";
 import { type Fact, factSchema } from "@/core/profile/schema";
 
+import type { LiveScore } from "./liveClaims";
 import {
   compareModels,
   type Comparison,
@@ -62,6 +63,9 @@ const setSchema = z.strictObject({
 
 export type JudgeSetItem = z.output<typeof itemSchema>;
 export type JudgeSet = z.output<typeof setSchema>;
+
+/** What the judge's run needs of a sentence: the judge set's, or a claim from a live draft. */
+export type JudgeItem = Pick<JudgeSetItem, "id" | "sentence" | "facts" | "label">;
 
 /** A sentence as the labelling page shows it: never what it was meant to be. */
 export type LabellingItem = Omit<JudgeSetItem, "intent">;
@@ -201,7 +205,7 @@ const STAND_IN_RECORD = {
 } as unknown as JobRecord;
 
 /** The sentence as the judge sees it: an email's one claim, citing its facts. */
-function kitOf(item: JudgeSetItem): EmailKit {
+function kitOf(item: JudgeItem): EmailKit {
   return {
     kind: "email",
     subject: "",
@@ -256,7 +260,7 @@ export interface JudgeSetRun {
 }
 
 /** The most one sentence's check can cost: its prompt as sent, the answer at its limit. */
-export function estimateJudgeItem(item: JudgeSetItem, model: string, at: Date): number {
+export function estimateJudgeItem(item: JudgeItem, model: string, at: Date): number {
   const content = judgeContent(
     kitOf(item),
     item.facts,
@@ -288,7 +292,7 @@ function budgetGuard(db: Db, budgetUsd: number) {
 /** Runs the judge on every labelled sentence in turn, until the budget would be passed. */
 export async function runJudgeSet(
   deps: JudgeSetDeps,
-  set: JudgeSet,
+  set: { items: readonly JudgeItem[] },
   options: { model: string; budgetUsd: number },
 ): Promise<JudgeSetRun> {
   const budget = budgetGuard(deps.db, options.budgetUsd);
@@ -396,13 +400,16 @@ export function compareJudgeRuns(first: JudgeSetRun, second: JudgeSetRun): Compa
 }
 
 export interface JudgeSetReport extends JudgeSetRun {
-  stage: "judge-set";
+  /** The frozen judge set, or the claims from live drafts. */
+  stage: "judge-set" | "judge";
   startedAt: string;
   finishedAt: string;
   commit: string;
   /** The judge's prompt version, as its stage hashes it. */
   prompt: string;
   effort: string;
+  /** For the claims from live drafts: the check as it ran live, against the same labels. */
+  live?: LiveScore;
 }
 
 const percent = (share: number | null) => (share === null ? "–" : `${Math.round(share * 100)}%`);
@@ -416,13 +423,18 @@ export function judgeReportMarkdown(report: JudgeSetReport): string {
   const { notSupported } = report;
   const cell = (text: string) => text.replaceAll("|", "/").replaceAll("\n", " ");
   return `${[
-    `# judge-set, ${report.model}`,
+    `# ${report.stage}, ${report.model}`,
     "",
     `Run at ${report.startedAt}, commit ${report.commit.slice(0, 12)}, prompt ${report.prompt.slice(0, 12)}, effort ${report.effort}.`,
     `Sentences: ${count("scored")} scored, ${count("failed")} failed, ${count("budget")} not run for the budget. Cost $${report.costUsd.toFixed(2)} of a $${report.budgetUsd.toFixed(2)} budget${report.stoppedAtBudget ? "; stopped at the budget" : ""}.`,
     "",
     `"Not supported" (overstated or unsupported) against the owner's labels: precision ${shareText(notSupported.precision)}, recall ${shareText(notSupported.recall)}.`,
     `Called as the owner did: ${shareText(report.accuracy)}.`,
+    ...(report.live
+      ? [
+          `The check as it ran live, on the ${report.live.claims} labelled claims it weighed: precision ${shareText(report.live.notSupported.precision)}, recall ${shareText(report.live.notSupported.recall)}; called as the owner did ${shareText(report.live.accuracy)}.`,
+        ]
+      : []),
     "",
     "| Sentence | Label | Verdict | Right | Note |",
     "|---|---|---|---|---|",

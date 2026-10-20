@@ -12,11 +12,13 @@ import { listCases, readCase } from "./cases";
 import { styleExamplesOf } from "./import";
 import {
   estimateJudgeItem,
+  type JudgeItem,
   type JudgeSetReport,
   judgeReportMarkdown,
   readJudgeSet,
   runJudgeSet,
 } from "./judgeSet";
+import { liveClaims, type LiveScore, scoreLive } from "./liveClaims";
 import {
   type CaseResult,
   type CaseSplit,
@@ -90,7 +92,7 @@ export interface EvalArgs {
   budgetUsd: number;
 }
 
-const STAGES_BUILT = ["extract", "draft", "address_read", "judge-set"] as const;
+const STAGES_BUILT = ["extract", "draft", "address_read", "judge", "judge-set"] as const;
 export type EvalStage = (typeof STAGES_BUILT)[number];
 
 /** Each stage's model, unless --model names another to compare with it. */
@@ -98,6 +100,7 @@ const STAGE_MODELS: Readonly<Record<EvalStage, string>> = {
   extract: EXTRACT.model,
   draft: DRAFT.model,
   address_read: ADDRESS_READ.model,
+  judge: JUDGE.model,
   "judge-set": JUDGE.model,
 };
 
@@ -146,16 +149,19 @@ export function parseEvalArgs(argv: readonly string[]): EvalArgs {
     throw new Error(`Only ${STAGES_BUILT.join(", ")} can be evaluated so far.`);
   }
   const built = stage as EvalStage;
-  // The judge set is one frozen set of sentences, run whole: it has no split.
-  if (stage === "judge-set") {
+  // The judge set is one frozen set of sentences, run whole, as are the claims from live
+  // drafts: neither has a split.
+  if (built === "judge-set" || built === "judge") {
     if (args.split !== undefined || args.final) {
       throw new Error(
-        "The judge set is one set, with no split: run it without --split or --final.",
+        built === "judge"
+          ? "The claims from live drafts are run whole, with no split: run them without --split or --final."
+          : "The judge set is one set, with no split: run it without --split or --final.",
       );
     }
     return {
-      stage: "judge-set",
-      model: args.model ?? JUDGE.model,
+      stage: built,
+      model: args.model ?? STAGE_MODELS[built],
       split: "dev",
       final: false,
       yes: args.yes ?? false,
@@ -504,48 +510,84 @@ export async function judgeSetCommand(args: EvalArgs, io: EvalIo): Promise<Judge
   io.log(
     `${labelled.length} labelled sentences of the judge set's ${set.items.length} to run; ${set.items.length - labelled.length} have no label yet.`,
   );
-  const startedAt = io.now();
-  const most = labelled.reduce(
-    (sum, item) => sum + estimateJudgeItem(item, args.model, startedAt),
-    0,
+  return judgeRun(args, io, "judge-set", labelled);
+}
+
+/**
+ * The judge on the claims from live drafts (evals spec, "Metrics", the
+ * judge): every labelled claim the pull kept beside a live case, each
+ * through the judge's own prompt, up to the budget, and the check as it ran
+ * live scored against the same labels, which spends nothing.
+ */
+export async function liveJudgeCommand(args: EvalArgs, io: EvalIo): Promise<JudgeSetReport | null> {
+  const claims = liveClaims(io.archive);
+  const labelled = claims.filter((claim) => claim.label !== null);
+  io.log(
+    `${labelled.length} labelled claims from live drafts to run; ${claims.length - labelled.length} have no label yet.`,
   );
+  const live = scoreLive(labelled);
+  if (live.claims > 0) {
+    io.log(
+      `As the check ran live, on the ${live.claims} it weighed: precision ${shareText(live.notSupported.precision)}, recall ${shareText(live.notSupported.recall)}.`,
+    );
+  }
+  return judgeRun(args, io, "judge", labelled, live);
+}
+
+/** A run of the judge over labelled sentences, each through its own prompt, up to the budget; its report beside the others. */
+async function judgeRun(
+  args: EvalArgs,
+  io: EvalIo,
+  stage: "judge-set" | "judge",
+  items: readonly JudgeItem[],
+  live?: LiveScore,
+): Promise<JudgeSetReport | null> {
+  const startedAt = io.now();
+  const most = items.reduce((sum, item) => sum + estimateJudgeItem(item, args.model, startedAt), 0);
   const runs = join(io.evalsDir, "runs");
   io.log(
-    `At most ${dollars(most)} for judge-set with ${args.model}; the run stops before passing its budget of ${dollars(args.budgetUsd)}.`,
+    `At most ${dollars(most)} for ${stage} with ${args.model}; the run stops before passing its budget of ${dollars(args.budgetUsd)}.`,
   );
   io.log(`Evaluation runs this month have spent ${dollars(spentThisMonth(runs, startedAt))}.`);
   if (!args.yes) {
     io.log("Nothing was spent. Run again with --yes to spend.");
     return null;
   }
-  if (labelled.length === 0) {
-    io.log("No labelled sentences, so nothing to run: label them on /dev/label/judge.");
+  if (items.length === 0) {
+    io.log(
+      stage === "judge"
+        ? "No labelled claims, so nothing to run: label them on /dev/label/claims."
+        : "No labelled sentences, so nothing to run: label them on /dev/label/judge.",
+    );
     return null;
   }
   const deps = await io.open(io.profileFile);
   let report: JudgeSetReport;
   try {
-    const run = await runJudgeSet(deps, set, { model: args.model, budgetUsd: args.budgetUsd });
+    const run = await runJudgeSet(
+      deps,
+      { items },
+      { model: args.model, budgetUsd: args.budgetUsd },
+    );
     report = {
       ...run,
-      stage: "judge-set",
+      stage,
       startedAt: startedAt.toISOString(),
       finishedAt: io.now().toISOString(),
       commit: io.commit,
       prompt: JUDGE_PROMPT,
       effort: JUDGE.effort,
+      ...(live ? { live } : {}),
     };
   } finally {
     await deps.close();
   }
-  const folder = join(runs, `${report.startedAt.replaceAll(":", "-")}-judge-set-${args.model}`);
+  const folder = join(runs, `${report.startedAt.replaceAll(":", "-")}-${stage}-${args.model}`);
   mkdirSync(folder, { recursive: true });
   writeFileSync(join(folder, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
   writeFileSync(join(folder, "report.md"), judgeReportMarkdown(report));
   const { precision, recall } = report.notSupported;
-  io.log(
-    `Not supported: precision ${precision.successes} of ${precision.n} (${percent(precision.point)}, ${percent(precision.low)} to ${percent(precision.high)}), recall ${recall.successes} of ${recall.n} (${percent(recall.point)}, ${percent(recall.low)} to ${percent(recall.high)}).`,
-  );
+  io.log(`Not supported: precision ${shareText(precision)}, recall ${shareText(recall)}.`);
   io.log(
     `Cost ${dollars(report.costUsd)}${report.stoppedAtBudget ? ", stopped at the budget" : ""}. Report: ${folder}`,
   );
@@ -629,6 +671,10 @@ export async function evalCommand(argv: readonly string[], io: EvalIo): Promise<
   }
   if (args.stage === "judge-set") {
     await judgeSetCommand(args, io);
+    return null;
+  }
+  if (args.stage === "judge") {
+    await liveJudgeCommand(args, io);
     return null;
   }
   const { split } = args;

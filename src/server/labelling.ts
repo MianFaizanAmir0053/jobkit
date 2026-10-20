@@ -15,7 +15,8 @@ import {
   shownSchema,
 } from "../../evals/cases";
 import { styleExamplesOf } from "../../evals/import";
-import { JUDGE_LABELS, labelJudgeItem } from "../../evals/judgeSet";
+import { JUDGE_LABELS, type JudgeLabel, labelJudgeItem } from "../../evals/judgeSet";
+import { labelClaim } from "../../evals/liveClaims";
 import type { Clock, Db } from "@/core/ports";
 import { type AppConfig, appConfig } from "@/server/config";
 import type { Container } from "@/server/container";
@@ -246,6 +247,35 @@ export async function postJudgeLabel(
       label as (typeof JUDGE_LABELS)[number],
       deps.clock.now(),
     );
+    if (!saved.ok) return refusal(saved.reason === "labelled" ? 409 : 404, saved.reason);
+  } catch (error) {
+    return failed(error);
+  }
+  return NextResponse.json({ saved: true }, { headers: NO_STORE });
+}
+
+/**
+ * POST /api/dev/label/claims/<case>/<block>: one claim from a live draft,
+ * labelled once, blind, as the judge set's sentences are.
+ */
+export async function postClaimLabel(
+  request: NextRequest,
+  deps: LabellingDeps,
+  caseId: string,
+  blockId: string,
+  archive: string = ARCHIVE,
+): Promise<NextResponse> {
+  if (!deps.allowed || !fromLaptop(requestFrom(request))) return notFound();
+  const actor = await sessionForChange(request, deps, { kind: "google" });
+  if (!actor.ok) return actor.response;
+  const body = await jsonBody(request, 1024);
+  if (body === "too-large") return refusal(413, "too-large");
+  const label = (body as { label?: unknown } | null)?.label;
+  if (typeof label !== "string" || !(JUDGE_LABELS as readonly string[]).includes(label)) {
+    return refusal(400, "bad-label");
+  }
+  try {
+    const saved = labelClaim(archive, caseId, blockId, label as JudgeLabel, deps.clock.now());
     if (!saved.ok) return refusal(saved.reason === "labelled" ? 409 : 404, saved.reason);
   } catch (error) {
     return failed(error);

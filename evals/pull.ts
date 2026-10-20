@@ -6,6 +6,7 @@ import { stageOutput } from "@/core/platform/runner";
 import type { Db, Storage } from "@/core/ports";
 
 import { DISMISSED } from "./import";
+import { claimsOfJob, keepClaims } from "./liveClaims";
 import { knownCaseIds } from "./splitFile";
 
 /**
@@ -14,7 +15,9 @@ import { knownCaseIds } from "./splitFile";
  * folder on the laptop, `<archive>/live-<received date>-<job ID start>/`,
  * with each kept image as `<purpose>-<place>.<extension>`, the stored crop
  * of its contact as `crop.png` and its pasted text as `pasted.txt` when it
- * had them, and the job's ID and arrival in `source.json`. Each image is
+ * had them, the claims of its draft with the facts they cite and the
+ * check's verdicts as `claims.json` (evals/liveClaims.ts), and the job's
+ * ID and arrival in `source.json`. Each image is
  * checked against its hash, and the crop against the hash its name holds.
  * A new case is put together in `_pulling/` and moved into the archive
  * whole, so a pull that fails leaves no half-made case. Only the keep flags
@@ -109,6 +112,8 @@ export async function pullKeptJobs(
         writeFileSync(file, bytes);
       }
       cropNote = await copyCrop(deps, jobId, work);
+      // The draft's claims, for the judge's metric on live drafts; kept once, as first pulled.
+      keepClaims(work, jobId, await claimsOfJob(deps.db, jobId));
       if (pastedText && pastedText.trim() !== "") {
         writeFileSync(join(work, "pasted.txt"), pastedText);
       }

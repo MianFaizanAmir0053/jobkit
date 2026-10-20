@@ -11,8 +11,16 @@ const WORDS: Record<Label, string> = {
   not_supported: "Overstated or not supported",
 };
 
-/** One sentence's label: two buttons until it is given, then what was given. */
-export function JudgeLabel({ id, label }: { id: string; label: Label | null }) {
+/** One sentence's label: two buttons until it is given, then what was given; `url` takes it. */
+export function JudgeLabel({
+  id,
+  label,
+  url = `/api/dev/label/judge/${id}`,
+}: {
+  id: string;
+  label: Label | null;
+  url?: string;
+}) {
   const [given, setGiven] = useState<Label | null>(label);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -21,7 +29,7 @@ export function JudgeLabel({ id, label }: { id: string; label: Label | null }) {
     setBusy(true);
     setError(null);
     try {
-      const response = await fetch(`/api/dev/label/judge/${id}`, {
+      const response = await fetch(url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ label: choice }),

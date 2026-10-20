@@ -22,6 +22,7 @@ import { cryptoRandom } from "@/adapters/random";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 import { DRAFT } from "@/core/drafting/draftStage";
+import { JUDGE } from "@/core/drafting/judgeStage";
 import { S01_DRAFT, S01_JUDGED } from "@/core/drafting/testDrafts";
 import { ADDRESS_READ } from "@/core/extraction/addressReadStage";
 import { EXTRACT } from "@/core/extraction/extract";
@@ -37,6 +38,8 @@ import {
   type RunReport,
   type SecondReadReport,
 } from "./command";
+import type { JudgeSetReport } from "./judgeSet";
+import { keepClaims, labelClaim } from "./liveClaims";
 import { manifestOf, sourceOf } from "./render";
 import { appendSplitEvents } from "./splitFile";
 import { syntheticPosts } from "./synthetic";
@@ -317,6 +320,50 @@ describe("evalCommand", () => {
       { id: CASE, outcome: "scored", firstRight: true, secondRight: false, agreed: false },
     ]);
     expect(lines).toContain("False alarms on a right first read: 1 of 1 (100%, 21% to 100%)");
+  });
+
+  it("runs the judge on the labelled claims from live drafts, and scores the check as it ran live", async () => {
+    const checked = validateProfile(readFileSync(join(SYNTHETIC, "profile.sample.yaml"), "utf8"), {
+      read: (path) => new Uint8Array(readFileSync(join(SYNTHETIC, path))),
+    });
+    if (!checked.ok) throw new Error(JSON.stringify(checked.problems));
+    const fact = checked.profile.facts.find((each) => each.approved)!;
+    const archive = join(dir, "archive");
+    const live = "live-2026-10-20-0123abcd";
+    mkdirSync(join(archive, live), { recursive: true });
+    keepClaims(join(archive, live), "job", [
+      {
+        blockId: "S2",
+        sentence: "I led a team of fifty engineers.",
+        facts: [fact],
+        liveVerdict: "overstated",
+      },
+    ]);
+    labelClaim(archive, live, "S2", "not_supported", new Date("2026-10-13T11:00:00Z"));
+    // The model under test lets the inflated claim through, where the check caught it live.
+    llm = fakeLlm([
+      answer({
+        verdicts: [{ block_id: "S1", verdict: "supported", company_claim: false, note: "" }],
+      }),
+    ]);
+
+    expect(await evalCommand(["--stage", "judge", "--yes"], io())).toBeNull();
+
+    expect(lines).toContain(
+      "As the check ran live, on the 1 it weighed: precision 1 of 1 (100%, 21% to 100%), recall 1 of 1 (100%, 21% to 100%).",
+    );
+    const runs = join(dir, "evals", "runs");
+    const [folder] = readdirSync(runs);
+    expect(folder).toBe(`2026-10-13T12-00-00.000Z-judge-${JUDGE.model}`);
+    const saved = JSON.parse(
+      readFileSync(join(runs, folder!, "report.json"), "utf8"),
+    ) as JudgeSetReport;
+    expect(saved).toMatchObject({
+      stage: "judge",
+      notSupported: { recall: { successes: 0, n: 1 } },
+      live: { claims: 1, notSupported: { recall: { successes: 1, n: 1 } } },
+    });
+    expect(() => parseEvalArgs(["--stage", "judge", "--split", "dev"])).toThrow(/no split/);
   });
 
   it("scores test cases only with --final, which it records, printing none of them", async () => {

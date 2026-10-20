@@ -297,23 +297,26 @@ function comparisonSection(first: RunReport, second: RunReport): string[] {
   return lines;
 }
 
-/** The latest judge-set run of each model. */
+/** The latest run of each model on the judge set, and on the claims from live drafts. */
 function latestJudgeRuns(reports: readonly JudgeSetReport[]): JudgeSetReport[] {
   const latest = new Map<string, JudgeSetReport>();
   for (const report of reports) {
-    const kept = latest.get(report.model);
-    if (!kept || kept.startedAt < report.startedAt) latest.set(report.model, report);
+    const key = `${report.stage}|${report.model}`;
+    const kept = latest.get(key);
+    if (!kept || kept.startedAt < report.startedAt) latest.set(key, report);
   }
-  return [...latest.values()].sort((a, b) => a.model.localeCompare(b.model));
+  return [...latest.values()].sort(
+    (a, b) => b.stage.localeCompare(a.stage) || a.model.localeCompare(b.model),
+  );
 }
 
-/** A judge-set run: "not supported" against the owner's labels, with intervals. */
+/** A judge run: "not supported" against the owner's labels, with intervals; for live claims, the check as it ran too. */
 function judgeSection(report: JudgeSetReport): string[] {
   const count = (outcome: JudgeSetReport["items"][number]["outcome"]) =>
     report.items.filter((each) => each.outcome === outcome).length;
   const { precision, recall } = report.notSupported;
   return [
-    `## judge-set, ${report.model}`,
+    `## ${report.stage}, ${report.model}`,
     "",
     `Run on ${report.startedAt.slice(0, 10)}: ${count("scored")} sentences scored, ${count("failed")} failed, ${count("budget")} not run for the budget. Cost ${report.costUsd.toFixed(2)}.`,
     "",
@@ -322,6 +325,18 @@ function judgeSection(report: JudgeSetReport): string[] {
     shareRow('Precision of "not supported"', precision),
     shareRow('Recall of "not supported"', recall),
     shareRow("Called as the owner did", report.accuracy),
+    ...(report.live
+      ? [
+          shareRow(
+            'Precision of "not supported", as the check ran live',
+            report.live.notSupported.precision,
+          ),
+          shareRow(
+            'Recall of "not supported", as the check ran live',
+            report.live.notSupported.recall,
+          ),
+        ]
+      : []),
   ];
 }
 
@@ -359,6 +374,7 @@ export function summaryOf(
   for (const report of judgeRuns) lines.push("", ...judgeSection(report));
   for (const [i, first] of judgeRuns.entries()) {
     for (const second of judgeRuns.slice(i + 1)) {
+      if (first.stage !== second.stage) continue;
       const compared = compareJudgeRuns(first, second);
       const better =
         compared.verdict === "first"
@@ -368,7 +384,7 @@ export function summaryOf(
             : "no difference shown";
       lines.push(
         "",
-        `## judge-set: ${first.model} against ${second.model}`,
+        `## ${first.stage}: ${first.model} against ${second.model}`,
         "",
         "McNemar's exact test on the sentences only one model called as the owner did; a model is named only below p = 0.05.",
         "",
@@ -486,7 +502,11 @@ export function readJudgeReports(runs: string): JudgeSetReport[] {
     if (!existsSync(file)) continue;
     try {
       const report = JSON.parse(readFileSync(file, "utf8")) as Partial<JudgeSetReport>;
-      if (report.stage === "judge-set" && Array.isArray(report.items) && report.notSupported) {
+      if (
+        (report.stage === "judge-set" || report.stage === "judge") &&
+        Array.isArray(report.items) &&
+        report.notSupported
+      ) {
         reports.push(report as JudgeSetReport);
       }
     } catch {
