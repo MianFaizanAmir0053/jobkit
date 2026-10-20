@@ -1067,7 +1067,9 @@ function KitPanel({
           </dd>
           {view.images?.screenshots === "always" && shots.length === 0 && fromScreenshots && (
             <dd className="col-span-2 text-muted-foreground">
-              jobkit cannot show the post&apos;s screenshots just now. Reload the page to try again.
+              {view.images.left === 0
+                ? "The post's screenshots were deleted 30 days after the job began: type it from the post."
+                : "jobkit cannot show the post's screenshots just now. Reload the page to try again."}
             </dd>
           )}
           {shots.length > 0 && (

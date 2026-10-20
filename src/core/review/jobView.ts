@@ -510,6 +510,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
                       ? "without-crop"
                       : "never",
             first: contactScreenshot,
+            left: await screenshotsLeft(deps.db, id),
           }
         : null,
     addressChecks,
@@ -1245,4 +1246,13 @@ export async function listJobViews(
         !row.sent_roles.includes(role.id),
     };
   });
+}
+
+/** How many of the post's screenshots the job still keeps, after the 30-day purge. */
+async function screenshotsLeft(db: Db, jobId: string): Promise<number> {
+  const { rows } = await db.query<{ left: number }>(
+    `select count(*)::int as left from {{schema}}.job_images where job_id = $1 and purpose = 'post'`,
+    [jobId],
+  );
+  return rows[0]?.left ?? 0;
 }

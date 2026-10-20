@@ -1,0 +1,190 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+
+import { fakeClock, type FakeClock } from "@/adapters/clock";
+import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
+import type { PgliteDb } from "@/adapters/pglite";
+import { purgeIntake } from "@/core/intake/purge";
+import { createJob } from "@/core/platform/jobs";
+import { createTestDb } from "@/server/db/testDb";
+
+import { purgeLedger } from "./purge";
+
+/*
+ * The daily retention purges (intake AC9, ledger AC9), with a fake clock:
+ * screenshots and crops past 30 days unless kept, stray objects, old pasted
+ * text; records, drafts and recruiter names 180 days after an
+ * application's last change, 30 days after a kit-less job's, the
+ * application row kept.
+ */
+
+let db: PgliteDb;
+let clock: FakeClock;
+let root: string;
+let storage: LocalStorage;
+
+const DAY = 24 * 60 * 60 * 1000;
+const PNG = new Uint8Array([1, 2, 3]);
+
+beforeAll(async () => {
+  db = await createTestDb();
+});
+
+afterAll(async () => {
+  await db.close();
+});
+
+beforeEach(async () => {
+  clock = fakeClock();
+  root = mkdtempSync(join(tmpdir(), "jobkit-purge-"));
+  storage = createLocalStorage({ root, origin: "http://localhost:3000" });
+  await db.exec(
+    `delete from {{schema}}.kit_reviews; delete from {{schema}}.status_changes;
+     delete from {{schema}}.applications; delete from {{schema}}.job_stage_runs;
+     delete from {{schema}}.job_leases; delete from {{schema}}.job_images;
+     delete from {{schema}}.job_state_changes; delete from {{schema}}.jobs`,
+  );
+});
+
+afterEach(() => {
+  rmSync(root, { recursive: true, force: true });
+});
+
+/** A job with one screenshot stored, its row, a crop, and pasted text. */
+async function jobWithImage(kept: boolean): Promise<string> {
+  const id = await createJob(db, {
+    state: "manual_run",
+    receivedAt: clock.now(),
+    clientElapsedMs: 0,
+  });
+  await db.query(
+    "update {{schema}}.jobs set pasted_text = 'A post.', post_links = '{https://example.com}' where id = $1",
+    [id],
+  );
+  const path = `jobs/${id}/one.png`;
+  await storage.put(path, PNG, "image/png");
+  await storage.put(`jobs/${id}/crops/contact.png`, PNG, "image/png");
+  await db.query(
+    `insert into {{schema}}.job_images
+       (job_id, position, purpose, storage_path, content_type, width, height, bytes, sha256,
+        tile_count, created_at, purge_after, kept_for_eval)
+     values ($1, 0, 'post', $2, 'image/png', 10, 10, 3, 'abc', 1, $3, $4, $5)`,
+    [id, path, clock.now(), new Date(clock.now().getTime() + 30 * DAY), kept],
+  );
+  return id;
+}
+
+describe("the daily purges", () => {
+  it("deletes screenshots, crops and pasted text past 30 days unless kept, and stray objects", async () => {
+    const gone = await jobWithImage(false);
+    const kept = await jobWithImage(true);
+    // An object no row names, as an add never confirmed leaves.
+    await storage.put(`jobs/${kept}/stray.png`, PNG, "image/png");
+
+    clock.advance(29 * DAY);
+    expect(await purgeIntake({ db, clock, storage })).toEqual({
+      images: 0,
+      crops: 0,
+      strays: 1,
+      pastedTexts: 0,
+    });
+
+    clock.advance(2 * DAY);
+    expect(await purgeIntake({ db, clock, storage })).toEqual({
+      images: 1,
+      crops: 1,
+      strays: 0,
+      pastedTexts: 1,
+    });
+    expect(await storage.list(`jobs/${gone}`)).toEqual([]);
+    expect((await storage.list(`jobs/${kept}`)).sort()).toEqual([
+      `jobs/${kept}/crops/contact.png`,
+      `jobs/${kept}/one.png`,
+    ]);
+    const { rows } = await db.query<{ id: string; pasted_text: string | null }>(
+      "select id, pasted_text from {{schema}}.jobs",
+    );
+    expect(Object.fromEntries(rows.map((row) => [row.id, row.pasted_text]))).toEqual({
+      [gone]: null,
+      [kept]: "A post.",
+    });
+    // Run twice, as the daily job may be: nothing more goes.
+    expect(await purgeIntake({ db, clock, storage })).toEqual({
+      images: 0,
+      crops: 0,
+      strays: 0,
+      pastedTexts: 0,
+    });
+  });
+
+  it("clears a job's record and drafts 180 days after its application last changed, keeping the application", async () => {
+    const withApplication = await createJob(db, {
+      state: "manual_run",
+      receivedAt: clock.now(),
+      clientElapsedMs: 0,
+    });
+    const kitless = await createJob(db, {
+      state: "manual_run",
+      receivedAt: clock.now(),
+      clientElapsedMs: 0,
+    });
+    await db.query(
+      "update {{schema}}.jobs set state = 'stopped', state_changed_at = $2 where id = $1",
+      [kitless, clock.now()],
+    );
+    const lease = await db.query<{ id: string }>(
+      `insert into {{schema}}.job_leases (id, job_id, claimed_at, expires_at)
+       values (gen_random_uuid(), $1, $2, $2), (gen_random_uuid(), $3, $2, $2)
+       returning id`,
+      [withApplication, clock.now(), kitless],
+    );
+    for (const [i, job] of [withApplication, kitless].entries()) {
+      await db.query(
+        `insert into {{schema}}.job_stage_runs
+           (job_id, lease_id, stage, round, attempt, input_hash, outcome, output, output_hash, started_at, ended_at)
+         values ($1, $2, 'extract', 0, 1, 'in', 'ok', '{"record": {"recruiter": {"name": "Ana"}}}', 'out', $3, $3)`,
+        [job, lease.rows[i]!.id, clock.now()],
+      );
+    }
+    await db.query(
+      `insert into {{schema}}.applications
+         (job_id, role_id, company, role, role_key, route, status, opened_at, status_changed_at,
+          final_draft, post_fingerprint, job_kind)
+       values ($1, 'P1', 'Northwind', 'Developer', 'developer', 'email', 'sent', $2, $2,
+               '{"body": "Dear Ana"}', '{abc}', 'real')`,
+      [withApplication, clock.now()],
+    );
+    await db.query(
+      `insert into {{schema}}.kit_reviews (job_id, role_id, decisions, gate, updated_at)
+       values ($1, 'P1', '{"typed": "ana@example.com"}', '[]', $2)`,
+      [withApplication, clock.now()],
+    );
+
+    clock.advance(31 * DAY);
+    expect(await purgeLedger({ db, clock })).toEqual({ jobs: 1 });
+    clock.advance(150 * DAY);
+    expect(await purgeLedger({ db, clock })).toEqual({ jobs: 1 });
+    expect(await purgeLedger({ db, clock })).toEqual({ jobs: 0 });
+
+    const runs = await db.query<{ output: unknown; started_at: Date }>(
+      "select output, started_at from {{schema}}.job_stage_runs",
+    );
+    expect(runs.rows.map((run) => run.output)).toEqual([null, null]);
+    const application = await db.query(
+      "select company, role, status, final_draft, post_fingerprint from {{schema}}.applications",
+    );
+    expect(application.rows).toEqual([
+      {
+        company: "Northwind",
+        role: "Developer",
+        status: "sent",
+        final_draft: null,
+        post_fingerprint: [],
+      },
+    ]);
+    expect((await db.query("select 1 from {{schema}}.kit_reviews")).rows).toEqual([]);
+  });
+});

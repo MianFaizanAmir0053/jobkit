@@ -29,6 +29,8 @@ export interface ImagesWanted {
   screenshots: "always" | "without-crop" | "never";
   /** The place of the screenshot the contact's box lies on, shown first; null for none. */
   first?: number | null;
+  /** How many of the post's screenshots the job still keeps: none once the purge took them. */
+  left?: number;
 }
 
 export interface PostScreenshot {

@@ -442,7 +442,7 @@ describe("jobView", () => {
     expect(agreed.noCrop).toBe(false);
     expect(agreed.kitParts?.contact?.needsRetype).toBe(false);
     // Pasted text alone: no cut-out could be made, so no screenshot is looked for.
-    expect(agreed.images).toEqual({ cropPath: null, screenshots: "never", first: null });
+    expect(agreed.images).toEqual({ cropPath: null, screenshots: "never", first: null, left: 0 });
 
     // The contact's box lies on a screenshot, but its crop could not be stored.
     await onScreenshot(id);
@@ -450,7 +450,7 @@ describe("jobView", () => {
     expect(held.noCrop).toBe(true);
     expect(held.kitParts?.contact?.needsRetype).toBe(true);
     expect(held.handoff).toEqual({ to: "", typed: true });
-    expect(held.images).toEqual({ cropPath: null, screenshots: "always", first: 0 });
+    expect(held.images).toEqual({ cropPath: null, screenshots: "always", first: 0, left: 1 });
 
     // With a crop of it to show beside it, the reads' agreement stands.
     await db.query(
@@ -465,6 +465,7 @@ describe("jobView", () => {
       cropPath: `jobs/${id}/crops/a.png`,
       screenshots: "without-crop",
       first: 0,
+      left: 1,
     });
   });
 
@@ -480,7 +481,7 @@ describe("jobView", () => {
     expect(view.kitParts?.contact?.needsRetype).toBe(false);
     expect(view.handoff).toEqual({ to: "jobs@example.com", typed: false });
     // No cut-out was possible, and the contact is not on the screenshots: none is shown.
-    expect(view.images).toEqual({ cropPath: null, screenshots: "never", first: null });
+    expect(view.images).toEqual({ cropPath: null, screenshots: "never", first: null, left: 1 });
   });
 
   it("shows where a kit went, as the ledger keeps it, with no screenshots until it bounced", async () => {
@@ -494,7 +495,7 @@ describe("jobView", () => {
     const went = (await jobView({ db, clock }, sent))!;
     expect(went.noCrop).toBe(false);
     expect(went.wentTo).toBe("jobs@example.com");
-    expect(went.images).toEqual({ cropPath: null, screenshots: "never", first: 0 });
+    expect(went.images).toEqual({ cropPath: null, screenshots: "never", first: 0, left: 1 });
 
     // Bounced: the owner checks the address against the post again.
     await markBounced({ db, clock }, sent, null, went.application!.sentAt!);

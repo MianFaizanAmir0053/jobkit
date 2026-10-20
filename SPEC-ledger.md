@@ -88,7 +88,7 @@ Any other transition is refused, and "Mark sent" needs the email route while "Ma
 
 ## Retention (amendment A7)
 
-The daily purge deletes extracted records, drafts and recruiter names 180 days after an application's last status change, and 30 days after the last state change for jobs that never got an application (`stopped`, `closed` before a role, `failed`, `upload_failed`). The application row keeps company, role, route, dates, status and the address or number, for duplicate checks.
+The daily purge deletes extracted records, drafts and recruiter names 180 days after an application's last status change, and 30 days after the last state change for jobs that never got an application (`stopped`, `closed` before a role, `failed`, `upload_failed`). The application row keeps company, role, route, dates, status and the address or number, for duplicate checks. What goes (Claude's choices, 2026-10-20): every stage run's output and error, where the record, the drafts, the contact's reads and the checks live, the runs themselves staying for the Stats page's times; the review page's decisions on the job's kits, which hold post text; and the application's final draft and post fingerprint. Draft outcomes and sends hold no post text and stay. The daily route runs both purges after the platform's housekeeping, and reports what each removed.
 
 ## Earlier applications
 

@@ -34,7 +34,7 @@ export interface DailyResult {
  * The heartbeat, the backstop for timeouts that status reads normally apply
  * (B9), and housekeeping: rows of ended sessions and pairing tokens a day
  * past their expiry are dead weight. Intake's and the ledger's retention
- * purges join this job when those modules arrive.
+ * purges run beside it, from the daily route (src/server/cron.ts).
  */
 export async function dailyMaintenance(deps: Deps): Promise<DailyResult> {
   await keepAlive(deps);

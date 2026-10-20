@@ -2,8 +2,10 @@ import { createHash, timingSafeEqual } from "node:crypto";
 
 import { NextResponse, type NextRequest } from "next/server";
 
+import { purgeIntake } from "@/core/intake/purge";
+import { purgeLedger } from "@/core/ledger/purge";
 import { dailyMaintenance, keepAlive } from "@/core/platform/maintenance";
-import type { Clock, Db } from "@/core/ports";
+import type { Clock, Db, Storage } from "@/core/ports";
 import { NO_STORE } from "@/server/http";
 
 /**
@@ -17,7 +19,8 @@ export interface CronSecrets {
   keepalive: string;
 }
 
-type Deps = { db: Db; clock: Clock; secrets: CronSecrets };
+/** `storage` runs the retention purges; the app's route gives it. */
+type Deps = { db: Db; clock: Clock; secrets: CronSecrets; storage?: Storage };
 
 export function readCronSecrets(env: Readonly<Record<string, string | undefined>>): CronSecrets {
   return { cron: env.CRON_SECRET ?? "", keepalive: env.KEEPALIVE_SECRET ?? "" };
@@ -33,7 +36,18 @@ export async function keepalive(request: NextRequest, deps: Deps): Promise<NextR
 /** GET /api/cron/daily, called by Vercel's cron once a day. */
 export async function daily(request: NextRequest, deps: Deps): Promise<NextResponse> {
   if (!authorised(request, deps.secrets.cron, deps.secrets)) return unauthorised();
-  return NextResponse.json(await dailyMaintenance(deps), { headers: NO_STORE });
+  const maintenance = await dailyMaintenance(deps);
+  // The retention purges intake and the ledger define (intake spec, "Storage and retention";
+  // ledger spec, "Retention").
+  const purged = deps.storage
+    ? {
+        ...(await purgeIntake({ ...deps, storage: deps.storage })),
+        records: (await purgeLedger(deps)).jobs,
+      }
+    : undefined;
+  return NextResponse.json(purged ? { ...maintenance, purged } : maintenance, {
+    headers: NO_STORE,
+  });
 }
 
 /**

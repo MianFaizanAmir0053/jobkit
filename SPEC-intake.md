@@ -62,7 +62,8 @@ The job stores `received_at` (server time of `POST /api/jobs`) and `client_elaps
 - `job_images` rows hold the job ID, order, purpose, storage path, width, height, bytes, SHA-256, tile count, `created_at`, `purge_after` (30 days later) and `kept_for_eval`.
 - The daily purge (platform B6) deletes, from storage and from the tables:
   - images and crops past `purge_after`, unless kept for evaluation;
-  - objects under a job's path, outside its `crops/` folder, that no image row names, once the job has left `uploading`: one that arrived after an upload timed out, or that an upload begun again left behind;
+  - objects under a job's path, outside its `crops/` folder, that no image row names, once the job has left `uploading`: one that arrived after an upload timed out, that an upload begun again left behind, or of an add never confirmed;
+  - a job's crops once none of its screenshots is left, so a job kept for evaluation keeps them with its screenshots (Claude's choice, 2026-10-20);
   - pasted raw text older than 30 days, with the links found in it.
 - `npm run eval:pull` copies kept images to the laptop's evaluation folder and then clears `kept_for_eval`, so the 30-day rule deletes the cloud copy (amendment A7).
 
