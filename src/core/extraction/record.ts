@@ -71,7 +71,7 @@ const placeCode = z
     'An ISO country code such as "GB", a region code such as "EU", "GCC", "APAC" or "EMEA", or "unknown".',
   );
 
-const addressedToAi = z
+export const addressedToAi = z
   .boolean()
   .describe("Whether it addresses an AI, a language model, a bot or an automated tool.");
 

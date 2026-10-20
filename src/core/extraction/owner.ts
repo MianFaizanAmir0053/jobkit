@@ -2,6 +2,7 @@ import { loadJob, moveJob } from "@/core/platform/jobs";
 import { stageOutput } from "@/core/platform/runner";
 import type { Clock, Db } from "@/core/ports";
 
+import { withAddedQuestions } from "./addedQuestions";
 import { type ExtractOutput, readExtractOutput, stopReasonOf } from "./extract";
 import { type KitType, kitTypeOf, type Role } from "./record";
 
@@ -44,7 +45,8 @@ async function extractionWithHash(
 
 /**
  * The role the job's chain works on: the owner's pick, made on the current
- * extraction, or else the post's only role.
+ * extraction, or else the post's only role; with the questions read from
+ * form screenshots the owner added since (`extract_questions`) after its own.
  */
 export async function chosenRole(db: Db, jobId: string): Promise<Role | null> {
   const extraction = await extractionWithHash(db, jobId);
@@ -55,10 +57,13 @@ export async function chosenRole(db: Db, jobId: string): Promise<Role | null> {
   }>("select chosen_role, chosen_role_output from {{schema}}.jobs where id = $1", [jobId]);
   const roles = extraction.output.record.roles;
   const pick = rows[0];
-  if (pick?.chosen_role && pick.chosen_role_output === extraction.hash) {
-    return roles.find((role) => role.id === pick.chosen_role) ?? null;
-  }
-  return roles.length === 1 ? roles[0]! : null;
+  const role =
+    pick?.chosen_role && pick.chosen_role_output === extraction.hash
+      ? (roles.find((each) => each.id === pick.chosen_role) ?? null)
+      : roles.length === 1
+        ? roles[0]!
+        : null;
+  return role && withAddedQuestions(db, jobId, extraction.hash, role);
 }
 
 /**

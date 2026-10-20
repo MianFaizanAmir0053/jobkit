@@ -56,6 +56,7 @@ import {
 import { duplicateLine, formatTime, placeOfFlag, STATE_WORDS, withoutContacts } from "../words";
 
 import { ActionButton } from "./ActionButton";
+import { AddScreenshots } from "./AddScreenshots";
 import { ApproveSend } from "./ApproveSend";
 import { JobPoller } from "./JobPoller";
 import { MarkSent } from "./MarkSent";
@@ -342,6 +343,8 @@ function StatePanel({ view }: { view: JobView }) {
             )}
             {skip}
           </div>
+          {/* More of the post, read again whole (intake spec, item 4). */}
+          <AddScreenshots jobId={view.id} since={view.stateChangedAt.toISOString()} form={false} />
         </Panel>
       );
     case "needs_eligibility_decision":
@@ -1994,6 +1997,17 @@ function KitPanel({
           </p>
         )}
       </Panel>
+
+      {!sent && !parts.sending && !skipped && (
+        <Panel title="Add screenshots">
+          {/* More of the post, or a form's questions (intake spec, item 4). */}
+          <AddScreenshots
+            jobId={view.id}
+            since={view.stateChangedAt.toISOString()}
+            form={form !== null}
+          />
+        </Panel>
+      )}
 
       {!sent && !parts.sending && !skipped && (
         <Panel title="Not applying?">

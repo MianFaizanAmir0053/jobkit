@@ -1,3 +1,4 @@
+import { draftAnswersStage } from "@/core/drafting/answersStage";
 import { draftStage } from "@/core/drafting/draftStage";
 import { judgeStage } from "@/core/drafting/judgeStage";
 import { templatesStage } from "@/core/drafting/templatesStage";
@@ -5,6 +6,7 @@ import { addressReadStage, contactOf } from "@/core/extraction/addressReadStage"
 import { eligibilityStage } from "@/core/extraction/eligibility";
 import { extractStage } from "@/core/extraction/extract";
 import { chosenRole } from "@/core/extraction/owner";
+import { extractQuestionsStage } from "@/core/extraction/questionsStage";
 import type { Role } from "@/core/extraction/record";
 import type { StageName } from "@/core/platform/jobStates";
 import type { Pipeline } from "@/core/platform/runner";
@@ -34,6 +36,14 @@ function stagesOf(container: Container, models: ReturnType<typeof modelCallDeps>
       random: container.random,
       models,
     }),
+    // Questions from a form's screenshots the owner added, and their answers (Task 31).
+    extract_questions: extractQuestionsStage({
+      db: container.db,
+      storage: container.storage,
+      random: container.random,
+      models,
+    }),
+    draft_answers: draftAnswersStage({ db: container.db, random: container.random, models }),
     eligibility: eligibilityStage({ db: container.db, clock: container.clock, kitOf: kitOfJob }),
     templates: {
       ...templatesStage({ db: container.db, kitOf: kitOfJob }),

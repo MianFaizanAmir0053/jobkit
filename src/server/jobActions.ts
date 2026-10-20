@@ -2,10 +2,12 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 
 import { confirmPost, draftAnyway as draftAnywayCore, pickRole } from "@/core/extraction/owner";
+import { CONTENT_TYPES, LIMITS } from "@/core/intake/limits";
 import { jobStatus, retryJob } from "@/core/platform/jobs";
 import { JOB_STATES } from "@/core/platform/jobStates";
 import type { RunnerDeps } from "@/core/platform/runner";
 import type { Dns, Storage } from "@/core/ports";
+import { type AddRefusal, confirmAdd, startAdd } from "@/core/review/addImages";
 import { openForJob } from "@/core/review/applications";
 import { kitOfJob, pickKitType } from "@/core/review/kitType";
 import { reviewActionSchema } from "@/core/review/decisions";
@@ -295,8 +297,9 @@ export async function review(
 async function bodyOf<T>(
   request: NextRequest,
   schema: z.ZodType<T>,
+  limit = MAX_BODY_BYTES,
 ): Promise<{ ok: true; data: T } | { ok: false; response: NextResponse }> {
-  const body = await readLimited(request, MAX_BODY_BYTES);
+  const body = await readLimited(request, limit);
   if (body === "too-large") return { ok: false, response: refusal(413, "too-large") };
   let json: unknown = null;
   try {
@@ -669,4 +672,89 @@ export async function sent(request: NextRequest, deps: Deps, jobId: string): Pro
   const marked = await markSent(deps, jobId, actor.session.id, { changedInGmail }, { kit, to });
   if (!marked.ok) return refusal(marked.reason === "not-found" ? 404 : 409, marked.reason);
   return ok(200, { ok: true, changed: marked.changed });
+}
+
+const imageMeta = z.object({
+  contentType: z.enum(CONTENT_TYPES),
+  bytes: z.number().int().positive(),
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  sha256: z.string().regex(/^[0-9a-f]{64}$/),
+});
+
+const addBody = z.object({
+  purpose: z.enum(["post", "form"]),
+  since: z.iso.datetime(),
+  images: z.array(imageMeta).min(1).max(LIMITS.images),
+});
+
+const confirmAddBody = addBody.extend({
+  images: z
+    .array(imageMeta.extend({ path: z.string().max(200) }))
+    .min(1)
+    .max(LIMITS.images),
+});
+
+const ADD_BODY_BYTES = 8192;
+
+/** A refused add, with the words the page shows for limits, and the screenshots storage lacks. */
+function addRefused(result: { reason: AddRefusal; message?: string; missing?: string[] }) {
+  const status =
+    result.reason === "not-found"
+      ? 404
+      : result.reason === "limits" || result.reason === "nothing-new"
+        ? 422
+        : 409;
+  return refusal(status, result.reason, {
+    ...(result.message === undefined ? {} : { message: result.message }),
+    ...(result.missing === undefined ? {} : { missing: result.missing }),
+  });
+}
+
+/**
+ * POST /api/jobs/<id>/add-images: "Add screenshots" (intake spec, item 4),
+ * the post's or an application form's: a signed upload URL for each new
+ * screenshot, refused once the job moved on from what the page showed.
+ */
+export async function addImages(
+  request: NextRequest,
+  deps: Deps & { storage: Storage },
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await bodyOf(request, addBody, ADD_BODY_BYTES);
+  if (!body.ok) return body.response;
+  const started = await startAdd(deps, jobId, {
+    ...body.data,
+    since: new Date(body.data.since),
+  });
+  if (!started.ok) return addRefused(started);
+  return ok(200, { ok: true, uploads: started.uploads });
+}
+
+/**
+ * POST /api/jobs/<id>/add-images/confirm: the screenshots uploaded become
+ * the job's, and the job reads them: the post again whole, or the form's new
+ * questions, then drafts and checks their answers.
+ */
+export async function addImagesConfirm(
+  request: NextRequest,
+  deps: Deps & { storage: Storage },
+  jobId: string,
+  startedAt: Date = deps.clock.now(),
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await bodyOf(request, confirmAddBody, ADD_BODY_BYTES);
+  if (!body.ok) return body.response;
+  const confirmed = await confirmAdd(deps, jobId, {
+    ...body.data,
+    since: new Date(body.data.since),
+  });
+  if (!confirmed.ok) return addRefused(confirmed);
+  await startPipeline(deps, jobId, startedAt);
+  return ok(202);
 }

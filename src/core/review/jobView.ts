@@ -1,8 +1,9 @@
 import { z } from "zod";
 
+import { addedAnswersOf, withAddedAnswers } from "@/core/drafting/answersStage";
 import { withCodeParts } from "@/core/drafting/build";
 import type { DraftOutput } from "@/core/drafting/draftStage";
-import type { JudgeOutput } from "@/core/drafting/judgeStage";
+import { answersJudgeOf, draftJudgeOf, type JudgeOutput } from "@/core/drafting/judgeStage";
 import { bodyWords } from "@/core/drafting/kit";
 import type { TemplatesOutput } from "@/core/drafting/templatesStage";
 import type { KitFlag } from "@/core/drafting/validate";
@@ -265,7 +266,13 @@ const STEPS: readonly { stage: StageName; label: string }[] = [
   { stage: "templates", label: "Draft from your templates" },
   { stage: "draft", label: "Write a draft with Gemini" },
   { stage: "judge", label: "Check every sentence separately" },
+  // Shown once the owner adds a form's screenshots to the job.
+  { stage: "extract_questions", label: "Read the form's new questions" },
+  { stage: "draft_answers", label: "Answer the new questions" },
 ];
+
+/** Steps that run only when the owner adds a form's screenshots to the job. */
+const ADDED_STEPS: ReadonlySet<StageName> = new Set(["extract_questions", "draft_answers"]);
 
 /** The stages that run beside templates and draft (B9): one that fails the job fails the step it ran beside. */
 const BESIDE: ReadonlySet<StageName> = new Set(["address_read", "address_checks"]);
@@ -283,17 +290,28 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const job = await jobStatus(deps, id);
   if (!job) return null;
   const outputs = new Map<StageName, string>();
+  // The judge's check of the draft itself: one of answers added since leaves the kit's key as it was.
+  const draftJudge = await draftJudgeOf(deps.db, id);
   for (const stage of [...POST_STAGES, ...GEMINI_STAGES, "templates" as const]) {
-    const kept = await stageOutput(deps.db, id, stage);
+    const kept = stage === "judge" ? draftJudge : await stageOutput(deps.db, id, stage);
     if (kept) outputs.set(stage, kept.outputHash);
   }
   const extract = await stageOutput(deps.db, id, "extract");
   const extraction = extract ? readExtractOutput(extract.output) : null;
   const stopReason = extraction ? stopReasonOf(extraction) : null;
   const role = await chosenRole(deps.db, id);
-  const draft = (await stageOutput(deps.db, id, "draft"))?.output as DraftOutput | undefined;
-  const judge = (await stageOutput(deps.db, id, "judge"))?.output as
-    JudgeOutput | PassedThrough | undefined;
+  // The draft with the answers added to its form since (draft_answers), and their verdicts.
+  const drafted = await stageOutput(deps.db, id, "draft");
+  const added = drafted ? await addedAnswersOf(deps.db, id, drafted.outputHash) : null;
+  const draft = drafted
+    ? withAddedAnswers(drafted.output as DraftOutput, added?.output ?? null)
+    : undefined;
+  const addedJudge = added ? await answersJudgeOf(deps.db, id, added.outputHash) : null;
+  const ownJudge = draftJudge?.output as JudgeOutput | PassedThrough | undefined;
+  const judge: JudgeOutput | PassedThrough | undefined =
+    ownJudge?.checked && addedJudge
+      ? { ...ownJudge, verdicts: [...ownJudge.verdicts, ...addedJudge.verdicts] }
+      : ownJudge;
   const eligibility = (await stageOutput(deps.db, id, "eligibility"))?.output as
     EligibilityOutput | PassedThrough | undefined;
   const read = (await stageOutput(deps.db, id, "address_read"))?.output as
@@ -979,6 +997,9 @@ async function stepsOf(
     STEPS
       // A job drafted before the templates were built shows the steps it ran.
       .filter(({ stage }) => stage !== "templates" || last.has("templates") || !last.has("draft"))
+      .filter(
+        ({ stage }) => !ADDED_STEPS.has(stage) || last.has(stage) || job.pendingStage === stage,
+      )
       .map(({ stage, label }) => {
         const outcome = last.get(stage);
         let status: Step["status"] = "waiting";

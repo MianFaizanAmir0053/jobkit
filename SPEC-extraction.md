@@ -81,7 +81,7 @@ The job page lists the roles with title, location and route. The owner picks one
 
 ## Stage `extract_questions`
 
-Runs when the owner adds `form` screenshots to a job, for example the screening questions LinkedIn Easy Apply or an ATS form shows. One call on `extract`'s model sees only those images, tiled, under the same marker and untrusted-data rules, and returns the questions with `addressed_to_ai`. They are appended to the chosen role's `screening_questions` with IDs that continue the sequence; drafting's `draft_answers` then answers the new questions only. A question addressed to AI is flagged and never answered.
+Runs when the owner adds `form` screenshots to a job, for example the screening questions LinkedIn Easy Apply or an ATS form shows. One call on `extract`'s model sees only those images, tiled, under the same marker and untrusted-data rules, and returns the questions with `addressed_to_ai`. They are appended to the chosen role's `screening_questions` with IDs that continue the sequence; drafting's `draft_answers` then answers the new questions only. A question addressed to AI is flagged and never answered. The fields for a name, contact details, profile links and files are left out. Its output keeps every question added so far and the screenshots it read, so a later batch reads only its own, and the chosen role reads the added questions from it; a fresh `extract`, as after more of the post is added, numbers the post's questions afresh and drops the added ones, which the owner adds again (Claude's choices, 2026-10-20).
 
 ## Stage `address_read`
 

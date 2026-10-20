@@ -89,7 +89,7 @@ One Gemini 3.8 Flash call (decisions A18) through the platform wrapper, with str
 
 ## Stage `draft_answers`
 
-Runs when `extract_questions` added questions to a job whose kit already exists. One call on the draft's model answers only the new questions without a fixed topic, with the same inputs and rules; code fills the topic answers. The new answers are appended to the kit; existing blocks, verdicts and the owner's edits are untouched. `judge` then checks the new answers only.
+Runs when `extract_questions` added questions to a job whose kit already exists. One call on the draft's model answers only the new questions without a fixed topic, with the same inputs and rules; code fills the topic answers. The new answers are appended to the kit; existing blocks, verdicts and the owner's edits are untouched. `judge` then checks the new answers only. The new answers are kept apart from the draft, in `draft_answers`' own output (every answer added to that draft so far, with `validate`'s flags on the whole kit), and the kit the page shows is the draft's with them; the judge's check of them is kept apart too, naming the answers it checked, so the kit keeps its key and the owner's decisions stand, while its words change and a page drawn before is refused. No call is made when no new question may reach the drafter. A choice whose drafter named a topic, and so wrote no answer, stays the owner's to type: `draft_answers` drafts added questions alone (Claude's choices, 2026-10-20).
 
 ## Code-built parts
 
