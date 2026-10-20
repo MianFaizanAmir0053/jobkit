@@ -37,7 +37,7 @@ import {
 import { listedSentences } from "@/core/review/edits";
 import { fitTableOf } from "@/core/review/fitTable";
 import { gmailComposeUrl } from "@/core/review/gmail";
-import { whatsAppLink, applicationLink } from "@/core/review/links";
+import { whatsAppLink, applicationLink, linkRefusal } from "@/core/review/links";
 import type { DraftChoice, JobView, Step } from "@/core/review/jobView";
 import { showsFor } from "@/core/review/kitSends";
 import type { PostImages } from "@/core/review/postImages";
@@ -910,10 +910,11 @@ function KitPanel({
             ) : !byEmail ? (
               <>
                 {role.route.kind === "other" || role.route.kind === "unknown" ? (
-                  // A kit the owner picked for a post that does not say how to apply.
+                  // A post that does not say how to apply: how the owner chose to, once they have.
                   <span>
-                    You chose {kit.kind === "form" ? "an application form" : "a message"} for this
-                    post, which does not say where to send it
+                    {view.kitRoute === null
+                      ? "The post does not say how to apply"
+                      : `You chose ${view.kitRoute === "form" ? "an application form" : "a message"} for this post, which does not say where to send it`}
                     {role.route.address ? `: it says ${role.route.address}` : ""}. Find out before
                     you apply.
                   </span>
@@ -923,7 +924,7 @@ function KitPanel({
                     {role.route.kind !== "whatsapp" &&
                       role.route.address &&
                       !needsRetype &&
-                      `: ${role.route.address}`}
+                      `: ${applyAt ?? role.route.address}`}
                     {kit.kind === "email"
                       ? ". The text below is drafted as an email: adapt it there."
                       : "."}
@@ -932,8 +933,8 @@ function KitPanel({
                 {/* A link to apply through that is not https is shown, never opened (review spec, "Handoffs"). */}
                 {form && address !== "" && applyAt === null && (
                   <span className="mt-1 block text-destructive">
-                    This link is not a secure https one, so jobkit does not open it: check it before
-                    you visit it.
+                    {linkRefusal(address)}, so jobkit does not open it: check it before you visit
+                    it.
                   </span>
                 )}
                 {/* The number in large type, to check against the post (review spec, "Contact panel"). */}

@@ -31,6 +31,10 @@ describe("applicationLink", () => {
       "https://jobs.example.com/Apply",
     );
     expect(applicationLink("https://jobs.example.com")).toBe("https://jobs.example.com/");
+    // The page shows the address as the parser reads it, and opens that.
+    expect(applicationLink("https://jobs.example.com:443?ref=post#apply")).toBe(
+      "https://jobs.example.com/?ref=post#apply",
+    );
   });
 
   it("gives the post's link to apply through only when it is https", () => {

@@ -89,7 +89,7 @@ const PROMPTS = {
     canonicalJson({
       kit: "message",
       // Raise it when a message's build changes: its merged lines, its count.
-      messageBuild: 2,
+      messageBuild: 3,
       rules: messageSystemPrompt(0),
       layout: DRAFT_LAYOUT_VERSION,
       schema: z.toJSONSchema(draftAnswerSchema),
@@ -102,7 +102,7 @@ const PROMPTS = {
     canonicalJson({
       kit: "form",
       // Raise it when a form's build changes: its answers (topics.ts, regions.ts), its flags.
-      formBuild: 2,
+      formBuild: 3,
       rules: formSystemPrompt(0),
       layout: DRAFT_LAYOUT_VERSION,
       schema: z.toJSONSchema(formAnswerSchema),

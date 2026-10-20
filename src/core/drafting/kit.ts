@@ -180,7 +180,10 @@ export interface FormAnswer {
   profile?: FixedAnswer;
   /** For a choice: the drafter's answer, when it wrote one. */
   drafted?: { text: string; factIds: string[] } | null;
-  /** Code put the profile's answer in place of a drafted one (fixed_answer_drafted). */
+  /**
+   * The drafter wrote words for a question both classifiers tied to a topic, and code put them
+   * aside: flagged (fixed_answer_drafted) while the profile answers it.
+   */
   replaced?: true;
   /** The owner's own words, typed on the review page: checked for what they say, never against facts. */
   owner?: true;

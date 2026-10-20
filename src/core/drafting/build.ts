@@ -15,7 +15,7 @@ import type {
   KitBlock,
   MessageKit,
 } from "./kit";
-import { decideTopic, fixedAnswer, type TopicProfile } from "./topics";
+import { decideTopic, fixedAnswer, keywordTopic, type TopicProfile } from "./topics";
 
 /**
  * The parts of an email kit code writes (drafting spec, "Code-built parts"
@@ -408,7 +408,11 @@ export function buildFormKit(
       case "not_answered":
         return { ...base, topic: null, source: "not_answered", text: "" };
       case "fixed": {
-        const fixed = fixedAnswer(decision.topic, question.text, topics);
+        // Read on one line, as the page shows it and withCodeParts reads it again. Words the
+        // drafter wrote are recorded put aside even where the owner answers, so a fix that lets
+        // the profile answer later still flags them.
+        const fixed = fixedAnswer(decision.topic, base.question, topics);
+        const putAside = text !== "" ? { replaced: true as const } : {};
         return fixed.kind === "needs_your_answer"
           ? {
               ...base,
@@ -416,14 +420,9 @@ export function buildFormKit(
               source: "needs_your_answer",
               text: "",
               reason: fixed.reason,
+              ...putAside,
             }
-          : {
-              ...base,
-              topic: decision.topic,
-              source: "profile",
-              text: fixed.text,
-              ...(text !== "" ? { replaced: true as const } : {}),
-            };
+          : { ...base, topic: decision.topic, source: "profile", text: fixed.text, ...putAside };
       }
       case "choice":
         return {
@@ -431,7 +430,7 @@ export function buildFormKit(
           topic: decision.topic,
           source: "choice",
           text: "",
-          profile: fixedAnswer(decision.topic, question.text, topics),
+          profile: fixedAnswer(decision.topic, base.question, topics),
           drafted,
         };
       case "ordinary":
@@ -464,7 +463,10 @@ export function buildFormKit(
  * fixed code builds it: a form's answers from the profile (each topic
  * question's, and a choice's profile answer, as fixedAnswer gives them now),
  * and a public comment's sign-off, the owner's name alone. The drafter's
- * words, and an answer code never took from the profile, stay as they were.
+ * words, and an answer code never took from the profile, stay as they were,
+ * but for a choice's drafted words where the keyword table names no topic or
+ * another: the drafter named the topic, so they are its words for a topic
+ * question, which a build before e7ea758 kept.
  */
 export function withCodeParts(
   kit: Kit,
@@ -477,7 +479,10 @@ export function withCodeParts(
   const answers = kit.answers.map((answer): FormAnswer => {
     if (answer.topic === null) return answer;
     const fixed = fixedAnswer(answer.topic, answer.question, context.topics);
-    if (answer.source === "choice") return { ...answer, profile: fixed };
+    if (answer.source === "choice") {
+      const drafted = keywordTopic(answer.question) === answer.topic ? answer.drafted : null;
+      return { ...answer, profile: fixed, drafted };
+    }
     if (answer.source !== "profile" && answer.source !== "needs_your_answer") return answer;
     // A reason belongs to an answer the owner must give alone.
     const rest = { ...answer };

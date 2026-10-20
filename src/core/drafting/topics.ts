@@ -102,9 +102,25 @@ const answer = (text: string): FixedAnswer => ({ kind: "answer", text });
 
 const WORD = /[\p{L}\p{N}][\p{L}\p{N}.+#-]*/gu;
 
-/** Words as written, for finding a currency. */
-function wordsOf(text: string): string[] {
-  return text.match(WORD) ?? [];
+/** A word as written, without a closing dot or hyphen, and where it stands in the text. */
+interface Word {
+  word: string;
+  /** Whether it begins a sentence, or follows a colon. */
+  starts: boolean;
+  index: number;
+  end: number;
+}
+
+function wordsIn(text: string): Word[] {
+  return [...text.matchAll(WORD)].map((match) => {
+    const word = match[0].replace(/[.-]+$/, "");
+    return {
+      word,
+      starts: sentenceStart(text, match.index),
+      index: match.index,
+      end: match.index + word.length,
+    };
+  });
 }
 
 /** Whether a word at this place begins a sentence, or follows a colon: "Rest assured", "React: …". */
@@ -129,8 +145,8 @@ const skillWord = (word: string, starts: boolean) =>
   !starts && (/^\p{Lu}/u.test(word) || /[.+#]/.test(word));
 
 /**
- * Words before a place that make it another place: "New South Wales" is not
- * Wales, nor "South America" America, nor "New Mexico" Mexico.
+ * Words before a place that make it another place, in any case: "New South
+ * Wales" is not Wales, nor "south America" America, nor "New Mexico" Mexico.
  */
 const PLACE_QUALIFIERS: ReadonlySet<string> = new Set([
   "new",
@@ -149,61 +165,158 @@ const PLACE_QUALIFIERS: ReadonlySet<string> = new Set([
   "lower",
 ]);
 
+/** Words after a place that make it another place: "Jersey City", "Panama City", "Jersey Shore". */
+const PLACE_NOUNS: ReadonlySet<string> = new Set([
+  "city",
+  "town",
+  "village",
+  "county",
+  "borough",
+  "township",
+  "shore",
+  "heights",
+  "beach",
+  "falls",
+  "springs",
+  "hills",
+  "valley",
+  "bay",
+  "park",
+  "harbour",
+  "harbor",
+]);
+
+/** Words that take a capital without naming anything: "I", and answers such as "Yes/No". */
+const COMMON_CAPITALS: ReadonlySet<string> = new Set([
+  "i",
+  "yes",
+  "no",
+  "y",
+  "n",
+  "ok",
+  "okay",
+  "true",
+  "false",
+  "ai",
+]);
+
+/** A word written as a name is, with a capital, where any word would not take one. */
+const nameLike = (each: Word) =>
+  !each.starts && /^\p{Lu}/u.test(each.word) && !COMMON_CAPITALS.has(each.word.toLowerCase());
+
+/**
+ * Whether a name the table does not know starts at `words[at]` and ends the
+ * clause, every word of it written as a name: "Ohio", "New Hampshire", "CA".
+ */
+function unknownName(
+  text: string,
+  words: readonly Word[],
+  at: number,
+  lookup: (name: string) => string | null,
+): boolean {
+  const name: string[] = [];
+  for (let i = at; i < words.length; i++) {
+    const each = words[i]!;
+    if (!/^\p{Lu}/u.test(each.word)) return false;
+    name.push(each.word);
+    const next = words[i + 1];
+    if (!next || next.starts || /\S/.test(text.slice(each.end, next.index))) break;
+  }
+  if (name.every((word) => COMMON_CAPITALS.has(word.toLowerCase()))) return false;
+  return lookup(name.join(" ")) === null && lookup(name[0]!) === null;
+}
+
+/**
+ * Whether the place `words[from..to)` names is part of a longer name,
+ * which is another place: after a word that makes it one ("New South
+ * Wales", "south America", "South-East Asia"), before one ("Jersey City"),
+ * or before a comma and a name the table does not know ("Dublin, Ohio",
+ * "Dublin, CA"). A word in another sentence, or across a mark, qualifies
+ * nothing ("…in the North. Pakistan…").
+ */
+function partOfLonger(
+  text: string,
+  words: readonly Word[],
+  from: number,
+  to: number,
+  lookup: (name: string) => string | null,
+): boolean {
+  const first = words[from]!;
+  const before = words[from - 1];
+  if (
+    before &&
+    !first.starts &&
+    /^\s+$/.test(text.slice(before.end, first.index)) &&
+    before.word
+      .toLowerCase()
+      .split("-")
+      .some((part) => PLACE_QUALIFIERS.has(part))
+  ) {
+    return true;
+  }
+  const after = words[to];
+  if (!after || after.starts) return false;
+  const gap = text.slice(words[to - 1]!.end, after.index);
+  if (/^\s+$/.test(gap) && PLACE_NOUNS.has(after.word.toLowerCase())) return true;
+  return /^\s*,\s*$/.test(gap) && unknownName(text, words, to, lookup);
+}
+
 /**
  * Every name in the text the lookup knows, each once, in order: at each
  * place it tries three words, then two, then one, and goes on after the
  * longest name found; a name of one word counts only where `counts` takes
- * it. A name a capitalised qualifier makes another (`qualifiers`) is none
- * the lookup knows: the text then names one jobkit cannot read.
+ * it. The words no name took are the `rest`. With `places`, a name that is
+ * part of a longer one is none the lookup knows: the text then names one
+ * jobkit cannot read (`unread`).
  */
 function namesIn(
   text: string,
   lookup: (name: string) => string | null,
   counts: (word: string, starts: boolean) => boolean,
-  qualifiers: ReadonlySet<string> = new Set(),
-): { found: string[]; unread: boolean } {
-  const words = [...text.matchAll(WORD)].map((match) => ({
-    word: match[0].replace(/[.-]+$/, ""),
-    starts: sentenceStart(text, match.index),
-  }));
+  places = false,
+): { found: string[]; unread: boolean; rest: Word[] } {
+  const words = wordsIn(text);
   const found: string[] = [];
+  const rest: Word[] = [];
   let unread = false;
   for (let start = 0; start < words.length;) {
-    let step = 1;
+    let step = 0;
     for (let size = 3; size >= 1; size--) {
       const parts = words.slice(start, start + size);
       if (parts.length < size) continue;
       if (size === 1 && !counts(parts[0]!.word, parts[0]!.starts)) continue;
       const known = lookup(parts.map((part) => part.word).join(" "));
-      if (known) {
-        // A qualifier in the sentence before ("…in the North. Pakistan…") makes no other place.
-        const before = parts[0]!.starts ? "" : (words[start - 1]?.word ?? "");
-        if (/^\p{Lu}/u.test(before) && qualifiers.has(before.toLowerCase())) unread = true;
-        else if (!found.includes(known)) found.push(known);
-        step = size;
-        break;
-      }
+      if (!known) continue;
+      if (places && partOfLonger(text, words, start, start + size, lookup)) unread = true;
+      else if (!found.includes(known)) found.push(known);
+      step = size;
+      break;
+    }
+    if (step === 0) {
+      rest.push(words[start]!);
+      step = 1;
     }
     start += step;
   }
-  return { found, unread };
+  return { found, unread, rest };
 }
 
 /**
- * The one place the question names; null for none, "several" for a question
- * about more than one, which one answer from the profile cannot give, and
- * "unread" for a place jobkit cannot read.
+ * The one place the question names: null for none, "several" for a
+ * question about more than one, which one answer from the profile cannot
+ * give, and "unread" for a place jobkit cannot read; with the words no
+ * place took.
  */
-function onePlace(question: string): string | null | "several" | "unread" {
-  const { found, unread } = namesIn(question, placeCode, placeWord, PLACE_QUALIFIERS);
-  if (unread) return "unread";
-  return found.length > 1 ? "several" : (found[0] ?? null);
-}
-
-/** The one skill the question names, as `onePlace` reads a place. */
-function oneSkill(question: string): string | null | "several" {
-  const { found } = namesIn(question, skillTag, skillWord);
-  return found.length > 1 ? "several" : (found[0] ?? null);
+function placesIn(question: string): {
+  place: string | null | "several" | "unread";
+  rest: Word[];
+} {
+  const { found, unread, rest } = namesIn(question, placeCode, placeWord, true);
+  // In capitals, "US" may be the pronoun ("…REQUIRE US TO SPONSOR…"): only "THE US" or "IN US"
+  // names the place.
+  const pronoun = !/\p{Ll}/u.test(question) && /(?<!\b(?:THE|IN)\s+)\bUS\b/u.test(question);
+  if (unread || pronoun) return { place: "unread", rest };
+  return { place: found.length > 1 ? "several" : (found[0] ?? null), rest };
 }
 
 /** Currency codes a question may write in any case. */
@@ -265,6 +378,13 @@ const CURRENCY_SIGNS: Readonly<Record<string, string>> = {
 /** Dollars written with a country's letters before the sign: "A$" is Australian, never US. */
 const PREFIXED_DOLLARS: Readonly<Record<string, string>> = {
   US: "USD",
+  USD: "USD",
+  AUD: "AUD",
+  CAD: "CAD",
+  NZD: "NZD",
+  SGD: "SGD",
+  HKD: "HKD",
+  MEX: "MXN",
   A: "AUD",
   AU: "AUD",
   C: "CAD",
@@ -278,14 +398,50 @@ const PREFIXED_DOLLARS: Readonly<Record<string, string>> = {
   NT: "TWD",
 };
 
-/** The currency a question names; "unread" for dollars of a kind jobkit does not know ("AR$"). */
+/** Words after a code that show it is pay's currency: "USD per month", "AED gross". */
+const AFTER_CODE =
+  /^(?:per|a|an|gross|net|annual(?:ly)?|monthly|yearly|hourly|weekly|daily|equivalent|only|salary|ctc|lpa|pa|k|thousand|million|lakhs?|crores?)$/i;
+
+/**
+ * Whether the code at `words[i]` stands where pay's currency does: opening
+ * the question, after "in", a bracket, a colon, a comma or a dash, next to
+ * an amount, ending a clause, or before a word about pay. "CAD designer"
+ * and "SAR imaging" name none.
+ */
+function currencyPlace(text: string, words: readonly Word[], i: number): boolean {
+  const word = words[i]!;
+  const before = words[i - 1];
+  const after = words[i + 1];
+  const amount = (other: Word | undefined) => other !== undefined && /^\d/.test(other.word);
+  return (
+    before === undefined ||
+    /[([:,–—-]/.test(text.slice(before.end, word.index)) ||
+    /^in$/i.test(before.word) ||
+    amount(before) ||
+    after === undefined ||
+    /[)\]?.,;:/–—-]/.test(text.slice(word.end, after.index)) ||
+    amount(after) ||
+    AFTER_CODE.test(after.word)
+  );
+}
+
+/**
+ * The currency a question names, by a code where pay's currency stands, by
+ * the letters before a dollar sign ("A$", "Mex$"), or by a sign; "unread"
+ * for dollars of a kind jobkit does not know ("AR$").
+ */
 function currencyOf(question: string): string | null | "unread" {
-  for (const word of wordsOf(question)) {
-    if (CURRENCY_CODES.has(word.toUpperCase())) return word.toUpperCase();
-    if (CAPITAL_CODES.has(word)) return word;
+  const words = wordsIn(question);
+  for (const [i, { word }] of words.entries()) {
+    const code = CURRENCY_CODES.has(word.toUpperCase())
+      ? word.toUpperCase()
+      : CAPITAL_CODES.has(word)
+        ? word
+        : null;
+    if (code && currencyPlace(question, words, i)) return code;
   }
-  const prefixed = /\b([A-Z]{1,3})\$/.exec(question)?.[1];
-  if (prefixed) return PREFIXED_DOLLARS[prefixed] ?? "unread";
+  const prefixed = /(\p{L}{1,4})\$/u.exec(question)?.[1];
+  if (prefixed) return PREFIXED_DOLLARS[prefixed.toUpperCase()] ?? "unread";
   for (const [sign, code] of Object.entries(CURRENCY_SIGNS)) {
     if (question.includes(sign)) return code;
   }
@@ -296,13 +452,27 @@ function currencyOf(question: string): string | null | "unread" {
 const PAST_PAY =
   /\b(?:current(?:ly)?|present|existing|last|previous|prior|past|former|drawn|now earning|earning now|earn now)\b/i;
 
+/**
+ * Words that ask for the pay the owner expects, which the profile holds:
+ * "expected", "desired", "salary requirements", "rate". A question with none
+ * ("What is your salary?") may ask for the pay they have now.
+ */
+const EXPECTED_PAY =
+  /\b(?:expect\w*|ectc|desired?|want(?:ed)?|looking (?:for|to)|seeking|target(?:ed|ing)?|asking|requir(?:e|ed|ement|ements)|hop(?:e|ing) (?:for|to)|like to (?:earn|be paid|make)|rates?)\b/i;
+
 /** The period pay is counted by, in a question or the profile's words. */
 const PERIODS: readonly (readonly [string, RegExp])[] = [
-  ["hour", /\b(?:hourly|per hour|an hour)\b|\/\s?(?:hr|hour)\b/i],
-  ["day", /\b(?:daily|per day|a day)\b/i],
-  ["week", /\b(?:weekly|per week|a week)\b/i],
-  ["month", /\b(?:monthly|per month|a month)\b|\/\s?(?:mo|month)\b/i],
-  ["year", /\b(?:annual(?:ly)?|yearly|per annum|per year|a year|lpa)\b|\/\s?(?:yr|year)\b/i],
+  ["hour", /\b(?:hourly|per (?:hour|hr)|an hour|p\/h)\b|\/\s?(?:hr|hour)\b/i],
+  ["day", /\b(?:daily|per day|a day|day rate)\b|\/\s?day\b/i],
+  ["week", /\b(?:weekly|per (?:week|wk)|a week|p\/w)\b|\/\s?(?:wk|week)\b/i],
+  [
+    "month",
+    /\b(?:monthly|per (?:month|mo|mth|mensem)|a month|p\/m)\b|\/\s?(?:mo|mth|month)\b|(?<![\p{L}\p{N}])p\.m\.?(?![\p{L}\p{N}])/iu,
+  ],
+  [
+    "year",
+    /\b(?:annual(?:ly)?|yearly|per (?:annum|year|yr)|a year|lpa|p\/a)\b|\/\s?(?:yr|year|annum)\b|(?<![\p{L}\p{N}])p\.?a\.?(?![\p{L}\p{N}])/iu,
+  ],
 ];
 
 function periodOf(text: string): string | null {
@@ -323,20 +493,25 @@ function inWords(code: string): string {
     : name;
 }
 
+/** Words that answer Yes or No, at the start of the profile's own words, after any quote or mark. */
+const OPENS_WITH_ANSWER =
+  /^[^\p{L}\p{N}]*(?:yes|yeah|yep|yup|yea|ya|aye|sure|certainly|absolutely|definitely|of course|correct|affirmative|indeed|ok|okay|no|nope|nah|negative|true|false|y|n)(?![\p{L}\p{N}])/iu;
+
 /**
  * Where the owner stands on working in a place, as a statement, never a bare
  * Yes or No, which a question worded the other way ("…without
  * sponsorship?") would turn false: the profile's own words for the place
- * when it gives them, but for words that open with a Yes or a No, which
- * answer one question and not its opposite; null where it does not say
- * whether sponsorship is needed and the question is about sponsorship.
+ * when it gives them, but for words that open with a Yes or a No ("Nope",
+ * "“Yes”"), which answer one question and not its opposite; null where it
+ * does not say whether sponsorship is needed and the question is about
+ * sponsorship.
  */
 function standing(
   topic: "work_authorisation" | "sponsorship",
   place: string,
   entry: FixedAnswers["work_authorisation"][number] | undefined,
 ): string | null {
-  if (entry?.text && !/^\s*(?:yes|no|y|n|true|false)\b/i.test(entry.text)) return entry.text;
+  if (entry?.text && !OPENS_WITH_ANSWER.test(entry.text)) return entry.text;
   const where = inWords(place);
   if (!entry || entry.authorised)
     return `Authorised to work in ${where}, with no sponsorship needed.`;
@@ -358,12 +533,39 @@ function authorisationFor(place: string, answers: FixedAnswers) {
   );
 }
 
-/** Years of something besides the skill itself: leading, managing or teaching with it. */
-const OTHER_YEARS =
-  /\b(?:lead|leads|leading|led|leader(?:ship)?|manag(?:e|es|ed|ing|ement|er)|teach(?:es|ing)?|taught|mentor(?:s|ed|ing)?|supervis(?:e|ed|ing|or)|architect(?:ed|ing)?)\b/i;
+/**
+ * The words a question for years with a skill may hold besides the skill's
+ * name, and no others: any other may ask for years of something else
+ * ("as a React instructor", "coaching React developers", "senior-level
+ * React", "since you last used React"), which the profile does not hold.
+ */
+const YEARS_WORDS: ReadonlySet<string> = new Set(
+  `how many much long what is are the a an total number of in with using use used working worked
+  work been have has had do does did you your ve s years year yrs yr experience experiences
+  experienced professional professionally commercial commercially hands-on hands on practical
+  relevant industry production real-world real world overall direct paid full-time as developer
+  engineer programmer dev development developing developed building built coding coded programming
+  programmed writing written applications application apps app projects project please enter state
+  specify indicate give provide list approximately approx roughly about around required for at so
+  far framework library language technology tech stack tool following skill skills expertise
+  knowledge frontend front-end backend back-end full-stack fullstack web mobile would say`.split(
+    /\s+/,
+  ),
+);
 
-/** Availability for a call, not a start date. */
-const TO_TALK = /\b(?:interviews?|calls?|meetings?|chats?)\b/i;
+/**
+ * The words a question about when the owner can start may hold, and no
+ * others: "availability for a phone screen", "weekly availability in hours"
+ * and "availability to travel" ask about something else.
+ */
+const START_WORDS: ReadonlySet<string> = new Set(
+  `what when how soon is are your you can could would will do be able to the a an of s earliest
+  soonest possible start starting begin beginning commence commencing join joining onboard
+  onboarding date dates availability available from for in with us our team company role position
+  job this new if offered offer after receiving accepting hired selected successful please state
+  indicate give provide specify enter let know notice period given considering expected expect
+  likely potential employment immediately immediate`.split(/\s+/),
+);
 
 const EEO_PARTS: readonly (readonly [RegExp, keyof FixedAnswers["eeo"]])[] = [
   [/\bgender\b/i, "gender"],
@@ -380,6 +582,11 @@ export function fixedAnswer(topic: Topic, question: string, profile: TopicProfil
       if (PAST_PAY.test(question)) {
         return needs("The profile holds the salary you expect, not one you have had.");
       }
+      if (!EXPECTED_PAY.test(question)) {
+        return needs(
+          "The question does not say it asks for the salary you expect, which the profile holds.",
+        );
+      }
       const currency = currencyOf(question);
       if (currency === "unread") return needs("The question names a currency jobkit cannot read.");
       if (!currency) return needs("The question names no currency.");
@@ -394,27 +601,32 @@ export function fixedAnswer(topic: Topic, question: string, profile: TopicProfil
     case "notice_period":
       return answer(answers.notice_period);
     case "availability":
-      return TO_TALK.test(question)
-        ? needs("The question asks when you are free to talk, not when you can start.")
-        : answer(answers.availability);
+      return wordsIn(question).every((each) => START_WORDS.has(each.word.toLowerCase()))
+        ? answer(answers.availability)
+        : needs("The question asks about something besides when you can start.");
     case "time_zone":
       return answer(answers.working_window.text);
     case "relocation": {
+      const { open, places, text } = answers.relocation;
+      // Not open to moving, or open to anywhere: the profile's words hold for any place.
+      if (!open || places.includes(WORLDWIDE)) return answer(text);
       // A place the profile does not list: whether the owner would move there is theirs to say.
-      const place = onePlace(question);
+      const { place, rest } = placesIn(question);
       if (place === "unread") return needs("The question names a place jobkit cannot read.");
       if (place === "several") return needs("The question names more than one place.");
-      const listed =
-        place === null ||
-        !answers.relocation.open ||
-        answers.relocation.places.some((each) => placeContains(each, place) === true);
-      return listed
-        ? answer(answers.relocation.text)
+      if (place === null) {
+        // A name the table does not know may be a place: "Houston", "our Austin office".
+        return rest.some(nameLike)
+          ? needs("The question names something jobkit cannot read as a place.")
+          : answer(text);
+      }
+      return places.some((each) => placeContains(each, place) === true)
+        ? answer(text)
         : needs("The profile does not say whether you would relocate there.");
     }
     case "work_authorisation":
     case "sponsorship": {
-      const place = onePlace(question);
+      const { place } = placesIn(question);
       if (place === "unread") return needs("The question names a place jobkit cannot read.");
       if (place === "several") return needs("The question names more than one country.");
       if (!place) return needs("The question names no country.");
@@ -427,12 +639,13 @@ export function fixedAnswer(topic: Topic, question: string, profile: TopicProfil
         : answer(stated);
     }
     case "years_with_skill": {
-      if (OTHER_YEARS.test(question)) {
+      const { found, rest } = namesIn(question, skillTag, skillWord);
+      if (found.length > 1) return needs("The question names more than one skill.");
+      const [skill] = found;
+      if (!skill) return needs("The question names no skill.");
+      if (rest.some((each) => !YEARS_WORDS.has(each.word.toLowerCase()))) {
         return needs("The question asks for years of something besides the skill.");
       }
-      const skill = oneSkill(question);
-      if (skill === "several") return needs("The question names more than one skill.");
-      if (!skill) return needs("The question names no skill.");
       const years = answers.years_per_stack[skill];
       if (years === undefined) return needs("The profile holds no years for this skill.");
       return answer(years === 1 ? "1 year" : `${years} years`);

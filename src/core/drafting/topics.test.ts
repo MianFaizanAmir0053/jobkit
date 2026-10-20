@@ -278,7 +278,7 @@ describe("fixedAnswer", () => {
       answers: {
         ...ANSWERS,
         work_authorisation: [
-          { place: "EU", authorised: false, sponsorship_needed: true },
+          { place: "EU", authorised: true },
           { place: "DE", authorised: true, text: "I hold a German residence permit." },
           { place: "NORTH_AMERICA", authorised: false, sponsorship_needed: true },
           { place: "KY", authorised: false, sponsorship_needed: true },
@@ -301,6 +301,72 @@ describe("fixedAnswer", () => {
         text: `Not authorised to work in ${said}; would need sponsorship.`,
       });
     }
+  });
+
+  it("needs the owner's answer wherever the profile's would answer another question", () => {
+    const wider = {
+      home: "PK",
+      answers: {
+        ...ANSWERS,
+        work_authorisation: [
+          ...ANSWERS.work_authorisation,
+          { place: "US", authorised: false, sponsorship_needed: true },
+          {
+            place: "AE",
+            authorised: false,
+            sponsorship_needed: true,
+            text: "Nope, none needed: I work remotely as a contractor.",
+          },
+        ],
+      },
+    };
+    for (const [topic, question] of [
+      // A place jobkit cannot read, or a part of a longer one.
+      ["relocation", "Are you willing to relocate to Houston?"],
+      ["relocation", "Would you move to our Ontario office? Relocation is paid."],
+      ["work_authorisation", "Do you have the right to work in new south wales?"],
+      ["work_authorisation", "Are you legally authorized to work in south america?"],
+      ["work_authorisation", "Are you authorised to work in Dublin, Ohio?"],
+      ["work_authorisation", "Are you authorised to work in Dublin, CA?"],
+      ["sponsorship", "WILL YOU NOW OR IN THE FUTURE REQUIRE US TO SPONSOR AN EMPLOYMENT VISA?"],
+      // Years of something besides the skill.
+      ["years_with_skill", "How many years of experience do you have as a React instructor?"],
+      ["years_with_skill", "How many years of experience do you have coaching React developers?"],
+      ["years_with_skill", "How many years of senior-level React experience do you have?"],
+      ["years_with_skill", "How many years since you last used React?"],
+      ["years_with_skill", "How many years of experience do you have hiring TypeScript engineers?"],
+      // Availability for anything but starting.
+      ["availability", "What is your availability to travel?"],
+      ["availability", "Weekly availability in hours?"],
+      // Pay the question does not say is expected, or by another period.
+      ["salary", "What is your salary in USD?"],
+      ["salary", "Expected salary per hr (USD)?"],
+      ["salary", "Expected salary in USD p.a.?"],
+    ] as const) {
+      expect(fixedAnswer(topic, question, wider), question).toMatchObject({
+        kind: "needs_your_answer",
+      });
+    }
+    // The profile's own words that open with a No are not quoted.
+    expect(
+      fixedAnswer("sponsorship", "Can you work in the UAE without sponsorship?", wider),
+    ).toEqual({
+      kind: "answer",
+      text: "Not authorised to work in the United Arab Emirates; would need sponsorship.",
+    });
+    // A code stands as pay's currency, after "in", or ending the question; dollars by their letters.
+    expect(
+      fixedAnswer("salary", "Expected salary for this CAD designer role, in USD.", wider),
+    ).toEqual({ kind: "answer", text: "USD 5,000 a month" });
+    expect(fixedAnswer("salary", "Expected salary in Mex$?", wider)).toMatchObject({
+      reason: "The profile holds no salary in MXN.",
+    });
+    expect(fixedAnswer("sponsorship", "Do you need sponsorship to work in THE US?", wider)).toEqual(
+      {
+        kind: "answer",
+        text: "Not authorised to work in the United States; would need sponsorship.",
+      },
+    );
   });
 
   it("needs the owner's answer to a question about more than one thing, or not about starting", () => {
