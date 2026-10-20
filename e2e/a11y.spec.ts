@@ -5,8 +5,8 @@ import { expect, test } from "@playwright/test";
 /**
  * The job page's accessibility (review AC13): axe, run in the page through
  * Playwright, finds no serious or critical violation on a ready kit, with
- * its flag, fit, outbound controls and add panel showing. axe-core is the
- * one eslint-plugin-jsx-a11y installs.
+ * its flag, fit, outbound controls and add panel showing. axe-core is a dev
+ * dependency of its own (the owner's approval, 2026-10-20).
  */
 
 // The tests run from the repository's root, as Playwright's config sits there.
