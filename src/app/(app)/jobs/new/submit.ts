@@ -263,7 +263,7 @@ export async function submitJob(
       at: deps.now() + UPLOAD_DEADLINE_MS,
       wallAt: deps.wallNow() + UPLOAD_DEADLINE_MS,
     };
-    let created: { jobId: string; uploads: Uploads };
+    let created: { jobId: string; uploads: Uploads; manual?: boolean };
     try {
       const metas = images.map((image) => image.meta);
       const response = await deps.fetch(
@@ -297,6 +297,8 @@ export async function submitJob(
       // The server may have created the job, or begun its upload again, before the answer was lost.
       return { ok: false, message: lost };
     }
+    // A manual run (the timing comparison's manual arm) takes no screenshots: its page says why.
+    if (created.manual === true) return { ok: true, jobId: created.jobId };
     if (created.uploads.length !== images.length) {
       return { ok: false, message: MESSAGES.notStarted };
     }

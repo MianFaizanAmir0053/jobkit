@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { confirmPost, draftAnyway as draftAnywayCore, pickRole } from "@/core/extraction/owner";
 import { CONTENT_TYPES, LIMITS } from "@/core/intake/limits";
+import { recordManualRun } from "@/core/ledger/statuses";
 import { jobStatus, retryJob } from "@/core/platform/jobs";
 import { JOB_STATES } from "@/core/platform/jobStates";
 import type { RunnerDeps } from "@/core/platform/runner";
@@ -757,4 +758,29 @@ export async function addImagesConfirm(
   if (!confirmed.ok) return addRefused(confirmed);
   await startPipeline(deps, jobId, startedAt);
   return ok(202);
+}
+
+const stopBody = z.object({
+  route: z.enum(["email", "form", "message"]),
+  company: z.string().trim().min(1).max(200),
+  role: z.string().trim().min(1).max(200),
+});
+
+/**
+ * POST /api/jobs/<id>/stop: Stop on a manual run (ledger spec, "The timing
+ * comparison"), with the route, company and role the owner names.
+ */
+export async function stopManualRun(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await bodyOf(request, stopBody);
+  if (!body.ok) return body.response;
+  const stopped = await recordManualRun(deps, jobId, body.data, actor.session.id);
+  if (!stopped.ok) return refusal(stopped.reason === "not-found" ? 404 : 409, stopped.reason);
+  return ok();
 }

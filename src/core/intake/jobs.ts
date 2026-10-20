@@ -1,7 +1,8 @@
+import { armForNewJob } from "@/core/ledger/realUse";
 import { spendState } from "@/core/ledger/spend";
 import { createJob, expireUploads, loadJob, moveJob } from "@/core/platform/jobs";
 import { tileCount } from "@/core/shared/tileGeometry";
-import type { Clock, Db, Storage } from "@/core/ports";
+import type { Clock, Db, Random, Storage } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
 import { withoutHidden } from "./hidden";
@@ -21,8 +22,9 @@ export { type ImageMeta, LIMITS } from "./limits";
  * `reissueUploads` gives fresh URLs for the files not yet stored. The job
  * keeps how it came in and the links its post gives, which are never
  * fetched, and every upload attempt is logged with its outcome (ledger
- * spec, "Records"). No arm is drawn: before real use there is none (ledger
- * spec), and intake draws one once real use starts.
+ * spec, "Records"). During real use each new job is drawn into a timing arm
+ * as it is created (ledger spec, "The timing comparison"): the manual arm's
+ * job is a manual run, which runs nothing and keeps nothing of the post.
  */
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -50,10 +52,18 @@ export interface NewJob {
 }
 
 export type StartResult =
-  | { ok: true; jobId: string; uploads: { imageId: string; url: string }[]; queued: boolean }
+  | {
+      ok: true;
+      jobId: string;
+      uploads: { imageId: string; url: string }[];
+      queued: boolean;
+      /** A manual run (the manual arm): nothing to upload, nothing runs. */
+      manual?: true;
+    }
   | { ok: false; message: string };
 
-type Deps = { db: Db; clock: Clock; storage: Storage };
+/** `random` draws the timing arm; without it, as in most tests, none is drawn. */
+type Deps = { db: Db; clock: Clock; storage: Storage; random?: Random };
 
 /**
  * Creates the job. `receivedAt` is when its request reached the server,
@@ -72,6 +82,15 @@ export async function startJob(
   const refused = refusal(images, pastedText);
   if (refused) return { ok: false, message: refused };
   if (job.clientElapsedMs > MAX_HELD_MS) return { ok: false, message: CLOCK_WRONG };
+  const arm = deps.random ? await armForNewJob({ db: deps.db, random: deps.random }) : null;
+  if (arm === "manual") {
+    const jobId = await createJob(deps.db, {
+      state: "manual_run",
+      receivedAt,
+      clientElapsedMs: job.clientElapsedMs,
+    });
+    return { ok: true, jobId, uploads: [], queued: false, manual: true };
+  }
   if (!(await spendState(deps)).newJobsAllowed) return { ok: false, message: CAP_REACHED };
 
   const now = deps.clock.now();

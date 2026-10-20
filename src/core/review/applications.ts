@@ -2,6 +2,7 @@ import { kitTypeOf } from "@/core/extraction/record";
 import { isStrictAddress, normaliseWhatsAppNumber } from "@/core/extraction/contacts";
 import { chosenRole, currentExtraction } from "@/core/extraction/owner";
 import type { Role } from "@/core/extraction/record";
+import { toolArmOf } from "@/core/ledger/realUse";
 import { changeStatus, openApplication, type Route } from "@/core/ledger/statuses";
 import type { Pipeline, StageDefinition } from "@/core/platform/runner";
 import type { Clock, Db } from "@/core/ports";
@@ -89,7 +90,8 @@ export async function openForJob(
       address: contactForLedger(role.route.kind, role.route.address),
       route: routeOf(role.route.kind),
       requirements: role.requirements.map((requirement) => requirement.text),
-      arm: null,
+      // A job made during real use is the tool arm's: the manual arm's run nothing.
+      arm: await toolArmOf(deps.db, jobId),
       jobKind: "real",
     },
     sessionId,

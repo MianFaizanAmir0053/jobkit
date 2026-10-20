@@ -60,6 +60,7 @@ Any other transition is refused, and "Mark sent" needs the email route while "Ma
 - **Manual arm.** The job page says "This one is a manual run: apply the old way, then tap Stop", starts the stopwatch from the job's start time (intake's clock), and shows nothing else for that job: no extraction or draft runs. At Stop, the owner picks the route and types the company and role, which enter the duplicate log.
 - **Tool arm.** Total time runs from the job's start to `sent` or `submitted`.
 - Both arms therefore start at the same event: the share or upload reaching jobkit with the screenshots already taken.
+- **How jobkit knows** (Claude's choices, 2026-10-20): real use starts at the earliest of a handoff the review page recorded (a part of an email handed off), an email jobkit sent or was asked to send, and a kit marked sent or submitted (a manual run's excepted), so a handoff whose record a redraft cleared still counts by what followed it. A job is drawn into an arm as it is created, once real use has started; a manual run keeps nothing of the post, has no screenshots to upload, and at Stop its application is recorded as gone at the tap (sent by email, submitted otherwise) and the job closes. Every other job created since real use started is the tool arm's, which its application records.
 
 ## Timing and stats
 
@@ -70,7 +71,7 @@ Any other transition is refused, and "Mark sent" needs the email route while "Ma
   - the route mix;
   - upload success rate;
   - the factual-edit rate with its 95% Wilson interval, and the trust-gate counter.
-- **The comparison** shows the median total time of each arm, pooled and per route, with bootstrap 95% intervals for each median and for their ratio. It appears per route once that route has at least 5 runs in each arm, and pooled once both arms have 10. Pre-real-use baseline runs are shown separately and never enter the ratio.
+- **The comparison** shows the median total time of each arm, pooled and per route, with bootstrap 95% intervals for each median and for their ratio (the percentile method, 2,000 resamples from a fixed seed, so the page shows the same interval for the same runs; the ratio is the old way's median over jobkit's). It appears per route once that route has at least 5 runs in each arm, and pooled once both arms have 10. Pre-real-use baseline runs are shown separately and never enter the ratio.
 
 ## Factual edits and the trust-gate counter
 
@@ -83,7 +84,7 @@ Any other transition is refused, and "Mark sent" needs the email route while "Ma
 
 - Month-to-date cost is the sum of the app's `model_calls.cost_usd` in the current UTC calendar month, the same way a provider's workspace limit counts. Evaluation runs use their own key and local database (platform B4) and never appear here.
 - New jobs are refused when month-to-date cost is at least $25. The guard injected into the model wrapper refuses any call once it reaches $26, so a job already running can finish but overshoot stays bounded. A warning banner shows from $20. Calls with unknown cost are counted at the most expensive known rate.
-- The Spend page shows month-to-date cost, the median cost per job, and cost per stage. On day 3 of real use the owner reviews the measured cost per job and decides whether to change the cap or move a stage to a cheaper model (amendment A9).
+- The Spend page shows month-to-date cost, the median cost per job, and cost per stage, each over the current UTC month, with how much of the total is provisional upper bounds and how many calls went to a model missing from the price table. On day 3 of real use the owner reviews the measured cost per job and decides whether to change the cap or move a stage to a cheaper model (amendment A9).
 
 ## Retention (amendment A7)
 

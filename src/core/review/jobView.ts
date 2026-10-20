@@ -113,6 +113,8 @@ export interface JobView {
   stateChangedAt: Date;
   kind: StateKind;
   receivedAt: Date;
+  /** The job's start (intake's clock): its receipt less the time the phone held it. */
+  startedAt: Date;
   failure: { stage: StageName | null; reason: string; detail: string | null } | null;
   steps: Step[];
   extraction: ExtractOutput | null;
@@ -449,6 +451,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     stateChangedAt: job.stateChangedAt,
     kind: kindOf(job.state),
     receivedAt: job.receivedAt,
+    startedAt: new Date(job.receivedAt.getTime() - job.clientElapsedMs),
     failure: await failureOf(deps.db, job),
     steps: await stepsOf(deps.db, job, unchecked, {
       drafted: round.templatesCurrent && (templates?.drafts.length ?? 0) > 0,

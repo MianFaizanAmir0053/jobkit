@@ -24,6 +24,8 @@ import { type JobListItem, listJobViews, jobView, type JobView } from "@/core/re
 import { type ImagesWanted, type PostImages, postImages } from "@/core/review/postImages";
 import { cvFileName } from "@/core/review/send";
 import { spendState } from "@/core/ledger/spend";
+import { spendReport, type SpendReport } from "@/core/ledger/spendReport";
+import { statsReport, type StatsReport } from "@/core/ledger/statsReport";
 import { isUuid } from "@/lib/uuid";
 
 import { getContainer } from "./container";
@@ -117,6 +119,19 @@ export const newJobsAllowedForViewer = cache(async (): Promise<boolean> => {
 export const baselineForViewer = cache(async (): Promise<BaselineSummary> => {
   await requireSession();
   return baselineSummary(await getContainer());
+});
+
+/** The Stats page (ledger spec, "Timing and stats"): real jobs only. */
+export const statsForViewer = cache(async (): Promise<StatsReport> => {
+  await requireSession();
+  return statsReport((await getContainer()).db);
+});
+
+/** The Spend page (ledger spec, "Spend cap"): this UTC month's model spend. */
+export const spendForViewer = cache(async (): Promise<SpendReport> => {
+  await requireSession();
+  const { db, clock } = await getContainer();
+  return spendReport(db, clock.now());
 });
 
 /**

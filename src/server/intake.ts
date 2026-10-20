@@ -10,7 +10,7 @@ import {
 } from "@/core/intake/jobs";
 import { CONTENT_TYPES, LIMITS } from "@/core/intake/limits";
 import type { RunnerDeps } from "@/core/platform/runner";
-import type { Storage } from "@/core/ports";
+import type { Random, Storage } from "@/core/ports";
 import type { AppConfig } from "@/server/config";
 import { NO_STORE, readLimited, refusal, sessionForChange } from "@/server/http";
 import { startPipeline } from "@/server/jobs";
@@ -25,6 +25,8 @@ import { startPipeline } from "@/server/jobs";
 
 type Deps = RunnerDeps & {
   storage: Storage;
+  /** Draws a new job's timing arm during real use (ledger spec); the app's container gives it. */
+  random?: Random;
   config: AppConfig;
   /** Next's after() in the app: the pipeline runs once the response has gone. */
   schedule: (task: () => Promise<unknown>) => void;
@@ -68,7 +70,12 @@ export async function create(
   // The job exists now: a pipeline that fails to start is started by the job page's next poll.
   if (started.queued) await startPipeline(deps, started.jobId, startedAt).catch(() => false);
   return NextResponse.json(
-    { jobId: started.jobId, uploads: started.uploads, queued: started.queued },
+    {
+      jobId: started.jobId,
+      uploads: started.uploads,
+      queued: started.queued,
+      ...(started.manual ? { manual: true } : {}),
+    },
     { status: 201, headers: NO_STORE },
   );
 }

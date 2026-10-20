@@ -59,6 +59,7 @@ import { ActionButton } from "./ActionButton";
 import { AddScreenshots } from "./AddScreenshots";
 import { ApproveSend } from "./ApproveSend";
 import { JobPoller } from "./JobPoller";
+import { ManualRun } from "./ManualRun";
 import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
 import { CROP_KEY } from "./imageUrls";
@@ -180,8 +181,21 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
         </p>
       </div>
 
-      <Steps steps={view.steps} />
-      <StatePanel view={view} />
+      {view.state === "manual_run" ? (
+        // The manual arm (ledger spec, "The timing comparison"): nothing else shows for this job.
+        <Panel title="A manual run">
+          <p>This one is a manual run: apply the old way, then tap Stop.</p>
+          <ManualRun
+            jobId={view.id}
+            elapsedAtLoadMs={Math.max(0, now.getTime() - view.startedAt.getTime())}
+          />
+        </Panel>
+      ) : (
+        <>
+          <Steps steps={view.steps} />
+          <StatePanel view={view} />
+        </>
+      )}
       {/* Banners, most serious first: the scam warning, earlier applications, the role's reasons. */}
       {record && <ScamPanel view={view} />}
       {readable && <DuplicatePanel view={view} timeZone={timeZone} />}

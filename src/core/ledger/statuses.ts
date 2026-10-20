@@ -1,4 +1,5 @@
 import { claimOne } from "@/core/platform/claim";
+import { loadJob, moveJob } from "@/core/platform/jobs";
 import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
@@ -282,4 +283,57 @@ async function recordChange(
      values ($1, $2, $3, $4, $5)`,
     [applicationId, from, to, at, sessionId],
   );
+}
+
+/**
+ * Stop on a manual run (ledger spec, "The timing comparison"): the owner
+ * applied the old way and names the route, the company and the role, which
+ * enter the duplicate log as an application of the manual arm that went
+ * (sent by email, submitted otherwise) at the tap; the job closes, in the
+ * same transaction, so a second tap records nothing.
+ */
+export async function recordManualRun(
+  deps: Deps,
+  jobId: string,
+  run: { route: Route; company: string; role: string },
+  sessionId: string | null,
+): Promise<{ ok: true } | { ok: false; reason: "not-found" | "not-a-manual-run" }> {
+  if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
+  const job = await loadJob(deps.db, jobId);
+  if (!job) return { ok: false, reason: "not-found" };
+  if (job.state !== "manual_run") return { ok: false, reason: "not-a-manual-run" };
+  const now = deps.clock.now();
+  const status: ApplicationStatus = run.route === "email" ? "sent" : "submitted";
+  const done = await deps.db.tx(async (tx) => {
+    const closed = await moveJob(tx, jobId, {
+      from: "manual_run",
+      to: "closed",
+      pending: null,
+      at: now,
+      ifChangedAt: job.stateChangedAt,
+    });
+    if (!closed) return false;
+    const { rows } = await tx.query<{ id: string }>(
+      `insert into {{schema}}.applications
+         (job_id, role_id, company, role, company_key, role_key, company_role_hash, address, route,
+          status, opened_at, ${status === "sent" ? "sent_at" : "submitted_at"}, status_changed_at,
+          arm, job_kind)
+       values ($1, 'manual', $2, $3, $4, $5, $6, null, $7, $8, $9, $9, $9, 'manual', 'real')
+       returning id`,
+      [
+        jobId,
+        run.company,
+        run.role,
+        companyKey(run.company),
+        roleKey(run.role),
+        companyRoleHash(run.company, run.role),
+        run.route,
+        status,
+        now,
+      ],
+    );
+    await recordChange(tx, rows[0]!.id, null, status, now, sessionId);
+    return true;
+  });
+  return done ? { ok: true } : { ok: false, reason: "not-a-manual-run" };
 }
