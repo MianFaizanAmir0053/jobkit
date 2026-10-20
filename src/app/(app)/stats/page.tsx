@@ -149,6 +149,11 @@ export default async function StatsPage() {
             : `${report.factualEdits.edits} of ${report.factualEdits.outcomes} emails had a factual edit: ${percent(report.factualEdits.rate)}${between(report.factualEdits.interval, percent)}.`}
         </p>
         <p>
+          {report.judgeFalsePositives.kits === 0
+            ? "No kit that went has a sentence you checked past the separate check yet."
+            : `${report.judgeFalsePositives.sentences} ${report.judgeFalsePositives.sentences === 1 ? "sentence" : "sentences"} the separate check held went unchanged after "I checked this", over ${report.judgeFalsePositives.kits} ${report.judgeFalsePositives.kits === 1 ? "kit" : "kits"}: its false positives.`}
+        </p>
+        <p>
           The trust gate is {report.trustGate.unlocked ? "unlocked" : "locked"}:{" "}
           {report.trustGate.cleanStreak} clean in a row, {report.trustGate.needed} unlock it.
         </p>

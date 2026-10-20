@@ -7,6 +7,7 @@ import { loadJob } from "@/core/platform/jobs";
 import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
+import { keepFinalDraft } from "./finalDraft";
 import { applicationIdOf, kitRouteOf, openForJob } from "./applications";
 import { keep, lockedKit, type ReviewOutcome } from "./kitReview";
 import { FACTUAL_CLASSES } from "./edits";
@@ -351,6 +352,14 @@ async function marking(
             draft,
           ],
         );
+        // The email as it went, the CV's label and the profile version (ledger spec, "Records").
+        await keepFinalDraft(tx, applicationId, view, {
+          draft,
+          to,
+          changed,
+          subject: handoff?.subject?.words ?? null,
+          text: handoff?.body?.words ?? null,
+        });
       }
       await keepGate(at, jobId, role.id);
       return { ok: true, changed: sent.changed };

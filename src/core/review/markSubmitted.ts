@@ -4,6 +4,7 @@ import { loadJob } from "@/core/platform/jobs";
 import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
+import { keepFinalDraft } from "./finalDraft";
 import { applicationIdOf, kitRouteOf, openForJob } from "./applications";
 import { jobView } from "./jobView";
 import { keepGate, lockReview } from "./markSent";
@@ -108,6 +109,15 @@ async function submitting(
   const submitted = await changeStatus(at, applicationId, "submitted", sessionId);
   // Unreached after the checks above; were it reached, nothing of the tap would be kept.
   if (!submitted.ok) throw new SubmitRefused();
+  if (submitted.changed) {
+    // The form or message as it went, the CV's label and the profile version (ledger spec).
+    const { edits, deleted } = view.review.decisions;
+    await keepFinalDraft(tx, applicationId, view, {
+      draft: view.picked,
+      to: view.handoff?.to ?? "",
+      changed: [...Object.keys(edits), ...deleted],
+    });
+  }
   await keepGate(at, jobId, roleId);
   return { ok: true, changed: submitted.changed };
 }

@@ -549,6 +549,38 @@ describe("recordReview", () => {
     ).toBe(true);
   });
 
+  it("keeps the email that went, its CV label and profile version, and a finding checked and sent unchanged as a judge false positive", async () => {
+    const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
+    // The separate check holds S1 (testKit); the owner checks it, and clears what else holds.
+    const view = (await jobView({ db, clock }, id))!;
+    for (const reason of view.review!.gate) {
+      if (reason.kind === "judge") {
+        await recordReview(deps(), id, { kind: "check", blockId: reason.blockId });
+      }
+      if (reason.kind === "flag") {
+        await recordReview(deps(), id, { kind: "check_flag", flag: flagKey(reason.flag) });
+      }
+    }
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+
+    const { rows } = await db.query<{
+      final_draft: { kind: string; text: string; judgeFalsePositives: string[] };
+      cv_label: string | null;
+      profile_version: string | null;
+    }>(
+      "select final_draft, cv_label, profile_version from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows[0]).toMatchObject({
+      final_draft: { kind: "email", judgeFalsePositives: ["S1"] },
+      cv_label: "sample",
+      profile_version: view.draft!.profileVersion,
+    });
+    expect(rows[0]!.final_draft.text).toContain("I have built production React applications");
+  });
+
   it("records an edit of a sentence about the post as factual only when it changes the company's or the role's name", async () => {
     const outcome = async (text: string) => {
       // Each job alone, so neither is the other's duplicate.

@@ -41,6 +41,8 @@ export interface StatsReport {
   routeMix: Record<BaselineRoute, number>;
   uploads: { ok: number; failed: number; rate: number | null };
   factualEdits: { edits: number; outcomes: number; rate: number | null; interval: Interval | null };
+  /** Sentences the separate check held that the owner checked and sent unchanged, over kits that went. */
+  judgeFalsePositives: { sentences: number; kits: number };
   trustGate: TrustGate;
   comparison: { pooled: ArmComparison; byRoute: Record<BaselineRoute, ArmComparison> };
 }
@@ -149,6 +151,13 @@ export async function statsReport(db: Db): Promise<StatsReport> {
   );
   const edits = outcomes.filter((each) => each.factual_edit).length;
 
+  const { rows: positives } = await db.query<{ sentences: number; kits: number }>(
+    `select coalesce(sum(jsonb_array_length(final_draft->'judgeFalsePositives')), 0)::int as sentences,
+            count(*)::int as kits
+       from {{schema}}.applications
+      where job_kind = 'real' and jsonb_typeof(final_draft->'judgeFalsePositives') = 'array'`,
+  );
+
   return {
     realUseSince,
     machine: { pooled: spread(machineOf()), byRoute: byRoute((route) => spread(machineOf(route))) },
@@ -162,6 +171,7 @@ export async function statsReport(db: Db): Promise<StatsReport> {
       rate: outcomes.length === 0 ? null : edits / outcomes.length,
       interval: wilsonInterval(edits, outcomes.length),
     },
+    judgeFalsePositives: positives[0] ?? { sentences: 0, kits: 0 },
     trustGate: trustGateState(
       outcomes.map((each) => ({ kind: "email", skipped: false, factualEdit: each.factual_edit })),
     ),
