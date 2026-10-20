@@ -82,7 +82,11 @@ export async function startJob(
   const refused = refusal(images, pastedText);
   if (refused) return { ok: false, message: refused };
   if (job.clientElapsedMs > MAX_HELD_MS) return { ok: false, message: CLOCK_WRONG };
-  const arm = deps.random ? await armForNewJob({ db: deps.db, random: deps.random }) : null;
+  // The cap holds every new job back, a manual run's too, before any place in the arms is drawn.
+  if (!(await spendState(deps)).newJobsAllowed) return { ok: false, message: CAP_REACHED };
+  const arm = deps.random
+    ? await armForNewJob({ db: deps.db, random: deps.random }, receivedAt)
+    : null;
   if (arm === "manual") {
     const jobId = await createJob(deps.db, {
       state: "manual_run",
@@ -91,7 +95,6 @@ export async function startJob(
     });
     return { ok: true, jobId, uploads: [], queued: false, manual: true };
   }
-  if (!(await spendState(deps)).newJobsAllowed) return { ok: false, message: CAP_REACHED };
 
   const now = deps.clock.now();
   const purgeAfter = new Date(now.getTime() + RETENTION_MS);

@@ -19,7 +19,7 @@ export interface FinalDraft {
   draft: string | null;
   kind: Kit["kind"];
   subject: string | null;
-  /** The email's body, the message or the form's text, as it went. */
+  /** The email's body, the message or the form's text, as it stood at the tap. */
   text: string;
   to: string;
   judgeFalsePositives: string[];
@@ -36,8 +36,9 @@ function textOf(kit: Kit): string {
 
 /**
  * Keeps the final draft, the CV's label and the profile version on the
- * application, inside the caller's transaction. `went` gives what the owner
- * handed off, where it is known, and the blocks and fields they changed.
+ * application, inside the caller's transaction: the kit as it stands at the
+ * tap, as a handoff keeps only a key to its words. `went` gives which draft
+ * went, where, and the blocks and fields the owner changed.
  */
 export async function keepFinalDraft(
   db: Db,
@@ -47,16 +48,21 @@ export async function keepFinalDraft(
     draft: string | null;
     to: string;
     changed: readonly string[];
-    subject?: string | null;
-    text?: string | null;
   },
 ): Promise<void> {
   const kit = view.kit;
   if (!kit) return;
   const verdicts = view.kitParts?.verdicts ?? [];
-  const judgeFalsePositives = (view.review?.decisions.checked ?? []).filter(
+  // A sentence the owner edited or deleted went in their words, or not at all: no false positive.
+  const decisions = view.review?.decisions;
+  const changed = new Set([
+    ...went.changed.map((entry) => entry.replace(/^sentence:/, "")),
+    ...Object.keys(decisions?.edits ?? {}),
+    ...(decisions?.deleted ?? []),
+  ]);
+  const judgeFalsePositives = (decisions?.checked ?? []).filter(
     (blockId) =>
-      !went.changed.includes(blockId) &&
+      !changed.has(blockId) &&
       verdicts.some(
         (verdict) =>
           verdict.blockId === blockId && isBlocking(verdict) && verdict.note !== NEVER_WEIGHED,
@@ -65,8 +71,8 @@ export async function keepFinalDraft(
   const finalDraft: FinalDraft = {
     draft: went.draft,
     kind: kit.kind,
-    subject: went.subject ?? (kit.kind === "email" ? kit.subject : null),
-    text: went.text ?? textOf(kit),
+    subject: kit.kind === "email" ? kit.subject : null,
+    text: textOf(kit),
     to: went.to,
     judgeFalsePositives,
   };

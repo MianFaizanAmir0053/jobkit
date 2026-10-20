@@ -8,10 +8,24 @@ import { type Arm, drawArm } from "./arms";
  * jobkit: the earliest of a handoff the review page recorded, an email
  * jobkit sent or was asked to send, and a kit marked sent or submitted (a
  * manual run's excepted), so a handoff whose record a redraft cleared still
- * counts by what followed it. From then, each new job is drawn into an arm
- * when it is created: the manual arm's job runs nothing (`manual_run`), and
- * every other job made since is the tool arm's.
+ * counts by what followed it. For four weeks from then (A13's "to the end of
+ * week 4", counted from real use as the MVP's calendar slipped: Claude's
+ * choice, 2026-10-20), each new job is drawn into an arm when it is created:
+ * the manual arm's job runs nothing (`manual_run`), and every other job made
+ * in those weeks is the tool arm's. After them, no job has an arm.
  */
+
+/** How long the comparison runs from the start of real use. */
+export const COMPARISON_MS = 28 * 24 * 60 * 60 * 1000;
+
+/** Whether a job created at `at` falls in the comparison's weeks. */
+function inComparison(start: Date | null, at: Date): boolean {
+  return (
+    start !== null &&
+    at.getTime() >= start.getTime() &&
+    at.getTime() < start.getTime() + COMPARISON_MS
+  );
+}
 export async function realUseStart(db: Db): Promise<Date | null> {
   const { rows } = await db.query<{ at: Date | null }>(
     `select least(
@@ -27,9 +41,12 @@ export async function realUseStart(db: Db): Promise<Date | null> {
   return rows[0]?.at ?? null;
 }
 
-/** The arm a job created now goes to: none before real use. */
-export async function armForNewJob(deps: { db: Db; random: Random }): Promise<Arm | null> {
-  if ((await realUseStart(deps.db)) === null) return null;
+/** The arm a job created at `at` goes to: none before real use, nor after its four weeks. */
+export async function armForNewJob(
+  deps: { db: Db; random: Random },
+  at: Date,
+): Promise<Arm | null> {
+  if (!inComparison(await realUseStart(deps.db), at)) return null;
   return (await drawArm(deps)).arm;
 }
 
@@ -46,5 +63,5 @@ export async function toolArmOf(db: Db, jobId: string): Promise<Arm | null> {
     [jobId],
   );
   const received = rows[0]?.received_at;
-  return received !== undefined && received.getTime() >= started.getTime() ? "tool" : null;
+  return received !== undefined && inComparison(started, received) ? "tool" : null;
 }

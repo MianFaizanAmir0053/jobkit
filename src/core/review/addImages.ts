@@ -124,6 +124,19 @@ async function closed(
   if (job.stateChangedAt.getTime() !== request.since.getTime()) {
     return { refused: { reason: "moved-on" } };
   }
+  // The post is read again whole: past 30 days its first screenshots and text are gone.
+  if (
+    request.purpose === "post" &&
+    deps.clock.now().getTime() - job.receivedAt.getTime() >= RETENTION_MS
+  ) {
+    return {
+      refused: {
+        reason: "limits",
+        message:
+          "The post's first screenshots were deleted 30 days after the job began: start a new job with the whole post.",
+      },
+    };
+  }
   if (job.state === "stopped" && request.purpose === "post") {
     const extraction = await currentExtraction(deps.db, jobId);
     // A post in another language has Skip as its only way on (extraction spec, B9).

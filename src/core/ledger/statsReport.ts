@@ -82,15 +82,31 @@ type Application = {
   started_at: Date;
 };
 
+/** Whether `a` went before `b`, or, neither having gone, reached its kit first. */
+function before(a: Application, b: Application): boolean {
+  const went = (each: Application) => each.went_at?.getTime() ?? Infinity;
+  if (went(a) !== went(b)) return went(a) < went(b);
+  const ready = (each: Application) => each.kit_ready_at?.getTime() ?? Infinity;
+  return ready(a) < ready(b);
+}
+
 export async function statsReport(db: Db): Promise<StatsReport> {
   const realUseSince = await realUseStart(db);
-  const { rows: applications } = await db.query<Application>(
+  const { rows: all } = await db.query<Application>(
     `select a.job_id, a.route, a.arm, a.kit_ready_at, coalesce(a.sent_at, a.submitted_at) as went_at,
             j.received_at - make_interval(secs => j.client_elapsed_ms / 1000.0) as started_at
        from {{schema}}.applications as a
        join {{schema}}.jobs as j on j.id = a.job_id
       where a.job_kind = 'real'`,
   );
+  // The times count each job once, though more than one of its roles got an application: by
+  // the first of them to go, else the first to reach its kit.
+  const firsts = new Map<string, Application>();
+  for (const each of all) {
+    const kept = firsts.get(each.job_id);
+    if (!kept || before(each, kept)) firsts.set(each.job_id, each);
+  }
+  const applications = [...firsts.values()];
 
   // Machine time: every real job that reached its kit through jobkit.
   const machine: { route: BaselineRoute | null; ms: number }[] = [];
@@ -163,7 +179,8 @@ export async function statsReport(db: Db): Promise<StatsReport> {
     machine: { pooled: spread(machineOf()), byRoute: byRoute((route) => spread(machineOf(route))) },
     total: { pooled: spread(totalFor()), byRoute: byRoute((route) => spread(totalFor(route))) },
     stages,
-    routeMix: byRoute((route) => applications.filter((each) => each.route === route).length),
+    // The route mix counts every application, each a kit of its own.
+    routeMix: byRoute((route) => all.filter((each) => each.route === route).length),
     uploads: { ok, failed, rate: ok + failed === 0 ? null : ok / (ok + failed) },
     factualEdits: {
       edits,

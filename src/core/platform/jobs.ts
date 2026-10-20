@@ -234,6 +234,7 @@ export async function retryJob(
 
 // A role pick's Skip may return to kit_ready instead, which extraction decides.
 const SKIPPABLE: ReadonlySet<JobState> = new Set([
+  "manual_run",
   "failed",
   "upload_failed",
   "stopped",
@@ -242,8 +243,10 @@ const SKIPPABLE: ReadonlySet<JobState> = new Set([
 ]);
 
 /**
- * Skip closes a job that failed, whose upload failed, that extraction
- * stopped, or that waits on an eligibility or kit-type decision. Given the
+ * Skip closes a manual run the owner will not apply to, which takes it out
+ * of both arms (ledger spec), or a job that failed, whose upload failed,
+ * that extraction stopped, or that waits on an eligibility or kit-type
+ * decision. Given the
  * state the owner's page showed, and when the job reached it, it closes the
  * job only as the page showed it, as it reads the job to move it: a job
  * that moved on since, or left that state and came back to it, as after a

@@ -330,18 +330,23 @@ describe("skipJob", () => {
   it("refuses every other state, among them a role pick, whose Skip extraction decides", async () => {
     const uploading = await jobIn("uploading");
     const running = await jobIn("uploading", [["queued", null]]);
-    const manual = await jobIn("manual_run");
     const rolePick = await jobIn("uploading", [
       ["queued", null],
       ["extracting", "extract"],
       ["needs_role_pick", null],
     ]);
 
-    for (const id of [uploading, running, manual, rolePick]) {
+    for (const id of [uploading, running, rolePick]) {
       expect(await skipJob({ db, clock }, id)).toEqual({ ok: false, reason: "not-skippable" });
     }
     expect(await skipJob({ db, clock }, "not-a-uuid")).toEqual({ ok: false, reason: "not-found" });
     expect(await loadJob(db, running)).toMatchObject({ state: "queued" });
+  });
+
+  it("closes a manual run the owner will not apply to, which then counts in neither arm", async () => {
+    const manual = await jobIn("manual_run");
+    expect(await skipJob({ db, clock }, manual, "manual_run")).toEqual({ ok: true });
+    expect(await loadJob(db, manual)).toMatchObject({ state: "closed" });
   });
 
   it("closes a job only from the state the owner's page showed, as it reads the job to move it", async () => {

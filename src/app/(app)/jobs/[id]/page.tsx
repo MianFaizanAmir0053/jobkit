@@ -141,7 +141,11 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
   // The Google account jobkit signs in with: Gmail opens in it, and the page says to check its From.
   const account = appConfig().ownerEmail;
   const record = view.extraction?.record ?? null;
-  const heading = [view.role?.title, record?.company.name].filter(Boolean).join(" · ") || "Job";
+  // A job whose records the purge took, or a manual run, is named as its application keeps it.
+  const heading =
+    [view.role?.title ?? view.application?.role, record?.company.name ?? view.application?.company]
+      .filter(Boolean)
+      .join(" · ") || "Job";
   const polling = view.kind === "running" || view.kind === "client";
   const ready = view.state === "kit_ready";
   const readable = ready && view.draft && view.role && view.kitParts && view.kitKey;
@@ -185,6 +189,19 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
         // The manual arm (ledger spec, "The timing comparison"): nothing else shows for this job.
         <Panel title="A manual run">
           <p>This one is a manual run: apply the old way, then tap Stop.</p>
+          <div>
+            <ActionButton
+              url={`/api/jobs/${view.id}/skip`}
+              label="Skip"
+              variant="outline"
+              body={{
+                state: view.state,
+                since: view.stateChangedAt.toISOString(),
+                uncertain: null,
+              }}
+              confirmText="Not applying for this one? Skip it: it closes for good, and is timed in neither arm."
+            />
+          </div>
           <ManualRun
             jobId={view.id}
             elapsedAtLoadMs={Math.max(0, now.getTime() - view.startedAt.getTime())}
@@ -218,7 +235,16 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
           timeZone={timeZone}
         />
       ) : (
-        ready && (
+        ready &&
+        (view.extraction === null && view.application ? (
+          // The purge took the post and its drafts (ledger spec, "Retention"): the ledger's row stays.
+          <Panel title="This kit was deleted">
+            <p className="text-sm">
+              Its post and drafts were deleted 180 days after the last change to its status. The
+              ledger keeps the company, the role and what became of it.
+            </p>
+          </Panel>
+        ) : (
           <Panel title="This kit cannot be read">
             <p className="text-sm">
               jobkit can no longer read this kit, as after an update.
@@ -234,7 +260,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
               </div>
             )}
           </Panel>
-        )
+        ))
       )}
       <KeepPanel view={view} />
     </section>

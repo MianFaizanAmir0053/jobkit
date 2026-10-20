@@ -353,13 +353,8 @@ async function marking(
           ],
         );
         // The email as it went, the CV's label and the profile version (ledger spec, "Records").
-        await keepFinalDraft(tx, applicationId, view, {
-          draft,
-          to,
-          changed,
-          subject: handoff?.subject?.words ?? null,
-          text: handoff?.body?.words ?? null,
-        });
+        // The words as they stand: a handoff keeps only a key to its words, never the words.
+        await keepFinalDraft(tx, applicationId, view, { draft, to, changed });
       }
       await keepGate(at, jobId, role.id);
       return { ok: true, changed: sent.changed };

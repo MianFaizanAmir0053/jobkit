@@ -96,6 +96,17 @@ describe("the timing arms and the Stats page", () => {
       );
       expect(Boolean(started.manual)).toBe(arm === "manual");
     }
+
+    // Four weeks from the start of real use the comparison ends: no place is drawn, the job runs.
+    clock.advance(28 * 24 * 60 * MINUTE);
+    expect(await startJob({ ...deps, random: fixed(7) }, job)).toMatchObject({
+      ok: true,
+      queued: true,
+    });
+    const { rows } = await db.query<{ next_index: number }>(
+      "select next_index from {{schema}}.arm_sequence",
+    );
+    expect(rows).toEqual([{ next_index: 6 }]);
   });
 
   it("records a manual run's Stop once, as an application of the manual arm that went", async () => {
@@ -161,6 +172,22 @@ describe("the timing arms and the Stats page", () => {
     // Pooled needs ten in each arm; the run before real use counts in total time, never the ratio.
     expect(report.comparison.pooled.shown).toBe(false);
     expect(report.total.byRoute.email.count).toBe(6);
+  });
+
+  it("times a job once though two of its roles went, and counts both kits in the route mix", async () => {
+    const jobId = await went("email", 10, null);
+    const later = new Date(clock.now().getTime() + 20 * MINUTE);
+    await db.query(
+      `insert into {{schema}}.applications
+         (job_id, role_id, company, role, role_key, route, status, opened_at, sent_at,
+          status_changed_at, job_kind)
+       values ($1, 'P2', 'Northwind', 'Designer', 'designer', 'email', 'sent', $2, $2, $2, 'real')`,
+      [jobId, later],
+    );
+
+    const report = await statsReport(db);
+    expect(report.total.pooled).toMatchObject({ count: 1, medianMs: 10 * MINUTE });
+    expect(report.routeMix.email).toBe(2);
   });
 
   it("reports the factual-edit rate with its interval, and an upload still open whose job moved on as failed", async () => {

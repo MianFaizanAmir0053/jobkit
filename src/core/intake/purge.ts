@@ -10,9 +10,13 @@ import type { Clock, Db, Storage } from "@/core/ports";
  *   screenshots;
  * - objects under a job's path, outside its crops, that no row names, once
  *   the job has left `uploading`: one that arrived after an upload timed
- *   out, one an upload begun again left, or one of an add never confirmed;
+ *   out, or one an upload begun again left; on a job that still takes
+ *   screenshots (a ready kit, a stopped post), only once it is 30 days old,
+ *   so an add uploaded but not yet confirmed is never taken from under it;
  * - pasted text older than 30 days, with the links found in the post, unless
  *   the job is kept for evaluation.
+ * A job whose storage cannot be listed or cleared is left for the next run;
+ * the others go on.
  */
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -44,24 +48,35 @@ export async function purgeIntake(deps: Deps): Promise<IntakePurge> {
   }
 
   // Every job past uploading: its objects that no row names, and its crops once no screenshot is left.
-  const { rows: jobs } = await db.query<{ id: string; paths: string[] | null }>(
-    `select job.id, array_agg(image.storage_path) filter (where image.id is not null) as paths
+  const { rows: jobs } = await db.query<{ id: string; paths: string[] | null; adding: boolean }>(
+    `select job.id, array_agg(image.storage_path) filter (where image.id is not null) as paths,
+            job.state in ('kit_ready', 'stopped') and job.received_at > $1 as adding
        from {{schema}}.jobs as job
        left join {{schema}}.job_images as image on image.job_id = job.id
       where job.state <> 'uploading'
       group by job.id`,
+    [new Date(now.getTime() - RETENTION_MS)],
   );
   let crops = 0;
   let strays = 0;
   for (const job of jobs) {
     const named = new Set(job.paths ?? []);
-    const stored = await storage.list(`jobs/${job.id}`);
     const cropFolder = `jobs/${job.id}/crops/`;
+    let stored: string[];
+    try {
+      stored = await storage.list(`jobs/${job.id}`);
+    } catch {
+      continue;
+    }
     const gone = stored.filter((path) =>
-      path.startsWith(cropFolder) ? named.size === 0 : !named.has(path),
+      path.startsWith(cropFolder) ? named.size === 0 : !job.adding && !named.has(path),
     );
     if (gone.length === 0) continue;
-    await storage.remove(gone);
+    try {
+      await storage.remove(gone);
+    } catch {
+      continue;
+    }
     crops += gone.filter((path) => path.startsWith(cropFolder)).length;
     strays += gone.filter((path) => !path.startsWith(cropFolder)).length;
   }

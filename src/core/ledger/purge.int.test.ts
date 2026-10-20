@@ -182,9 +182,45 @@ describe("the daily purges", () => {
         role: "Developer",
         status: "sent",
         final_draft: null,
-        post_fingerprint: [],
+        post_fingerprint: ["abc"],
       },
     ]);
     expect((await db.query("select 1 from {{schema}}.kit_reviews")).rows).toEqual([]);
+  });
+
+  it("keeps the records of a job kept for evaluation, and clears a role never picked after 30 days", async () => {
+    const kept = await jobWithImage(true);
+    const unpicked = await jobWithImage(false);
+    for (const [job, state] of [
+      [kept, "stopped"],
+      [unpicked, "needs_role_pick"],
+    ]) {
+      await db.query("update {{schema}}.jobs set state = $2, state_changed_at = $3 where id = $1", [
+        job,
+        state,
+        clock.now(),
+      ]);
+      const lease = await db.query<{ id: string }>(
+        `insert into {{schema}}.job_leases (id, job_id, claimed_at, expires_at)
+         values (gen_random_uuid(), $1, $2, $2) returning id`,
+        [job, clock.now()],
+      );
+      await db.query(
+        `insert into {{schema}}.job_stage_runs
+           (job_id, lease_id, stage, round, attempt, input_hash, outcome, output, output_hash, started_at, ended_at)
+         values ($1, $2, 'extract', 0, 1, 'in', 'ok', '{"record": {}}', 'out', $3, $3)`,
+        [job, lease.rows[0]!.id, clock.now()],
+      );
+    }
+
+    clock.advance(31 * DAY);
+    expect(await purgeLedger({ db, clock })).toEqual({ jobs: 1 });
+    const { rows } = await db.query<{ job_id: string; output: unknown }>(
+      "select job_id, output from {{schema}}.job_stage_runs",
+    );
+    expect(Object.fromEntries(rows.map((row) => [row.job_id, row.output !== null]))).toEqual({
+      [kept]: true,
+      [unpicked]: false,
+    });
   });
 });

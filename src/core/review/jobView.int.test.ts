@@ -717,7 +717,7 @@ describe("markSent", () => {
     expect(rows).toEqual([
       { status: "sent", route: "email", address: "jobs@example.com", role_id: "P1" },
     ]);
-    expect((await jobView({ db, clock }, id))?.application).toEqual({
+    expect((await jobView({ db, clock }, id))?.application).toMatchObject({
       status: "sent",
       sentAt: clock.now(),
       skippedAt: null,
@@ -909,7 +909,7 @@ describe("skipKit", () => {
     const view = (await jobView({ db, clock }, id))!;
     expect(view).toMatchObject({ state: "kit_ready", role: { id: "P1" } });
     expect(view.draft).not.toBeNull();
-    expect(view.application).toEqual({
+    expect(view.application).toMatchObject({
       status: "skipped",
       sentAt: null,
       skippedAt: clock.now(),
@@ -968,7 +968,7 @@ describe("skipKit", () => {
     });
 
     const view = (await jobView({ db, clock }, id))!;
-    expect(view.application).toEqual({
+    expect(view.application).toMatchObject({
       status: "kit_ready",
       sentAt: null,
       skippedAt: null,
@@ -1248,7 +1248,7 @@ describe("markBounced", () => {
     });
 
     const view = (await jobView({ db, clock }, id))!;
-    expect(view.application).toEqual({
+    expect(view.application).toMatchObject({
       status: "bounced",
       sentAt,
       skippedAt: null,
@@ -1273,7 +1273,7 @@ describe("markBounced", () => {
     clock.advance(60_000);
 
     expect(await takeBackBounced({ db, clock }, id, null, bouncedAt)).toEqual({ ok: true });
-    expect((await jobView({ db, clock }, id))!.application).toEqual({
+    expect((await jobView({ db, clock }, id))!.application).toMatchObject({
       status: "sent",
       sentAt,
       skippedAt: null,

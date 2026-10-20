@@ -37,17 +37,23 @@ export async function keepalive(request: NextRequest, deps: Deps): Promise<NextR
 export async function daily(request: NextRequest, deps: Deps): Promise<NextResponse> {
   if (!authorised(request, deps.secrets.cron, deps.secrets)) return unauthorised();
   const maintenance = await dailyMaintenance(deps);
+  if (!deps.storage) return NextResponse.json(maintenance, { headers: NO_STORE });
   // The retention purges intake and the ledger define (intake spec, "Storage and retention";
-  // ledger spec, "Retention").
-  const purged = deps.storage
-    ? {
-        ...(await purgeIntake({ ...deps, storage: deps.storage })),
-        records: (await purgeLedger(deps)).jobs,
-      }
-    : undefined;
-  return NextResponse.json(purged ? { ...maintenance, purged } : maintenance, {
-    headers: NO_STORE,
-  });
+  // ledger spec, "Retention"), each on its own: one that fails leaves the other to run, and
+  // both run again tomorrow.
+  const storage = deps.storage;
+  const attempt = async <T>(run: () => Promise<T>): Promise<T | { failed: string }> => {
+    try {
+      return await run();
+    } catch (error) {
+      return { failed: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  const purged = {
+    intake: await attempt(() => purgeIntake({ ...deps, storage })),
+    ledger: await attempt(() => purgeLedger(deps)),
+  };
+  return NextResponse.json({ ...maintenance, purged }, { headers: NO_STORE });
 }
 
 /**

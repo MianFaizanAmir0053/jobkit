@@ -196,6 +196,9 @@ export interface JobView {
     skippedAt: Date | null;
     bouncedAt: Date | null;
     submittedAt: Date | null;
+    /** The company and role the ledger keeps, which name a job whose reading is gone. */
+    company: string;
+    role: string;
   } | null;
   /**
    * The kind of kit the chosen role takes: the one its application records,
@@ -349,7 +352,12 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
   const addressChecks =
     contact?.kind === "email" ? addressChecksOf(contact.contact, checks, read) : null;
   const ready = job.state === "kit_ready";
-  const application = role ? await applicationOf(deps.db, id, role.id) : null;
+  // A job with no reading left (the purge took it, or a manual run never had one): its application.
+  const application = role
+    ? await applicationOf(deps.db, id, role.id)
+    : extraction === null
+      ? await applicationOf(deps.db, id, null)
+      : null;
   // As kitRouteOf decides, so the page offers what Mark sent and Mark submitted accept.
   const kitRoute = application ? application.route : role ? routeOf(role.route.kind) : null;
   const picked = role ? await pickedDraftOf(deps.db, id, role.id) : null;
@@ -526,6 +534,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       skippedAt: application.skippedAt,
       bouncedAt: application.bouncedAt,
       submittedAt: application.submittedAt,
+      company: application.company,
+      role: application.role,
     },
     kitRoute,
     went,
@@ -1037,10 +1047,11 @@ async function stepsOf(
   );
 }
 
+/** The job's application for the role, or with no role (a reading gone), its first one. */
 async function applicationOf(
   db: Db,
   jobId: string,
-  roleId: string,
+  roleId: string | null,
 ): Promise<{
   id: string;
   status: ApplicationStatus;
@@ -1050,6 +1061,8 @@ async function applicationOf(
   submittedAt: Date | null;
   route: Route | null;
   address: string | null;
+  company: string;
+  role: string;
 } | null> {
   const { rows } = await db.query<{
     id: string;
@@ -1060,10 +1073,14 @@ async function applicationOf(
     submitted_at: Date | null;
     route: Route | null;
     address: string | null;
+    company: string;
+    role: string;
   }>(
-    `select id, status, sent_at, skipped_at, bounced_at, submitted_at, route, address
+    `select id, status, sent_at, skipped_at, bounced_at, submitted_at, route, address, company,
+            role
        from {{schema}}.applications
-      where job_id = $1 and role_id = $2`,
+      where job_id = $1 and ($2::text is null or role_id = $2)
+      order by opened_at limit 1`,
     [jobId, roleId],
   );
   const row = rows[0];
@@ -1077,6 +1094,8 @@ async function applicationOf(
         submittedAt: row.submitted_at,
         route: row.route,
         address: row.address,
+        company: row.company,
+        role: row.role,
       }
     : null;
 }
@@ -1177,6 +1196,7 @@ export async function listJobViews(
     pending_stage: string | null;
     uncertain_roles: string[];
     template_drafts: boolean;
+    ledger: { roleId: string; company: string; role: string } | null;
     output: unknown;
     output_hash: string | null;
     sent_roles: string[];
@@ -1199,6 +1219,9 @@ export async function listJobViews(
                    where a.job_id = j.id and a.status = 'submitted') as submitted_roles,
             array(select k.role_id from {{schema}}.kit_sends as k
                    where k.job_id = j.id and ${uncertainWhere("$2")}) as uncertain_roles,
+            (select json_build_object('roleId', a.role_id, 'company', a.company, 'role', a.role)
+               from {{schema}}.applications as a
+              where a.job_id = j.id order by a.opened_at limit 1) as ledger,
             coalesce((select case jsonb_typeof(t.output -> 'drafts')
                                when 'array' then jsonb_array_length(t.output -> 'drafts') > 0
                                else false
@@ -1226,13 +1249,16 @@ export async function listJobViews(
         ? roles.find((role) => role.id === row.chosen_role)
         : undefined;
     const role = picked ?? (roles.length === 1 ? roles[0] : undefined);
+    // With no reading left, the ledger's row names the job and says whether it went.
+    const ledger = extraction === null ? row.ledger : null;
+    const roleId = role?.id ?? ledger?.roleId;
     return {
       id: row.id,
       state: row.state,
       kind: kindOf(row.state),
       receivedAt: row.received_at,
-      company: extraction?.record.company.name ?? "",
-      title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : ""),
+      company: extraction?.record.company.name ?? ledger?.company ?? "",
+      title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : (ledger?.role ?? "")),
       stateChangedAt: row.state_changed_at,
       route: role?.route.kind ?? null,
       failure: row.state === "failed" ? (row.failure ?? "This step failed.") : null,
@@ -1242,9 +1268,9 @@ export async function listJobViews(
         row.state === "failed" &&
         (row.pending_stage === "draft" || row.pending_stage === "judge") &&
         row.template_drafts,
-      sent: role !== undefined && row.sent_roles.includes(role.id),
-      bounced: role !== undefined && row.bounced_roles.includes(role.id),
-      submitted: role !== undefined && row.submitted_roles.includes(role.id),
+      sent: roleId !== undefined && row.sent_roles.includes(roleId),
+      bounced: roleId !== undefined && row.bounced_roles.includes(roleId),
+      submitted: roleId !== undefined && row.submitted_roles.includes(roleId),
       skipped:
         row.state === "kit_ready" &&
         role !== undefined &&

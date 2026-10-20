@@ -248,11 +248,20 @@ export async function undoStatus(
       );
       if (undone) {
         await recordChange(tx, applicationId, tapped, UNDO_TO[tapped], now, sessionId);
-        // A sent tap's outcome goes with it, so no outcome stands for a kit that was not sent.
+        // A sent tap's outcome goes with it, so no outcome stands for a kit that was not sent;
+        // so does the final draft of a kit that went, sent or submitted.
         if (tapped === "sent") {
           await tx.query("delete from {{schema}}.draft_outcomes where application_id = $1", [
             applicationId,
           ]);
+        }
+        if (tapped === "sent" || tapped === "submitted") {
+          await tx.query(
+            `update {{schema}}.applications
+                set final_draft = null, cv_label = null, profile_version = null
+              where id = $1`,
+            [applicationId],
+          );
         }
         return { ok: true, changed: true, status: UNDO_TO[tapped] };
       }
