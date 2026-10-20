@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { offlineDns } from "@/adapters/dns";
-import { answer, fakeLlm } from "@/adapters/fakeLlm";
+import { answer, fakeLlm, type FakeStep, refusal } from "@/adapters/fakeLlm";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { draftAnswersStage } from "@/core/drafting/answersStage";
@@ -23,6 +23,7 @@ import { claimJob, runJob } from "@/core/platform/runner";
 import { createTestDb } from "@/server/db/testDb";
 
 import { confirmAdd, startAdd } from "./addImages";
+import { backToDrafts } from "./draftChoice";
 import { jobView } from "./jobView";
 import { recordReview } from "./kitReview";
 import { KIT_DRAFT, readyKit, resetKitBed } from "./testKit";
@@ -114,6 +115,34 @@ async function add(
     })),
   });
 }
+
+/** Runs the job's pipeline through an add's stages, the models answering with `steps` in turn. */
+async function runAdd(id: string, steps: readonly FakeStep[]) {
+  const llm = fakeLlm(steps);
+  const models: ModelCallDeps = { db, clock, llmFor: () => llm, guard: async () => ({ ok: true }) };
+  const pipeline = {
+    extract_questions: extractQuestionsStage({ db, storage, random, models }),
+    draft_answers: draftAnswersStage({ db, random, models }),
+    judge: judgeStage({ db, random, models }),
+  };
+  const lease = await claimJob({ db, clock, pipeline }, id);
+  await runJob({ db, clock, pipeline }, lease!);
+  return llm;
+}
+
+const readyForm = () =>
+  readyKit({ db, clock, storage }, "Northwind is hiring.", {
+    record: throughAForm,
+    draft: FORM,
+    verdicts: [
+      { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
+      { blockId: "Q1", verdict: "supported", companyClaim: false, note: "" },
+      { blockId: "Q2", verdict: "supported", companyClaim: false, note: "" },
+    ],
+  });
+
+const answerIds = async (id: string) =>
+  ((await jobView({ db, clock }, id))!.kit as FormKit).answers.map((each) => each.id);
 
 beforeAll(async () => {
   db = await createTestDb();
@@ -229,5 +258,65 @@ describe("adding screenshots to a job", () => {
 
     expect(await add(id, "post", [await screenshot(80)])).toEqual({ ok: true });
     expect(await loadJob(db, id)).toMatchObject({ state: "extracting", pendingStage: "extract" });
+  });
+
+  it("keeps the answers added before when a later add of the form finds no new question", async () => {
+    const id = await readyForm();
+    // A page of contact fields alone, then a page with a question, then the form's review page.
+    expect(await add(id, "form", [await screenshot(10)])).toEqual({ ok: true });
+    await runAdd(id, [answer({ questions: [] })]);
+    expect(await add(id, "form", [await screenshot(20)])).toEqual({ ok: true });
+    await runAdd(id, [
+      answer({ questions: [{ text: "Describe a hard bug you fixed.", addressed_to_ai: false }] }),
+      answer({
+        answers: [
+          {
+            question_id: "Q3",
+            topic: "none",
+            text: "I traced a race in our React checkout.",
+            fact_ids: ["F-react-production"],
+          },
+        ],
+      }),
+      answer({
+        verdicts: [{ block_id: "Q3", verdict: "supported", company_claim: false, note: "" }],
+      }),
+    ]);
+    expect(await add(id, "form", [await screenshot(30)])).toEqual({ ok: true });
+    await runAdd(id, [answer({ questions: [] })]);
+
+    expect(await loadJob(db, id)).toMatchObject({ state: "kit_ready" });
+    expect(await answerIds(id)).toEqual(["Q1", "Q2", "Q3"]);
+  });
+
+  it("goes back to the kit as it was when an add fails, and refuses an add past the spend cap", async () => {
+    const id = await readyForm();
+    expect(await add(id, "form", [await screenshot(40)])).toEqual({ ok: true });
+    await runAdd(id, [
+      answer({ questions: [{ text: "Why do you want to join?", addressed_to_ai: false }] }),
+      refusal(),
+    ]);
+    expect(await loadJob(db, id)).toMatchObject({ state: "failed", pendingStage: "draft_answers" });
+    expect(await jobView({ db, clock }, id)).toMatchObject({
+      canGoBackToDrafts: true,
+      failedAdd: true,
+    });
+
+    expect(await backToDrafts({ db, clock }, id)).toEqual({ ok: true });
+    expect(await loadJob(db, id)).toMatchObject({ state: "kit_ready" });
+    expect(await answerIds(id)).toEqual(["Q1", "Q2"]);
+
+    // Past the cap for new jobs, nothing is read or answered.
+    await db.query(
+      `insert into {{schema}}.model_calls
+         (stage, attempt, provider, requested_model, started_at, outcome, cost_usd)
+       values ('draft', 1, 'gemini', 'gemini-3.8-flash', $1, 'ok', 30)`,
+      [clock.now()],
+    );
+    const since = (await loadJob(db, id))!.stateChangedAt;
+    const shot = await screenshot(50);
+    expect(
+      await startAdd({ db, clock, storage }, id, { purpose: "form", since, images: [shot.meta] }),
+    ).toMatchObject({ ok: false, reason: "limits" });
   });
 });

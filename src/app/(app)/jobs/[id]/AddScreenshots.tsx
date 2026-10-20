@@ -13,17 +13,21 @@ import { prepareImage, type PreparedImage } from "../new/prepare";
  * reads and answers alone. Each screenshot is prepared as on New job, sent
  * straight to storage with a signed URL, and then confirmed, which is when
  * it becomes the job's. The page showed the job as of `since`: an add made
- * after it moved on is refused, and the page is drawn again.
+ * after it moved on is refused, and says so. Reading the post again drafts a
+ * ready kit afresh, so the owner confirms it first.
  */
 export function AddScreenshots({
   jobId,
   since,
   form,
+  kit,
 }: {
   jobId: string;
   since: string;
   /** Whether the kit is a form's, which takes its questions' screenshots. */
   form: boolean;
+  /** Whether the job has a ready kit, which more of the post replaces. */
+  kit: boolean;
 }) {
   const router = useRouter();
   const inputId = useId();
@@ -33,6 +37,15 @@ export function AddScreenshots({
 
   async function add(files: readonly File[]) {
     if (files.length === 0) return;
+    if (
+      purpose === "post" &&
+      kit &&
+      !window.confirm(
+        "jobkit reads the post again whole and drafts the kit afresh: your edits and choices on this kit go. Add them?",
+      )
+    ) {
+      return;
+    }
     setBusy(true);
     setMessage(null);
     try {
@@ -60,8 +73,7 @@ export function AddScreenshots({
         const image = bySha.get(upload.sha256);
         if (!image) continue;
         const meta = image.meta;
-        const put = await fetch(upload.url, { method: "PUT", body: image.blob }).catch(() => null);
-        if (!put || !put.ok) {
+        if (!(await putOnce(upload.url, image.blob))) {
           setMessage("A screenshot did not upload. Check the connection and add them again.");
           return;
         }
@@ -185,4 +197,26 @@ async function post(
   } catch {
     return { ok: false, message: "The connection dropped. Try again." };
   }
+}
+
+/**
+ * Sends one screenshot to its signed URL, trying again twice on a dropped
+ * connection, a timeout or a server error, each try at most a minute; a
+ * refusal is final, as a signed URL takes one upload.
+ */
+async function putOnce(url: string, blob: Blob): Promise<boolean> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await fetch(url, {
+        method: "PUT",
+        body: blob,
+        signal: AbortSignal.timeout(60_000),
+      });
+      if (response.ok) return true;
+      if (response.status < 500) return false;
+    } catch {
+      // A dropped connection or a timeout: try again.
+    }
+  }
+  return false;
 }

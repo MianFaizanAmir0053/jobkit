@@ -333,7 +333,10 @@ function StatePanel({ view }: { view: JobView }) {
           )}
           <div className="flex flex-wrap gap-2">
             {view.canGoBackToDrafts && (
-              <ActionButton url={`${base}/back-to-drafts`} label="Back to your drafts" />
+              <ActionButton
+                url={`${base}/back-to-drafts`}
+                label={view.failedAdd ? "Back to your kit" : "Back to your drafts"}
+              />
             )}
             <ActionButton
               url={`${base}/retry`}
@@ -357,8 +360,16 @@ function StatePanel({ view }: { view: JobView }) {
             )}
             {skip}
           </div>
-          {/* More of the post, read again whole (intake spec, item 4). */}
-          <AddScreenshots jobId={view.id} since={view.stateChangedAt.toISOString()} form={false} />
+          {/* More of the post, read again whole (intake spec, item 4); never for a post in another
+              language, whose only way on is Skip. */}
+          {view.stopReason !== "language" && (
+            <AddScreenshots
+              jobId={view.id}
+              since={view.stateChangedAt.toISOString()}
+              form={false}
+              kit={false}
+            />
+          )}
         </Panel>
       );
     case "needs_eligibility_decision":
@@ -2021,6 +2032,7 @@ function KitPanel({
             jobId={view.id}
             since={view.stateChangedAt.toISOString()}
             form={form !== null}
+            kit
           />
         </Panel>
       )}

@@ -11,7 +11,14 @@ import { canonicalJson } from "@/lib/canonicalJson";
 import { sha256Hex } from "@/lib/encoding";
 
 import { acceptedInstructions, buildFormKit, oneLine } from "./build";
-import { BUILD_VERSION, DRAFT, type DraftOutput, NO_PROFILE, withoutAiLines } from "./draftStage";
+import {
+  BUILD_VERSION,
+  DRAFT,
+  type DraftOutput,
+  FORM_BUILD,
+  NO_PROFILE,
+  withoutAiLines,
+} from "./draftStage";
 import { type FormAnswer, formAnswerSchema, type FormKit } from "./kit";
 import { ANSWERS_LAYOUT_VERSION, answersContent, answersSystemPrompt } from "./prompt";
 import { TOPICS } from "./topics";
@@ -30,7 +37,8 @@ import { type KitFlag, validateKit } from "./validate";
  * AI).
  */
 
-const answersSchema = z.object({ answers: formAnswerSchema.shape.answers });
+/** The drafter's answers to the new questions alone: the form's schema without its fit and note. */
+export const answersOnlySchema = z.object({ answers: formAnswerSchema.shape.answers });
 
 // The prompt as sent, and the form's build, which fills the topic answers.
 const ANSWERS_PROMPT = sha256Hex(
@@ -39,9 +47,9 @@ const ANSWERS_PROMPT = sha256Hex(
     answersOnly: true,
     rules: answersSystemPrompt(),
     layout: ANSWERS_LAYOUT_VERSION,
-    schema: z.toJSONSchema(answersSchema),
+    schema: z.toJSONSchema(answersOnlySchema),
     build: BUILD_VERSION,
-    formBuild: 3,
+    formBuild: FORM_BUILD,
     skills: SKILLS,
     topics: TOPICS,
   }),
@@ -107,7 +115,7 @@ export function withAddedAnswers(draft: DraftOutput, added: AddedAnswers | null)
 
 interface AnswersInput {
   draft: string;
-  /** The questions not yet answered, on one line, and whether each addresses AI. */
+  /** Every question added to the draft, on one line, and whether each addresses AI. */
   questions: { id: string; text: string; ai: boolean }[];
   profile: string;
   model: string;
@@ -134,19 +142,22 @@ export function draftAnswersStage(deps: AnswersDeps): StageDefinition {
       [...draft.kit.answers, ...(earlier?.output.answers ?? [])].map((answer) => answer.id),
     );
     const fresh = role.screening_questions.filter((question) => !answered.has(question.id));
-    return { draftHash: stored.outputHash, draft, kit: draft.kit, earlier, role, fresh };
+    // Every question added to the draft, answered or not: what the stage's output answers.
+    const ownIds = new Set(draft.kit.answers.map((answer) => answer.id));
+    const added = role.screening_questions.filter((question) => !ownIds.has(question.id));
+    return { draftHash: stored.outputHash, draft, kit: draft.kit, earlier, role, fresh, added };
   }
 
   return {
     callsModel: true,
 
-    // B9: the IDs and texts of the questions not yet answered, the draft they add to, the profile
-    // version, the model's settings.
+    // B9: the IDs and texts of the questions added (every one, so an output kept for fewer is
+    // never taken for more), the draft they add to, the profile version, the model's settings.
     async input(ctx): Promise<AnswersInput> {
-      const { draftHash, draft, fresh } = await parts(ctx);
+      const { draftHash, draft, added } = await parts(ctx);
       return {
         draft: draftHash,
-        questions: fresh.map((question) => ({
+        questions: added.map((question) => ({
           id: question.id,
           text: oneLine(question.text),
           ai: question.addressed_to_ai,
@@ -176,7 +187,7 @@ export function draftAnswersStage(deps: AnswersDeps): StageDefinition {
       const freshIds = new Set(fresh.map((question) => question.id));
       const shown = post.role.screening_questions.filter((question) => freshIds.has(question.id));
       const markers: string[] = [];
-      let drafted: z.output<typeof answersSchema>["answers"] = [];
+      let drafted: z.output<typeof answersOnlySchema>["answers"] = [];
       if (shown.length > 0) {
         const marker = Buffer.from(deps.random.bytes(16)).toString("hex");
         markers.push(marker);
@@ -190,7 +201,7 @@ export function draftAnswersStage(deps: AnswersDeps): StageDefinition {
             { company: post.company, role: { ...post.role, screening_questions: shown } },
             marker,
           ),
-          schema: answersSchema,
+          schema: answersOnlySchema,
           effort: input.effort,
           maxTokens: DRAFT.maxTokens,
         });

@@ -6,10 +6,12 @@ import { type ZodType, z } from "zod";
 
 import { caseless } from "@/core/platform/caseless";
 
+import { answersOnlySchema } from "@/core/drafting/answersStage";
 import { judgeAnswerSchema } from "@/core/drafting/judge";
 import { draftAnswerSchema, formAnswerSchema } from "@/core/drafting/kit";
 
 import { contactReadSchema } from "./addressReadStage";
+import { formQuestionsSchema } from "./questionsStage";
 import { jobRecordSchema } from "./record";
 
 /*
@@ -30,6 +32,8 @@ const STRUCTURED_SCHEMAS: Record<string, ZodType> = {
   "draft: the fit table, a cover note and the answers": formAnswerSchema,
   "judge: a verdict for every block": judgeAnswerSchema,
   "address_read: the contact a crop shows": contactReadSchema,
+  "extract_questions: a form's questions": formQuestionsSchema,
+  "draft_answers: the answers to added questions": answersOnlySchema,
 };
 
 const MAX_OPTIONAL = 20;

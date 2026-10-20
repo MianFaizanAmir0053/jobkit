@@ -42,7 +42,8 @@ The questions
 - Leave out the fields for a name, an email address, a phone number, a postal address, links to profiles, and files such as a CV or a cover letter: the job seeker fills those in themselves.
 - When the screenshots show no question, return an empty list.`;
 
-const questionsSchema = z.object({
+/** The questions a form's screenshots ask, for the census of structured outputs. */
+export const formQuestionsSchema = z.object({
   questions: z
     .array(
       z.strictObject({
@@ -58,7 +59,11 @@ const LAYOUT_VERSION = 1;
 
 // The prompt as sent: its rules, the user turn's layout and the output's schema.
 const QUESTIONS_PROMPT = sha256Hex(
-  canonicalJson({ rules: RULES, layout: LAYOUT_VERSION, schema: z.toJSONSchema(questionsSchema) }),
+  canonicalJson({
+    rules: RULES,
+    layout: LAYOUT_VERSION,
+    schema: z.toJSONSchema(formQuestionsSchema),
+  }),
 );
 
 const CHANGED_IMAGES = "The form's screenshots changed while this step began.";
@@ -88,15 +93,27 @@ interface FormImage {
   sha256: string;
 }
 
-/** The form screenshots the owner added to a job, in the order added. */
-async function formImages(db: Db, jobId: string): Promise<FormImage[]> {
+/**
+ * The form screenshots the owner added to the job's current reading of its
+ * post, in the order added: one added before a fresh reading answered the
+ * questions of another, and is not read again (extraction spec).
+ */
+export async function formImages(db: Db, jobId: string): Promise<FormImage[]> {
   const { rows } = await db.query<{ storage_path: string; sha256: string }>(
     `select storage_path, sha256 from {{schema}}.job_images
-      where job_id = $1 and purpose = 'form' order by position`,
+      where job_id = $1 and purpose = 'form'
+        and created_at >= coalesce(
+          (select max(ended_at) from {{schema}}.job_stage_runs
+            where job_id = $1 and stage = 'extract' and outcome in ('ok', 'reused')),
+          '-infinity')
+      order by position`,
     [jobId],
   );
   return rows.map((row) => ({ storagePath: row.storage_path, sha256: row.sha256 }));
 }
+
+/** A question as it is compared with another: on one line, in lower case. */
+const sameText = (text: string) => text.replace(/\s+/g, " ").trim().toLowerCase();
 
 /** The user turn: the marker line, each tile after a line saying where it comes from, the closing marker. */
 function formContent(tiles: readonly Tile[], marker: string): LlmInput[] {
@@ -180,27 +197,34 @@ export function extractQuestionsStage(deps: QuestionsDeps): StageDefinition {
         model: input.model,
         system: RULES,
         content: formContent(cut.tiles, marker),
-        schema: questionsSchema,
+        schema: formQuestionsSchema,
         effort: input.effort,
         maxTokens: EXTRACT.maxTokens,
       });
       if (!called.ok)
         return { ok: false, reason: called.message, retry: PASSING.has(called.reason) };
 
-      // IDs by position, after the role's own questions and those added before.
-      const first = role.screening_questions.length + earlier.questions.length;
+      // IDs after the highest the role and the questions added before use; a question already
+      // asked, as a form's review page repeats them, is not added again.
+      const known = [...role.screening_questions, ...earlier.questions];
+      let next = Math.max(
+        known.length,
+        ...known.map((question) => Number(/^Q(\d+)$/.exec(question.id)?.[1] ?? 0)),
+      );
+      const asked = new Set(known.map((question) => sameText(question.text)));
+      const questions = called.output.questions.flatMap((question) => {
+        const text = sameText(question.text);
+        if (text === "" || asked.has(text)) return [];
+        asked.add(text);
+        return [
+          { id: `Q${++next}`, text: question.text, addressed_to_ai: question.addressed_to_ai },
+        ];
+      });
       const output: AddedQuestions = {
         extract: input.extract,
         role: input.role,
         images: [...earlier.images, ...fresh.map((image) => image.sha256)],
-        questions: [
-          ...earlier.questions,
-          ...called.output.questions.map((question, i) => ({
-            id: `Q${first + i + 1}`,
-            text: question.text,
-            addressed_to_ai: question.addressed_to_ai,
-          })),
-        ],
+        questions: [...earlier.questions, ...questions],
       };
       return { ok: true, output };
     },

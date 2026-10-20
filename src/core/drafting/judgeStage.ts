@@ -71,6 +71,8 @@ export interface JudgeOutput {
   markers: string[];
   /** For a check of added answers: the draft_answers output it checked; absent for the draft's. */
   answers?: string;
+  /** For a check of added answers: each answer's words as weighed, hashed, by its ID. */
+  weighed?: Record<string, string>;
 }
 
 interface JudgeInput {
@@ -111,8 +113,11 @@ export async function answersJudgeOf(
   return rows[0]?.output ?? null;
 }
 
-/** The verdicts on added answers that the judge gave before, on answers added to this same draft. */
-async function earlierAnswerVerdicts(db: Db, jobId: string, draftHash: string) {
+/**
+ * The latest check of answers added to this same draft: its verdicts, and
+ * the words each weighed, hashed.
+ */
+async function earlierAnswerCheck(db: Db, jobId: string, draftHash: string) {
   const { rows } = await db.query<{ output: JudgeOutput }>(
     `select run.output from {{schema}}.job_stage_runs as run
       where run.job_id = $1 and run.stage = 'judge' and run.outcome in ('ok', 'reused')
@@ -123,8 +128,10 @@ async function earlierAnswerVerdicts(db: Db, jobId: string, draftHash: string) {
       order by run.id desc limit 1`,
     [jobId, draftHash],
   );
-  return rows[0]?.output.verdicts ?? [];
+  return { verdicts: rows[0]?.output.verdicts ?? [], weighed: rows[0]?.output.weighed ?? {} };
 }
+
+const wordsHash = (text: string) => sha256Hex(text);
 
 export interface JudgeDeps {
   db: Db;
@@ -169,18 +176,30 @@ export function judgeStage(deps: JudgeDeps): StageDefinition {
         if (!added || added.outputHash !== input.answers) {
           throw new Error("judge's added answers are gone");
         }
-        const before = await earlierAnswerVerdicts(deps.db, ctx.job.id, input.draft);
-        const weighed = new Set(before.map((verdict) => verdict.blockId));
+        // A verdict stands only for the words it weighed: an answer drafted again is weighed again.
+        const earlier = await earlierAnswerCheck(deps.db, ctx.job.id, input.draft);
+        const words = new Map(
+          added.output.answers.map((answer) => [answer.id, wordsHash(answer.text)]),
+        );
+        const before = earlier.verdicts.filter(
+          (verdict) =>
+            earlier.weighed[verdict.blockId] !== undefined &&
+            earlier.weighed[verdict.blockId] === words.get(verdict.blockId),
+        );
+        const kept = new Set(before.map((verdict) => verdict.blockId));
         const kit: FormKit = {
           kind: "form",
           blocks: [],
-          answers: added.output.answers.filter((answer) => !weighed.has(answer.id)),
+          answers: added.output.answers.filter((answer) => !kept.has(answer.id)),
         };
         const output: JudgeOutput = {
           checked: true,
           verdicts: before,
           markers: [],
           answers: input.answers,
+          weighed: Object.fromEntries(
+            before.map((verdict) => [verdict.blockId, earlier.weighed[verdict.blockId]!]),
+          ),
         };
         if (draftedAnswers(kit).length === 0) return { ok: true, output };
         const marker = Buffer.from(deps.random.bytes(16)).toString("hex");
@@ -201,12 +220,19 @@ export function judgeStage(deps: JudgeDeps): StageDefinition {
         });
         if (!called.ok)
           return { ok: false, reason: called.message, retry: PASSING.has(called.reason) };
+        const fresh = mergeVerdicts(kit, called.output);
         return {
           ok: true,
           output: {
             ...output,
-            verdicts: [...before, ...mergeVerdicts(kit, called.output)],
+            verdicts: [...before, ...fresh],
             markers: [marker],
+            weighed: {
+              ...output.weighed,
+              ...Object.fromEntries(
+                fresh.map((verdict) => [verdict.blockId, words.get(verdict.blockId) ?? ""]),
+              ),
+            },
           },
         };
       }

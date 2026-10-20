@@ -73,6 +73,13 @@ export const DRAFT = {
  */
 export const BUILD_VERSION = 9;
 
+/**
+ * A form's build beyond the email's (its answers: topics.ts, regions.ts; its
+ * flags): raise it when a form's build changes. `draft` and `draft_answers`
+ * both carry it.
+ */
+export const FORM_BUILD = 3;
+
 // The prompt as sent (its rules, the user turn's layout, the output's schema) and the build, for
 // each kit; an email's as it always was.
 const PROMPTS = {
@@ -101,8 +108,7 @@ const PROMPTS = {
   form: sha256Hex(
     canonicalJson({
       kit: "form",
-      // Raise it when a form's build changes: its answers (topics.ts, regions.ts), its flags.
-      formBuild: 3,
+      formBuild: FORM_BUILD,
       rules: formSystemPrompt(0),
       layout: DRAFT_LAYOUT_VERSION,
       schema: z.toJSONSchema(formAnswerSchema),

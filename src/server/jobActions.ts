@@ -700,6 +700,8 @@ const ADD_BODY_BYTES = 8192;
 
 /** A refused add, with the words the page shows for limits, and the screenshots storage lacks. */
 function addRefused(result: { reason: AddRefusal; message?: string; missing?: string[] }) {
+  // As the upload's own confirmation answers a storage that cannot be reached.
+  if (result.reason === "storage") return refusal(503, "storage-unavailable");
   const status =
     result.reason === "not-found"
       ? 404
@@ -756,7 +758,8 @@ export async function addImagesConfirm(
     since: new Date(body.data.since),
   });
   if (!confirmed.ok) return addRefused(confirmed);
-  await startPipeline(deps, jobId, startedAt);
+  // The add is the job's now: a pipeline that fails to start is started by the job page's next poll.
+  await startPipeline(deps, jobId, startedAt).catch(() => false);
   return ok(202);
 }
 

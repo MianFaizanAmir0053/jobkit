@@ -267,7 +267,7 @@ Modules register stages; the runner owns their order, the job's state and the bo
 | `judging` | running | `judge` | `kit_ready`, `failed` |
 | `kit_ready` | ready | the kit is ready for review | `extracting` (screenshots added), `drafting` (contact edited, another kit type, new questions, or a Gemini draft beside the templates', decisions A22), `needs_role_pick` (another role) |
 | `stopped` | owner | not a job post, not in English, or no role found | `extracting` (the owner confirms a post marked "not a job post", or has a post with no role found read again; the confirmation is given once per job, never for language), `closed` |
-| `failed` | owner | a stage failed; the page shows the stage, a readable reason, Retry and Skip | the failed stage's running state (Retry), `kit_ready` ("Back to your drafts", only from `draft` or `judge`, when a Gemini draft asked for beside the templates' failed), `closed` (Skip) |
+| `failed` | owner | a stage failed; the page shows the stage, a readable reason, Retry and Skip | the failed stage's running state (Retry), `kit_ready` ("Back to your drafts", only from `draft` or `judge`, when a Gemini draft asked for beside the templates' failed; "Back to your kit", from `extract_questions`, `draft_answers` or the `judge` of the answers they added, when an add of a form's screenshots failed: the kit as it was before the add), `closed` (Skip) |
 | `closed` | final | finished without a kit, or skipped | none |
 
 - **Kinds:** only `running` jobs are advanced by the runner. `waiting` and `owner` states move only on the owner's action; `client` moves on intake's requests; `ready` and `final` never advance by themselves. The application's outcome (sent, submitted, skipped, bounced) is the ledger's status, not a job state.

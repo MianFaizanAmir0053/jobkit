@@ -153,6 +153,8 @@ export interface JobView {
    * draft they asked for beside them, or its check, failed.
    */
   canGoBackToDrafts: boolean;
+  /** Whether the job failed adding a form's screenshots, so the way back is to the kit as it was. */
+  failedAdd: boolean;
   /** The judge's verdicts on Gemini's draft; null before it ran, from before it was built, or with none. */
   judge: JudgeOutput | null;
   /**
@@ -483,10 +485,14 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
       !kitParts.sent &&
       !kitParts.sending &&
       !kitParts.skipped,
+    failedAdd: job.state === "failed" && addFailed(job.pendingStage, added !== null),
     canGoBackToDrafts:
       job.state === "failed" &&
-      (job.pendingStage === "draft" || job.pendingStage === "judge") &&
-      candidates.some((candidate) => candidate.choice.source === "template"),
+      (((job.pendingStage === "draft" || job.pendingStage === "judge") &&
+        candidates.some((candidate) => candidate.choice.source === "template")) ||
+        // An add of a form's screenshots that failed: back to the kit as it was before it.
+        (addFailed(job.pendingStage, added !== null) &&
+          candidates.some((candidate) => candidate.choice.source === "gemini"))),
     judge: geminiCurrent && judge?.checked ? judge : null,
     contact: settled,
     contactScreenshot,
@@ -1255,4 +1261,17 @@ async function screenshotsLeft(db: Db, jobId: string): Promise<number> {
     [jobId],
   );
   return rows[0]?.left ?? 0;
+}
+
+/**
+ * Whether the stage a failed job stopped at was an add of a form's
+ * screenshots: reading their questions, answering them, or the check of the
+ * answers added (a judge with answers added to the draft).
+ */
+export function addFailed(stage: StageName | null, answersAdded: boolean): boolean {
+  return (
+    stage === "extract_questions" ||
+    stage === "draft_answers" ||
+    (stage === "judge" && answersAdded)
+  );
 }

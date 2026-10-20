@@ -132,8 +132,9 @@ const AFTER_DRAFTING: Partial<Record<StageName, readonly JobState[]>> = {
  * job and a post the owner confirms start at `extract`, only
  * `extract_questions` leads from extracting to drafting, with
  * `draft_answers`, only `templates` leads from drafting to a ready kit, or
- * on to `draft`, and a failed job goes back to its kit only from `draft` or
- * `judge`, named as the stage it leaves.
+ * on to `draft`, and a failed job goes back to its kit only from `draft`,
+ * `judge` or a form's add (`extract_questions`, `draft_answers`), named as
+ * the stage it leaves.
  */
 export function checkMove(
   from: JobState,
@@ -167,9 +168,19 @@ export function checkMove(
       return { ok: false, reason: "a post no template fits is drafted by draft" };
     }
   }
-  // Back to its kit only from a Gemini draft asked for beside the templates' (decisions A22).
-  if (from === "failed" && to === "kit_ready" && leaving !== "draft" && leaving !== "judge") {
-    return { ok: false, reason: "a failed job goes back to its kit only from draft or judge" };
+  // Back to its kit only from a Gemini draft asked for beside the templates' (decisions A22), or
+  // from an add of a form's screenshots that failed (intake spec, item 4).
+  if (
+    from === "failed" &&
+    to === "kit_ready" &&
+    !(["draft", "judge", "extract_questions", "draft_answers"] as const).some(
+      (stage) => stage === leaving,
+    )
+  ) {
+    return {
+      ok: false,
+      reason: "a failed job goes back to its kit only from draft, judge or a form's add",
+    };
   }
   if ((from === "queued" || from === "stopped") && to === "extracting" && pending !== "extract") {
     return { ok: false, reason: `${from} moves to extracting only with extract` };
