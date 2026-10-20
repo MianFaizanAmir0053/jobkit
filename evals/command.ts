@@ -1,12 +1,20 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 
+import { JUDGE, JUDGE_PROMPT } from "@/core/drafting/judgeStage";
 import { EXTRACT, EXTRACT_PROMPT } from "@/core/extraction/extract";
 import { providerOf } from "@/core/platform/models";
 import { assertLocalOnly } from "@/server/localOnly";
 
 import { listCases, readCase } from "./cases";
 import { styleExamplesOf } from "./import";
+import {
+  estimateJudgeItem,
+  type JudgeSetReport,
+  judgeReportMarkdown,
+  readJudgeSet,
+  runJudgeSet,
+} from "./judgeSet";
 import {
   type CaseResult,
   type CaseSplit,
@@ -59,7 +67,7 @@ export interface EvalIo {
 }
 
 export interface EvalArgs {
-  stage: "extract";
+  stage: (typeof STAGES_BUILT)[number];
   model: string;
   split: CaseSplit;
   final: boolean;
@@ -67,7 +75,7 @@ export interface EvalArgs {
   budgetUsd: number;
 }
 
-const STAGES_BUILT = ["extract"] as const;
+const STAGES_BUILT = ["extract", "judge-set"] as const;
 
 /** The evaluation key each provider's models run on (platform spec B8). */
 const EVAL_KEYS = {
@@ -105,6 +113,22 @@ export function parseEvalArgs(argv: readonly string[]): EvalArgs {
   if (!stage) throw new Error("Name the stage: npm run eval -- --stage extract");
   if (!(STAGES_BUILT as readonly string[]).includes(stage)) {
     throw new Error(`Only ${STAGES_BUILT.join(", ")} can be evaluated so far.`);
+  }
+  // The judge set is one frozen set of sentences, run whole: it has no split.
+  if (stage === "judge-set") {
+    if (args.split !== undefined || args.final) {
+      throw new Error(
+        "The judge set is one set, with no split: run it without --split or --final.",
+      );
+    }
+    return {
+      stage: "judge-set",
+      model: args.model ?? JUDGE.model,
+      split: "dev",
+      final: false,
+      yes: args.yes ?? false,
+      budgetUsd: args.budgetUsd ?? DEFAULT_BUDGET_USD,
+    };
   }
   const split = args.split ?? "dev";
   if (split === "test" && !args.final) {
@@ -302,6 +326,71 @@ export function reportMarkdown(report: RunReport): string {
   return `${lines.join("\n")}\n`;
 }
 
+/**
+ * The judge set's run (evals spec, "Metrics", the judge): every labelled
+ * sentence of private/evals/judge-set.json, each through the judge's own
+ * prompt, up to the budget; its report beside the others.
+ */
+export async function judgeSetCommand(args: EvalArgs, io: EvalIo): Promise<JudgeSetReport | null> {
+  const file = join(io.evalsDir, "judge-set.json");
+  const set = readJudgeSet(file);
+  if (!set) throw new Error(`No judge set yet: make it with npm run eval:judge-set (${file}).`);
+  const labelled = set.items.filter((item) => item.label !== null);
+  io.log(
+    `${labelled.length} labelled sentences of the judge set's ${set.items.length} to run; ${set.items.length - labelled.length} have no label yet.`,
+  );
+  const startedAt = io.now();
+  const most = labelled.reduce(
+    (sum, item) => sum + estimateJudgeItem(item, args.model, startedAt),
+    0,
+  );
+  const runs = join(io.evalsDir, "runs");
+  io.log(
+    `At most ${dollars(most)} for judge-set with ${args.model}; the run stops before passing its budget of ${dollars(args.budgetUsd)}.`,
+  );
+  io.log(`Evaluation runs this month have spent ${dollars(spentThisMonth(runs, startedAt))}.`);
+  if (!args.yes) {
+    io.log("Nothing was spent. Run again with --yes to spend.");
+    return null;
+  }
+  if (labelled.length === 0) {
+    io.log("No labelled sentences, so nothing to run: label them on /dev/label/judge.");
+    return null;
+  }
+  const deps = await io.open(io.profileFile);
+  let report: JudgeSetReport;
+  try {
+    const run = await runJudgeSet(deps, set, { model: args.model, budgetUsd: args.budgetUsd });
+    report = {
+      ...run,
+      stage: "judge-set",
+      startedAt: startedAt.toISOString(),
+      finishedAt: io.now().toISOString(),
+      commit: io.commit,
+      prompt: JUDGE_PROMPT,
+      effort: JUDGE.effort,
+    };
+  } finally {
+    await deps.close();
+  }
+  const folder = join(runs, `${report.startedAt.replaceAll(":", "-")}-judge-set-${args.model}`);
+  mkdirSync(folder, { recursive: true });
+  writeFileSync(join(folder, "report.json"), `${JSON.stringify(report, null, 2)}\n`);
+  writeFileSync(join(folder, "report.md"), judgeReportMarkdown(report));
+  const { precision, recall } = report.notSupported;
+  io.log(
+    `Not supported: precision ${precision.successes} of ${precision.n} (${percent(precision.point)}, ${percent(precision.low)} to ${percent(precision.high)}), recall ${recall.successes} of ${recall.n} (${percent(recall.point)}, ${percent(recall.low)} to ${percent(recall.high)}).`,
+  );
+  io.log(
+    `Cost ${dollars(report.costUsd)}${report.stoppedAtBudget ? ", stopped at the budget" : ""}. Report: ${folder}`,
+  );
+  return report;
+}
+
+/**
+ * The command. Extraction's report comes back for the caller; the judge
+ * set's is written and printed, and none comes back.
+ */
 export async function evalCommand(argv: readonly string[], io: EvalIo): Promise<RunReport | null> {
   assertLocalOnly(io.env, "npm run eval");
   assertLocalOnly(io.localEnv, "npm run eval (.env.local)");
@@ -311,6 +400,10 @@ export async function evalCommand(argv: readonly string[], io: EvalIo): Promise<
     throw new Error(
       `npm run eval needs ${key} in .env.local to run ${args.model}: see docs/runbook/setup.md`,
     );
+  }
+  if (args.stage === "judge-set") {
+    await judgeSetCommand(args, io);
+    return null;
   }
   const { split } = args;
   let cases: EvalCase[];
@@ -357,7 +450,7 @@ export async function evalCommand(argv: readonly string[], io: EvalIo): Promise<
   }
   const report: RunReport = {
     ...run,
-    stage: args.stage,
+    stage: "extract",
     split: args.split,
     final: args.final,
     startedAt: startedAt.toISOString(),

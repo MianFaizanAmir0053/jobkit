@@ -2,6 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { RunReport } from "./command";
+import { compareJudgeRuns, type JudgeSetReport } from "./judgeSet";
 import type { CaseResult } from "./run";
 import { compareModels, type Proportion } from "./score";
 
@@ -166,8 +167,40 @@ function comparisonSection(first: RunReport, second: RunReport): string[] {
   return lines;
 }
 
+/** The latest judge-set run of each model. */
+function latestJudgeRuns(reports: readonly JudgeSetReport[]): JudgeSetReport[] {
+  const latest = new Map<string, JudgeSetReport>();
+  for (const report of reports) {
+    const kept = latest.get(report.model);
+    if (!kept || kept.startedAt < report.startedAt) latest.set(report.model, report);
+  }
+  return [...latest.values()].sort((a, b) => a.model.localeCompare(b.model));
+}
+
+/** A judge-set run: "not supported" against the owner's labels, with intervals. */
+function judgeSection(report: JudgeSetReport): string[] {
+  const count = (outcome: JudgeSetReport["items"][number]["outcome"]) =>
+    report.items.filter((each) => each.outcome === outcome).length;
+  const { precision, recall } = report.notSupported;
+  return [
+    `## judge-set, ${report.model}`,
+    "",
+    `Run on ${report.startedAt.slice(0, 10)}: ${count("scored")} sentences scored, ${count("failed")} failed, ${count("budget")} not run for the budget. Cost ${report.costUsd.toFixed(2)}.`,
+    "",
+    "| Measure | Right | Of | Share | 95% interval |",
+    "|---|---|---|---|---|",
+    shareRow('Precision of "not supported"', precision),
+    shareRow('Recall of "not supported"', recall),
+    shareRow("Called as the owner did", report.accuracy),
+  ];
+}
+
 /** The summary of the latest runs, as Markdown, written on `at`. */
-export function summaryOf(reports: readonly RunReport[], at: Date): string {
+export function summaryOf(
+  reports: readonly RunReport[],
+  at: Date,
+  judges: readonly JudgeSetReport[] = [],
+): string {
   const runs = latestRuns(reports);
   const lines = [
     "# Evaluation summary",
@@ -180,6 +213,29 @@ export function summaryOf(reports: readonly RunReport[], at: Date): string {
       if (groupOf(first) === groupOf(second)) lines.push("", ...comparisonSection(first, second));
     }
   }
+  const judgeRuns = latestJudgeRuns(judges);
+  for (const report of judgeRuns) lines.push("", ...judgeSection(report));
+  for (const [i, first] of judgeRuns.entries()) {
+    for (const second of judgeRuns.slice(i + 1)) {
+      const compared = compareJudgeRuns(first, second);
+      const better =
+        compared.verdict === "first"
+          ? first.model
+          : compared.verdict === "second"
+            ? second.model
+            : "no difference shown";
+      lines.push(
+        "",
+        `## judge-set: ${first.model} against ${second.model}`,
+        "",
+        "McNemar's exact test on the sentences only one model called as the owner did; a model is named only below p = 0.05.",
+        "",
+        `| Only ${first.model} | Only ${second.model} | p | Better |`,
+        "|---|---|---|---|",
+        `| ${compared.onlyFirst} | ${compared.onlySecond} | ${formatP(compared.p)} | ${better} |`,
+      );
+    }
+  }
   return `${lines.join("\n")}\n`;
 }
 
@@ -188,17 +244,25 @@ const ADDRESS = /[^\s@<>()|]+@[^\s@<>()|]+\.[a-z]{2,}/gi;
 const LONG_NUMBER = /\d(?: ?\d){6,}/g;
 
 /** What in a summary could come from a case: its ID, an extracted value or note, an address, a long number. */
-export function checkSummary(text: string, reports: readonly RunReport[]): string[] {
+export function checkSummary(
+  text: string,
+  reports: readonly RunReport[],
+  judges: readonly JudgeSetReport[] = [],
+): string[] {
   // Route and eligibility are a few fixed words, which the summary names; the rest is the case's own.
-  const fromCases = reports.flatMap((report) =>
-    report.cases.flatMap((result) => [
-      result.id,
-      result.note ?? "",
-      result.extracted?.company ?? "",
-      result.extracted?.role ?? "",
-      result.extracted?.contact ?? "",
-    ]),
-  );
+  const fromCases = [
+    ...reports.flatMap((report) =>
+      report.cases.flatMap((result) => [
+        result.id,
+        result.note ?? "",
+        result.extracted?.company ?? "",
+        result.extracted?.role ?? "",
+        result.extracted?.contact ?? "",
+      ]),
+    ),
+    // A judge's note on a sentence can quote the owner's facts.
+    ...judges.flatMap((report) => report.items.map((each) => each.note ?? "")),
+  ];
   const found = new Set<string>();
   for (const value of fromCases) {
     if (value.trim().length >= 3 && text.includes(value)) found.add(value);
@@ -226,6 +290,25 @@ export function readReports(runs: string): RunReport[] {
           renders: report.renders ?? null,
           cases: report.cases.map((result) => ({ ...result, checks: result.checks ?? [] })),
         });
+      }
+    } catch {
+      // Not a report this version can read.
+    }
+  }
+  return reports;
+}
+
+/** Every judge-set run's report under `runs`, passing over any that cannot be read as one. */
+export function readJudgeReports(runs: string): JudgeSetReport[] {
+  if (!existsSync(runs)) return [];
+  const reports: JudgeSetReport[] = [];
+  for (const name of readdirSync(runs).sort()) {
+    const file = join(runs, name, "report.json");
+    if (!existsSync(file)) continue;
+    try {
+      const report = JSON.parse(readFileSync(file, "utf8")) as Partial<JudgeSetReport>;
+      if (report.stage === "judge-set" && Array.isArray(report.items) && report.notSupported) {
+        reports.push(report as JudgeSetReport);
       }
     } catch {
       // Not a report this version can read.

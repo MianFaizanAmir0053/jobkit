@@ -15,6 +15,7 @@ import {
   shownSchema,
 } from "../../evals/cases";
 import { styleExamplesOf } from "../../evals/import";
+import { JUDGE_LABELS, labelJudgeItem } from "../../evals/judgeSet";
 import type { Clock, Db } from "@/core/ports";
 import { type AppConfig, appConfig } from "@/server/config";
 import type { Container } from "@/server/container";
@@ -29,6 +30,9 @@ import { NO_STORE, readLimited, refusal, sessionForChange, sessionForRead } from
  * tunnel to the dev server is, and only to the laptop's own session; their
  * files are local-only, so no build has them.
  */
+
+/** The frozen judge set, never committed (private/). */
+export const JUDGE_SET = join(process.cwd(), "private", "evals", "judge-set.json");
 
 /** The evaluation archive: one folder per case, never committed (private/). */
 export const ARCHIVE = join(process.cwd(), "private", "archive");
@@ -213,4 +217,38 @@ export async function getArchiveImage(
   return new NextResponse(Buffer.from(found.bytes), {
     headers: { "Content-Type": found.contentType, ...NO_STORE },
   });
+}
+
+/**
+ * One judge-set sentence's label from its page (evals spec, "Labelling"):
+ * supported or not, once; the page never shows a verdict or what the
+ * sentence was meant to be.
+ */
+export async function postJudgeLabel(
+  request: NextRequest,
+  deps: LabellingDeps,
+  itemId: string,
+  file: string = JUDGE_SET,
+): Promise<NextResponse> {
+  if (!deps.allowed || !fromLaptop(requestFrom(request))) return notFound();
+  const actor = await sessionForChange(request, deps, { kind: "google" });
+  if (!actor.ok) return actor.response;
+  const body = await jsonBody(request, 1024);
+  if (body === "too-large") return refusal(413, "too-large");
+  const label = (body as { label?: unknown } | null)?.label;
+  if (typeof label !== "string" || !(JUDGE_LABELS as readonly string[]).includes(label)) {
+    return refusal(400, "bad-label");
+  }
+  try {
+    const saved = labelJudgeItem(
+      file,
+      itemId,
+      label as (typeof JUDGE_LABELS)[number],
+      deps.clock.now(),
+    );
+    if (!saved.ok) return refusal(saved.reason === "labelled" ? 409 : 404, saved.reason);
+  } catch (error) {
+    return failed(error);
+  }
+  return NextResponse.json({ saved: true }, { headers: NO_STORE });
 }

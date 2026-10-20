@@ -41,7 +41,7 @@ export const JUDGE = {
   maxTokens: 16_000,
 } as const;
 
-const PROMPT = sha256Hex(
+export const JUDGE_PROMPT = sha256Hex(
   canonicalJson({
     rules: JUDGE_RULES,
     layout: JUDGE_LAYOUT_VERSION,
@@ -156,7 +156,7 @@ export function judgeStage(deps: JudgeDeps): StageDefinition {
         facts: sha256Hex(canonicalJson(facts)),
         model: JUDGE.model,
         effort: JUDGE.effort,
-        prompt: output.kit.kind === "form" ? FORM_PROMPT : PROMPT,
+        prompt: output.kit.kind === "form" ? FORM_PROMPT : JUDGE_PROMPT,
         ...(added ? { answers: added.outputHash } : {}),
       };
     },

@@ -13,7 +13,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-import { checkSummary, readReports, summaryOf } from "../evals/summary";
+import { checkSummary, readJudgeReports, readReports, summaryOf } from "../evals/summary";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -22,13 +22,14 @@ async function main(): Promise<void> {
   }
   const evalsDir = resolve(join("private", "evals"));
   const reports = readReports(join(evalsDir, "runs"));
+  const judges = readJudgeReports(join(evalsDir, "runs"));
   const draft = join(evalsDir, "summary.md");
   if (args[0] === "--publish") {
     if (!existsSync(draft)) {
       throw new Error("Write the summary first with npm run eval:summary, and read it.");
     }
     const text = readFileSync(draft, "utf8");
-    const found = checkSummary(text, reports);
+    const found = checkSummary(text, reports, judges);
     if (found.length > 0) {
       throw new Error(
         `${draft} holds ${found.length} strings from cases, addresses or long numbers: nothing was published.`,
@@ -42,9 +43,11 @@ async function main(): Promise<void> {
     console.log(`Published to ${published}. Commit it when you are ready for it to be public.`);
     return;
   }
-  if (reports.length === 0) throw new Error("No evaluation runs yet: run npm run eval first.");
-  const text = summaryOf(reports, new Date());
-  const found = checkSummary(text, reports);
+  if (reports.length === 0 && judges.length === 0) {
+    throw new Error("No evaluation runs yet: run npm run eval first.");
+  }
+  const text = summaryOf(reports, new Date(), judges);
+  const found = checkSummary(text, reports, judges);
   if (found.length > 0) {
     throw new Error(
       `The summary would hold ${found.length} strings from cases: nothing was written.`,
