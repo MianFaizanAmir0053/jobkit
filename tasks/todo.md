@@ -145,12 +145,12 @@ Built in this order, each test-first with a full check and a doubt review.
   - Topic classifier and fixed answers done (2026-10-14): `src/core/drafting/topics.ts`, the keyword table (sponsorship before work authorisation, so "without sponsorship" is a sponsorship question), the decision between the two classifiers (agree: fixed; one, or two that differ: the owner's choice, offered the keyword table's topic; addressed to AI: never answered) and each topic's answer from the profile, or "Needs your answer" with why. Left: kit types and `needs_kit_type`, and wiring the decision into `draft` (with Task 23) and the review page (Task 30).
   - Verify: `npm test`. Depends on: 14, 15. Files: src/core/drafting/{kit,topics,fit,gapLines,validate}.ts and tests. Scope: M (two commits).
   - Open (audit, 2026-10-18): form and message kits; four of validate's flags; declined formats; the browser run of `validate`; a test that a gap line is kept through the build.
-- [ ] **Task 23: `draft`** — Owns: drafting AC1, AC2, AC3.
+- [x] **Task 23: `draft`** — Owns: drafting AC1, AC2, AC3.
   - Verify: `npm test` with the fake model. Depends on: 9, 10, 22. Files: src/core/drafting/{draftStage,prompts}.ts. Scope: S.
-  - Open (audit, 2026-10-18): routing by kit type, with `needs_kit_type`; the topic decisions in `draft`.
-- [ ] **Task 24: `judge`** — Owns: drafting AC9.
+  - Open (audit, 2026-10-18): routing by kit type, with `needs_kit_type`; the topic decisions in `draft`. Both done since (2026-10-19, Task 30: the kit-type pick and the form kits).
+- [x] **Task 24: `judge`** — Owns: drafting AC9.
   - Verify: `npm test`. Depends on: 23. Files: src/core/drafting/judgeStage.ts and tests. Scope: S.
-  - Open (audit, 2026-10-18): a drafted answer to a question counts as a claim the judge weighs (with the form kits).
+  - Open (audit, 2026-10-18): a drafted answer to a question counts as a claim the judge weighs (with the form kits). Done since (2026-10-19, Task 30), and the answers added from a form's screenshots too (2026-10-20, Task 31).
 - [x] **Task 25: `address_checks`** — Owns: review AC5.
   - DNS port and adapter, implicit and null MX, free mail, company mismatch.
   - Verify: `npm test` with a fake DNS. Depends on: 9. Files: src/core/review/addressChecks.ts, src/adapters/dns.ts. Scope: S.
@@ -233,8 +233,9 @@ Built in this order, each test-first with a full check and a doubt review.
   - Purging a job deletes its `kit_reviews` rows first (they reference the job, with no cascade). They hold post text (scam quotes, attachment names, the typed contact), and an application's row keeps its job, so the 180-day purge of extracted records must clear them too, not only a job's delete.
   - Verify: `npm test` with a fake clock. Depends on: 11, 12, 13. Files: src/core/{intake,ledger}/purge.ts, src/app/api/cron/daily/route.ts. Scope: S.
   - Done (2026-10-20; intake AC7's late objects, AC9; ledger AC9; one test with a fake clock, at the owner's word): `purgeIntake` deletes screenshots past `purge_after` unless kept, a job's crops once none of its screenshots is left (so a kept job keeps them), objects no row names once the job left uploading (a late upload, an upload begun again, an add never confirmed), and pasted text with the post's links after 30 days unless kept. `purgeLedger` clears the stage runs' outputs and errors, deletes the review's decisions, and clears the application's final draft and fingerprint, 180 days after an application's last change or 30 days after a kit-less job's, the application row and the runs' times kept. Both run from `GET /api/cron/daily` and report what they removed; both are idempotent. A ready kit whose screenshots the purge took says so where it asks for the contact typed, rather than that they cannot be shown just now; a crop gone from storage brings the screenshots back without asking, as the review spec has it. Known: the purge lists each job's folder in storage once a day; an add whose upload is done but not yet confirmed when the purge runs loses its screenshots, and the page then says to add them again.
-- [ ] **Task 35: End-to-end and accessibility** — Owns: review AC12, AC13.
+- [x] **Task 35: End-to-end and accessibility** — Owns: review AC12, AC13.
   - Verify: `npm run test:e2e`. Depends on: 30, 33. Files: e2e/flow.spec.ts, e2e/a11y.spec.ts. Scope: S.
+  - Done (2026-10-20; review AC2's end-to-end clause, AC12, AC13): `e2e/flow.spec.ts` takes a pasted post with the fake models to its email, drafted from the sample profile's template, sees every outbound control held while the one flag stands (a must-have only the owner can confirm), ticks it, opens Gmail (stubbed), marks it sent and finds the Stats page counting it. `e2e/controls.spec.ts` does the same for a form's Copy all, each field's Copy and Open application link (settled by "I will answer it in the form"), and a WhatsApp message's Open WhatsApp and Copy message (settled by "I checked this"). `e2e/a11y.spec.ts` runs axe in the job page of a ready kit, its flag, fit, controls and add panel showing, and finds no serious or critical violation; it loads the axe-core that eslint-plugin-jsx-a11y installs (4.14.0), not yet a declared dependency (the owner's decision). Kept as they are: focus after a decision or a deletion falls to the page; axe runs on one state of one page.
 - [ ] **Checkpoint E (day 20)** — all criteria owned so far pass; doubt review.
 
 ## Phase 5: Measure and write up (days 21–28)
