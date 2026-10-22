@@ -65,23 +65,38 @@ describe("applyMigrations", () => {
   });
 });
 
+/** The tables and indexes a migration's statements name, its comments left out. */
+function namesIn(text: string): string[] {
+  const sql = text.replace(/--.*$/gm, "");
+  return [
+    /\bcreate table(?: if not exists)?\s+([a-z_."{}]+)/gi,
+    /\balter table\s+([a-z_."{}]+)/gi,
+    /\breferences\s+([a-z_."{}]+)/gi,
+    /\bcreate (?:unique )?index(?: if not exists)?\s+[a-z_]+\s+on\s+([a-z_."{}]+)/gi,
+    /\binsert into\s+([a-z_."{}]+)/gi,
+    // At a statement's start, so "for update" and "do update set" are not read as one.
+    /^\s*update\s+([a-z_."{}]+)/gim,
+    /^\s*delete from\s+([a-z_."{}]+)/gim,
+    /\bdrop (?:table|index)(?: if exists)?\s+([a-z_."{}]+)/gi,
+  ].flatMap((pattern) => [...sql.matchAll(pattern)].map((m) => m[1] ?? ""));
+}
+
 describe("the migration files", () => {
   it("name their schema only through the placeholder", () => {
     const offenders: string[] = [];
     for (const file of readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql"))) {
-      const sql = readFileSync(join(MIGRATIONS_DIR, file), "utf8").replace(/--.*$/gm, "");
-      const tableRefs = [
-        /\bcreate table(?: if not exists)?\s+([a-z_."{}]+)/gi,
-        /\balter table\s+([a-z_."{}]+)/gi,
-        /\breferences\s+([a-z_."{}]+)/gi,
-        /\bcreate (?:unique )?index(?: if not exists)?\s+[a-z_]+\s+on\s+([a-z_."{}]+)/gi,
-        /\binsert into\s+([a-z_."{}]+)/gi,
-      ].flatMap((pattern) => [...sql.matchAll(pattern)].map((m) => m[1] ?? ""));
-      for (const name of tableRefs) {
+      for (const name of namesIn(readFileSync(join(MIGRATIONS_DIR, file), "utf8"))) {
         if (!name.startsWith("{{schema}}.")) offenders.push(`${file}: ${name}`);
       }
     }
     expect(offenders).toEqual([]);
+    // Each kind of statement is looked at: these would be found.
+    expect(
+      namesIn(
+        "update jobs set state = 'closed';\ndelete from jobs;\ndrop index jobs_state;\n" +
+          "drop table if exists heartbeat;\ninsert into jobs (id) values (1) on conflict do update set id = 1;",
+      ),
+    ).toEqual(["jobs", "jobs", "jobs", "jobs_state", "heartbeat"]);
   });
 });
 

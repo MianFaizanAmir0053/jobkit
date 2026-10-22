@@ -529,6 +529,31 @@ describe("createAnthropicLlm", () => {
       requestId: "req_429",
       retryAfterMs: 3000,
     });
+    // The wrapper waits and retries; the SDK sends nothing more itself.
+    expect(api.sent).toHaveLength(1);
+  });
+
+  it("returns a server error after a single request, since the SDK's own retries are off", async () => {
+    const api = fakeApi(
+      () =>
+        new Response(
+          JSON.stringify({
+            type: "error",
+            error: { type: "overloaded_error", message: "Overloaded" },
+          }),
+          {
+            status: 529,
+            headers: { "content-type": "application/json", "request-id": "req_529" },
+          },
+        ),
+    );
+
+    const reply = await createAnthropicLlm({ apiKey: "test-key", fetch: api.fetch }).call(
+      request(),
+    );
+
+    expect(reply).toMatchObject({ kind: "failure", failure: "server", requestId: "req_529" });
+    expect(api.sent).toHaveLength(1);
   });
 
   it("returns a body that ends before the message does as a dropped connection, with its request ID", async () => {

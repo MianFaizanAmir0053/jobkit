@@ -21,7 +21,7 @@ import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import { changeStatus, openApplication, undoStatus } from "@/core/ledger/statuses";
-import { loadJob } from "@/core/platform/jobs";
+import { createJob, loadJob } from "@/core/platform/jobs";
 import type { ModelCallDeps } from "@/core/platform/models";
 import { issueSession } from "@/core/platform/sessions";
 import type { Db, QueryResult, Row } from "@/core/ports";
@@ -35,6 +35,8 @@ import type { AppConfig } from "@/server/config";
 import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 
 import {
+  addImages,
+  addImagesConfirm,
   applyAgainRoute,
   backToDrafts,
   bounced,
@@ -45,6 +47,7 @@ import {
   geminiDraft,
   handoff,
   keepForEval,
+  kitType,
   pick,
   readAgain,
   retry,
@@ -52,6 +55,7 @@ import {
   role,
   sent,
   skip,
+  stopManualRun,
   takeBack,
 } from "./jobActions";
 import { startPipeline } from "./jobs";
@@ -1054,6 +1058,98 @@ describe("the job page's routes", () => {
     expect((await jobView({ db, clock }, id))!.drafts.map((draft) => draft.id)).toContain("gemini");
   });
 
+  it("stop a manual run, recording the route, the company and the role the owner names, once", async () => {
+    const { token, session } = await issueSession(
+      { db, clock, random: cryptoRandom },
+      { kind: "google", label: "laptop" },
+    );
+    const id = await createJob(db, {
+      state: "manual_run",
+      receivedAt: clock.now(),
+      clientElapsedMs: 0,
+    });
+    clock.advance(25 * 60_000);
+    const body = JSON.stringify({
+      route: "email",
+      company: "  Northwind Analytics ",
+      role: "Senior Full-Stack Engineer",
+    });
+    const stop = () => stopManualRun(post(`/api/jobs/${id}/stop`, body, token), deps(), id);
+
+    expect((await stop()).status).toBe(200);
+
+    expect(await stateOf(id)).toBe("closed");
+    const { rows } = await db.query(
+      `select route, company, role, status, arm, sent_at
+         from {{schema}}.applications where job_id = $1`,
+      [id],
+    );
+    // An application of the manual arm, sent by email at the tap.
+    expect(rows).toEqual([
+      {
+        route: "email",
+        company: "Northwind Analytics",
+        role: "Senior Full-Stack Engineer",
+        status: "sent",
+        arm: "manual",
+        sent_at: clock.now(),
+      },
+    ]);
+    const changes = await db.query(
+      "select from_status, to_status, session_id from {{schema}}.status_changes",
+    );
+    expect(changes.rows).toEqual([
+      { from_status: null, to_status: "sent", session_id: session.id },
+    ]);
+
+    // A second tap, as from another tab, records nothing more.
+    const again = await stop();
+    expect(again.status).toBe(409);
+    expect(await again.json()).toEqual({ error: "not-a-manual-run" });
+    expect((await db.query("select id from {{schema}}.applications")).rows).toHaveLength(1);
+  });
+
+  it("refuse a Stop that names no route, company or role, and one on a job that is not a manual run", async () => {
+    const cookie = await signedIn();
+    const id = await createJob(db, {
+      state: "manual_run",
+      receivedAt: clock.now(),
+      clientElapsedMs: 0,
+    });
+    const stop = (jobId: string, body: string) =>
+      stopManualRun(post(`/api/jobs/${jobId}/stop`, body, cookie), deps(), jobId);
+    const named = { route: "form", company: "Fabrikam Payments", role: "Full-Stack Developer" };
+
+    for (const body of [
+      "not json",
+      JSON.stringify({ company: named.company, role: named.role }),
+      JSON.stringify({ ...named, route: "fax" }),
+      JSON.stringify({ ...named, company: "   " }),
+      JSON.stringify({ ...named, role: "x".repeat(201) }),
+    ]) {
+      const refused = await stop(id, body);
+      expect(refused.status, body).toBe(400);
+      expect(await refused.json()).toEqual({ error: "invalid" });
+    }
+    expect((await stop(id, JSON.stringify({ ...named, role: "x".repeat(2_000) }))).status).toBe(
+      413,
+    );
+    const uploading = await createJob(db, {
+      state: "uploading",
+      receivedAt: clock.now(),
+      clientElapsedMs: 0,
+    });
+    const notManual = await stop(uploading, JSON.stringify(named));
+    expect(notManual.status).toBe(409);
+    expect(await notManual.json()).toEqual({ error: "not-a-manual-run" });
+    const unknown = "55555555-5555-4555-8555-555555555555";
+    expect((await stop(unknown, JSON.stringify(named))).status).toBe(404);
+
+    expect(await stateOf(id)).toBe("manual_run");
+    expect(await stateOf(uploading)).toBe("uploading");
+    expect((await db.query("select id from {{schema}}.applications")).rows).toEqual([]);
+  });
+
   it("refuse another origin, a missing session and an unknown job", async () => {
     const cookie = await signedIn();
     const id = await settled([answer(fixture("S08-urdu"))]);
@@ -1063,6 +1159,7 @@ describe("the job page's routes", () => {
       role,
       readAgain,
       draftAnyway,
+      kitType,
       sent,
       review,
       applyAgainRoute,
@@ -1072,17 +1169,29 @@ describe("the job page's routes", () => {
       backToDrafts,
       bounced,
       submitted,
+      handoff,
+      keepForEval,
+      addImages,
+      addImagesConfirm,
+      stopManualRun,
     ] as const;
+    // The add routes sign upload URLs, so their ports include storage.
+    const routeDeps = { ...deps(), storage };
 
     for (const action of actions) {
       expect(
-        (await action(post(`/api/jobs/${id}/x`, "{}", cookie, "https://evil.example"), deps(), id))
-          .status,
+        (
+          await action(
+            post(`/api/jobs/${id}/x`, "{}", cookie, "https://evil.example"),
+            routeDeps,
+            id,
+          )
+        ).status,
       ).toBe(403);
-      expect((await action(post(`/api/jobs/${id}/x`, "{}"), deps(), id)).status).toBe(401);
-      expect((await action(post("/api/jobs/x/x", "{}", cookie), deps(), "not-a-uuid")).status).toBe(
-        404,
-      );
+      expect((await action(post(`/api/jobs/${id}/x`, "{}"), routeDeps, id)).status).toBe(401);
+      expect(
+        (await action(post("/api/jobs/x/x", "{}", cookie), routeDeps, "not-a-uuid")).status,
+      ).toBe(404);
     }
     expect(await stateOf(id)).toBe("stopped");
   });

@@ -9,20 +9,21 @@ import { answer, fakeLlm, type FakeLlm, type FakeStep } from "@/adapters/fakeLlm
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { eligibilityStage, type EligibilityOutput } from "@/core/extraction/eligibility";
-import { draftAnyway, draftedAnyway } from "@/core/extraction/owner";
+import { draftAnyway, draftedAnyway, type KitOf } from "@/core/extraction/owner";
 import { extractStage } from "@/core/extraction/extract";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import { loadJob } from "@/core/platform/jobs";
 import type { ModelCallDeps } from "@/core/platform/models";
-import { claimJob, runJob, stageOutput } from "@/core/platform/runner";
+import { claimJob, runJob, type StageContext, stageOutput } from "@/core/platform/runner";
 import type { LlmInput } from "@/core/ports";
+import { getActiveProfile } from "@/core/profile/profile";
 import { seedProfile } from "@/core/profile/seed";
 import { validateProfile } from "@/core/profile/validate";
 import { createTestDb } from "@/server/db/testDb";
 
 import { DEFAULT_GREETING, CLOSING } from "./build";
-import { type DraftOutput, draftStage, NO_PROFILE } from "./draftStage";
+import { DRAFT, type DraftOutput, draftStage, NO_PROFILE } from "./draftStage";
 import { type JudgeOutput, judgeStage } from "./judgeStage";
 import { NO_GAP as gapBlock, S01_DRAFT, S01_JUDGED as JUDGED } from "./testDrafts";
 import { noTemplateDrafts } from "./testTemplates";
@@ -633,5 +634,48 @@ describe("the thin drafting group", () => {
       state: "needs_eligibility_decision",
       pending: null,
     });
+  });
+});
+
+describe("draft's input", () => {
+  it("covers the reading of the post, the chosen role, the profile version, the kit type, the declined instructions and the model's settings", async () => {
+    await seedSample();
+    const id = await run("Northwind Analytics is hiring. Apply by email to jobs@example.com.", [
+      answer(fixture("S01-email-simple")),
+      answer(S01_DRAFT),
+      answer(JUDGED),
+    ]);
+    const ctx: StageContext = {
+      job: (await loadJob(db, id))!,
+      outputOf: (stage) => stageOutput(db, id, stage),
+    };
+    const inputOf = async (kitOf?: KitOf) =>
+      (await draftStage({ db, random, models: models(), kitOf }).input(ctx)) as Record<
+        string,
+        unknown
+      >;
+
+    const input = await inputOf();
+
+    expect(input).toEqual({
+      record: (await stageOutput(db, id, "extract"))!.outputHash,
+      role: "P1",
+      profile: (await getActiveProfile(db))!.versionId,
+      kit: "email",
+      // B9: always none, as the review page applies a decline to the email as it stands.
+      declined: [],
+      model: DRAFT.model,
+      effort: DRAFT.effort,
+      prompt: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    // The kit the owner picks is drafted with that kit's own prompt.
+    const form = await inputOf(async () => "form");
+    expect(form).toEqual({ ...input, kit: "form", prompt: form.prompt });
+    expect(form.prompt).not.toBe(input.prompt);
+    // A new version of the profile drafts afresh.
+    await seedSample((yaml) => yaml.replace("+1 202 555 0143", "+1 202 555 0144"));
+    const newer = (await getActiveProfile(db))!.versionId;
+    expect(newer).not.toBe(input.profile);
+    expect(await inputOf()).toEqual({ ...input, profile: newer });
   });
 });

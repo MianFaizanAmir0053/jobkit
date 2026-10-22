@@ -356,4 +356,39 @@ describe("POST /api/jobs/<id>/send/undo and /deliver", () => {
     expect(late.status).toBe(409);
     expect(await late.json()).toEqual({ error: "too-late" });
   });
+
+  it("refuses Undo and the nudge from another site, or without a session, and the send goes on", async () => {
+    const cookie = await signedIn();
+    await connectGmail();
+    const id = await readyKit({ db, clock, storage }, POST);
+    const pressed = await send(
+      post(`/api/jobs/${id}/send`, await pressedOn(id), cookie),
+      deps(),
+      id,
+    );
+    const sendId = (await pressed.json()).send.id as string;
+    // The server restarted: only the page's nudge can deliver it now.
+    scheduled = [];
+
+    const elsewhere = "https://evil.example";
+    const undoing = (session?: string, origin?: string) =>
+      undo(post(`/api/jobs/${id}/send/undo`, { sendId }, session, origin), deps(), id);
+    expect((await undoing(cookie, elsewhere)).status).toBe(403);
+    expect((await undoing()).status).toBe(401);
+    clock.advance(9_900);
+    const nudging = (session?: string, origin?: string) =>
+      deliver(post(`/api/jobs/${id}/send/deliver`, { sendId }, session, origin), deps(), id);
+    expect((await nudging(cookie, elsewhere)).status).toBe(403);
+    expect((await nudging()).status).toBe(401);
+    expect(gmail.sent).toEqual([]);
+
+    // Neither cancelled it: the page's own nudge sends it.
+    const nudged = await deliver(
+      post(`/api/jobs/${id}/send/deliver`, { sendId }, cookie),
+      deps(),
+      id,
+    );
+    expect((await nudged.json()).send).toMatchObject({ status: "sent" });
+    expect(gmail.sent).toHaveLength(1);
+  });
 });
