@@ -19,7 +19,8 @@ export function ManualRun({ jobId, elapsedAtLoadMs }: { jobId: string; elapsedAt
   const router = useRouter();
   const id = useId();
   const [elapsed, setElapsed] = useState(elapsedAtLoadMs);
-  const [route, setRoute] = useState<BaselineRoute>("email");
+  // No route is picked for the owner: a run filed under a route they never chose would skew it.
+  const [route, setRoute] = useState<BaselineRoute | null>(null);
   const [company, setCompany] = useState("");
   const [role, setRole] = useState("");
   const [busy, setBusy] = useState(false);
@@ -35,6 +36,10 @@ export function ManualRun({ jobId, elapsedAtLoadMs }: { jobId: string; elapsedAt
   }, [elapsedAtLoadMs]);
 
   async function stop() {
+    if (route === null) {
+      setNotice("Say how you applied.");
+      return;
+    }
     if (company.trim() === "" || role.trim() === "") {
       setNotice("Say the company and the role.");
       return;

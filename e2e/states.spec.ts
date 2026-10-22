@@ -255,11 +255,13 @@ test("shows a manual run's clock and Stop, which records the route, the company 
   await expect(page.getByText(/^\d+:\d{2}$/)).toBeVisible();
   await expect(page.getByRole("group", { name: "How you applied" })).toBeVisible();
   await expect(button(page, "Skip")).toBeVisible();
-  // Stop asks for the company and the role first.
+  // Stop asks how the owner applied first, picking no route for them, then the company and role.
+  await button(page, "Stop").click();
+  await expect(page.getByText("Say how you applied.")).toBeVisible();
+  await page.getByLabel("Application form").check();
   await button(page, "Stop").click();
   await expect(page.getByText("Say the company and the role.")).toBeVisible();
 
-  await page.getByLabel("Application form").check();
   await page.getByLabel("Company").fill("Northwind Traders");
   await page.getByLabel("Role").fill("Data Engineer");
   await button(page, "Stop").click();

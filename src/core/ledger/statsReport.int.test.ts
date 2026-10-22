@@ -328,6 +328,33 @@ describe("the timing arms and the Stats page", () => {
     expect(report.total.byRoute.email.count).toBe(6);
   });
 
+  it("counts a run in the arm it was drawn into, though the phone held its share from before real use began", async () => {
+    // Real use starts as the first kit goes, 30 minutes in.
+    await went("email", 30, null);
+    clock.advance(31 * MINUTE);
+    // A share the phone held for an hour reaches jobkit now, and is the tool arm's.
+    const jobId = await createJob(db, {
+      state: "manual_run",
+      receivedAt: clock.now(),
+      clientElapsedMs: 60 * MINUTE,
+    });
+    const at = new Date(clock.now().getTime() + 10 * MINUTE);
+    await db.query(
+      `insert into {{schema}}.applications
+         (job_id, role_id, company, role, role_key, route, status, opened_at, sent_at,
+          status_changed_at, arm, job_kind)
+       values ($1, 'P1', 'Northwind', 'Developer', 'developer', 'email', 'sent', $2, $2, $2,
+               'tool', 'real')`,
+      [jobId, at],
+    );
+
+    // Its time runs from the share, an hour before it arrived and so before real use began.
+    expect((await statsReport(db)).comparison.byRoute.email.tool).toMatchObject({
+      count: 1,
+      medianMs: 70 * MINUTE,
+    });
+  });
+
   it("times a job once though two of its roles went, and counts both kits in the route mix", async () => {
     const jobId = await went("email", 10, null);
     const later = new Date(clock.now().getTime() + 20 * MINUTE);

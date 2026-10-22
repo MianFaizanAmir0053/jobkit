@@ -124,16 +124,12 @@ export async function statsReport(db: Db): Promise<StatsReport> {
   const totalFor = (route?: BaselineRoute) =>
     tool.filter((each) => route === undefined || each.route === route).map(totalOf);
 
-  // The comparison counts only runs made during real use, in their arms.
+  // The comparison counts the runs drawn into an arm, which only a job created in real use's weeks
+  // has. It goes by the arm itself, not by the start of real use as it reads now: a share the
+  // phone held can start before it, and a later record can move it.
   const armRuns = (arm: "tool" | "manual", route?: BaselineRoute) =>
     went
-      .filter(
-        (each) =>
-          each.arm === arm &&
-          realUseSince !== null &&
-          each.started_at.getTime() >= realUseSince.getTime() &&
-          (route === undefined || each.route === route),
-      )
+      .filter((each) => each.arm === arm && (route === undefined || each.route === route))
       .map(totalOf);
 
   const { rows: runs } = await db.query<{ stage: StageName; ms: number }>(

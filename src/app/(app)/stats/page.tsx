@@ -5,9 +5,10 @@ import { BASELINE_ROUTES } from "@/core/ledger/baseline";
 import type { Interval } from "@/core/ledger/bootstrap";
 import { type ArmComparison, COMPARISON_MIN, type Spread } from "@/core/ledger/statsReport";
 import { formatDuration } from "@/lib/time";
-import { requireSession, statsForViewer } from "@/server/dal";
+import { requireSession, statsForViewer, viewerTimeZone } from "@/server/dal";
 
 import { ROUTE_NAMES } from "../baseline/routeNames";
+import { formatTime } from "../jobs/words";
 import { STAGE_NAMES } from "../stageNames";
 
 export const metadata: Metadata = { title: "Stats · jobkit" };
@@ -21,6 +22,7 @@ const between = (interval: Interval | null, show: (value: number) => string) =>
 export default async function StatsPage() {
   await requireSession();
   const report = await statsForViewer();
+  const timeZone = await viewerTimeZone();
   const routes = [
     ["All routes", "pooled"] as const,
     ...BASELINE_ROUTES.map((route) => [ROUTE_NAMES[route], route] as const),
@@ -39,7 +41,7 @@ export default async function StatsPage() {
         <p className="mt-2 text-muted-foreground">
           Real jobs only.{" "}
           {report.realUseSince
-            ? `Real use started ${report.realUseSince.toUTCString().slice(5, 16)}.`
+            ? `Real use started ${formatTime(report.realUseSince, timeZone)}.`
             : "Real use starts at your first handoff of a kit jobkit made."}
         </p>
       </div>
