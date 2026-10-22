@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -26,13 +26,14 @@ import { confirmAdd, startAdd } from "./addImages";
 import { backToDrafts } from "./draftChoice";
 import { jobView } from "./jobView";
 import { recordReview } from "./kitReview";
-import { KIT_DRAFT, readyKit, resetKitBed } from "./testKit";
+import { KIT_DRAFT, readyKit, resetKitBed, SYNTHETIC } from "./testKit";
 
 /*
  * "Add screenshots" (intake AC11, drafting AC11): a form's questions added
  * to a ready kit are read, answered and checked alone, the kit's own blocks,
- * answers, verdicts and the owner's decisions untouched; more of the post
- * sends the job back to read it whole.
+ * answers, verdicts and the owner's decisions untouched, each call logged
+ * under its stage (extraction AC12); more of the post sends the job back to
+ * read it whole, but for a post stopped for its language (extraction AC6).
  */
 
 let db: PgliteDb;
@@ -144,6 +145,9 @@ const readyForm = () =>
 const answerIds = async (id: string) =>
   ((await jobView({ db, clock }, id))!.kit as FormKit).answers.map((each) => each.id);
 
+const fixture = (name: string): JobRecord =>
+  JSON.parse(readFileSync(join(SYNTHETIC, "records", `${name}.json`), "utf8")) as JobRecord;
+
 beforeAll(async () => {
   db = await createTestDb();
 });
@@ -164,23 +168,28 @@ afterEach(() => {
 });
 
 describe("adding screenshots to a job", () => {
-  it("reads a form's new questions and answers and checks them alone, keeping the kit and the owner's decisions", async () => {
+  it("reads a form's new questions and answers and checks them alone, keeping the kit, its verdicts and the owner's decisions", async () => {
     const id = await readyKit({ db, clock, storage }, "Northwind is hiring.", {
       record: throughAForm,
       draft: FORM,
       verdicts: [
         { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
         { blockId: "Q1", verdict: "supported", companyClaim: false, note: "" },
-        { blockId: "Q2", verdict: "supported", companyClaim: false, note: "" },
+        { blockId: "Q2", verdict: "overstated", companyClaim: false, note: "Carder is one app." },
       ],
     });
-    await recordReview({ db, clock, dns: offlineDns() }, id, {
-      kind: "choose",
-      questionId: "Q1",
-      use: "drafted",
-      was: "",
-    });
+    const decide = { db, clock, dns: offlineDns() };
+    await recordReview(decide, id, { kind: "choose", questionId: "Q1", use: "drafted", was: "" });
+    // The owner's words for the cover note's sentence, and "I checked this" on Q2's finding.
+    const words = "I have built production React applications for four years.";
+    await recordReview(decide, id, { kind: "edit", blockId: "S1", text: words });
+    await recordReview(decide, id, { kind: "check", blockId: "Q2" });
     const before = (await jobView({ db, clock }, id))!;
+    expect(before.kitParts!.verdicts.map(({ blockId, verdict }) => [blockId, verdict])).toEqual([
+      ["S1", "supported"],
+      ["Q1", "supported"],
+      ["Q2", "overstated"],
+    ]);
 
     expect(await add(id, "form", [await screenshot(40)])).toEqual({ ok: true });
     expect(await loadJob(db, id)).toMatchObject({
@@ -228,7 +237,12 @@ describe("adding screenshots to a job", () => {
     const after = (await jobView({ db, clock }, id))!;
     // The kit and the owner's decisions stand; the new answers follow the kit's own.
     expect(after.kitKey).toBe(before.kitKey);
-    expect(after.review!.decisions.choices).toEqual({ Q1: "drafted" });
+    expect(after.review!.decisions).toMatchObject({
+      choices: { Q1: "drafted" },
+      edits: { S1: words },
+      checked: ["Q2"],
+    });
+    expect(after.kit!.blocks[0]!.text).toBe(words);
     expect(
       (after.kit as FormKit).answers.map(({ id: question, source, text }) => [
         question,
@@ -241,13 +255,49 @@ describe("adding screenshots to a job", () => {
       ["Q3", "drafted", "I want to build payment products with React."],
       ["Q4", "profile", "USD 5,000 a month"],
     ]);
-    expect(after.kitParts!.verdicts.find((verdict) => verdict.blockId === "Q3")).toMatchObject({
-      verdict: "supported",
-    });
+    // The earlier verdicts stand as they were, the new answer's after them.
+    expect(after.kitParts!.verdicts).toEqual([
+      ...before.kitParts!.verdicts,
+      expect.objectContaining({ blockId: "Q3", verdict: "supported" }),
+    ]);
     // The separate check weighed the new drafted answer alone.
     const judged = JSON.stringify(llm.calls[2]!.content);
     expect(judged).toContain("payment products");
     expect(judged).not.toContain("Carder");
+  });
+
+  it("logs the calls that read, answer and check a form's new questions each under its own stage", async () => {
+    const id = await readyForm();
+    expect(await add(id, "form", [await screenshot(40)])).toEqual({ ok: true });
+
+    await runAdd(id, [
+      answer({ questions: [{ text: "Why do you want to join?", addressed_to_ai: false }] }),
+      answer({
+        answers: [
+          {
+            question_id: "Q3",
+            topic: "none",
+            text: "I want to build payment products with React.",
+            fact_ids: ["F-react-production"],
+          },
+        ],
+      }),
+      answer({
+        verdicts: [{ block_id: "Q3", verdict: "supported", company_claim: false, note: "" }],
+      }),
+    ]);
+
+    // The post's reading and its draft, then the add's three calls.
+    const { rows } = await db.query<{ stage: string; outcome: string }>(
+      "select stage, outcome from {{schema}}.model_calls where job_id = $1 order by stage",
+      [id],
+    );
+    expect(rows).toEqual(
+      ["draft", "draft_answers", "extract", "extract_questions", "judge"].map((stage) => ({
+        stage,
+        outcome: "ok",
+      })),
+    );
   });
 
   it("sends a ready job back to read its post again whole when more of the post is added", async () => {
@@ -258,6 +308,43 @@ describe("adding screenshots to a job", () => {
 
     expect(await add(id, "post", [await screenshot(80)])).toEqual({ ok: true });
     expect(await loadJob(db, id)).toMatchObject({ state: "extracting", pendingStage: "extract" });
+  });
+
+  it("takes no more of a post stopped for its language, whose only way on is Skip", async () => {
+    // Each runs as far as it goes: the one in Urdu stops for its language, the other with no role.
+    const urdu = await readyKit({ db, clock, storage }, "ہمیں ایک ویب ڈویلپر کی ضرورت ہے", {
+      record: () => fixture("S08-urdu"),
+    });
+    const roleless = await readyKit({ db, clock, storage }, "Northwind is hiring.", {
+      record: (record) => ({ ...record, roles: [] }),
+    });
+    expect(await jobView({ db, clock }, urdu)).toMatchObject({
+      state: "stopped",
+      stopReason: "language",
+    });
+    expect(await jobView({ db, clock }, roleless)).toMatchObject({
+      state: "stopped",
+      stopReason: "no_role",
+    });
+    const shot = await screenshot(60);
+    const deps = { db, clock, storage };
+    const since = (await loadJob(db, urdu))!.stateChangedAt;
+
+    expect(await startAdd(deps, urdu, { purpose: "post", since, images: [shot.meta] })).toEqual({
+      ok: false,
+      reason: "moved-on",
+    });
+    const path = `jobs/${urdu}/${randomUUID()}.png`;
+    expect(
+      await confirmAdd(deps, urdu, { purpose: "post", since, images: [{ ...shot.meta, path }] }),
+    ).toEqual({ ok: false, reason: "moved-on" });
+    expect(await loadJob(db, urdu)).toMatchObject({ state: "stopped" });
+    // A post stopped for another reason takes more of itself, and is read again whole.
+    expect(await add(roleless, "post", [shot])).toEqual({ ok: true });
+    expect(await loadJob(db, roleless)).toMatchObject({
+      state: "extracting",
+      pendingStage: "extract",
+    });
   });
 
   it("keeps the answers added before when a later add of the form finds no new question", async () => {

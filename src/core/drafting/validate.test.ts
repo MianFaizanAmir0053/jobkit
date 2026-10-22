@@ -6,8 +6,8 @@ import { describe, expect, it } from "vitest";
 import type { JobRecord, Role } from "@/core/extraction/record";
 import type { Fact } from "@/core/profile/schema";
 
-import { NEEDS_YOUR_LINE, type ProfileParts } from "./build";
-import type { EmailKit, FitRow, KitBlock } from "./kit";
+import { buildEmailKit, NEEDS_YOUR_LINE, type ProfileParts } from "./build";
+import type { DraftAnswer, EmailKit, FitRow, KitBlock } from "./kit";
 import { type KitContext, type KitFlagKind, validateKit } from "./validate";
 
 /* validate on email kits: drafting AC4, AC10 and AC12, for the flags the thin path has. */
@@ -259,6 +259,74 @@ describe("validateKit", () => {
         message: "The email's body is 34 words; the limit is 20.",
       },
     ]);
+  });
+
+  it("keeps a must-have's gap line in an email past the word limit, flagging the length instead", () => {
+    // AWS made a must-have, which no fact meets: the drafter picked its known line, which code writes.
+    const mustAws: Role = {
+      ...role,
+      requirements: role.requirements.map((requirement) =>
+        requirement.id === "R4" ? { ...requirement, priority: "must" as const } : requirement,
+      ),
+    };
+    const none = { requirement_id: "", known_line_id: "", template_id: "", related_fact_id: "" };
+    const answer: DraftAnswer = {
+      fit: [
+        { requirement_id: "R1", verdict: "met", fact_ids: ["F-react"], note: "" },
+        { requirement_id: "R2", verdict: "met", fact_ids: ["F-node"], note: "" },
+        { requirement_id: "R3", verdict: "met", fact_ids: ["F-node"], note: "" },
+        { requirement_id: "R4", verdict: "gap", fact_ids: [], note: "" },
+      ],
+      blocks: [
+        {
+          id: "S1",
+          text: "I have built production React applications for five years.",
+          paragraph_break: false,
+          class: "claim",
+          fact_ids: ["F-react"],
+          fields: [],
+          gap: none,
+        },
+        {
+          id: "S2",
+          text: "I run Node.js APIs on PostgreSQL in production.",
+          paragraph_break: true,
+          class: "claim",
+          fact_ids: ["F-node"],
+          fields: [],
+          gap: none,
+        },
+        {
+          id: "S3",
+          text: "",
+          paragraph_break: false,
+          class: "gap",
+          fact_ids: [],
+          fields: [],
+          gap: { ...none, requirement_id: "R4", known_line_id: "K-aws" },
+        },
+      ],
+    };
+    // The post asks for 20 words; the three sentences need more.
+    const { kit, fit } = buildEmailKit(answer, {
+      record: { ...record, roles: [mustAws] },
+      role: mustAws,
+      ownerName: "Sam Rivera",
+      accepted: { subjectFormat: null, wordLimit: 20, keyword: null },
+      profile,
+    });
+
+    expect(kit.blocks.map((each) => [each.class, each.text])).toEqual([
+      ["claim", "I have built production React applications for five years."],
+      ["claim", "I run Node.js APIs on PostgreSQL in production."],
+      ["gap", "I have not used AWS at work."],
+    ]);
+    expect(
+      kinds(
+        kit,
+        context({ record: { ...record, roles: [mustAws] }, role: mustAws, fit, wordLimit: 20 }),
+      ),
+    ).toEqual([["over_limit", "body"]]);
   });
 
   it("flags an accepted keyword the email leaves out, in any case", () => {

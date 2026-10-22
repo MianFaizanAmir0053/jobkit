@@ -119,6 +119,42 @@ describe("validateProfile", () => {
     ]);
   });
 
+  it("rejects a duplicate or malformed gap template or known gap ID", () => {
+    // A second gap template and a second known gap under the IDs of the first.
+    const repeated = SAMPLE.replace(
+      "  known:\n",
+      '    - id: G-not-professional\n      text: "I\'m new to {skill}; the closest is {related}."\n  known:\n',
+    ).replace(
+      "      approved: true\nemail_templates:",
+      '      approved: true\n    - id: K-kubernetes\n      skills: [go]\n      line: "I haven\'t written Go in production."\n      approved: true\nemail_templates:',
+    );
+    const malformed = SAMPLE.replace("id: G-not-professional", "id: G_not_professional").replace(
+      "id: K-kubernetes",
+      "id: k-kubernetes",
+    );
+
+    expect(problemsOf(repeated)).toEqual([
+      {
+        line: lineOf(repeated, "id: G-not-professional", "{skill} professionally"),
+        message: "gaps.templates[1].id: is used more than once",
+      },
+      {
+        line: lineOf(repeated, "id: K-kubernetes", "Docker on managed platforms"),
+        message: "gaps.known[1].id: is used more than once",
+      },
+    ]);
+    expect(problemsOf(malformed)).toEqual([
+      {
+        line: lineOf(malformed, "id: G_not_professional"),
+        message: "gaps.templates[0].id: must look like G-lower-case-words",
+      },
+      {
+        line: lineOf(malformed, "id: k-kubernetes"),
+        message: "gaps.known[0].id: must look like K-lower-case-words",
+      },
+    ]);
+  });
+
   it("rejects a fact without a source or a phrase", () => {
     const text = SAMPLE.replace('    source: "sample CV, Projects"\n', "").replace(
       '    phrase: "five years of production React and Next.js"\n',
@@ -209,9 +245,11 @@ describe("validateProfile", () => {
         message: "style_examples: needs 3 to 5 style examples",
       },
     ]);
-    expect(problemsOf(six)).toContainEqual(
-      expect.objectContaining({ message: "style_examples: needs 3 to 5 style examples" }),
-    );
+    // The three added files are missing too, each reported at its own line.
+    expect(problemsOf(six)).toContainEqual({
+      line: lineOf(six, "- style/sample-1.txt"),
+      message: "style_examples: needs 3 to 5 style examples",
+    });
     expect(problemsOf(SAMPLE, sampleFiles({ "style/sample-1.txt": long }))).toEqual([
       {
         line: lineOf(SAMPLE, "- style/sample-1.txt"),

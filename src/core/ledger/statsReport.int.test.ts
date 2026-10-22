@@ -5,10 +5,13 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { startJob } from "@/core/intake/jobs";
 import { createJob, loadJob } from "@/core/platform/jobs";
 import type { Random } from "@/core/ports";
+import type { Handoff, HandoffPart } from "@/core/review/decisions";
+import type { FinalDraft } from "@/core/review/finalDraft";
 import { createLocalStorage } from "@/adapters/localStorage";
 import { createTestDb } from "@/server/db/testDb";
 
 import { armAt } from "./arms";
+import { companyRoleHash } from "./normalise";
 import { realUseStart } from "./realUse";
 import { recordManualRun } from "./statuses";
 import { statsReport } from "./statsReport";
@@ -38,15 +41,20 @@ afterAll(async () => {
 beforeEach(async () => {
   clock = fakeClock();
   await db.exec(
-    `delete from {{schema}}.status_changes; delete from {{schema}}.draft_outcomes;
+    `delete from {{schema}}.kit_sends; delete from {{schema}}.kit_reviews;
+     delete from {{schema}}.status_changes; delete from {{schema}}.draft_outcomes;
      delete from {{schema}}.applications; delete from {{schema}}.upload_attempts;
      delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
      delete from {{schema}}.jobs; delete from {{schema}}.arm_sequence`,
   );
 });
 
-/** A job of the tool arm that went by `route`, `minutes` after it started. */
-async function went(route: "email" | "form", minutes: number, arm: "tool" | null) {
+/** A job of `arm` (none before real use) that went by `route`, `minutes` after it started. */
+async function went(
+  route: "email" | "form" | "message",
+  minutes: number,
+  arm: "tool" | "manual" | null,
+) {
   const started = clock.now();
   const jobId = await createJob(db, {
     state: "manual_run",
@@ -109,7 +117,7 @@ describe("the timing arms and the Stats page", () => {
     expect(rows).toEqual([{ next_index: 6 }]);
   });
 
-  it("records a manual run's Stop once, as an application of the manual arm that went", async () => {
+  it("records a manual run's Stop once, with its route, company and role, as an application of the manual arm that went", async () => {
     const jobId = await createJob(db, {
       state: "manual_run",
       receivedAt: clock.now(),
@@ -124,12 +132,158 @@ describe("the timing arms and the Stats page", () => {
       reason: "not-a-manual-run",
     });
     expect((await loadJob(db, jobId))?.state).toBe("closed");
-    const { rows } = await db.query<{ status: string; arm: string; company_role_hash: string }>(
-      "select status, arm, company_role_hash from {{schema}}.applications where job_id = $1",
+    const { rows } = await db.query(
+      `select route, company, role, company_role_hash, status, submitted_at, arm
+         from {{schema}}.applications where job_id = $1`,
       [jobId],
     );
-    expect(rows).toMatchObject([{ status: "submitted", arm: "manual" }]);
-    expect(rows[0]!.company_role_hash).toBeTruthy();
+    // Gone at the tap, keyed for the duplicate log by the company and role the owner typed.
+    expect(rows).toEqual([
+      {
+        route: "form",
+        company: "Northwind",
+        role: "Developer",
+        company_role_hash: companyRoleHash("Northwind", "Developer"),
+        status: "submitted",
+        submitted_at: clock.now(),
+        arm: "manual",
+      },
+    ]);
+  });
+
+  it("starts real use at the earliest of a handoff the review page kept, a send jobkit was asked for, and a kit that went", async () => {
+    const at = (minutes: number) => new Date(clock.now().getTime() + minutes * MINUTE);
+    const jobId = await createJob(db, {
+      state: "manual_run",
+      receivedAt: clock.now(),
+      clientElapsedMs: 0,
+    });
+    /** The review page's record of a handoff of the role's kit: its subject and body as last handed off. */
+    const handedOff = async (roleId: string, subject: Date | null, body: Date | null) => {
+      const part = (when: Date | null): HandoffPart | null =>
+        when === null
+          ? null
+          : { draft: "gemini", words: "0f3a", changed: [], factual: false, at: when.toISOString() };
+      const handoff: Handoff = {
+        to: "jobs@example.com",
+        typed: false,
+        subject: part(subject),
+        body: part(body),
+      };
+      await db.query(
+        `insert into {{schema}}.kit_reviews (job_id, role_id, decisions, gate, updated_at)
+         values ($1, $2, $3::jsonb, '[]', $4)`,
+        [jobId, roleId, JSON.stringify({ handoff }), clock.now()],
+      );
+    };
+    expect(await realUseStart(db)).toBeNull();
+
+    // A send the owner undid: jobkit was still asked to send the email.
+    await db.query(
+      `insert into {{schema}}.kit_sends
+         (job_id, role_id, kit, to_address, status, send_at, created_at, updated_at)
+       values ($1, 'P1', 'kit', 'jobs@example.com', 'cancelled', $2, $2, $2)`,
+      [jobId, at(40)],
+    );
+    expect(await realUseStart(db)).toEqual(at(40));
+
+    // Copy email: the body handed off alone.
+    await handedOff("P1", null, at(30));
+    expect(await realUseStart(db)).toEqual(at(30));
+
+    // Copy subject on another role's kit, earlier still: the subject handed off alone.
+    await handedOff("P2", at(20), null);
+    expect(await realUseStart(db)).toEqual(at(20));
+
+    // A kit marked sent before any of them.
+    await went("email", 10, null);
+    expect(await realUseStart(db)).toEqual(at(10));
+  });
+
+  it("never starts real use from a manual run, though it went first", async () => {
+    const manual = await createJob(db, {
+      state: "manual_run",
+      receivedAt: clock.now(),
+      clientElapsedMs: 0,
+    });
+    clock.advance(5 * MINUTE);
+    const run = { route: "email" as const, company: "Northwind", role: "Developer" };
+    expect(await recordManualRun({ db, clock }, manual, run, null)).toEqual({ ok: true });
+
+    expect(await realUseStart(db)).toBeNull();
+
+    const kitWent = new Date(clock.now().getTime() + 10 * MINUTE);
+    await went("email", 10, null);
+    expect(await realUseStart(db)).toEqual(kitWent);
+  });
+
+  it("compares the arms pooled only once each has 10 runs, though no route has 5", async () => {
+    // Real use starts as the first kit goes, 30 minutes in; the runs below start after it.
+    await went("email", 30, null);
+    clock.advance(31 * MINUTE);
+    const routes = ["email", "form", "message"] as const;
+    for (let i = 0; i < 9; i++) {
+      await went(routes[i % 3]!, 10 + i, "tool");
+      await went(routes[i % 3]!, 40 + i, "manual");
+    }
+
+    expect((await statsReport(db)).comparison.pooled).toMatchObject({
+      shown: false,
+      tool: { count: 9 },
+      manual: { count: 9 },
+    });
+
+    // Ten in one arm is not enough while the other has nine.
+    await went("email", 19, "tool");
+    expect((await statsReport(db)).comparison.pooled).toMatchObject({
+      shown: false,
+      tool: { count: 10 },
+      manual: { count: 9 },
+    });
+
+    await went("email", 49, "manual");
+    const report = await statsReport(db);
+    expect(report.comparison.pooled).toMatchObject({
+      shown: true,
+      tool: { count: 10 },
+      manual: { count: 10 },
+    });
+    expect(report.comparison.pooled.ratioInterval).not.toBeNull();
+    // Four, three and three runs in each arm by route: no route is compared on its own.
+    expect(Object.values(report.comparison.byRoute).map((each) => each.shown)).toEqual([
+      false,
+      false,
+      false,
+    ]);
+  });
+
+  it("counts the sentences the separate check held falsely from the final drafts kept, over real kits", async () => {
+    /** A kit of a real job that went, its final draft keeping these false positives, or none kept. */
+    const sent = async (judgeFalsePositives: string[] | null, kind: "real" | "test" = "real") => {
+      const jobId = await went("email", 5, null);
+      const finalDraft: FinalDraft | null = judgeFalsePositives && {
+        draft: "gemini",
+        kind: "email",
+        subject: "Application: Developer",
+        text: "I have built production React applications for four years.",
+        to: "jobs@example.com",
+        judgeFalsePositives,
+      };
+      await db.query(
+        `update {{schema}}.applications set final_draft = $2::jsonb, job_kind = $3
+          where job_id = $1`,
+        [jobId, finalDraft && JSON.stringify(finalDraft), kind],
+      );
+    };
+    expect((await statsReport(db)).judgeFalsePositives).toEqual({ sentences: 0, kits: 0 });
+
+    await sent(["S1", "S3"]);
+    await sent([]);
+    // A final draft the purge cleared, and a test job's, count for nothing.
+    await sent(null);
+    await sent(["S2"], "test");
+
+    expect((await statsReport(db)).judgeFalsePositives).toEqual({ sentences: 2, kits: 2 });
   });
 
   it("compares the arms' total times only from enough runs in each arm, during real use", async () => {

@@ -1067,6 +1067,35 @@ describe("recordReview", () => {
     expect(rows[0]!.factual_edit).toBe(true);
   });
 
+  it("counts an edit of a drafted gap line as factual, though the separate check called it no claim", async () => {
+    const id = await readyKit(POSTED, {
+      record: askingForKubernetes,
+      draft: WITH_GAP_LINE,
+      verdicts: [
+        { blockId: "S1", verdict: "supported", companyClaim: false, note: "" },
+        { blockId: "S2", verdict: "not_a_claim", companyClaim: false, note: "" },
+      ],
+    });
+    const gap = (await jobView({ db, clock }, id))!.kit!.blocks.find(
+      (block) => block.class === "gap",
+    )!;
+    await recordReview(deps(), id, {
+      kind: "edit",
+      blockId: gap.id,
+      text: "I have not run Kubernetes in production; I deploy containers with Docker Compose.",
+    });
+    await recordReview(deps(), id, { kind: "confirm", blockId: gap.id });
+
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+    const { rows } = await db.query(
+      "select changed, factual_edit from {{schema}}.draft_outcomes where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ changed: [`sentence:${gap.id}`], factual_edit: true }]);
+  });
+
   it("runs validate again on the email as the owner edited it", async () => {
     const id = await readyKit("Northwind Analytics is hiring. Apply to jobs@example.com.");
     const block = (await jobView({ db, clock }, id))!.draft!.kit.blocks[0]!;

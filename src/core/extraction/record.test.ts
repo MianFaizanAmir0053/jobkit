@@ -10,9 +10,11 @@ import {
   type JobRecord,
   MAX_FIELD_LENGTH,
   MAX_QUOTE_LENGTH,
+  ROUTE_KINDS,
   type RecordFlag,
   checkRecord,
   jobRecordSchema,
+  kitTypeOf,
 } from "./record";
 import { type TilePlace, tileSpans } from "@/core/shared/tileGeometry";
 
@@ -327,5 +329,22 @@ describe("checkRecord", () => {
   it("uses the messages the review page shows", () => {
     expect(FLAG_MESSAGES.number).toBe(NUMBER_FLAG);
     for (const message of Object.values(FLAG_MESSAGES)) expect(message).toMatch(/^[A-Z].*[^ ]$/);
+  });
+});
+
+/* Drafting AC1: the kit each route takes, by drafting's route table. */
+describe("kitTypeOf", () => {
+  it("gives every route its kit, and none to a route the owner must name", () => {
+    expect(Object.fromEntries(ROUTE_KINDS.map((route) => [route, kitTypeOf(route)]))).toEqual({
+      email: "email",
+      ats_form: "form",
+      easy_apply: "form",
+      careers_page: "form",
+      whatsapp: "message",
+      linkedin_dm: "message",
+      linkedin_comment: "message",
+      other: null,
+      unknown: null,
+    });
   });
 });

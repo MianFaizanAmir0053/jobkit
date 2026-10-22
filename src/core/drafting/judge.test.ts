@@ -17,7 +17,7 @@ import {
   mergeVerdicts,
   NO_VERDICT,
 } from "./judge";
-import type { EmailKit, KitBlock } from "./kit";
+import type { EmailKit, FormKit, KitBlock } from "./kit";
 
 /* The judge: drafting AC9. */
 
@@ -122,6 +122,74 @@ describe("mergeVerdicts", () => {
     const merged = mergeVerdicts(kit, { verdicts: [verdict("S2", "not_a_claim")] });
 
     expect(merged.find((entry) => entry.blockId === "S2")?.verdict).toBe("unsupported");
+  });
+
+  it("judges as a claim a sentence the judge calls one, though the drafter called it courtesy", () => {
+    const courteous: EmailKit = {
+      ...kit,
+      blocks: [
+        block({
+          id: "S1",
+          class: "courtesy",
+          text: "I would love to bring my ten years of leading teams to yours.",
+        }),
+      ],
+    };
+
+    const [merged] = mergeVerdicts(courteous, { verdicts: [verdict("S1", "overstated")] });
+
+    expect(merged).toMatchObject({
+      blockId: "S1",
+      verdict: "overstated",
+      note: "Five years, not ten; no leadership shown.",
+    });
+    expect(isBlocking(merged!)).toBe(true);
+  });
+
+  it("judges a form's every drafted answer as a claim, a bare Yes too, and no answer the profile gave", () => {
+    const form: FormKit = {
+      kind: "form",
+      blocks: [block({ id: "S1", class: "courtesy", text: "Thank you for reading." })],
+      answers: [
+        {
+          id: "Q1",
+          question: "Have you shipped React in production?",
+          topic: null,
+          source: "drafted",
+          text: "Yes.",
+          factIds: ["F-react"],
+        },
+        {
+          id: "Q2",
+          question: "Tell us about a product you shipped.",
+          topic: null,
+          source: "drafted",
+          text: "I shipped Carder, a React app used in production.",
+          factIds: ["F-react"],
+        },
+        {
+          id: "Q3",
+          question: "What is your notice period?",
+          topic: "notice_period",
+          source: "profile",
+          text: "One month",
+          factIds: [],
+        },
+      ],
+    };
+
+    // The judge calls the bare Yes no claim, and gives Q2 no verdict at all.
+    const merged = mergeVerdicts(form, {
+      verdicts: [verdict("S1", "not_a_claim"), verdict("Q1", "not_a_claim")],
+    });
+
+    expect(merged.map(({ blockId, verdict: value }) => [blockId, value])).toEqual([
+      ["S1", "not_a_claim"],
+      ["Q1", "unsupported"],
+      ["Q2", "unsupported"],
+    ]);
+    expect(merged.find((entry) => entry.blockId === "Q2")!.note).toBe(NO_VERDICT);
+    expect(merged.filter(isBlocking).map((entry) => entry.blockId)).toEqual(["Q1", "Q2"]);
   });
 });
 

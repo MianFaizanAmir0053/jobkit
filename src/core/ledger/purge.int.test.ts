@@ -7,16 +7,18 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { fakeClock, type FakeClock } from "@/adapters/clock";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
+import { confirmUploads, type ImageMeta, startJob, uploadAgain } from "@/core/intake/jobs";
 import { purgeIntake } from "@/core/intake/purge";
-import { createJob } from "@/core/platform/jobs";
+import { createJob, expireUploads } from "@/core/platform/jobs";
 import { createTestDb } from "@/server/db/testDb";
 
 import { purgeLedger } from "./purge";
 
 /*
- * The daily retention purges (intake AC9, ledger AC9), with a fake clock:
- * screenshots and crops past 30 days unless kept, stray objects, old pasted
- * text; records, drafts and recruiter names 180 days after an
+ * The daily retention purges (intake AC7 and AC9, ledger AC9), with a fake
+ * clock: screenshots and crops past 30 days unless kept, stray objects, a
+ * screenshot that lands after its upload failed, old pasted text with its
+ * links; records, drafts and recruiter names 180 days after an
  * application's last change, 30 days after a kit-less job's, the
  * application row kept.
  */
@@ -77,8 +79,23 @@ async function jobWithImage(kept: boolean): Promise<string> {
   return id;
 }
 
+/** What the phone declares for a screenshot of `PNG`'s bytes, its hash told apart by `n`. */
+const shot = (n: number): ImageMeta => ({
+  contentType: "image/png",
+  bytes: PNG.length,
+  width: 10,
+  height: 10,
+  sha256: n.toString(16).padStart(64, "0"),
+});
+
+/** The phone's upload of `PNG` through a signed upload URL, as the storage takes it. */
+const upload = (url: string) =>
+  storage.acceptSignedUpload(new URL(url).pathname.split("/").pop()!, PNG);
+
+const NOTHING = { images: 0, crops: 0, strays: 0, pastedTexts: 0 };
+
 describe("the daily purges", () => {
-  it("deletes screenshots, crops and pasted text past 30 days unless kept, and stray objects", async () => {
+  it("deletes screenshots, crops and pasted text with its links past 30 days unless kept, and stray objects", async () => {
     const gone = await jobWithImage(false);
     const kept = await jobWithImage(true);
     // An object no row names, as an add never confirmed leaves.
@@ -104,12 +121,17 @@ describe("the daily purges", () => {
       `jobs/${kept}/crops/contact.png`,
       `jobs/${kept}/one.png`,
     ]);
-    const { rows } = await db.query<{ id: string; pasted_text: string | null }>(
-      "select id, pasted_text from {{schema}}.jobs",
-    );
-    expect(Object.fromEntries(rows.map((row) => [row.id, row.pasted_text]))).toEqual({
-      [gone]: null,
-      [kept]: "A post.",
+    const { rows } = await db.query<{
+      id: string;
+      pasted_text: string | null;
+      post_links: string[];
+    }>("select id, pasted_text, post_links from {{schema}}.jobs");
+    // The links found in the post go with its text.
+    expect(
+      Object.fromEntries(rows.map((row) => [row.id, [row.pasted_text, row.post_links]])),
+    ).toEqual({
+      [gone]: [null, []],
+      [kept]: ["A post.", ["https://example.com"]],
     });
     // Run twice, as the daily job may be: nothing more goes.
     expect(await purgeIntake({ db, clock, storage })).toEqual({
@@ -118,6 +140,62 @@ describe("the daily purges", () => {
       strays: 0,
       pastedTexts: 0,
     });
+  });
+
+  it("keeps a screenshot that lands after its upload timed out, since its row still names it, until the row's 30 days are up (intake AC7)", async () => {
+    const began = clock.now().getTime();
+    const started = await startJob(
+      { db, clock, storage },
+      { images: [shot(1)], pastedText: "", clientElapsedMs: 0 },
+    );
+    if (!started.ok) throw new Error(started.message);
+    clock.advance(15 * 60_000 + 1);
+    expect(await expireUploads(db, clock.now())).toBe(1);
+    // A signed upload URL lives two hours, so the phone's upload can still land after the
+    // timeout, at the path the screenshot's row names.
+    expect(await upload(started.uploads[0]!.url)).toBe(true);
+    const folder = `jobs/${started.jobId}`;
+    const late = await storage.list(folder);
+    expect(late).toHaveLength(1);
+
+    // The next day's purge keeps it: it is no stray, but the job's screenshot.
+    clock.advance(DAY);
+    expect(await purgeIntake({ db, clock, storage })).toEqual(NOTHING);
+    expect(await storage.list(folder)).toEqual(late);
+
+    // It goes with its row, 30 days after the job began uploading, not after it landed.
+    clock.advance(began + 30 * DAY - clock.now().getTime());
+    expect(await purgeIntake({ db, clock, storage })).toEqual({ ...NOTHING, images: 1 });
+    expect(await storage.list(folder)).toEqual([]);
+  });
+
+  it("deletes a screenshot that lands after Upload again replaced it, as a stray, once the job has left uploading (intake AC7)", async () => {
+    const deps = { db, clock, storage };
+    const started = await startJob(deps, { images: [shot(1)], pastedText: "", clientElapsedMs: 0 });
+    if (!started.ok) throw new Error(started.message);
+    clock.advance(15 * 60_000 + 1);
+    expect(await expireUploads(db, clock.now())).toBe(1);
+    const again = await uploadAgain(deps, started.jobId, [shot(2)]);
+    if (!again.ok) throw new Error(JSON.stringify(again));
+    // The first upload's URL still works: its screenshot lands at a path no row names now.
+    expect(await upload(started.uploads[0]!.url)).toBe(true);
+    const folder = `jobs/${started.jobId}`;
+    const late = await storage.list(folder);
+    expect(late).toHaveLength(1);
+
+    // While the job uploads again, the purge leaves its folder alone.
+    expect(await purgeIntake(deps)).toEqual(NOTHING);
+    expect(await storage.list(folder)).toEqual(late);
+
+    // The screenshot chosen again arrives and is confirmed: the job has left uploading.
+    expect(await upload(again.uploads[0]!.url)).toBe(true);
+    expect(await confirmUploads(deps, started.jobId)).toEqual({ ok: true });
+    expect(await purgeIntake(deps)).toEqual({ ...NOTHING, strays: 1 });
+    const { rows } = await db.query<{ storage_path: string }>(
+      "select storage_path from {{schema}}.job_images where job_id = $1",
+      [started.jobId],
+    );
+    expect(await storage.list(folder)).toEqual(rows.map((row) => row.storage_path));
   });
 
   it("clears a job's record and drafts 180 days after its application last changed, keeping the application", async () => {
