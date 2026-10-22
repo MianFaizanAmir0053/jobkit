@@ -171,7 +171,8 @@ beforeEach(async () => {
      delete from {{schema}}.applications;
      delete from {{schema}}.model_calls; delete from {{schema}}.job_stage_runs;
      delete from {{schema}}.job_leases; delete from {{schema}}.job_images;
-     delete from {{schema}}.job_state_changes; delete from {{schema}}.jobs;
+     delete from {{schema}}.job_state_changes; delete from {{schema}}.measurement;
+     delete from {{schema}}.jobs;
      delete from {{schema}}.profile_versions`,
   );
   clock = fakeClock();

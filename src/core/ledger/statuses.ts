@@ -4,6 +4,7 @@ import type { Clock, Db } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
 
 import { companyKey, companyRoleHash, postFingerprint, roleKey } from "./normalise";
+import { noteRealUse } from "./realUse";
 
 /**
  * An application's statuses (ledger spec, "Statuses"). Only the moves in
@@ -180,7 +181,7 @@ export async function changeStatus(
   );
   return deps.db.tx(async (tx) => {
     if (to !== "open") {
-      const moved = await claimOne<{ from_status: ApplicationStatus }>(
+      const moved = await claimOne<{ from_status: ApplicationStatus; job_id: string }>(
         tx,
         `with previous as (
            select id, status from {{schema}}.applications
@@ -192,11 +193,13 @@ export async function changeStatus(
             set status = $3, status_changed_at = $4, ${TIME_COLUMN[to]} = $4
            from previous
           where a.id = previous.id
-         returning previous.status as from_status`,
+         returning previous.status as from_status, a.job_id`,
         [applicationId, from, to, now, ROUTES_FOR[to] ?? null],
       );
       if (moved) {
         await recordChange(tx, applicationId, moved.from_status, to, now, sessionId);
+        // A kit that went starts real use, unless something did before.
+        if (to === "sent" || to === "submitted") await noteRealUse(tx, moved.job_id, now);
         return { ok: true, changed: true, status: to };
       }
     }

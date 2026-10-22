@@ -5,14 +5,13 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { startJob } from "@/core/intake/jobs";
 import { createJob, loadJob } from "@/core/platform/jobs";
 import type { Random } from "@/core/ports";
-import type { Handoff, HandoffPart } from "@/core/review/decisions";
 import type { FinalDraft } from "@/core/review/finalDraft";
 import { createLocalStorage } from "@/adapters/localStorage";
 import { createTestDb } from "@/server/db/testDb";
 
 import { armAt } from "./arms";
 import { companyRoleHash } from "./normalise";
-import { realUseStart } from "./realUse";
+import { noteRealUse, realUseStart } from "./realUse";
 import { recordManualRun } from "./statuses";
 import { statsReport } from "./statsReport";
 
@@ -45,11 +44,16 @@ beforeEach(async () => {
      delete from {{schema}}.status_changes; delete from {{schema}}.draft_outcomes;
      delete from {{schema}}.applications; delete from {{schema}}.upload_attempts;
      delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
-     delete from {{schema}}.jobs; delete from {{schema}}.arm_sequence`,
+     delete from {{schema}}.measurement; delete from {{schema}}.jobs;
+     delete from {{schema}}.arm_sequence`,
   );
 });
 
-/** A job of `arm` (none before real use) that went by `route`, `minutes` after it started. */
+/**
+ * A job of `arm` (none before real use) that went by `route`, `minutes`
+ * after it started; one not of the manual arm starts real use, as Mark sent
+ * would, unless something did before.
+ */
 async function went(
   route: "email" | "form" | "message",
   minutes: number,
@@ -77,6 +81,7 @@ async function went(
       arm,
     ],
   );
+  if (arm !== "manual") await noteRealUse(db, jobId, at);
   return jobId;
 }
 
@@ -151,53 +156,30 @@ describe("the timing arms and the Stats page", () => {
     ]);
   });
 
-  it("starts real use at the earliest of a handoff the review page kept, a send jobkit was asked for, and a kit that went", async () => {
+  it("records the start of real use once, at the first event on a real job, and nothing later moves it", async () => {
     const at = (minutes: number) => new Date(clock.now().getTime() + minutes * MINUTE);
-    const jobId = await createJob(db, {
-      state: "manual_run",
-      receivedAt: clock.now(),
-      clientElapsedMs: 0,
-    });
-    /** The review page's record of a handoff of the role's kit: its subject and body as last handed off. */
-    const handedOff = async (roleId: string, subject: Date | null, body: Date | null) => {
-      const part = (when: Date | null): HandoffPart | null =>
-        when === null
-          ? null
-          : { draft: "gemini", words: "0f3a", changed: [], factual: false, at: when.toISOString() };
-      const handoff: Handoff = {
-        to: "jobs@example.com",
-        typed: false,
-        subject: part(subject),
-        body: part(body),
-      };
-      await db.query(
-        `insert into {{schema}}.kit_reviews (job_id, role_id, decisions, gate, updated_at)
-         values ($1, $2, $3::jsonb, '[]', $4)`,
-        [jobId, roleId, JSON.stringify({ handoff }), clock.now()],
-      );
-    };
+    const job = () =>
+      createJob(db, { state: "manual_run", receivedAt: clock.now(), clientElapsedMs: 0 });
+    // A test job's handoff, and a manual run's, start nothing.
+    const test = await job();
+    await db.query("update {{schema}}.jobs set kind = 'test' where id = $1", [test]);
+    await noteRealUse(db, test, at(10));
+    const manual = await job();
+    await db.query("update {{schema}}.jobs set arm = 'manual' where id = $1", [manual]);
+    await noteRealUse(db, manual, at(15));
     expect(await realUseStart(db)).toBeNull();
 
-    // A send the owner undid: jobkit was still asked to send the email.
-    await db.query(
-      `insert into {{schema}}.kit_sends
-         (job_id, role_id, kit, to_address, status, send_at, created_at, updated_at)
-       values ($1, 'P1', 'kit', 'jobs@example.com', 'cancelled', $2, $2, $2)`,
-      [jobId, at(40)],
-    );
-    expect(await realUseStart(db)).toEqual(at(40));
-
-    // Copy email: the body handed off alone.
-    await handedOff("P1", null, at(30));
+    // A real job's first event starts it.
+    const first = await job();
+    await noteRealUse(db, first, at(30));
     expect(await realUseStart(db)).toEqual(at(30));
 
-    // Copy subject on another role's kit, earlier still: the subject handed off alone.
-    await handedOff("P2", at(20), null);
-    expect(await realUseStart(db)).toEqual(at(20));
-
-    // A kit marked sent before any of them.
-    await went("email", 10, null);
-    expect(await realUseStart(db)).toEqual(at(10));
+    // A later event, though it names an earlier time, leaves it where it was, and so does the
+    // purge of the job whose event started it.
+    await noteRealUse(db, await job(), at(20));
+    await db.query("delete from {{schema}}.job_state_changes where job_id = $1", [first]);
+    await db.query("delete from {{schema}}.jobs where id = $1", [first]);
+    expect(await realUseStart(db)).toEqual(at(30));
   });
 
   it("never starts real use from a manual run, though it went first", async () => {

@@ -34,6 +34,7 @@ export async function POST() {
     delete from {{schema}}.upload_attempts;
     delete from {{schema}}.job_images;
     delete from {{schema}}.job_state_changes;
+    delete from {{schema}}.measurement;
     delete from {{schema}}.jobs;
   `);
   // A pipeline left running from an earlier test must not take the next test's answers.

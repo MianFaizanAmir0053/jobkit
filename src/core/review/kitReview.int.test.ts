@@ -11,6 +11,7 @@ import type { PgliteDb } from "@/adapters/pglite";
 import { asEmailKit, type DraftAnswer } from "@/core/drafting/kit";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
+import { realUseStart } from "@/core/ledger/realUse";
 import type { Dns } from "@/core/ports";
 import { createTestDb } from "@/server/db/testDb";
 
@@ -1291,6 +1292,49 @@ describe("recordReview", () => {
 
     expect(kinds((await jobView({ db, clock }, id))!.review!.gate)).toEqual([]);
     expect(await takeBackSent({ db, clock }, id, null)).toEqual({ ok: false, reason: "not-sent" });
+  });
+
+  it("starts real use at a kit's first handoff, which a later handoff, Mark sent and its taking back never move", async () => {
+    const id = await readyKit(POSTED);
+    await recordReview(deps(), id, { kind: "check", blockId: "S1" });
+    const handedOff = async () => {
+      const shown = (await jobView({ db, clock }, id))!;
+      expect(
+        await recordHandoff({ db, clock }, id, { kit: shown.kitKey!, words: shown.wordsKey! }),
+      ).toEqual({ ok: true });
+    };
+    expect(await realUseStart(db)).toBeNull();
+
+    await handedOff();
+    const first = clock.now();
+    expect(await realUseStart(db)).toEqual(first);
+
+    clock.advance(60_000);
+    await handedOff();
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+    expect(await takeBackSent({ db, clock }, id, null)).toEqual({ ok: true });
+    expect(await realUseStart(db)).toEqual(first);
+  });
+
+  it("starts real use at Mark sent with nothing handed off before, but never for a test job", async () => {
+    const id = await readyKit(POSTED);
+    await recordReview(deps(), id, { kind: "check", blockId: "S1" });
+    await db.query("update {{schema}}.jobs set kind = 'test' where id = $1", [id]);
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+    expect(await realUseStart(db)).toBeNull();
+
+    // The same kit as a real job's: marked sent again, it starts real use.
+    expect(await takeBackSent({ db, clock }, id, null)).toEqual({ ok: true });
+    await db.query("update {{schema}}.jobs set kind = 'real' where id = $1", [id]);
+    clock.advance(60_000);
+    expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
+      ok: true,
+    });
+    expect(await realUseStart(db)).toEqual(clock.now());
   });
 
   it("refuses a Mark sent from a page drawn on another kit, or showing another address", async () => {

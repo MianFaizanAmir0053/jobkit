@@ -94,7 +94,8 @@ export async function resetKitBed(bed: KitBed): Promise<void> {
      delete from {{schema}}.applications; delete from {{schema}}.model_calls;
      delete from {{schema}}.job_stage_runs; delete from {{schema}}.job_leases;
      delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
-     delete from {{schema}}.jobs; delete from {{schema}}.profile_versions`,
+     delete from {{schema}}.measurement; delete from {{schema}}.jobs;
+     delete from {{schema}}.profile_versions`,
   );
   const checked = validateProfile(readFileSync(join(SYNTHETIC, "profile.sample.yaml"), "utf8"), {
     read: (path) => new Uint8Array(readFileSync(join(SYNTHETIC, path))),

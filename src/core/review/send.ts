@@ -1,4 +1,5 @@
 import { asEmailKit, emailBody } from "@/core/drafting/kit";
+import { noteRealUse } from "@/core/ledger/realUse";
 import { getProfileVersion } from "@/core/profile/profile";
 import type { Clock, Db, GmailSender, GmailSendResult, Storage } from "@/core/ports";
 import { isUuid } from "@/lib/uuid";
@@ -147,6 +148,8 @@ export async function scheduleSend(
       [jobId, roleId, view.kitKey, to, new Date(now.getTime() + UNDO_MS), pressed.sessionId, now],
     );
     await keep(at, jobId, roleId, view.kitKey, decisions);
+    // An email jobkit is asked to send starts real use, though Undo stops it.
+    await noteRealUse(tx, jobId, now);
     return { ok: true, send: sendOf(rows[0]!) };
   });
 }

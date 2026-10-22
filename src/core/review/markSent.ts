@@ -2,6 +2,7 @@ import type { KitBlock } from "@/core/drafting/kit";
 import { NEVER_WEIGHED } from "@/core/drafting/verdict";
 import { chosenRole } from "@/core/extraction/owner";
 import { sameAddress } from "@/core/ledger/normalise";
+import { noteRealUse } from "@/core/ledger/realUse";
 import { changeStatus, setAddress, undoStatus } from "@/core/ledger/statuses";
 import { loadJob } from "@/core/platform/jobs";
 import type { Clock, Db } from "@/core/ports";
@@ -256,7 +257,10 @@ export async function recordHandoff(
         : (before.handoff?.body ?? null),
     };
     const kept = await keep(at, jobId, view.role!.id, view.kitKey, { ...before, handoff });
-    return kept.ok ? { ok: true as const } : kept;
+    if (!kept.ok) return kept;
+    // A handoff starts real use, unless something did before.
+    await noteRealUse(tx, jobId, deps.clock.now());
+    return { ok: true as const };
   });
 }
 

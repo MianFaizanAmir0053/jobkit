@@ -10,6 +10,7 @@ import { fakeGmail, type FakeGmail } from "@/adapters/fakeGmail";
 import { createLocalStorage, type LocalStorage } from "@/adapters/localStorage";
 import type { PgliteDb } from "@/adapters/pglite";
 import { asEmailKit, emailBody } from "@/core/drafting/kit";
+import { realUseStart } from "@/core/ledger/realUse";
 import { setAddress } from "@/core/ledger/statuses";
 import type { Db, GmailSender, QueryResult, Row } from "@/core/ports";
 import { cryptoRandom } from "@/adapters/random";
@@ -419,6 +420,17 @@ describe("undoSend", () => {
     const after = await view(id);
     expect(kinds(after)).toEqual([]);
     expect(after.review!.decisions.checked).toEqual(["S1"]);
+  });
+
+  it("starts real use at the press, though Undo stops the send", async () => {
+    const id = await readyKit(POST);
+    expect(await realUseStart(db)).toBeNull();
+    const pressedAt = clock.now();
+    const send = await press(id);
+    clock.advance(5_000);
+    expect(await undoSend({ db, clock }, id, send.id)).toEqual({ ok: true });
+
+    expect(await realUseStart(db)).toEqual(pressedAt);
   });
 
   it("is too late once the email went", async () => {
