@@ -419,8 +419,14 @@ export function checkSummary(
         result.extracted?.contact ?? "",
       ]),
     ),
-    // A judge's note on a sentence can quote the owner's facts.
-    ...judges.flatMap((report) => report.items.map((each) => each.note ?? "")),
+    // A judge's note on a sentence can quote the owner's facts, and a claim from a live draft is
+    // named by its case (`<case>/<block>`), whose ID no summary may carry.
+    ...judges.flatMap((report) =>
+      report.items.flatMap((each) => [
+        each.note ?? "",
+        report.stage === "judge" ? each.id.split("/")[0]! : "",
+      ]),
+    ),
     ...(stages.drafts ?? []).flatMap((report) =>
       report.cases.flatMap((result) => [
         result.id,

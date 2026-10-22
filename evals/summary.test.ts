@@ -5,10 +5,11 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { DraftReport, RunReport, SecondReadReport } from "./command";
+import type { JudgeLabel, JudgeSetReport } from "./judgeSet";
 import type { CaseResult } from "./run";
 import { checkMetricsOf, metricsOf } from "./run";
 import type { Renders } from "./synthetic";
-import { wilson } from "./score";
+import { precisionRecall, wilson } from "./score";
 import { checkSummary, readReports, summaryOf } from "./summary";
 
 /* The aggregate summary: evals AC6. Every name, address and number here is planted, to be kept out. */
@@ -169,6 +170,98 @@ describe("the drafting and second-read runs in the summary", () => {
     expect(text).toContain("| 0 | 10 | 0.002 | gemini-3.6-flash |");
     for (const planted of PLANTED) expect(text).not.toContain(planted);
     expect(checkSummary(text, [], [], stages)).toEqual([]);
+  });
+});
+
+describe("the judge's runs in the summary", () => {
+  /** A live case, which names each claim kept beside it. */
+  const LIVE_CASE = "live-2026-10-06-1a2b3c4d";
+  /** A judge's note, which can quote the owner's facts and the post's words. */
+  const NOTE =
+    "Sam Rivera led the platform at Northwind Analytics; call 0300 1234567 or write to jobs@northwind.example.";
+
+  /** A judge run on labelled sentences, each with its label and whether it was called not supported. */
+  const judgeRun = (
+    stage: JudgeSetReport["stage"],
+    calls: readonly [id: string, label: JudgeLabel, notSupported: boolean][],
+  ): JudgeSetReport => {
+    const rows = calls.map(([, label, notSupported]) => ({
+      predicted: notSupported,
+      actual: label === "not_supported",
+    }));
+    return {
+      stage,
+      model: "gemini-3.8-flash",
+      startedAt: "2026-10-20T12:00:00.000Z",
+      finishedAt: "2026-10-20T12:00:00.000Z",
+      commit: "0123456789abcdef0123",
+      prompt: "c".repeat(64),
+      effort: "low",
+      budgetUsd: 5,
+      stoppedAtBudget: false,
+      costUsd: 0.004,
+      items: calls.map(([id, label, notSupported]) => ({
+        id,
+        label,
+        outcome: "scored",
+        verdict: notSupported ? "overstated" : "supported",
+        note: NOTE,
+        notSupported,
+        right: notSupported === (label === "not_supported"),
+        costUsd: 0.001,
+        seconds: 1,
+      })),
+      notSupported: precisionRecall(rows),
+      accuracy: wilson(rows.filter((row) => row.predicted === row.actual).length, rows.length),
+    };
+  };
+
+  const judgeSet = judgeRun("judge-set", [
+    ["J01", "supported", false],
+    ["J02", "supported", true],
+    ["J41", "not_supported", true],
+    ["J42", "not_supported", true],
+  ]);
+  const claims = {
+    ...judgeRun("judge", [
+      [`${LIVE_CASE}/S2`, "not_supported", true],
+      [`${LIVE_CASE}/S3`, "supported", false],
+    ]),
+    // The check as it ran live: it held the one claim the owner calls not supported.
+    live: {
+      claims: 2,
+      notSupported: precisionRecall([
+        { predicted: true, actual: true },
+        { predicted: false, actual: false },
+      ]),
+      accuracy: wilson(2, 2),
+    },
+  };
+
+  it("gives the judge set's and the live claims' measures with counts and intervals, and nothing from a case or a note", () => {
+    const text = summaryOf([], new Date("2026-10-20T15:00:00Z"), [judgeSet, claims]);
+
+    expect(text).toContain("## judge-set, gemini-3.8-flash");
+    expect(text).toContain('| Precision of "not supported" | 2 | 3 | 67% |');
+    expect(text).toContain('| Recall of "not supported" | 2 | 2 | 100% |');
+    expect(text).toContain("| Called as the owner did | 3 | 4 | 75% |");
+    expect(text).toContain("## judge, gemini-3.8-flash");
+    expect(text).toContain('| Recall of "not supported", as the check ran live | 1 | 1 | 100% |');
+    for (const planted of [...PLANTED, LIVE_CASE, NOTE]) expect(text).not.toContain(planted);
+    expect(checkSummary(text, [], [judgeSet, claims])).toEqual([]);
+  });
+
+  it("names a judge's note, or a live claim's case, that a summary would carry", () => {
+    const leaky = `Calls: ${LIVE_CASE}/S2 was held. ${NOTE}`;
+
+    const found = checkSummary(leaky, [], [judgeSet, claims]);
+
+    expect(found).toContain(NOTE);
+    // A live claim is named by its case, whose ID no summary may carry.
+    expect(
+      found.some((each) => each.includes(LIVE_CASE)),
+      `the check named only: ${found.join(" | ")}`,
+    ).toBe(true);
   });
 });
 
