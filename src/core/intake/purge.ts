@@ -9,8 +9,10 @@ import type { Clock, Db, Storage } from "@/core/ports";
  *   none of its screenshots is left, so a kept job keeps them with its
  *   screenshots;
  * - objects under a job's path, outside its crops, that no row names, once
- *   the job has left `uploading`: one that arrived after an upload timed
- *   out, or one an upload begun again left; on a job that still takes
+ *   the job has left `uploading`: one an upload begun again left, as a
+ *   screenshot of the first upload arriving after Upload again replaced its
+ *   rows (one arriving after a timeout alone lands at the path its row still
+ *   names, and goes with that row); on a job that still takes
  *   screenshots (a ready kit, a stopped post), only once it is 30 days old,
  *   so an add uploaded but not yet confirmed is never taken from under it;
  * - pasted text older than 30 days, with the links found in the post, unless

@@ -108,7 +108,7 @@ Code checks every fit row against the facts it cites (the owner's rule, 2026-10-
 
 - a `met` verdict needs, for a `skill` or `experience` requirement, for every skill tag the requirement names, one cited fact with that tag, a depth at least the requirement's (`production` above `professional` above `side-project` above `learning`; `any` accepts all) and years at least the requirement's when it states some, the depth and the years from that same fact;
 - a `met` verdict for an `experience` requirement that names no skill tag ("3+ years of professional software development") needs one cited work fact (a skill, experience, project or metric) with the depth and the years it asks; one that asks neither ("experience leading a team") is never met by code, so a must-have needs a gap line or the owner's line (the owner's rule, 2026-10-12);
-- a `met` verdict for an `education` requirement needs a cited `education` fact; for a `language` or `other` requirement, the owner's tick;
+- a `met` verdict for an `education` requirement needs a cited `education` fact; a `met` verdict for a `language` or `other` requirement stands, flagged `fit_unverified` until the owner ticks "I meet this requirement", and the flag holds the gate meanwhile; one the owner says they do not meet needs their line, as any must-have short of met does (the owner's choice, 2026-10-22, matching what was built, in place of counting it partial until ticked);
 - anything short of that makes the row `fit_unverified`, counted as `partial`, so a must-have needs a gap line;
 - a requirement with no fit row at all is flagged `fit_missing`.
 

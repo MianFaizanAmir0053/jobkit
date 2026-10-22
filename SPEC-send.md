@@ -32,6 +32,18 @@ The Devices page connects Gmail once, through a consent flow of jobkit's own bes
 - A page left open on the other device learns of a send within one gate check, 15 seconds, longer than the countdown, so for those seconds its Open in Gmail stays open (a trade-off: the press and every delivery check the server, never the page).
 - A claim whose commit is lost to a dropped connection, though the database kept it, leaves the send sending, which later reads as one that may have gone though it did not (a trade-off: a false warning, never a second email).
 
+### Acceptance criteria (Part 1)
+
+Part 1's own list (the owner's choice, 2026-10-22), in place of Part 2's, which waits for milestone 2 with the daily cap and the deliverability test:
+
+1. Connecting asks Google for `gmail.send` with `openid email`, offline, with PKCE and state; keeps the connection only for `OWNER_EMAIL` with the permission to send left ticked, its refresh token sealed; keeps nothing for another account; and Disconnect revokes the token, then forgets the connection, saying when Google did not confirm.
+2. Google refusing the token, or a key that cannot open it, marks the connection refused, and Approve & send waits for Connect again.
+3. Approve & send is held while a reason its press does not settle holds the kit, in the order the page gives them, and the server refuses such a press; a post that asks for a file besides the CV, or a kit whose words must change, goes through Gmail instead.
+4. A press is refused when its page showed another kit, address or words, listed other sentences and flags than the press would mark, or did not show a send that may have gone; a second press is refused while one counts down, and once the email went.
+5. Undo before delivery stops the send, with the kit open again and its checks kept; Undo of a send that failed is taken as done.
+6. Delivery sends once, though two meet; sends nothing when the kit changed during the countdown; builds the message with its one recipient, its encoded subject, the signature under the closing and the CV attached, refusing a header in a recipient or subject and a message larger than Gmail takes (35 MB); and records what Gmail took as sent, with its IDs, at the address it went to, in a Mark sent that cannot be taken back.
+7. Each refusal says what to do: connect Gmail again, enable the API, wait for the sending limit, or press again; an answer lost while Gmail had the message says to check Gmail's Sent folder; a send not delivered within two minutes of its time lapses, never sent late.
+
 ## Part 2: deferred (milestone 2)
 
 ### Why it waits

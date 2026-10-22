@@ -17,7 +17,7 @@ The geometry below was made for Claude, and stays now that every model stage run
 
 - **Tile height** for an image of width `w` is `min(2576, 28 × floor(4784 / ceil(w / 28)))`. For a 1,080-pixel-wide phone screenshot that is 2,576; for a 2,576-pixel-wide image, 1,456.
 - An image whose height is within its tile height is sent whole. A taller one is cut into horizontal tiles of that height, overlapping by 200 pixels, at full width.
-- Every image block carries `transformations: { oversized_image: "error" }`, so a sizing mistake fails loudly instead of shifting coordinates (the exact field is checked against the vision-coordinates page at implementation).
+- Sent to a Claude model, every image block carries `transformations: { oversized_image: "error" }`, so a sizing mistake fails loudly instead of shifting coordinates (the exact field is checked against the vision-coordinates page at implementation). Gemini has no such setting: since every stage runs on it (decisions A18), the tiles' own limits, checked before the call, are what keep an image from being scaled (the owner's choice, 2026-10-22).
 - Tiles are cut on the server with `sharp`, in memory, from the stored image, and encoded losslessly (PNG), so text never goes through a second lossy pass. Before sending, code checks that the request stays under 30 MB; a job over that is refused with "Too much image data for one job".
 - One request carries at most 20 image blocks, because more than 20 lowers the per-image limit. Intake refuses jobs whose images would need more.
 - Each tile carries its image index and vertical offset. A box the model returns for a tile is mapped back to the original image by adding the offset.
@@ -115,7 +115,7 @@ The ADR's target is a median machine time of 60 seconds from share to kit. With 
 
 Criteria about what the model notices (lines addressed to AI, scam signals in images, roles, depth asked for) are evaluation criteria in the evals spec, scored on synthetic cases. The tests below use the fake model.
 
-1. Tiling: a 1,080 × 2,400 image goes whole; a 1,080 × 6,000 image becomes three tiles of at most 2,576 pixels with 200-pixel overlaps; a 2,576-pixel-wide image uses 1,456-pixel tiles; every tile stays within 4,784 visual tokens; every block carries the oversized-image error setting; tiles are PNG; a request over 30 MB is refused; a box in a later tile maps back with the right offset.
+1. Tiling: a 1,080 × 2,400 image goes whole; a 1,080 × 6,000 image becomes three tiles of at most 2,576 pixels with 200-pixel overlaps; a 2,576-pixel-wide image uses 1,456-pixel tiles; every tile stays within 4,784 visual tokens; every block sent to a Claude model carries the oversized-image error setting; tiles are PNG; a request over 30 MB is refused; a box in a later tile maps back with the right offset.
 2. Schemas: the counting test passes for every structured schema in extraction and drafting; no schema contains a regular expression or length bound; `minItems` is never above 1.
 3. The record schema accepts every synthetic fixture and rejects malformed ones; output that parses but fails a check is kept and flagged, not retried.
 4. The system prompt never contains post text; the post sits between per-call random markers; the wrapper call passes no tools (type-level test).
