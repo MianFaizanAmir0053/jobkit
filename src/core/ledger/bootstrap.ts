@@ -4,7 +4,8 @@ import { median } from "./stats";
  * Bootstrap 95% intervals for the timing comparison (ledger spec, "Timing
  * and stats"): the percentile method over resamples drawn with a seeded
  * generator, so the Stats page shows the same interval each time it is
- * drawn from the same runs.
+ * drawn from the same runs. The runs are put in order first, since a
+ * resample picks them by place and the database returns them in any order.
  */
 
 export interface Interval {
@@ -31,6 +32,11 @@ function generator(seed: number): () => number {
   };
 }
 
+/** The values from smallest to largest, a copy, so a resample does not follow their order. */
+function inOrder(values: readonly number[]): number[] {
+  return [...values].sort((a, b) => a - b);
+}
+
 function resample(values: readonly number[], next: () => number): number[] {
   return values.map(() => values[Math.floor(next() * values.length)]!);
 }
@@ -49,10 +55,11 @@ export function medianInterval(
   options: BootstrapOptions = {},
 ): Interval | null {
   if (values.length === 0) return null;
+  const runs = inOrder(values);
   const next = generator(options.seed ?? 1);
   const statistics: number[] = [];
   for (let i = 0; i < (options.resamples ?? RESAMPLES); i++) {
-    statistics.push(median(resample(values, next))!);
+    statistics.push(median(resample(runs, next))!);
   }
   return percentileInterval(statistics);
 }
@@ -68,12 +75,13 @@ export function ratioInterval(
   options: BootstrapOptions = {},
 ): Interval | null {
   if (top.length === 0 || bottom.length === 0) return null;
+  const [above, under] = [inOrder(top), inOrder(bottom)];
   const next = generator(options.seed ?? 1);
   const statistics: number[] = [];
   for (let i = 0; i < (options.resamples ?? RESAMPLES); i++) {
-    const below = median(resample(bottom, next))!;
+    const below = median(resample(under, next))!;
     if (below === 0) return null;
-    statistics.push(median(resample(top, next))! / below);
+    statistics.push(median(resample(above, next))! / below);
   }
   return percentileInterval(statistics);
 }
