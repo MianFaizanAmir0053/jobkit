@@ -16,19 +16,10 @@
  * --yes only once the owner has approved the spend.
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-
-import { systemClock } from "@/adapters/clock";
-import { createLocalStorage } from "@/adapters/localStorage";
-import { cryptoRandom } from "@/adapters/random";
-import { seedProfile } from "@/core/profile/seed";
-import { validateProfile } from "@/core/profile/validate";
-import { createTestDb } from "@/server/db/testDb";
-import { modelsFor } from "@/server/models";
+import { join, resolve } from "node:path";
 
 import { evalCommand } from "../evals/command";
+import { openRun } from "../evals/openRun";
 
 import { loadLocalEnv } from "./ops";
 
@@ -53,38 +44,8 @@ async function main(): Promise<void> {
     commit: commitOf(),
     now: () => new Date(),
     log: (line) => console.log(line),
-    async open(profile) {
-      // In memory, as the tests' database is: nothing the run writes outlives it but its report.
-      const db = await createTestDb();
-      const root = mkdtempSync(join(tmpdir(), "jobkit-eval-"));
-      const storage = createLocalStorage({ root, origin: "http://localhost:3000" });
-      const close = async () => {
-        await db.close();
-        rmSync(root, { recursive: true, force: true });
-      };
-      try {
-        const checked = validateProfile(readFileSync(profile, "utf8"), {
-          read: (path) => new Uint8Array(readFileSync(join(dirname(profile), path))),
-        });
-        if (!checked.ok) {
-          throw new Error(
-            `${profile} has problems: ${checked.problems.map((problem) => problem.message).join("; ")}`,
-          );
-        }
-        await seedProfile({ db, storage, clock: systemClock }, checked);
-      } catch (error) {
-        await close();
-        throw error;
-      }
-      return {
-        db,
-        storage,
-        clock: systemClock,
-        random: cryptoRandom,
-        llmFor: modelsFor("development", { ...process.env, ...localEnv }),
-        close,
-      };
-    },
+    // In memory, on the evaluation keys: nothing the run writes outlives it but its report.
+    open: (profile) => openRun(profile, { ...process.env, ...localEnv }),
   });
 }
 

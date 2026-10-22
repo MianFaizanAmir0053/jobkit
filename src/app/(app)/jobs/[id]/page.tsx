@@ -31,7 +31,6 @@ import {
   MAX_ADDED,
   MAX_SENTENCE,
   NEEDS_NEW_WORDS,
-  needsNewWords,
   NO_DECISIONS,
 } from "@/core/review/decisions";
 import { listedSentences } from "@/core/review/edits";
@@ -41,6 +40,7 @@ import { whatsAppLink, applicationLink, linkRefusal } from "@/core/review/links"
 import type { DraftChoice, JobView, Step } from "@/core/review/jobView";
 import { showsFor } from "@/core/review/kitSends";
 import type { PostImages } from "@/core/review/postImages";
+import { sendHoldOf } from "@/core/review/sendHold";
 import { appConfig } from "@/server/config";
 import {
   gmailForViewer,
@@ -896,16 +896,7 @@ function KitPanel({
   ).length;
   // What Approve & send cannot settle: a file besides the CV, which it cannot attach, words that
   // must change, which it cannot change, and the reasons only the owner can.
-  const held =
-    parts.attachments.length > 0
-      ? "This post asks for a file besides your CV, which jobkit cannot attach: send it yourself with Open in Gmail, and attach the file there."
-      : needsNewWords(parts, decisions)
-        ? "Some of this email's words must change before it goes: change them above where you can, or send it yourself with Open in Gmail and change them there."
-        : reasons.some((reason) => reason.kind === "flag" && isMeetable(reason.flag))
-          ? "Only you can say whether you meet a requirement above: tick it under How you fit, or say you will fix the email, first."
-          : reasons.some((reason) => reason.kind !== "judge" && reason.kind !== "flag")
-            ? "Approve & send marks the sentences and flags above as checked, but the other reasons listed need you first."
-            : null;
+  const held = sendHoldOf(parts, decisions, gate)?.message ?? null;
   const needsRetype = parts.contact?.needsRetype ?? false;
   // The post's screenshots the page could sign: the one the contact was read on first, when its
   // box lies on one; the rest open on a tap, so a phone fetches them only then.
