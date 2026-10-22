@@ -269,13 +269,20 @@ test("holds a share whose first page load failed, when a reload brings the page"
     { times: 1 },
   );
 
-  await share(page, { images: await screenshots(1), text: "Northwind is hiring" });
+  await share(page, {
+    images: await screenshots(1),
+    text: "Northwind is hiring",
+    url: "https://lnkd.in/x",
+  });
   await expect(page.getByText("Bad gateway")).toBeVisible();
   await page.reload();
 
-  // The reload's request looks like the owner's own, but the share was opened once already.
+  // The reload's request looks like the owner's own, but the share was opened once already: it
+  // shows the screenshot and the link, which is never opened.
   await expect(page.getByRole("status")).toHaveText(OPENED_BEFORE);
   await expect(page.getByRole("img", { name: "shot-0.png" })).toBeVisible();
+  await expect(page.getByText("Link: https://lnkd.in/x")).toBeVisible();
+  await expect(page.getByRole("link", { name: /lnkd/ })).toHaveCount(0);
 });
 
 test("refuses an empty share and a share holding only a link, starting no job", async ({

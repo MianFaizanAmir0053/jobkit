@@ -21,6 +21,74 @@ const MARKER = "jobkit-e2e-owner-data-marker";
 const FIXED_ANSWER = "USD 5,000 a month";
 // Everything the dev server prints (e2e/devServer.mjs).
 const SERVER_LOG = ".data/e2e/server.log";
+// A job of the owner's, as its page and the jobs list name it, and where its email goes.
+const COMPANY = "Contoso Labs";
+const ADDRESS = "jobs@contoso.com";
+// What the Stats page says once the owner's email went.
+const SENT_STAT = "emails had a factual edit";
+
+/** The post the owner's job reads, with a must-have only the owner can say they meet. */
+const RECORD = {
+  post_kind: "job_post",
+  language: "en",
+  company: { name: COMPANY, website: "" },
+  recruiter: { name: "", title: "" },
+  scam_signals: [],
+  roles: [
+    {
+      id: "P1",
+      title: "Senior Full-Stack Engineer",
+      seniority: "senior",
+      employment: "full_time",
+      location: {
+        work_mode: "remote",
+        places: [],
+        remote_regions: ["worldwide"],
+        time_zone: { zone: "unspecified", min_overlap_hours: -1, text: "" },
+      },
+      eligibility: { work_authorisation: [], sponsorship: "unspecified", other_limits: [] },
+      salary: { text: "", currency: "", min: -1, max: -1, period: "unspecified" },
+      requirements: [
+        {
+          id: "R1",
+          text: "4+ years with React",
+          priority: "must",
+          kind: "experience",
+          skills: ["react"],
+          depth: "any",
+          years: 4,
+        },
+        {
+          id: "R2",
+          text: "production Node.js",
+          priority: "must",
+          kind: "skill",
+          skills: ["nodejs"],
+          depth: "production",
+          years: -1,
+        },
+        {
+          id: "R3",
+          text: "Fluent English",
+          priority: "must",
+          kind: "language",
+          skills: [],
+          depth: "any",
+          years: -1,
+        },
+      ],
+      route: {
+        kind: "email",
+        address: ADDRESS,
+        quote: `Apply by email to ${ADDRESS}`,
+        box: { tile: -1, x1: -1, y1: -1, x2: -1, y2: -1 },
+      },
+      instructions: [],
+      required_attachments: [],
+      screening_questions: [],
+    },
+  ],
+};
 
 interface Device {
   context: BrowserContext;
@@ -78,6 +146,47 @@ async function approve(from: Device, code: string): Promise<void> {
   await from.page.getByRole("button", { name: "Approve" }).click();
 }
 
+/**
+ * The owner takes a pasted post, with the fake models, to an email marked
+ * sent, so its job page and the Stats page have the owner's data to show:
+ * the job page's path.
+ */
+async function sentJob(owner: Device): Promise<string> {
+  const { context, page } = owner;
+  // Gmail opens in a tab of its own: nothing leaves the test.
+  await context.route("https://mail.google.com/**", (route) => route.abort());
+  const scripted = await page.evaluate(
+    async (record) =>
+      (
+        await fetch("/api/test/models", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ answers: { "gemini-3.8-flash": [record] } }),
+        })
+      ).status,
+    RECORD,
+  );
+  expect(scripted).toBe(204);
+  await page.goto("/jobs/new");
+  await page
+    .getByLabel("Paste text")
+    .fill(`${COMPANY} is hiring a Senior Full-Stack Engineer. Apply by email to ${ADDRESS}`);
+  await page.getByRole("button", { name: "Start" }).click();
+  await expect(page.getByText(/^Ready to review/)).toBeVisible();
+  await page.getByLabel("I meet this requirement").click();
+  await expect(page.getByText(`Did you send it to ${ADDRESS}?`)).toBeVisible();
+  const gmail = page.waitForEvent("popup");
+  await page.getByRole("link", { name: "Open in Gmail" }).click();
+  await (await gmail).close();
+  await page.getByRole("button", { name: "Mark sent" }).click();
+  await expect(page.getByText("Did you change anything in Gmail?")).toBeVisible();
+  // Past the double-tap guard, an answer of its own.
+  await page.waitForTimeout(600);
+  await page.getByRole("button", { name: "No", exact: true }).click();
+  await expect(page.getByText(/^Sent · started/)).toBeVisible();
+  return new URL(page.url()).pathname;
+}
+
 test("pairs a phone, and the token never reaches a request URL or a server log line", async ({
   browser,
 }) => {
@@ -105,12 +214,16 @@ test("a phone waiting for approval gets none of the owner's data, from pages or 
   const { code } = await scan(owner, mobile);
   // The checks below mean something only if the pages do show data to an approved session.
   expect((await owner.page.request.post("/api/test/profile")).status()).toBe(204);
+  const job = await sentJob(owner);
+  await expect(owner.page.getByText(COMPANY).first()).toBeVisible();
+  await owner.page.goto("/stats");
+  await expect(owner.page.getByText(`0 of 1 ${SENT_STAT}`, { exact: false })).toBeVisible();
   await owner.page.goto("/test/data");
   await expect(owner.page.getByText(MARKER)).toBeVisible();
   await owner.page.goto("/profile");
   await expect(owner.page.getByText(FIXED_ANSWER)).toBeVisible();
 
-  for (const path of ["/jobs", "/test/data", "/devices", "/profile"]) {
+  for (const path of ["/jobs", job, "/stats", "/test/data", "/devices", "/profile"]) {
     await mobile.page.goto(path);
     await expect(mobile.page).toHaveURL(/\/pair$/);
     const bodies = await mobile.page.evaluate(async (target) => {
@@ -119,8 +232,9 @@ test("a phone waiting for approval gets none of the owner's data, from pages or 
       return [html, payload];
     }, path);
     for (const body of bodies) {
-      expect(body).not.toContain(MARKER);
-      expect(body).not.toContain(FIXED_ANSWER);
+      for (const owners of [MARKER, FIXED_ANSWER, COMPANY, ADDRESS, SENT_STAT]) {
+        expect(body, path).not.toContain(owners);
+      }
     }
   }
   // Only the waiting screen, with the phone's code still on it.
@@ -131,6 +245,8 @@ test("a phone waiting for approval gets none of the owner's data, from pages or 
   await expect(mobile.page).toHaveURL(/\/jobs$/);
   await mobile.page.goto("/test/data");
   await expect(mobile.page.getByText(MARKER)).toBeVisible();
+  await mobile.page.goto(job);
+  await expect(mobile.page.getByText(COMPANY).first()).toBeVisible();
 });
 
 test("a paired phone cannot reach Devices or the Profile, and once revoked it is sent to sign in", async ({

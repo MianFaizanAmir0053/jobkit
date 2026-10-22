@@ -90,7 +90,9 @@ const held = (page: Page, name: string) =>
 const open = (page: Page, name: string) =>
   expect(page.getByRole("link", { name })).toHaveAttribute("href", /^https:/);
 
-test("holds a form's every control until its answer is settled", async ({ page }) => {
+test("holds a form's every control until its answer is settled", async ({ page, context }) => {
+  // The copy buttons write to the clipboard, which the test then reads back.
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const link = "https://boards.example.net/fabrikam/jobs/4471";
   await readyKit(
     page,
@@ -128,9 +130,13 @@ test("holds a form's every control until its answer is settled", async ({ page }
     `Fabrikam Payments is hiring a Full-Stack Developer. Apply here: ${link}`,
   );
 
+  // Each answer has a copy button of its own, named by its question.
+  const answerCopy = page.getByRole("button", { name: "Copy: Why do you want to join Fabrikam?" });
+
   await held(page, "Open application link");
   await expect(page.getByRole("button", { name: "Copy all" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "Copy: Cover note" })).toBeDisabled();
+  await expect(answerCopy).toBeDisabled();
 
   await page
     .getByRole("button", { name: /^I will answer it in the form/ })
@@ -141,6 +147,12 @@ test("holds a form's every control until its answer is settled", async ({ page }
   await open(page, "Open application link");
   await expect(page.getByRole("button", { name: "Copy all" })).toBeEnabled();
   await expect(page.getByRole("button", { name: "Copy: Cover note" })).toBeEnabled();
+  // The answer's own button copies that answer alone.
+  await answerCopy.click();
+  await expect(answerCopy).toHaveText("Copied");
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+    "I want to build payment products with React.",
+  );
 });
 
 test("holds a WhatsApp message's every control until its finding is checked", async ({ page }) => {
