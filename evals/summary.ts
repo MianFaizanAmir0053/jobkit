@@ -481,10 +481,19 @@ export function readStageRuns(runs: string): {
     try {
       const report = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
       if (!Array.isArray(report.cases) || typeof report.model !== "string") continue;
-      if (report.stage === "draft" && report.gapCoverage)
-        drafts.push(report as unknown as DraftReport);
+      if (report.stage === "draft" && report.gapCoverage) {
+        const draft = report as unknown as DraftReport;
+        drafts.push({
+          ...draft,
+          verdicts: draft.verdicts ?? {},
+          checks: draft.checks ?? {},
+          renders: draft.renders ?? null,
+          cases: draft.cases.map((result) => ({ ...result, checks: result.checks ?? [] })),
+        });
+      }
       if (report.stage === "address_read" && report.agreesWithLabel) {
-        reads.push(report as unknown as SecondReadReport);
+        const read = report as unknown as SecondReadReport;
+        reads.push({ ...read, renders: read.renders ?? null });
       }
     } catch {
       // Not a report this version can read.

@@ -436,7 +436,9 @@ export function checkDraftExpectations(
       if (!(KEY_TOPICS[key] ?? []).includes(answer.topic ?? "")) {
         return [`${id} was read as ${answer.topic ?? "no topic"}`];
       }
-      return answer.source === "drafted" ? [`${id} was answered in the model's words`] : [];
+      return answer.source === "profile"
+        ? []
+        : [`${id} was not answered from the profile (${answer.source})`];
     });
     checks.push({ key: "fixed_keys", met: notes.length === 0, note: notes.join("; ") });
   }

@@ -4,9 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import type { DraftOutput } from "@/core/drafting/draftStage";
-import { draftJudgeOf, type JudgeOutput } from "@/core/drafting/judgeStage";
-import { NEVER_WEIGHED } from "@/core/drafting/verdict";
-import { stageOutput } from "@/core/platform/runner";
+import type { JudgeOutput } from "@/core/drafting/judgeStage";
 import type { Db } from "@/core/ports";
 import { getProfileVersion } from "@/core/profile/profile";
 import { type Fact, factSchema } from "@/core/profile/schema";
@@ -55,18 +53,34 @@ const NOT_SUPPORTED: ReadonlySet<string> = new Set(["overstated", "unsupported"]
 
 /** The claim sentences of a job's draft, as drafted, with the facts they cite and the check's verdicts. */
 export async function claimsOfJob(db: Db, jobId: string): Promise<LiveClaim[]> {
-  const drafted = (await stageOutput(db, jobId, "draft"))?.output as DraftOutput | undefined;
-  if (!drafted) return [];
+  // The latest draft, and the latest check of a draft: its verdicts are this draft's only when it
+  // ran after it, as block IDs go by place (S1 to Sn) and a draft made again reuses them.
+  const { rows } = await db.query<{ stage: string; id: string | number; output: unknown }>(
+    `select distinct on (stage) stage, id, output from {{schema}}.job_stage_runs
+      where job_id = $1 and outcome in ('ok', 'reused')
+        and (stage = 'draft' or (stage = 'judge' and output->'answers' is null))
+      order by stage, id desc`,
+    [jobId],
+  );
+  const draftRun = rows.find((row) => row.stage === "draft");
+  if (!draftRun) return [];
+  const drafted = draftRun.output as DraftOutput;
+  const judgeRun = rows.find((row) => row.stage === "judge");
+  const judged =
+    judgeRun && Number(judgeRun.id) > Number(draftRun.id)
+      ? (judgeRun.output as Partial<JudgeOutput>)
+      : undefined;
   const profile = await getProfileVersion(db, drafted.profileVersion);
   const facts = new Map((profile?.facts ?? []).map((fact) => [fact.id, fact]));
-  const judged = (await draftJudgeOf(db, jobId))?.output as Partial<JudgeOutput> | undefined;
   const verdicts = new Map(
-    (judged?.checked ? (judged.verdicts ?? []) : [])
-      .filter((verdict) => verdict.note !== NEVER_WEIGHED)
-      .map((verdict) => [verdict.blockId, verdict.verdict as string]),
+    (judged?.checked ? (judged.verdicts ?? []) : []).map((verdict) => [
+      verdict.blockId,
+      verdict.verdict as string,
+    ]),
   );
   return drafted.kit.blocks.flatMap((block): LiveClaim[] => {
     if (block.class !== "claim" || block.owner || block.factIds.length === 0) return [];
+    if (block.text.trim() === "") return [];
     const cited = block.factIds.map((id) => facts.get(id));
     if (cited.some((fact) => fact === undefined)) return [];
     return [
@@ -133,8 +147,17 @@ export function liveClaims(archive: string): LabelledClaim[] {
 /** A claim as the labelling page shows it: never the check's verdict. */
 export type ClaimForLabelling = Omit<LabelledClaim, "liveVerdict">;
 
+/** The claims for the labelling page, each named field by field, so the verdict never goes with them. */
 export function claimsForLabelling(archive: string): ClaimForLabelling[] {
-  return liveClaims(archive).map(({ liveVerdict: _hidden, ...claim }) => claim);
+  return liveClaims(archive).map((claim) => ({
+    id: claim.id,
+    caseId: claim.caseId,
+    blockId: claim.blockId,
+    sentence: claim.sentence,
+    facts: claim.facts,
+    label: claim.label,
+    labelledAt: claim.labelledAt,
+  }));
 }
 
 /** Labels one claim, once: a label never changes, so it stays what the owner judged blind. */

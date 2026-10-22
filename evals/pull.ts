@@ -112,8 +112,15 @@ export async function pullKeptJobs(
         writeFileSync(file, bytes);
       }
       cropNote = await copyCrop(deps, jobId, work);
-      // The draft's claims, for the judge's metric on live drafts; kept once, as first pulled.
-      keepClaims(work, jobId, await claimsOfJob(deps.db, jobId));
+      // The draft's claims, for the judge's metric on live drafts; kept once, as first pulled. Claims
+      // that cannot be kept never hold the case back: the pull says so and goes on.
+      try {
+        keepClaims(work, jobId, await claimsOfJob(deps.db, jobId));
+      } catch (error) {
+        report.notes.push(
+          `${id}: its draft's claims were not kept: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
       if (pastedText && pastedText.trim() !== "") {
         writeFileSync(join(work, "pasted.txt"), pastedText);
       }

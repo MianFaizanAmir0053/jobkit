@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 /** A job whose draft makes two claims, one citing a fact the version holds, as drafted, and the check's verdicts. */
-async function draftedJob(): Promise<{ jobId: string; factId: string }> {
+async function draftedJob(): Promise<{ jobId: string; factId: string; redraft(): Promise<void> }> {
   const checked = validateProfile(readFileSync(join(SYNTHETIC, "profile.sample.yaml"), "utf8"), {
     read: (path) => new Uint8Array(readFileSync(join(SYNTHETIC, path))),
   });
@@ -119,12 +119,21 @@ async function draftedJob(): Promise<{ jobId: string; factId: string }> {
       [jobId, lease.rows[0]!.id, stage, JSON.stringify(output)],
     );
   }
-  return { jobId, factId: fact.id };
+  // The draft made again after its check, as when the post is read again and the check then fails.
+  const redraft = async () => {
+    await db.query(
+      `insert into {{schema}}.job_stage_runs
+         (job_id, lease_id, stage, round, attempt, input_hash, outcome, output, output_hash, started_at, ended_at)
+       values ($1, $2, 'draft', 1, 1, 'again', 'ok', $3, 'again', now(), now())`,
+      [jobId, lease.rows[0]!.id, JSON.stringify(draft)],
+    );
+  };
+  return { jobId, factId: fact.id, redraft };
 }
 
 describe("claims from live drafts", () => {
   it("keeps a draft's claims with their facts and verdicts, labels each once, blind, and scores the check as it ran", async () => {
-    const { jobId, factId } = await draftedJob();
+    const { jobId, factId, redraft } = await draftedJob();
     const folder = join(dir, "archive", CASE);
     mkdirSync(folder, { recursive: true });
 
@@ -155,5 +164,9 @@ describe("claims from live drafts", () => {
       notSupported: { precision: { successes: 1, n: 1 }, recall: { successes: 1, n: 1 } },
       accuracy: { successes: 1, n: 1 },
     });
+
+    // A check made before the draft weighed other sentences: the draft's claims have no verdict.
+    await redraft();
+    expect(await claimsOfJob(db, jobId)).toMatchObject([{ blockId: "S2", liveVerdict: null }]);
   });
 });

@@ -1,6 +1,8 @@
+import { NEEDS_YOUR_LINE } from "@/core/drafting/build";
 import { DRAFT, type DraftOutput, draftStage } from "@/core/drafting/draftStage";
+import { checkFit } from "@/core/drafting/fit";
 import { JUDGE, type JudgeOutput, judgeStage } from "@/core/drafting/judgeStage";
-import { agreement } from "@/core/extraction/addressRead";
+import { answersOf } from "@/core/drafting/kit";
 import {
   ADDRESS_READ,
   type AddressReadOutput,
@@ -11,10 +13,12 @@ import { eligibilityStage } from "@/core/extraction/eligibility";
 import { EXTRACT, extractStage, readExtractOutput } from "@/core/extraction/extract";
 import { chosenRole, draftAnyway, kitByRoute, pickRole } from "@/core/extraction/owner";
 import { roleKey } from "@/core/ledger/normalise";
+import { kindOf } from "@/core/platform/jobStates";
 import { loadJob } from "@/core/platform/jobs";
-import type { ModelCallDeps } from "@/core/platform/models";
+import { IMAGE_TOKENS_UPPER_BOUND, type ModelCallDeps } from "@/core/platform/models";
 import { provisionalCost } from "@/core/platform/prices";
 import { claimJob, type Pipeline, runJob, stageOutput } from "@/core/platform/runner";
+import { getProfileVersion } from "@/core/profile/profile";
 
 import {
   budgetGuard,
@@ -37,14 +41,21 @@ import { type Check, checkDraftExpectations, type SyntheticExpect } from "./synt
  *   have to "Draft anyway" is drafted anyway, so every case is drafted), no
  *   template drafting, as the model under test drafts each case, and the
  *   separate check after it. Scored: gap coverage, the share of must-haves
- *   short of met that a gap line answers; the separate check's verdicts; and
- *   a synthetic post's drafting expectations (its fixed answers by
- *   question, the must-have gaps the draft answers).
+ *   the fit, as code weighs it, finds short of met that a gap line code
+ *   wrote answers ("Needs your line" answers none); the separate check's
+ *   verdicts; and a synthetic post's drafting expectations (its fixed
+ *   answers by question, the must-have gaps the draft answers). A draft the
+ *   check did not weigh, for the budget or a failure, is not scored.
  * - `address_read`: the post read, and the contact's second read beside the
  *   drafting group, as the app runs it. Scored on cases whose contact a
- *   model read a second time (from a screenshot's crop): how often the
- *   second read agreed with the labelled contact, how often it caught the
- *   first read's misreading, and how often it raised a false alarm.
+ *   model read a second time (from a screenshot's crop) and answered: how
+ *   often the second read agreed with the labelled contact, how often it
+ *   caught the first read's misreading, and how often it raised a false
+ *   alarm, the two reads compared as the scorer compares contacts, so a
+ *   number without its country code by its digits.
+ * A job that runs out of an invocation's time while still running is
+ * claimed again until it rests, so no stage is left unrun for a slow call
+ * before it.
  */
 
 /** How the run went for a case. */
@@ -108,8 +119,8 @@ export interface SecondReadRun {
 
 /** The input a drafting call or a check can take at most, beyond the post's tiles: the profile and the post's fields. */
 const PROMPT_ALLOWANCE_TOKENS = 12_000;
-/** The crop the second read sees, at most. */
-const CROP_ALLOWANCE_TOKENS = 3_000;
+/** The crop the second read sees, at the wrapper's own upper bound for an image, and the rules beside it. */
+const CROP_ALLOWANCE_TOKENS = IMAGE_TOKENS_UPPER_BOUND + 1_000;
 
 /** The most a case's drafting run can cost: its reading, the draft and the check, each answer at its limit. */
 export async function estimateDraftCase(item: EvalCase, model: string, at: Date): Promise<number> {
@@ -144,7 +155,9 @@ async function runToRest(
   labelledRole: string | undefined,
 ): Promise<void> {
   const runner = { db: deps.db, clock: deps.clock, pipeline };
-  for (let turn = 0; turn < 4; turn++) {
+  // A claim gives the runner one invocation's time, as the app's runs have: a job left running
+  // when it ran out is claimed again.
+  for (let turn = 0; turn < 12; turn++) {
     const lease = await claimJob(runner, jobId);
     if (lease) await runJob(runner, lease);
     const state = (await loadJob(deps.db, jobId))?.state;
@@ -159,7 +172,7 @@ async function runToRest(
       await pickRole(deps, jobId, labelled.id);
     } else if (state === "needs_eligibility_decision") {
       await draftAnyway(deps, jobId);
-    } else return;
+    } else if (state === undefined || kindOf(state) !== "running") return;
   }
 }
 
@@ -237,22 +250,36 @@ export async function runDrafting(
       });
       continue;
     }
+    // A draft the check did not weigh is not scored: the budget refused it, or it failed.
+    const judge = (await stageOutput(deps.db, jobId, "judge"))?.output as JudgeOutput | undefined;
+    if (!judge) {
+      results.push({
+        ...base,
+        ...empty,
+        outcome: budget.reached() ? "budget" : "failed",
+        note: job?.failure ?? "The separate check did not weigh the draft.",
+      });
+      continue;
+    }
+    // The gaps validate asks a line for: the must-haves the fit, as code weighs it, finds short of
+    // met. A gap line code wrote answers them; "Needs your line" is the owner's to write.
     const role = await chosenRole(deps.db, jobId);
-    const must = new Set(
+    const facts = (await getProfileVersion(deps.db, stored.profileVersion))?.facts ?? [];
+    const fit = role ? checkFit(role, stored.fit, facts).verdicts : new Map<string, string>();
+    const gaps = new Set(
       (role?.requirements ?? [])
-        .filter((requirement) => requirement.priority === "must")
+        .filter(
+          (requirement) => requirement.priority === "must" && fit.get(requirement.id) !== "met",
+        )
         .map((requirement) => requirement.id),
     );
-    const answeredIds = new Set<string>();
-    for (const block of stored.kit.blocks) {
-      for (const id of [block.gap?.requirementId ?? "", ...(block.alsoAnswers ?? [])]) {
-        if (must.has(id)) answeredIds.add(id);
-      }
-    }
-    const missing = new Set(
-      stored.flags.filter((flag) => flag.kind === "missing_gap_line").map((flag) => flag.at),
-    ).size;
-    const judge = (await stageOutput(deps.db, jobId, "judge"))?.output as JudgeOutput | undefined;
+    const answeredIds = new Set(
+      stored.kit.blocks
+        .filter((block) => block.text !== NEEDS_YOUR_LINE)
+        .flatMap(answersOf)
+        .filter((id) => gaps.has(id)),
+    );
+    const missing = gaps.size - answeredIds.size;
     const verdicts: Record<string, number> = {};
     for (const verdict of judge?.checked ? judge.verdicts : []) {
       verdicts[verdict.verdict] = (verdicts[verdict.verdict] ?? 0) + 1;
@@ -342,7 +369,9 @@ export async function runSecondRead(
       AddressReadOutput | undefined;
     const contact = contactOf(await chosenRole(deps.db, jobId));
     const label = item.labels.contact;
-    if (!read?.checked || !contact || !("read" in read.second) || label === undefined) {
+    // A second read whose call gave no answer (refused by the budget, failed, or empty) is not one.
+    const second = read?.checked && "read" in read.second ? read.second.read : null;
+    if (!read?.checked || !contact || second === null || label === undefined) {
       const job = await loadJob(deps.db, jobId);
       results.push({
         ...base,
@@ -352,20 +381,21 @@ export async function runSecondRead(
           ? "No email address or WhatsApp number was read."
           : label === undefined
             ? "The case labels no contact."
-            : read?.checked
-              ? "The contact was settled without a model's second read (pasted text, or no crop)."
-              : (job?.failure ?? "The second read did not run."),
+            : read?.checked && "read" in read.second
+              ? "The second read's call gave no answer."
+              : read?.checked
+                ? "The contact was settled without a model's second read (pasted text, or no crop)."
+                : (job?.failure ?? "The second read did not run."),
       });
       continue;
     }
-    const firstRight = sameContact(contact.contact, label);
     results.push({
       ...base,
       outcome: "scored",
       note: null,
-      firstRight,
-      secondRight: read.second.read !== null && sameContact(read.second.read, label),
-      agreed: agreement(contact.kind, contact.contact, read.second).ok,
+      firstRight: sameContact(contact.contact, label),
+      secondRight: sameContact(second, label),
+      agreed: sameContact(contact.contact, second),
     });
   }
   const scored = results.filter((result) => result.outcome === "scored");

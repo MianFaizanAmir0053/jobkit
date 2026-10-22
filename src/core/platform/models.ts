@@ -105,7 +105,7 @@ const FAILURE_OUTCOMES: Record<Exclude<LlmFailureKind, "aborted">, string> = {
 const RETRYABLE: ReadonlySet<LlmFailureKind> = new Set(["rate-limit", "server", "connection"]);
 
 /** The most image tokens either provider charges for one picture, for estimates. */
-const IMAGE_TOKENS_UPPER_BOUND = 4784;
+export const IMAGE_TOKENS_UPPER_BOUND = 4784;
 
 export function providerOf(model: string): "anthropic" | "gemini" {
   if (model.startsWith("claude-")) return "anthropic";
