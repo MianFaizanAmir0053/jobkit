@@ -181,7 +181,8 @@ describe("the browser's code", () => {
     },
   );
 
-  // The page runs the gate in the browser on every edit once the block editor exists (Task 29).
+  // The gate runs on the server alone (the owner's choice, 2026-10-19), but canHandOff stays
+  // free of server code, so a page could still run it without reaching the database.
   it("can run the outbound gate in the browser, reaching no server code (review AC1)", () => {
     expect(serverReach(join(SRC, "core", "review", "canHandOff.ts"))).toEqual([]);
   });

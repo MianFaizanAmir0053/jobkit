@@ -66,7 +66,7 @@ There is no domain-age check (amendment A5).
 
 ## The outbound gate
 
-`canHandOff(job, kit)` is one pure function, bundled for the browser and run on the server too. Every outbound control uses it: "Approve & send", the Gmail handoff buttons, every copy button, "Copy all", "Open WhatsApp" and "Open application link". It returns the open blocking reasons:
+`canHandOff(job, kit)` is one pure function, run on the server alone (the owner's choice, 2026-10-19; see below). Every outbound control uses it: "Approve & send", the Gmail handoff buttons, every copy button, "Copy all", "Open WhatsApp" and "Open application link". It returns the open blocking reasons:
 
 - any flag from drafting's `validate` that is unresolved, including `overstated`, `unsupported` and `company_claim` sentences without "I checked this", unticked short answers, and "Needs your answer" fields;
 - a changed sentence awaiting the owner's confirmation;

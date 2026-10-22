@@ -136,13 +136,13 @@ export function findDuplicates(
   - changing the database schema beyond the specs;
   - changing CI;
   - running live evaluations or anything else that spends money;
-  - starting any part of milestone 2 (`SPEC-send.md`);
+  - starting any part of milestone 2 (`SPEC-send.md`, Part 2);
   - publishing anything.
 - **Never:**
   - commit secrets, tokens or personal data, or put credentials in chat;
   - call a real model in a unit or integration test;
   - give tools to a model whose input contains job-post text;
-  - send email from jobkit in the MVP;
+  - send email from jobkit in the MVP, beyond the one-click send that amendment A20 brought in (`SPEC-send.md`, Part 1);
   - automate LinkedIn or WhatsApp;
   - delete or skip a failing test, or lower a threshold, to get to green.
 
@@ -265,7 +265,7 @@ Modules register stages; the runner owns their order, the job's state and the bo
 | `needs_kit_type` | waiting | the route is `other` or `unknown`; the owner picks email, form or message | `drafting`, `closed` |
 | `drafting` | running | `templates` first (code only: drafts from the owner's approved templates, decisions A22), then `draft` or `draft_answers`, each with `address_read` and `address_checks` alongside | `kit_ready` (after `templates`, when a template drafted the kit), `drafting` (after `templates`, with `draft`, when none did), `judging` (after `draft` or `draft_answers`), `failed` |
 | `judging` | running | `judge` | `kit_ready`, `failed` |
-| `kit_ready` | ready | the kit is ready for review | `extracting` (screenshots added), `drafting` (contact edited, another kit type, new questions, or a Gemini draft beside the templates', decisions A22), `needs_role_pick` (another role) |
+| `kit_ready` | ready | the kit is ready for review | `extracting` (screenshots added), `drafting` (new questions, or a Gemini draft beside the templates', decisions A22; a contact the owner types is checked at the tap with no stage run, and another kit type for a ready kit is not built), `needs_role_pick` (another role) |
 | `stopped` | owner | not a job post, not in English, or no role found | `extracting` (the owner confirms a post marked "not a job post", or has a post with no role found read again; the confirmation is given once per job, never for language), `closed` |
 | `failed` | owner | a stage failed; the page shows the stage, a readable reason, Retry and Skip | the failed stage's running state (Retry), `kit_ready` ("Back to your drafts", only from `draft` or `judge`, when a Gemini draft asked for beside the templates' failed; "Back to your kit", from `extract_questions`, `draft_answers` or the `judge` of the answers they added, when an add of a form's screenshots failed: the kit as it was before the add), `closed` (Skip) |
 | `closed` | final | finished without a kit, or skipped | none |
@@ -279,16 +279,16 @@ Modules register stages; the runner owns their order, the job's state and the bo
 | Stage | Input hash covers |
 |---|---|
 | `extract` | post image hashes and pasted text; the owner's "This is a job post" confirmation; model, effort and prompt version |
-| `extract_questions` | form image hashes; model, effort and prompt version |
+| `extract_questions` | the record's output hash; the chosen role; the hashes of the form screenshots added since the post was last read; model, effort and prompt version |
 | `eligibility` | the record's output hash; the chosen role; the profile version; the owner's eligibility decision; the role's zone's offset from UTC that day, on which the overlap turns |
-| `templates` | the record's output hash; the chosen role; the profile version; the build's version |
-| `draft` | the record's output hash; the chosen role; the profile version; the kit type; the owner's declined instructions (always none: the review page applies a decline to the email as it stands, never to a draft); model, effort and prompt version |
-| `draft_answers` | the IDs and texts of questions not yet answered; the profile version; model, effort and prompt version |
+| `templates` | the record's output hash; the chosen role; the profile version; the build's version; the kit type, when it is not an email |
+| `draft` | the record's output hash; the chosen role; the profile version; the kit type; the owner's declined instructions (always none: the review page applies a decline to the email as it stands, never to a draft); for a LinkedIn comment, that the sign-off is the owner's name alone; model, effort and prompt version |
+| `draft_answers` | the draft's output hash; the ID, text and addressed-to-AI mark of each question added to the form since it was drafted; the profile version the form was drafted with; model, effort and prompt version |
 | `address_read` | the contact and its kind, which the output is for; from a screenshot, the crop's hash, by the screenshot's hash, the box and the crop's rules it is made from, with the model, whether this machine has it, effort, the token limit and the prompt version; from pasted text, the text's hash and the matching's version |
-| `address_checks` | the address as it now stands (extracted or typed by the owner), the company's name the name check reads, and the checks' version |
+| `address_checks` | the address the post's reading gives for the chosen role, the company's name the name check reads, and the checks' version; an address the owner types is checked when they tap it, apart from this stage, and those checks then stand in for these (review spec, "The outbound gate") |
 | `judge` | the output hash of `draft` or `draft_answers`; the cited facts' hash; model, effort and prompt version |
 
-So the owner's override re-runs `extract`; an edited address re-runs only `address_checks`, and the draft, the verdicts and the owner's edits stay; new screenshots re-run what reads them and nothing else.
+So the owner's override re-runs `extract`; an address the owner types is checked on its own, re-running no stage, and the draft, the verdicts and the owner's edits stay; new screenshots re-run what reads them and nothing else.
 
 **Leases instead of self-requests:**
 
@@ -322,6 +322,6 @@ So the owner's override re-runs `extract`; an edited address re-runs only `addre
 14. The keep-alive endpoint accepts only `KEEPALIVE_SECRET` and only touches the heartbeat; the daily endpoint accepts only `CRON_SECRET`; each rejects the other's secret.
 15. CI runs lint, typecheck, tests with the coverage threshold, build and the guard over the tree and the commits the push adds, including on a new branch. The guard blocks a staged file under `private/`, staged strings shaped like each key pattern in B7, a connection string with a password, and an exact value from the local env files.
 16. Migrations apply cleanly to an empty PGlite database after the test bootstrap, and running them again changes nothing; every statement uses the `{{schema}}` placeholder.
-17. Runner: only `running` jobs advance; stages run in order inside one claimed invocation; a second `advance` while the lease is live is refused; a lapsed lease can be claimed again; each stage's input hash follows its row in the table, so the override re-runs `extract`, an edited address re-runs only `address_checks`, and an unchanged input reuses the output with no model call; three unfinished starts move the job to `failed`, and Retry resumes; Skip closes `failed`, `upload_failed` and `stopped` jobs; timeouts apply when status is read; every transition outside the table is refused.
+17. Runner: only `running` jobs advance; stages run in order inside one claimed invocation; a second `advance` while the lease is live is refused; a lapsed lease can be claimed again; each stage's input hash follows its row in the table, so the override re-runs `extract`, an address the owner types is checked on its own, re-running no stage, and an unchanged input reuses the output with no model call; three unfinished starts move the job to `failed`, and Retry resumes; Skip closes `failed`, `upload_failed` and `stopped` jobs; timeouts apply when status is read; every transition outside the table is refused.
 18. Times: machine time ends at the first `kit_ready`, includes upload and normal poll delays, and excludes waiting and owner states and what unpolled gaps run past 10 seconds, which is reported as paused time; processing time counts concurrent stages once.
 19. Polling stops while the page is hidden and never runs for ready, waiting, owner or final states.
