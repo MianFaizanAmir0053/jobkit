@@ -93,13 +93,15 @@ export async function findDuplicates(db: Db, candidate: Candidate): Promise<Dupl
     });
 
   // Every application that got as far as a kit: sent, submitted, bounced,
-  // or never sent, and every manual run that went, which had no kit. Open ones
-  // are still being read, and test jobs are not applications.
+  // or never sent, and every one that went with no kit: a manual run, or one
+  // the owner made another way. Open ones are still being read, and test jobs
+  // are not applications.
   const applications = await db.query<ApplicationRow>(
     `select id, company, role, address, post_fingerprint, kit_ready_at, sent_at, submitted_at,
             bounced_at
        from {{schema}}.applications
-      where (kit_ready_at is not null or arm = 'manual') and job_kind = 'real'
+      where (kit_ready_at is not null or sent_at is not null or submitted_at is not null)
+        and job_kind = 'real'
         and ($1::uuid is null or id <> $1)
         and (sent_at is not null or submitted_at is not null
              or $2::timestamptz is null or (opened_at, id) < ($2::timestamptz, $1::uuid))`,

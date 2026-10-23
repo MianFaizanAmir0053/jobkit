@@ -268,9 +268,15 @@ test("shows a manual run's clock and Stop, which records the route, the company 
   await button(page, "Stop").click();
 
   // Closed, and named as the application Stop recorded: by a form, so submitted, not sent.
-  await expect(page.getByText("This job is closed.")).toBeVisible();
+  await expect(page.getByText(/^You stopped this manual run on /)).toBeVisible();
   await expect(
     page.getByRole("heading", { name: "Data Engineer · Northwind Traders" }),
   ).toBeVisible();
   await state(page, "Submitted");
+
+  // A Stop tapped too soon is taken back: the manual run opens again, its clock still running.
+  page.once("dialog", (dialog) => void dialog.accept());
+  await button(page, "Take back Stop").click();
+  await expect(manual).toBeVisible();
+  await state(page, "Manual run");
 });

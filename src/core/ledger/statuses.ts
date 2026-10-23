@@ -297,6 +297,51 @@ async function recordChange(
   );
 }
 
+/** What the owner names when they applied the old way: at Stop, or another way. */
+export interface OldWayRun {
+  route: Route;
+  company: string;
+  role: string;
+}
+
+/**
+ * The application of a job the owner applied to the old way, gone at the tap
+ * (sent by email, submitted otherwise), with its audit row: `manual` for a
+ * manual run's Stop, `another-way` for a tool-arm job applied to another way.
+ */
+async function insertGone(
+  db: Db,
+  jobId: string,
+  made: { roleId: "manual" | "another-way"; arm: "manual" | "tool" },
+  run: OldWayRun,
+  at: Date,
+  sessionId: string | null,
+): Promise<void> {
+  const status: ApplicationStatus = run.route === "email" ? "sent" : "submitted";
+  const { rows } = await db.query<{ id: string }>(
+    `insert into {{schema}}.applications
+       (job_id, role_id, company, role, company_key, role_key, company_role_hash, address, route,
+        status, opened_at, ${status === "sent" ? "sent_at" : "submitted_at"}, status_changed_at,
+        arm, job_kind)
+     values ($1, $2, $3, $4, $5, $6, $7, null, $8, $9, $10, $10, $10, $11, 'real')
+     returning id`,
+    [
+      jobId,
+      made.roleId,
+      run.company,
+      run.role,
+      companyKey(run.company),
+      roleKey(run.role),
+      companyRoleHash(run.company, run.role),
+      run.route,
+      status,
+      at,
+      made.arm,
+    ],
+  );
+  await recordChange(db, rows[0]!.id, null, status, at, sessionId);
+}
+
 /**
  * Stop on a manual run (ledger spec, "The timing comparison"): the owner
  * applied the old way and names the route, the company and the role, which
@@ -307,7 +352,7 @@ async function recordChange(
 export async function recordManualRun(
   deps: Deps,
   jobId: string,
-  run: { route: Route; company: string; role: string },
+  run: OldWayRun,
   sessionId: string | null,
 ): Promise<{ ok: true } | { ok: false; reason: "not-found" | "not-a-manual-run" }> {
   if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
@@ -315,7 +360,6 @@ export async function recordManualRun(
   if (!job) return { ok: false, reason: "not-found" };
   if (job.state !== "manual_run") return { ok: false, reason: "not-a-manual-run" };
   const now = deps.clock.now();
-  const status: ApplicationStatus = run.route === "email" ? "sent" : "submitted";
   const done = await deps.db.tx(async (tx) => {
     const closed = await moveJob(tx, jobId, {
       from: "manual_run",
@@ -325,27 +369,116 @@ export async function recordManualRun(
       ifChangedAt: job.stateChangedAt,
     });
     if (!closed) return false;
-    const { rows } = await tx.query<{ id: string }>(
-      `insert into {{schema}}.applications
-         (job_id, role_id, company, role, company_key, role_key, company_role_hash, address, route,
-          status, opened_at, ${status === "sent" ? "sent_at" : "submitted_at"}, status_changed_at,
-          arm, job_kind)
-       values ($1, 'manual', $2, $3, $4, $5, $6, null, $7, $8, $9, $9, $9, 'manual', 'real')
-       returning id`,
-      [
-        jobId,
-        run.company,
-        run.role,
-        companyKey(run.company),
-        roleKey(run.role),
-        companyRoleHash(run.company, run.role),
-        run.route,
-        status,
-        now,
-      ],
-    );
-    await recordChange(tx, rows[0]!.id, null, status, now, sessionId);
+    await insertGone(tx, jobId, { roleId: "manual", arm: "manual" }, run, now, sessionId);
     return true;
   });
   return done ? { ok: true } : { ok: false, reason: "not-a-manual-run" };
+}
+
+/** The states a tool-arm job can be applied to another way from. */
+export const ANOTHER_WAY_FROM = ["upload_failed", "stopped", "failed"] as const;
+
+/**
+ * "I applied another way" (ledger spec, "The timing comparison"; the
+ * owner's choice, 2026-10-22): a job of the tool arm whose upload failed,
+ * that stopped, or whose step failed, which the owner applied to without
+ * jobkit's kit. It is recorded as Stop records a manual run, gone at the
+ * tap, but in the tool arm, so jobkit's failures count against it rather
+ * than leave its arm. The page names the state it showed and when the job
+ * reached it, so a tap from a page drawn before the job moved on is refused.
+ * The job closes, keeping a failed job's stage, so taking the tap back opens
+ * it again as it was.
+ */
+export async function recordAnotherWay(
+  deps: Deps,
+  jobId: string,
+  run: OldWayRun,
+  shown: { state: string; at: Date },
+  sessionId: string | null,
+): Promise<{ ok: true } | { ok: false; reason: "not-found" | "not-offered" | "changed" }> {
+  if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
+  const job = await loadJob(deps.db, jobId);
+  if (!job) return { ok: false, reason: "not-found" };
+  const from = ANOTHER_WAY_FROM.find((state) => state === job.state);
+  if (job.test || job.arm !== "tool" || from === undefined) {
+    return { ok: false, reason: "not-offered" };
+  }
+  if (shown.state !== job.state || shown.at.getTime() !== job.stateChangedAt.getTime()) {
+    return { ok: false, reason: "changed" };
+  }
+  const now = deps.clock.now();
+  const done = await deps.db.tx(async (tx) => {
+    const closed = await moveJob(tx, jobId, {
+      from,
+      to: "closed",
+      pending: from === "failed" ? job.pendingStage : null,
+      at: now,
+      ifChangedAt: job.stateChangedAt,
+    });
+    if (!closed) return false;
+    await insertGone(tx, jobId, { roleId: "another-way", arm: "tool" }, run, now, sessionId);
+    return true;
+  });
+  return done ? { ok: true } : { ok: false, reason: "changed" };
+}
+
+/**
+ * Takes back Stop on a manual run, or "I applied another way" (ledger spec,
+ * "Statuses"), by the time of the tap the page showed, which is when its job
+ * closed: the application the tap made goes, with its audit rows, and the
+ * job opens again as it was, a manual run with its clock still running from
+ * the job's start, or the state it was applied to another way from, a failed
+ * job with the stage it failed at. A second tap, or one from a page drawn
+ * before the job moved on, changes nothing.
+ */
+export async function takeBackOldWay(
+  deps: Deps,
+  jobId: string,
+  shownAt: Date,
+): Promise<{ ok: true } | { ok: false; reason: "not-found" | "changed" }> {
+  if (!isUuid(jobId)) return { ok: false, reason: "not-found" };
+  const job = await loadJob(deps.db, jobId);
+  if (!job) return { ok: false, reason: "not-found" };
+  if (job.state !== "closed" || job.stateChangedAt.getTime() !== shownAt.getTime()) {
+    return { ok: false, reason: "changed" };
+  }
+  const done = await deps.db.tx(async (tx) => {
+    const { rows } = await tx.query<{ id: string; role_id: "manual" | "another-way" }>(
+      `select id, role_id from {{schema}}.applications
+        where job_id = $1 and role_id in ('manual', 'another-way')
+          and coalesce(sent_at, submitted_at) = $2
+        for update`,
+      [jobId, shownAt],
+    );
+    const made = rows[0];
+    if (!made) return false;
+    let back: "manual_run" | (typeof ANOTHER_WAY_FROM)[number] = "manual_run";
+    if (made.role_id === "another-way") {
+      const { rows: closing } = await tx.query<{ from_state: string }>(
+        `select from_state from {{schema}}.job_state_changes
+          where job_id = $1 and to_state = 'closed' order by id desc limit 1`,
+        [jobId],
+      );
+      const from = ANOTHER_WAY_FROM.find((state) => state === closing[0]?.from_state);
+      if (from === undefined) return false;
+      back = from;
+    }
+    const failedAt = back === "failed" ? job.pendingStage : null;
+    if (back === "failed" && (failedAt === null || job.failedStage === null)) return false;
+    const opened = await moveJob(tx, jobId, {
+      from: "closed",
+      to: back,
+      pending: failedAt,
+      at: deps.clock.now(),
+      ifChangedAt: job.stateChangedAt,
+      ...(back === "failed"
+        ? { failure: { stage: job.failedStage!, reason: job.failure ?? "This step failed." } }
+        : {}),
+    });
+    if (!opened) return false;
+    await tx.query("delete from {{schema}}.status_changes where application_id = $1", [made.id]);
+    await tx.query("delete from {{schema}}.applications where id = $1", [made.id]);
+    return true;
+  });
+  return done ? { ok: true } : { ok: false, reason: "changed" };
 }

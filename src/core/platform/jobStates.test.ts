@@ -27,7 +27,8 @@ const TABLE: Record<JobState, { kind: string; next: JobState[] }> = {
     kind: "owner",
     next: ["extracting", "checking", "drafting", "judging", "kit_ready", "closed"],
   },
-  closed: { kind: "final", next: [] },
+  // Only a take-back of Stop or of "I applied another way" opens a closed job again.
+  closed: { kind: "final", next: ["manual_run", "upload_failed", "stopped", "failed"] },
 };
 
 // A pending stage each state can be entered with, where it needs one.
@@ -48,8 +49,10 @@ function leavingFor(from: JobState, to: JobState): StageName | null {
   return from === "queued" ? null : (ENTRY_STAGE[from] ?? null);
 }
 
-// The pending stage a move carries: a failed job keeps the stage it failed at.
+// The pending stage a move carries: a failed job keeps the stage it failed at, which closing it
+// another way kept, so a take-back opens it again with that stage.
 function pendingFor(from: JobState, to: JobState): StageName | null {
+  if (from === "closed" && to === "failed") return "draft";
   if (to === "failed") return leavingFor(from, to);
   if (from === "extracting" && to === "drafting") return "draft_answers";
   if (from === "drafting" && to === "drafting") return "draft";
@@ -133,5 +136,12 @@ describe("job states", () => {
     for (const stage of [null, "extract", "eligibility", "templates", "address_read"] as const) {
       expect(checkMove("failed", "kit_ready", null, stage).ok, `after ${stage}`).toBe(false);
     }
+  });
+
+  it("closes a failed job applied to another way keeping its stage, and opens it again only with it", () => {
+    expect(checkMove("failed", "closed", "draft").ok).toBe(true);
+    expect(checkMove("closed", "failed", "draft").ok).toBe(true);
+    expect(checkMove("closed", "failed", null).ok).toBe(false);
+    expect(checkMove("closed", "kit_ready", null).ok).toBe(false);
   });
 });

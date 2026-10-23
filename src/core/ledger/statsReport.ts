@@ -222,8 +222,14 @@ export async function statsReport(db: Db): Promise<StatsReport> {
     machine: { pooled: spread(machineOf()), byRoute: byRoute((route) => spread(machineOf(route))) },
     total: { pooled: spread(totalFor()), byRoute: byRoute((route) => spread(totalFor(route))) },
     stages,
-    // The route mix counts every application, each a kit of its own.
-    routeMix: byRoute((route) => all.filter((each) => each.route === route).length),
+    // The route mix counts every application that reached a kit or went, each a kit of its own;
+    // one still open never did, as the chosen role's of a job applied to another way.
+    routeMix: byRoute(
+      (route) =>
+        all.filter(
+          (each) => each.route === route && (each.kit_ready_at !== null || each.went_at !== null),
+        ).length,
+    ),
     uploads: { ok, failed, rate: ok + failed === 0 ? null : ok / (ok + failed) },
     factualEdits: {
       edits,

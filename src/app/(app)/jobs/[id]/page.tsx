@@ -60,6 +60,7 @@ import { AddScreenshots } from "./AddScreenshots";
 import { ApproveSend } from "./ApproveSend";
 import { JobPoller } from "./JobPoller";
 import { ManualRun } from "./ManualRun";
+import { OldWayForm } from "./OldWayForm";
 import { MarkSent } from "./MarkSent";
 import { Outbound } from "./Outbound";
 import { CROP_KEY } from "./imageUrls";
@@ -211,7 +212,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
       ) : (
         <>
           <Steps steps={view.steps} />
-          <StatePanel view={view} />
+          <StatePanel view={view} timeZone={timeZone} />
         </>
       )}
       {/* Banners, most serious first: the scam warning, earlier applications, the role's reasons. */}
@@ -314,7 +315,35 @@ function Steps({ steps }: { steps: Step[] }) {
   );
 }
 
-function StatePanel({ view }: { view: JobView }) {
+/**
+ * "I applied another way" (ledger spec, "The timing comparison"): on a job
+ * of jobkit's arm that failed, stopped or whose upload failed, which the
+ * owner applied to without its kit, so its time still counts against jobkit.
+ */
+function AnotherWay({ view }: { view: JobView }) {
+  if (view.arm !== "tool" || view.test) return null;
+  return (
+    <details className="text-sm">
+      <summary className="min-h-11 cursor-pointer py-2">Applied another way?</summary>
+      <div className="flex flex-col gap-3">
+        <p className="text-muted-foreground">
+          If you applied to this one without jobkit&apos;s kit, say how: it still counts as
+          jobkit&apos;s run, so the comparison stays fair. Skip only a job you will not apply for.
+        </p>
+        <OldWayForm
+          url={`/api/jobs/${view.id}/another-way`}
+          label="I applied another way"
+          extra={{ state: view.state, stateChangedAt: view.stateChangedAt.toISOString() }}
+          company={view.extraction?.record.company.name ?? ""}
+          role={view.role?.title ?? ""}
+          done="This job moved on since the page was drawn. Reload it to see how it stands."
+        />
+      </div>
+    </details>
+  );
+}
+
+function StatePanel({ view, timeZone }: { view: JobView; timeZone: string }) {
   const base = `/api/jobs/${view.id}`;
   // A send of the kit that may have gone, as when a Gemini draft asked for beside it then failed.
   const uncertain = view.uncertain;
@@ -372,6 +401,7 @@ function StatePanel({ view }: { view: JobView }) {
             />
             {skip}
           </div>
+          <AnotherWay view={view} />
         </Panel>
       );
     case "stopped":
@@ -397,6 +427,7 @@ function StatePanel({ view }: { view: JobView }) {
               kit={false}
             />
           )}
+          <AnotherWay view={view} />
         </Panel>
       );
     case "needs_eligibility_decision":
@@ -453,6 +484,7 @@ function StatePanel({ view }: { view: JobView }) {
             </Link>
             {skip}
           </div>
+          <AnotherWay view={view} />
         </Panel>
       );
     case "needs_role_pick":
@@ -476,7 +508,32 @@ function StatePanel({ view }: { view: JobView }) {
         </Panel>
       );
     case "closed":
-      return <p className="text-muted-foreground">This job is closed.</p>;
+      // Applied to the old way: the tap can be taken back, opening the job again as it was.
+      return view.oldWay ? (
+        <Panel title={view.oldWay.kind === "manual" ? "Stopped" : "Applied another way"}>
+          <p>
+            {view.oldWay.kind === "manual"
+              ? "You stopped this manual run"
+              : "You applied to this one another way"}{" "}
+            on {formatTime(view.oldWay.at, timeZone)}.
+          </p>
+          <div>
+            <ActionButton
+              url={`${base}/take-back`}
+              label={view.oldWay.kind === "manual" ? "Take back Stop" : "Take it back"}
+              variant="outline"
+              body={{ closedAt: view.oldWay.at.toISOString() }}
+              confirmText={
+                view.oldWay.kind === "manual"
+                  ? "Take back Stop? The manual run opens again, its clock still running from the job's start."
+                  : "Take it back? The job opens again as it was, and its application goes."
+              }
+            />
+          </div>
+        </Panel>
+      ) : (
+        <p className="text-muted-foreground">This job is closed.</p>
+      );
     default:
       return null;
   }

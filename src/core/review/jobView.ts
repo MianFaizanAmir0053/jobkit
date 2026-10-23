@@ -117,6 +117,13 @@ export interface JobView {
   startedAt: Date;
   /** A test job, made in test mode, which never counts (ledger spec, "Test jobs"). */
   test: boolean;
+  /** The timing arm the job was drawn into during real use; none outside it. */
+  arm: "tool" | "manual" | null;
+  /**
+   * A closed job the owner applied to the old way: Stop on a manual run, or
+   * "I applied another way", with when, which its take-back names.
+   */
+  oldWay: { kind: "manual" | "another-way"; at: Date } | null;
   failure: { stage: StageName | null; reason: string; detail: string | null } | null;
   steps: Step[];
   extraction: ExtractOutput | null;
@@ -295,6 +302,21 @@ interface PassedThrough {
   checked?: false;
 }
 
+/**
+ * The old way a closed job was applied to: the application Stop or "I
+ * applied another way" made as it closed the job, at the moment it closed.
+ */
+async function oldWayOf(db: Db, jobId: string, closedAt: Date): Promise<JobView["oldWay"]> {
+  const { rows } = await db.query<{ role_id: "manual" | "another-way" }>(
+    `select role_id from {{schema}}.applications
+      where job_id = $1 and role_id in ('manual', 'another-way')
+        and coalesce(sent_at, submitted_at) = $2`,
+    [jobId, closedAt],
+  );
+  const made = rows[0];
+  return made ? { kind: made.role_id, at: closedAt } : null;
+}
+
 export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promise<JobView | null> {
   const job = await jobStatus(deps, id);
   if (!job) return null;
@@ -465,6 +487,8 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     receivedAt: job.receivedAt,
     startedAt: new Date(job.receivedAt.getTime() - job.clientElapsedMs),
     test: job.test,
+    arm: job.arm,
+    oldWay: job.state === "closed" ? await oldWayOf(deps.db, job.id, job.stateChangedAt) : null,
     failure: await failureOf(deps.db, job),
     steps: await stepsOf(deps.db, job, unchecked, {
       drafted: round.templatesCurrent && (templates?.drafts.length ?? 0) > 0,

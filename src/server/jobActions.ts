@@ -3,7 +3,12 @@ import { z } from "zod";
 
 import { confirmPost, draftAnyway as draftAnywayCore, pickRole } from "@/core/extraction/owner";
 import { CONTENT_TYPES, LIMITS } from "@/core/intake/limits";
-import { recordManualRun } from "@/core/ledger/statuses";
+import {
+  ANOTHER_WAY_FROM,
+  recordAnotherWay,
+  recordManualRun,
+  takeBackOldWay,
+} from "@/core/ledger/statuses";
 import { jobStatus, retryJob } from "@/core/platform/jobs";
 import { JOB_STATES } from "@/core/platform/jobStates";
 import type { RunnerDeps } from "@/core/platform/runner";
@@ -436,12 +441,17 @@ const takeBackBody = z.union([
   z
     .object({ submittedAt: z.iso.datetime() })
     .transform((shown) => ({ kind: "submitted" as const, ...shown })),
+  z
+    .object({ closedAt: z.iso.datetime() })
+    .transform((shown) => ({ kind: "closed" as const, ...shown })),
 ]);
 
 /**
  * POST /api/jobs/<id>/take-back: takes back a mistaken Mark sent, or a skip
  * of a ready kit, or a Mark submitted, opening the kit again, or a Mark
- * bounced, the email sent again as it was; each the one the page showed.
+ * bounced, the email sent again as it was; or a manual run's Stop, or "I
+ * applied another way", by when its job closed, opening the job again as it
+ * was; each the one the page showed.
  */
 export async function takeBack(
   request: NextRequest,
@@ -469,7 +479,9 @@ export async function takeBack(
         ? await takeBackSkip(deps, jobId, actor.session.id, new Date(shown.skippedAt))
         : shown.kind === "submitted"
           ? await takeBackSubmitted(deps, jobId, actor.session.id, new Date(shown.submittedAt))
-          : await takeBackBounced(deps, jobId, actor.session.id, new Date(shown.bouncedAt));
+          : shown.kind === "closed"
+            ? await takeBackOldWay(deps, jobId, new Date(shown.closedAt))
+            : await takeBackBounced(deps, jobId, actor.session.id, new Date(shown.bouncedAt));
   if (!taken.ok) return refusal(taken.reason === "not-found" ? 404 : 409, taken.reason);
   return ok();
 }
@@ -785,5 +797,38 @@ export async function stopManualRun(
   if (!body.ok) return body.response;
   const stopped = await recordManualRun(deps, jobId, body.data, actor.session.id);
   if (!stopped.ok) return refusal(stopped.reason === "not-found" ? 404 : 409, stopped.reason);
+  return ok();
+}
+
+/** What "I applied another way" names: the run, and the state the page showed with its time. */
+const anotherWayBody = stopBody.extend({
+  state: z.enum(ANOTHER_WAY_FROM),
+  stateChangedAt: z.iso.datetime(),
+});
+
+/**
+ * POST /api/jobs/<id>/another-way: "I applied another way" on a tool-arm
+ * job whose upload failed, that stopped, or whose step failed (ledger spec,
+ * "The timing comparison"), with the route, company and role the owner names.
+ */
+export async function anotherWay(
+  request: NextRequest,
+  deps: Deps,
+  jobId: string,
+): Promise<NextResponse> {
+  const actor = await sessionForChange(request, deps);
+  if (!actor.ok) return actor.response;
+  if (!isUuid(jobId)) return refusal(404, "not-found");
+  const body = await bodyOf(request, anotherWayBody);
+  if (!body.ok) return body.response;
+  const { state, stateChangedAt, ...run } = body.data;
+  const recorded = await recordAnotherWay(
+    deps,
+    jobId,
+    run,
+    { state, at: new Date(stateChangedAt) },
+    actor.session.id,
+  );
+  if (!recorded.ok) return refusal(recorded.reason === "not-found" ? 404 : 409, recorded.reason);
   return ok();
 }

@@ -66,7 +66,8 @@ const STATES: Record<JobState, { kind: StateKind; next: readonly JobState[] }> =
     kind: "owner",
     next: ["extracting", "checking", "drafting", "judging", "kit_ready", "closed"],
   },
-  closed: { kind: "final", next: [] },
+  // Only a take-back of Stop or of "I applied another way" opens a closed job again.
+  closed: { kind: "final", next: ["manual_run", "upload_failed", "stopped", "failed"] },
 };
 
 /**
@@ -143,6 +144,14 @@ export function checkMove(
   leaving: StageName | null = null,
 ): MoveCheck {
   if (!STATES[from].next.includes(to)) return { ok: false, reason: `${from} cannot move to ${to}` };
+  // "I applied another way" closes a failed job keeping the stage it failed at, so taking the tap
+  // back opens it again as it was (ledger spec, "Statuses"); Skip keeps none.
+  if (from === "failed" && to === "closed") return { ok: true };
+  if (from === "closed" && to === "failed") {
+    return pending === null
+      ? { ok: false, reason: "failed needs the stage it failed at" }
+      : { ok: true };
+  }
   const expected = to === "failed" ? PENDING[from] : PENDING[to];
   if (expected === undefined || expected.length === 0) {
     if (pending !== null) return { ok: false, reason: `${to} has no pending stage` };

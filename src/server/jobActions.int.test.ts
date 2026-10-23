@@ -37,6 +37,7 @@ import { createTestDb, insertTestJobs } from "@/server/db/testDb";
 import {
   addImages,
   addImagesConfirm,
+  anotherWay,
   applyAgainRoute,
   backToDrafts,
   bounced,
@@ -1151,6 +1152,48 @@ describe("the job page's routes", () => {
     expect((await db.query("select id from {{schema}}.applications")).rows).toEqual([]);
   });
 
+  it("record a job of jobkit's arm applied to another way, take it back by when it closed, and refuse a stale or empty tap", async () => {
+    const cookie = await signedIn();
+    const id = await createJob(db, {
+      state: "uploading",
+      receivedAt: clock.now(),
+      clientElapsedMs: 0,
+      arm: { arm: "tool", index: 0, from: null },
+    });
+    await db.query(
+      "update {{schema}}.jobs set state = 'upload_failed', state_changed_at = $2 where id = $1",
+      [id, clock.now()],
+    );
+    const shownAt = clock.now().toISOString();
+    clock.advance(60_000);
+    const named = { route: "form", company: "Fabrikam", role: "Developer" };
+    const tap = (body: unknown) =>
+      anotherWay(post(`/api/jobs/${id}/another-way`, JSON.stringify(body), cookie), deps(), id);
+
+    // A page that named no state, or another time, records nothing.
+    expect((await tap(named)).status).toBe(400);
+    expect(
+      (await tap({ ...named, state: "upload_failed", stateChangedAt: clock.now().toISOString() }))
+        .status,
+    ).toBe(409);
+    expect(await stateOf(id)).toBe("upload_failed");
+
+    expect((await tap({ ...named, state: "upload_failed", stateChangedAt: shownAt })).status).toBe(
+      200,
+    );
+    expect(await stateOf(id)).toBe("closed");
+    const closedAt = clock.now().toISOString();
+
+    const back = await takeBack(
+      post(`/api/jobs/${id}/take-back`, JSON.stringify({ closedAt }), cookie),
+      deps(),
+      id,
+    );
+    expect(back.status).toBe(200);
+    expect(await stateOf(id)).toBe("upload_failed");
+    expect((await db.query("select id from {{schema}}.applications")).rows).toEqual([]);
+  });
+
   it("refuse another origin, a missing session and an unknown job", async () => {
     const cookie = await signedIn();
     const id = await settled([answer(fixture("S08-urdu"))]);
@@ -1175,6 +1218,7 @@ describe("the job page's routes", () => {
       addImages,
       addImagesConfirm,
       stopManualRun,
+      anotherWay,
     ] as const;
     // The add routes sign upload URLs, so their ports include storage.
     const routeDeps = { ...deps(), storage };
