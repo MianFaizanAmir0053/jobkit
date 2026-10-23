@@ -7,6 +7,7 @@ import {
   jobForViewer,
   newJobsAllowedForViewer,
   requireSession,
+  testModeForViewer,
   viewerTimeZone,
 } from "@/server/dal";
 import { ownerSent } from "@/server/shareStart";
@@ -14,6 +15,7 @@ import { ownerSent } from "@/server/shareStart";
 import { formatTime } from "../words";
 
 import { NewJobForm } from "./NewJobForm";
+import { TestMode } from "./TestMode";
 
 export const metadata: Metadata = { title: "New job · jobkit" };
 
@@ -105,6 +107,7 @@ export default async function NewJobPage(props: PageProps<"/jobs/new">) {
     );
   }
 
+  const testUntil = await testModeForViewer();
   return (
     <section aria-labelledby="new-job-heading">
       <h1 id="new-job-heading" className="text-2xl font-semibold tracking-tight">
@@ -113,6 +116,7 @@ export default async function NewJobPage(props: PageProps<"/jobs/new">) {
       <p className="mt-2 text-muted-foreground">
         Screenshots of a job post, its text, or both. jobkit never opens a link in the post.
       </p>
+      <TestMode until={testUntil && formatTime(testUntil, await viewerTimeZone())} />
       {!allowed && (
         <p role="alert" className="mt-6 text-sm text-destructive">
           This month&apos;s model spend has reached its cap for new jobs, so jobkit starts none

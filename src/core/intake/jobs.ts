@@ -1,5 +1,6 @@
 import { armForNewJob } from "@/core/ledger/realUse";
 import { spendState } from "@/core/ledger/spend";
+import { testModeUntil } from "@/core/ledger/testMode";
 import { createJob, expireUploads, loadJob, moveJob } from "@/core/platform/jobs";
 import { tileCount } from "@/core/shared/tileGeometry";
 import type { Clock, Db, Random, Storage } from "@/core/ports";
@@ -84,9 +85,12 @@ export async function startJob(
   if (job.clientElapsedMs > MAX_HELD_MS) return { ok: false, message: CLOCK_WRONG };
   // The cap holds every new job back, a manual run's too, before any place in the arms is drawn.
   if (!(await spendState(deps)).newJobsAllowed) return { ok: false, message: CAP_REACHED };
-  const arm = deps.random
-    ? await armForNewJob({ db: deps.db, random: deps.random }, receivedAt)
-    : null;
+  // In test mode the job is a test job, which draws no arm (ledger spec, "Test jobs").
+  const test = (await testModeUntil(deps)) !== null;
+  const arm =
+    deps.random && !test
+      ? await armForNewJob({ db: deps.db, random: deps.random }, receivedAt)
+      : null;
   if (arm === "manual") {
     const jobId = await createJob(deps.db, {
       state: "manual_run",
@@ -103,6 +107,7 @@ export async function startJob(
       state: "uploading",
       receivedAt,
       clientElapsedMs: job.clientElapsedMs,
+      test,
     });
     await tx.query(
       "update {{schema}}.jobs set pasted_text = $2, input_kind = $3, post_links = $4 where id = $1",

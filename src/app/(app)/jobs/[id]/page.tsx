@@ -182,6 +182,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
                   ? "Skipped"
                   : STATE_WORDS[view.state]}{" "}
           · started {formatTime(view.receivedAt, timeZone)}
+          {view.test && " · a test job, which never counts"}
         </p>
       </div>
 

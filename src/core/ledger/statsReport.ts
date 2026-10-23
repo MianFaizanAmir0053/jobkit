@@ -136,8 +136,8 @@ export async function statsReport(db: Db): Promise<StatsReport> {
     `select run.stage, extract(epoch from (run.ended_at - run.started_at)) * 1000 as ms
        from {{schema}}.job_stage_runs as run
       where run.outcome = 'ok' and run.ended_at is not null
-        and exists (select 1 from {{schema}}.applications as a
-                     where a.job_id = run.job_id and a.job_kind = 'real')`,
+        and exists (select 1 from {{schema}}.jobs as job
+                     where job.id = run.job_id and job.kind = 'real')`,
   );
   const stages = STAGES.map((stage) => {
     const times = runs.filter((run) => run.stage === stage).map((run) => Number(run.ms));
@@ -150,7 +150,8 @@ export async function statsReport(db: Db): Promise<StatsReport> {
             count(*) filter (where attempt.outcome = 'failed'
                                or (attempt.outcome is null and job.state <> 'uploading'))::int as failed
        from {{schema}}.upload_attempts as attempt
-       join {{schema}}.jobs as job on job.id = attempt.job_id`,
+       join {{schema}}.jobs as job on job.id = attempt.job_id
+      where job.kind = 'real'`,
   );
   const ok = attempts[0]?.ok ?? 0;
   const failed = attempts[0]?.failed ?? 0;

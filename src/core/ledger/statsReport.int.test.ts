@@ -14,6 +14,7 @@ import { companyRoleHash } from "./normalise";
 import { noteRealUse, realUseStart } from "./realUse";
 import { recordManualRun } from "./statuses";
 import { statsReport } from "./statsReport";
+import { setTestMode, TEST_MODE_MS } from "./testMode";
 
 /*
  * The Stats page's figures and the timing arms (ledger spec, "The timing
@@ -43,6 +44,7 @@ beforeEach(async () => {
     `delete from {{schema}}.kit_sends; delete from {{schema}}.kit_reviews;
      delete from {{schema}}.status_changes; delete from {{schema}}.draft_outcomes;
      delete from {{schema}}.applications; delete from {{schema}}.upload_attempts;
+     delete from {{schema}}.job_stage_runs; delete from {{schema}}.job_leases;
      delete from {{schema}}.job_images; delete from {{schema}}.job_state_changes;
      delete from {{schema}}.measurement; delete from {{schema}}.jobs;
      delete from {{schema}}.arm_sequence`,
@@ -197,6 +199,49 @@ describe("the timing arms and the Stats page", () => {
     const kitWent = new Date(clock.now().getTime() + 10 * MINUTE);
     await went("email", 10, null);
     expect(await realUseStart(db)).toEqual(kitWent);
+  });
+
+  it("makes every job a test job while test mode is on: it draws no arm, and no figure counts it", async () => {
+    const deps = { db, clock, storage: createLocalStorage({ root: ".", origin: "http://x" }) };
+    const job = { images: [], pastedText: "A post.", clientElapsedMs: 0 };
+    // Real use has started, so a real job would be drawn into an arm.
+    await went("email", 10, null);
+    clock.advance(11 * MINUTE);
+    await setTestMode({ db, clock }, true);
+
+    const started = await startJob({ ...deps, random: fixed(7) }, job);
+    if (!started.ok) throw new Error(started.message);
+    // It runs as any job of jobkit's does, but takes no place in the sequence.
+    expect(await loadJob(db, started.jobId)).toMatchObject({ state: "queued", test: true });
+    expect((await db.query("select next_index from {{schema}}.arm_sequence")).rows).toEqual([]);
+
+    // Its upload and its steps count for nothing on the Stats page.
+    const lease = "77777777-7777-4777-8777-777777777777";
+    await db.query(
+      "insert into {{schema}}.job_leases (id, job_id, claimed_at, expires_at) values ($1, $2, $3, $3)",
+      [lease, started.jobId, clock.now()],
+    );
+    await db.query(
+      `insert into {{schema}}.job_stage_runs
+         (job_id, lease_id, stage, round, attempt, outcome, started_at, ended_at)
+       values ($1, $2, 'extract', 0, 1, 'ok', $3, $3)`,
+      [started.jobId, lease, clock.now()],
+    );
+    await db.query(
+      `insert into {{schema}}.upload_attempts (job_id, started_at, files, bytes, outcome, ended_at)
+       values ($1, $2, 1, 100, 'failed', $2)`,
+      [started.jobId, clock.now()],
+    );
+    expect(await statsReport(db)).toMatchObject({
+      uploads: { ok: 0, failed: 0, rate: null },
+      stages: [],
+    });
+
+    // Once the hour is up, a job is a real one again.
+    clock.advance(TEST_MODE_MS);
+    const real = await startJob({ ...deps, random: fixed(7) }, { ...job, pastedText: "Another." });
+    if (!real.ok) throw new Error(real.message);
+    expect((await loadJob(db, real.jobId))?.test).toBe(false);
   });
 
   it("compares the arms pooled only once each has 10 runs, though no route has 5", async () => {

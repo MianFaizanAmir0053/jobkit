@@ -84,6 +84,7 @@ export default async function JobsPage() {
                             : STATE_WORDS[job.state]}{" "}
                     {job.route && `· ${ROUTE_LABELS[job.route]} `}·{" "}
                     {formatTime(job.receivedAt, timeZone)}
+                    {job.test && " · test job"}
                   </span>
                 </Link>
                 {job.state === "failed" && (

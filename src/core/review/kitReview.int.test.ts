@@ -12,6 +12,7 @@ import { asEmailKit, type DraftAnswer } from "@/core/drafting/kit";
 import type { JobRecord } from "@/core/extraction/record";
 import { startJob } from "@/core/intake/jobs";
 import { realUseStart } from "@/core/ledger/realUse";
+import { setTestMode } from "@/core/ledger/testMode";
 import type { Dns } from "@/core/ports";
 import { createTestDb } from "@/server/db/testDb";
 
@@ -1319,13 +1320,20 @@ describe("recordReview", () => {
   });
 
   it("starts real use at Mark sent with nothing handed off before, but never for a test job", async () => {
+    // A job made in test mode is a test job, and so is its application.
+    await setTestMode({ db, clock }, true);
     const id = await readyKit(POSTED);
+    await setTestMode({ db, clock }, false);
     await recordReview(deps(), id, { kind: "check", blockId: "S1" });
-    await db.query("update {{schema}}.jobs set kind = 'test' where id = $1", [id]);
     expect(await markSent({ db, clock }, id, null, { changedInGmail: false })).toMatchObject({
       ok: true,
     });
     expect(await realUseStart(db)).toBeNull();
+    const { rows } = await db.query(
+      "select job_kind, arm from {{schema}}.applications where job_id = $1",
+      [id],
+    );
+    expect(rows).toEqual([{ job_kind: "test", arm: null }]);
 
     // The same kit as a real job's: marked sent again, it starts real use.
     expect(await takeBackSent({ db, clock }, id, null)).toEqual({ ok: true });

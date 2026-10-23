@@ -33,6 +33,8 @@ export interface Job {
   clientElapsedMs: number;
   leaseId: string | null;
   leaseExpiresAt: Date | null;
+  /** A test job, made in test mode, which never counts (ledger spec, "Test jobs"). */
+  test: boolean;
 }
 
 // A job left uploading this long after it began to upload has failed (intake spec).
@@ -50,10 +52,11 @@ type JobRow = {
   client_elapsed_ms: number;
   lease_id: string | null;
   lease_expires_at: Date | null;
+  kind: "real" | "test";
 };
 
 const COLUMNS = `id, state, pending_stage, state_changed_at, failed_stage, failure, retry_round,
-  received_at, client_elapsed_ms, lease_id, lease_expires_at`;
+  received_at, client_elapsed_ms, lease_id, lease_expires_at, kind`;
 
 function toJob(row: JobRow): Job {
   return {
@@ -68,6 +71,7 @@ function toJob(row: JobRow): Job {
     clientElapsedMs: row.client_elapsed_ms,
     leaseId: row.lease_id,
     leaseExpiresAt: row.lease_expires_at,
+    test: row.kind === "test",
   };
 }
 
@@ -78,11 +82,17 @@ const MAX_CLIENT_ELAPSED_MS = 2 ** 31 - 1;
  * A new job, in the state intake starts it in: `uploading`, or `manual_run`
  * for the manual arm (ledger spec). `receivedAt` is the server's time of the
  * request; the job starts `clientElapsedMs` before it, rounded to whole
- * milliseconds since phones measure it with a fractional timer.
+ * milliseconds since phones measure it with a fractional timer. A test
+ * job, made in test mode, never counts (ledger spec, "Test jobs").
  */
 export async function createJob(
   db: Db,
-  job: { state: "uploading" | "manual_run"; receivedAt: Date; clientElapsedMs: number },
+  job: {
+    state: "uploading" | "manual_run";
+    receivedAt: Date;
+    clientElapsedMs: number;
+    test?: boolean;
+  },
 ): Promise<string> {
   const clientElapsedMs = Math.round(job.clientElapsedMs);
   if (!(clientElapsedMs >= 0 && clientElapsedMs <= MAX_CLIENT_ELAPSED_MS)) {
@@ -92,10 +102,10 @@ export async function createJob(
   }
   return db.tx(async (tx) => {
     const { rows } = await tx.query<{ id: string }>(
-      `insert into {{schema}}.jobs (state, state_changed_at, received_at, client_elapsed_ms)
-       values ($1, $2, $2, $3)
+      `insert into {{schema}}.jobs (state, state_changed_at, received_at, client_elapsed_ms, kind)
+       values ($1, $2, $2, $3, $4)
        returning id`,
-      [job.state, job.receivedAt, clientElapsedMs],
+      [job.state, job.receivedAt, clientElapsedMs, job.test ? "test" : "real"],
     );
     const id = rows[0]!.id;
     await tx.query(

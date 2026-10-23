@@ -26,6 +26,7 @@ import { cvFileName } from "@/core/review/send";
 import { spendState } from "@/core/ledger/spend";
 import { spendReport, type SpendReport } from "@/core/ledger/spendReport";
 import { statsReport, type StatsReport } from "@/core/ledger/statsReport";
+import { testModeUntil } from "@/core/ledger/testMode";
 import { isUuid } from "@/lib/uuid";
 
 import { getContainer } from "./container";
@@ -113,6 +114,12 @@ export const gmailForViewer = cache(async (): Promise<GmailConnection | null> =>
 export const newJobsAllowedForViewer = cache(async (): Promise<boolean> => {
   await requireSession();
   return (await spendState(await getContainer())).newJobsAllowed;
+});
+
+/** When test mode ends, while it is on (ledger spec, "Test jobs"); null while it is off. */
+export const testModeForViewer = cache(async (): Promise<Date | null> => {
+  await requireSession();
+  return testModeUntil(await getContainer());
 });
 
 /** The Baseline page: the stopwatch and the manual runs' timings (ledger spec). */

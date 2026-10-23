@@ -115,6 +115,8 @@ export interface JobView {
   receivedAt: Date;
   /** The job's start (intake's clock): its receipt less the time the phone held it. */
   startedAt: Date;
+  /** A test job, made in test mode, which never counts (ledger spec, "Test jobs"). */
+  test: boolean;
   failure: { stage: StageName | null; reason: string; detail: string | null } | null;
   steps: Step[];
   extraction: ExtractOutput | null;
@@ -462,6 +464,7 @@ export async function jobView(deps: { db: Db; clock: Clock }, id: string): Promi
     kind: kindOf(job.state),
     receivedAt: job.receivedAt,
     startedAt: new Date(job.receivedAt.getTime() - job.clientElapsedMs),
+    test: job.test,
     failure: await failureOf(deps.db, job),
     steps: await stepsOf(deps.db, job, unchecked, {
       drafted: round.templatesCurrent && (templates?.drafts.length ?? 0) > 0,
@@ -1139,6 +1142,8 @@ export interface JobListItem {
   state: JobState;
   kind: StateKind;
   receivedAt: Date;
+  /** A test job, made in test mode, which never counts (ledger spec, "Test jobs"). */
+  test: boolean;
   company: string;
   title: string;
   /** How the chosen role applies; null before a role is chosen. */
@@ -1189,6 +1194,7 @@ export async function listJobViews(
     id: string;
     state: JobState;
     received_at: Date;
+    kind: "real" | "test";
     chosen_role: string | null;
     chosen_role_output: string | null;
     failure: string | null;
@@ -1204,8 +1210,8 @@ export async function listJobViews(
     bounced_roles: string[];
     submitted_roles: string[];
   }>(
-    `select j.id, j.state, j.state_changed_at, j.pending_stage, j.received_at, j.chosen_role,
-            j.chosen_role_output, j.failure, x.output, x.output_hash,
+    `select j.id, j.state, j.state_changed_at, j.pending_stage, j.received_at, j.kind,
+            j.chosen_role, j.chosen_role_output, j.failure, x.output, x.output_hash,
             array(select a.role_id from {{schema}}.applications as a
                    where a.job_id = j.id and a.status in ('sent', 'submitted', 'bounced')
                   union
@@ -1257,6 +1263,7 @@ export async function listJobViews(
       state: row.state,
       kind: kindOf(row.state),
       receivedAt: row.received_at,
+      test: row.kind === "test",
       company: extraction?.record.company.name ?? ledger?.company ?? "",
       title: role?.title ?? (roles.length > 1 ? `${roles.length} roles` : (ledger?.role ?? "")),
       stateChangedAt: row.state_changed_at,
