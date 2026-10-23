@@ -2,7 +2,6 @@ import { kitTypeOf } from "@/core/extraction/record";
 import { isStrictAddress, normaliseWhatsAppNumber } from "@/core/extraction/contacts";
 import { chosenRole, currentExtraction } from "@/core/extraction/owner";
 import type { Role } from "@/core/extraction/record";
-import { toolArmOf } from "@/core/ledger/realUse";
 import { changeStatus, openApplication, type Route } from "@/core/ledger/statuses";
 import { loadJob } from "@/core/platform/jobs";
 import type { Pipeline, StageDefinition } from "@/core/platform/runner";
@@ -81,8 +80,9 @@ export async function openForJob(
   const extraction = await currentExtraction(deps.db, jobId);
   const role = await chosenRole(deps.db, jobId);
   if (!extraction || !role) return null;
-  // A test job's application is a test job's, in no arm (ledger spec, "Test jobs").
-  const test = (await loadJob(deps.db, jobId))?.test ?? false;
+  // The application takes its job's arm and kind: a test job's is a test job's, in no arm.
+  const job = await loadJob(deps.db, jobId);
+  const test = job?.test ?? false;
   return openApplication(
     deps,
     {
@@ -93,8 +93,8 @@ export async function openForJob(
       address: contactForLedger(role.route.kind, role.route.address),
       route: routeOf(role.route.kind),
       requirements: role.requirements.map((requirement) => requirement.text),
-      // A job made during real use is the tool arm's: the manual arm's run nothing.
-      arm: test ? null : await toolArmOf(deps.db, jobId),
+      // A job drawn during real use is the tool arm's: the manual arm's run nothing.
+      arm: test ? null : (job?.arm ?? null),
       jobKind: test ? "test" : "real",
     },
     sessionId,

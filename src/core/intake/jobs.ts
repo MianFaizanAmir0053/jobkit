@@ -1,4 +1,4 @@
-import { armForNewJob } from "@/core/ledger/realUse";
+import { armForNewJob, postHashesOf } from "@/core/ledger/realUse";
 import { spendState } from "@/core/ledger/spend";
 import { testModeUntil } from "@/core/ledger/testMode";
 import { createJob, expireUploads, loadJob, moveJob } from "@/core/platform/jobs";
@@ -87,15 +87,21 @@ export async function startJob(
   if (!(await spendState(deps)).newJobsAllowed) return { ok: false, message: CAP_REACHED };
   // In test mode the job is a test job, which draws no arm (ledger spec, "Test jobs").
   const test = (await testModeUntil(deps)) !== null;
+  const postHashes = postHashesOf(
+    images.map((image) => image.sha256),
+    pastedText,
+  );
   const arm =
     deps.random && !test
-      ? await armForNewJob({ db: deps.db, random: deps.random }, receivedAt)
+      ? await armForNewJob({ db: deps.db, random: deps.random }, receivedAt, postHashes)
       : null;
-  if (arm === "manual") {
+  if (arm?.arm === "manual") {
     const jobId = await createJob(deps.db, {
       state: "manual_run",
       receivedAt,
       clientElapsedMs: job.clientElapsedMs,
+      arm,
+      postHashes,
     });
     return { ok: true, jobId, uploads: [], queued: false, manual: true };
   }
@@ -108,6 +114,8 @@ export async function startJob(
       receivedAt,
       clientElapsedMs: job.clientElapsedMs,
       test,
+      arm,
+      postHashes,
     });
     await tx.query(
       "update {{schema}}.jobs set pasted_text = $2, input_kind = $3, post_links = $4 where id = $1",

@@ -1,4 +1,5 @@
 import type { Db, Random } from "@/core/ports";
+import { sha256Hex } from "@/lib/encoding";
 
 import { type Arm, drawArm } from "./arms";
 
@@ -56,27 +57,50 @@ export async function noteRealUse(db: Db, jobId: string, at: Date): Promise<void
   );
 }
 
-/** The arm a job created at `at` goes to: none before real use, nor after its four weeks. */
-export async function armForNewJob(
-  deps: { db: Db; random: Random },
-  at: Date,
-): Promise<Arm | null> {
-  if (!inComparison(await realUseStart(deps.db), at)) return null;
-  return (await drawArm(deps)).arm;
+/**
+ * A new job's arm, which the job keeps on its row: its place in the
+ * sequence when drawn, or the earlier job whose arm it took.
+ */
+export interface ArmDraw {
+  arm: Arm;
+  index: number | null;
+  from: string | null;
 }
 
 /**
- * A job's arm for its application: the tool arm's when the job was created
- * once real use had started, as only the manual arm's jobs run nothing;
- * none before.
+ * The arm a real job created at `at` goes to: none before real use, nor
+ * after its four weeks. A post shared again in those weeks, matched by any
+ * of `postHashes` (its screenshots' SHA-256s and its pasted text's), takes
+ * the arm of the job it first came as, with no new draw, so skipping a
+ * manual run and sharing the post again leaves it in the manual arm (the
+ * owner's choice, 2026-10-22).
  */
-export async function toolArmOf(db: Db, jobId: string): Promise<Arm | null> {
-  const started = await realUseStart(db);
-  if (started === null) return null;
-  const { rows } = await db.query<{ received_at: Date }>(
-    "select received_at from {{schema}}.jobs where id = $1",
-    [jobId],
-  );
-  const received = rows[0]?.received_at;
-  return received !== undefined && inComparison(started, received) ? "tool" : null;
+export async function armForNewJob(
+  deps: { db: Db; random: Random },
+  at: Date,
+  postHashes: readonly string[],
+): Promise<ArmDraw | null> {
+  const start = await realUseStart(deps.db);
+  if (start === null || !inComparison(start, at)) return null;
+  if (postHashes.length > 0) {
+    const { rows } = await deps.db.query<{ id: string; arm: Arm }>(
+      `select id, arm from {{schema}}.jobs
+        where kind = 'real' and arm is not null and received_at >= $2
+          and post_hashes && $1::text[]
+        order by received_at, id
+        limit 1`,
+      [postHashes, start],
+    );
+    const first = rows[0];
+    if (first) return { arm: first.arm, index: null, from: first.id };
+  }
+  const drawn = await drawArm(deps);
+  return { arm: drawn.arm, index: drawn.index, from: null };
+}
+
+/** A post's hashes, by which a share of it is known again: its screenshots' and its text's. */
+export function postHashesOf(imageHashes: readonly string[], pastedText: string): string[] {
+  // The text as words, so a share that only spaces it otherwise is the same post.
+  const text = pastedText.replace(/\s+/g, " ").trim();
+  return [...new Set([...imageHashes, ...(text === "" ? [] : [sha256Hex(text)])])];
 }

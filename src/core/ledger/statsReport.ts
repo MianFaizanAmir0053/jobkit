@@ -33,6 +33,20 @@ export interface ArmComparison {
   shown: boolean;
 }
 
+/**
+ * What became of the real jobs drawn into an arm (ledger spec, "Skips per
+ * arm"), so a skip rate that differs between the arms shows.
+ */
+export interface ArmTally {
+  drawn: number;
+  went: number;
+  /** Closed, or skipped at their kit, without going. */
+  left: number;
+  open: number;
+  /** Those that came as a post shared again, and took the arm it first had. */
+  sharedAgain: number;
+}
+
 export interface StatsReport {
   realUseSince: Date | null;
   machine: { pooled: Spread; byRoute: Record<BaselineRoute, Spread> };
@@ -45,6 +59,7 @@ export interface StatsReport {
   judgeFalsePositives: { sentences: number; kits: number };
   trustGate: TrustGate;
   comparison: { pooled: ArmComparison; byRoute: Record<BaselineRoute, ArmComparison> };
+  arms: { tool: ArmTally; manual: ArmTally };
 }
 
 /** The comparison shows per route once each arm has this many runs there, and pooled from POOLED. */
@@ -171,6 +186,37 @@ export async function statsReport(db: Db): Promise<StatsReport> {
       where job_kind = 'real' and jsonb_typeof(final_draft->'judgeFalsePositives') = 'array'`,
   );
 
+  // What became of each arm's jobs: a job went when any of its applications did.
+  const { rows: tallies } = await db.query<{
+    arm: "tool" | "manual";
+    drawn: number;
+    went: number;
+    left: number;
+    shared_again: number;
+  }>(
+    `select job.arm, count(*)::int as drawn,
+            count(*) filter (where job.went)::int as went,
+            count(*) filter (where not job.went and job.left_it)::int as left,
+            count(*) filter (where job.arm_from is not null)::int as shared_again
+       from (select j.arm, j.arm_from,
+                    exists (select 1 from {{schema}}.applications as a
+                             where a.job_id = j.id
+                               and (a.sent_at is not null or a.submitted_at is not null)) as went,
+                    j.state = 'closed'
+                      or exists (select 1 from {{schema}}.applications as a
+                                  where a.job_id = j.id and a.status = 'skipped') as left_it
+               from {{schema}}.jobs as j
+              where j.kind = 'real' and j.arm is not null) as job
+      group by job.arm`,
+  );
+  const tally = (arm: "tool" | "manual"): ArmTally => {
+    const row = tallies.find((each) => each.arm === arm);
+    const drawn = row?.drawn ?? 0;
+    const went = row?.went ?? 0;
+    const left = row?.left ?? 0;
+    return { drawn, went, left, open: drawn - went - left, sharedAgain: row?.shared_again ?? 0 };
+  };
+
   return {
     realUseSince,
     machine: { pooled: spread(machineOf()), byRoute: byRoute((route) => spread(machineOf(route))) },
@@ -195,5 +241,6 @@ export async function statsReport(db: Db): Promise<StatsReport> {
         compared(armRuns("tool", route), armRuns("manual", route), COMPARISON_MIN.route),
       ),
     },
+    arms: { tool: tally("tool"), manual: tally("manual") },
   };
 }

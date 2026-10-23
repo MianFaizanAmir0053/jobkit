@@ -203,6 +203,33 @@ export default async function StatsPage() {
           never enter this comparison.
         </p>
       </div>
+
+      {report.realUseSince !== null && (
+        <div className="flex flex-col gap-2 text-sm">
+          <h2 className="text-base font-medium">What became of each arm&apos;s jobs</h2>
+          <ul className="flex flex-col gap-1">
+            {(
+              [
+                ["With jobkit", report.arms.tool],
+                ["The old way", report.arms.manual],
+              ] as const
+            ).map(([name, arm]) => (
+              <li key={name}>
+                <span className="font-medium">{name}: </span>
+                {arm.drawn} drawn: {arm.went} went, {arm.left} left without going, {arm.open} still
+                open
+                {arm.sharedAgain > 0 &&
+                  `; ${arm.sharedAgain} came as a post shared again, in the arm it first had`}
+                .
+              </li>
+            ))}
+          </ul>
+          <p className="text-muted-foreground">
+            A post you skip leaves both arms; if one arm loses many more than the other, the
+            comparison leans.
+          </p>
+        </div>
+      )}
     </section>
   );
 }

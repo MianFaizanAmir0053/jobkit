@@ -100,6 +100,8 @@ describe("the daily purges", () => {
     const kept = await jobWithImage(true);
     // An object no row names, as an add never confirmed leaves.
     await storage.put(`jobs/${kept}/stray.png`, PNG, "image/png");
+    // Each was drawn into an arm, keeping its post's hashes.
+    await db.query("update {{schema}}.jobs set arm = 'tool', post_hashes = $1", [["a".repeat(64)]]);
 
     clock.advance(29 * DAY);
     expect(await purgeIntake({ db, clock, storage })).toEqual({
@@ -125,13 +127,16 @@ describe("the daily purges", () => {
       id: string;
       pasted_text: string | null;
       post_links: string[];
-    }>("select id, pasted_text, post_links from {{schema}}.jobs");
-    // The links found in the post go with its text.
+      post_hashes: string[];
+    }>("select id, pasted_text, post_links, post_hashes from {{schema}}.jobs");
+    // The links found in the post, and its hashes, go with its text.
     expect(
-      Object.fromEntries(rows.map((row) => [row.id, [row.pasted_text, row.post_links]])),
+      Object.fromEntries(
+        rows.map((row) => [row.id, [row.pasted_text, row.post_links, row.post_hashes]]),
+      ),
     ).toEqual({
-      [gone]: [null, []],
-      [kept]: ["A post.", ["https://example.com"]],
+      [gone]: [null, [], []],
+      [kept]: ["A post.", ["https://example.com"], ["a".repeat(64)]],
     });
     // Run twice, as the daily job may be: nothing more goes.
     expect(await purgeIntake({ db, clock, storage })).toEqual({

@@ -83,13 +83,23 @@ export async function purgeIntake(deps: Deps): Promise<IntakePurge> {
     strays += gone.filter((path) => !path.startsWith(cropFolder)).length;
   }
 
+  const textsBefore = new Date(now.getTime() - RETENTION_MS);
   const texts = await db.query(
     `update {{schema}}.jobs as job set pasted_text = null, post_links = '{}'
       where (job.pasted_text is not null or job.post_links <> '{}')
         and job.received_at <= $1
         and not exists (select 1 from {{schema}}.job_images as image
                          where image.job_id = job.id and image.kept_for_eval)`,
-    [new Date(now.getTime() - RETENTION_MS)],
+    [textsBefore],
+  );
+  // The post's hashes go with its text: a share is matched to an earlier one only within the
+  // comparison's four weeks (ledger spec, "The timing comparison").
+  await db.query(
+    `update {{schema}}.jobs as job set post_hashes = '{}'
+      where job.post_hashes <> '{}' and job.received_at <= $1
+        and not exists (select 1 from {{schema}}.job_images as image
+                         where image.job_id = job.id and image.kept_for_eval)`,
+    [textsBefore],
   );
 
   return { images: expired.length, crops, strays, pastedTexts: texts.rowCount };

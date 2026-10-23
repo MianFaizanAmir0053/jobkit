@@ -35,6 +35,8 @@ export interface Job {
   leaseExpiresAt: Date | null;
   /** A test job, made in test mode, which never counts (ledger spec, "Test jobs"). */
   test: boolean;
+  /** The timing arm it was drawn into during real use (ledger spec); none outside it. */
+  arm: "tool" | "manual" | null;
 }
 
 // A job left uploading this long after it began to upload has failed (intake spec).
@@ -53,10 +55,11 @@ type JobRow = {
   lease_id: string | null;
   lease_expires_at: Date | null;
   kind: "real" | "test";
+  arm: "tool" | "manual" | null;
 };
 
 const COLUMNS = `id, state, pending_stage, state_changed_at, failed_stage, failure, retry_round,
-  received_at, client_elapsed_ms, lease_id, lease_expires_at, kind`;
+  received_at, client_elapsed_ms, lease_id, lease_expires_at, kind, arm`;
 
 function toJob(row: JobRow): Job {
   return {
@@ -72,6 +75,7 @@ function toJob(row: JobRow): Job {
     leaseId: row.lease_id,
     leaseExpiresAt: row.lease_expires_at,
     test: row.kind === "test",
+    arm: row.arm,
   };
 }
 
@@ -83,7 +87,10 @@ const MAX_CLIENT_ELAPSED_MS = 2 ** 31 - 1;
  * for the manual arm (ledger spec). `receivedAt` is the server's time of the
  * request; the job starts `clientElapsedMs` before it, rounded to whole
  * milliseconds since phones measure it with a fractional timer. A test
- * job, made in test mode, never counts (ledger spec, "Test jobs").
+ * job, made in test mode, never counts (ledger spec, "Test jobs"). A job
+ * drawn into a timing arm keeps the draw, its place in the sequence or the
+ * earlier job whose arm it took, with its post's hashes, by which a share
+ * of the same post is known again.
  */
 export async function createJob(
   db: Db,
@@ -92,6 +99,8 @@ export async function createJob(
     receivedAt: Date;
     clientElapsedMs: number;
     test?: boolean;
+    arm?: { arm: "tool" | "manual"; index: number | null; from: string | null } | null;
+    postHashes?: readonly string[];
   },
 ): Promise<string> {
   const clientElapsedMs = Math.round(job.clientElapsedMs);
@@ -102,10 +111,22 @@ export async function createJob(
   }
   return db.tx(async (tx) => {
     const { rows } = await tx.query<{ id: string }>(
-      `insert into {{schema}}.jobs (state, state_changed_at, received_at, client_elapsed_ms, kind)
-       values ($1, $2, $2, $3, $4)
+      `insert into {{schema}}.jobs
+         (state, state_changed_at, received_at, client_elapsed_ms, kind, arm, arm_index, arm_from,
+          post_hashes)
+       values ($1, $2, $2, $3, $4, $5, $6, $7, $8)
        returning id`,
-      [job.state, job.receivedAt, clientElapsedMs, job.test ? "test" : "real"],
+      [
+        job.state,
+        job.receivedAt,
+        clientElapsedMs,
+        job.test ? "test" : "real",
+        job.arm?.arm ?? null,
+        job.arm?.index ?? null,
+        job.arm?.from ?? null,
+        // Only a job in an arm keeps its post's hashes: no other share is matched against it.
+        job.arm ? [...(job.postHashes ?? [])] : [],
+      ],
     );
     const id = rows[0]!.id;
     await tx.query(

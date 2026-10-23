@@ -86,9 +86,9 @@ async function script(page: Page, answers: unknown[]): Promise<void> {
 }
 
 /** Pastes the post on New job and starts it, landing on its page. */
-async function start(page: Page): Promise<void> {
+async function start(page: Page, text = POST): Promise<void> {
   await page.goto("/jobs/new");
-  await page.getByLabel("Paste text").fill(POST);
+  await page.getByLabel("Paste text").fill(text);
   await page.getByRole("button", { name: "Start" }).click();
   await expect(page).toHaveURL(/\/jobs\/[0-9a-f-]{36}$/);
 }
@@ -242,10 +242,11 @@ test("shows a manual run's clock and Stop, which records the route, the company 
   expect((await handedOff).status()).toBe(200);
 
   // New jobs until one is drawn into the manual arm; the others fail at once, with no answer.
+  // Each is another post: one shared again would keep the arm it first took.
   const manual = page.getByText("This one is a manual run: apply the old way, then tap Stop.");
   await script(page, []);
   for (let tries = 0; tries < 20; tries++) {
-    await start(page);
+    await start(page, `${POST}\nReference ${tries}.`);
     await expect(manual.or(page.getByRole("heading", { name: "This step failed" }))).toBeVisible();
     if (await manual.isVisible()) break;
   }

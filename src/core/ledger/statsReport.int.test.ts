@@ -100,16 +100,25 @@ describe("the timing arms and the Stats page", () => {
     expect(await realUseStart(db)).not.toBeNull();
     clock.advance(11 * MINUTE);
 
-    // The sequence the seed sets decides each job's arm; the manual arm's job runs nothing.
+    // The sequence the seed sets decides each job's arm, which the job keeps with its place; the
+    // manual arm's job runs nothing. Each is another post, so each draws.
     const seed = fixed(7).bytes(32);
     for (let i = 0; i < 6; i++) {
-      const started = await startJob({ ...deps, random: fixed(7) }, job);
+      const started = await startJob(
+        { ...deps, random: fixed(7) },
+        { ...job, pastedText: `Post ${i}.` },
+      );
       if (!started.ok) throw new Error(started.message);
       const arm = armAt(seed, i);
-      expect((await loadJob(db, started.jobId))?.state).toBe(
-        arm === "manual" ? "manual_run" : "queued",
-      );
+      expect(await loadJob(db, started.jobId)).toMatchObject({
+        state: arm === "manual" ? "manual_run" : "queued",
+        arm,
+      });
       expect(Boolean(started.manual)).toBe(arm === "manual");
+      const { rows } = await db.query("select arm_index from {{schema}}.jobs where id = $1", [
+        started.jobId,
+      ]);
+      expect(rows).toEqual([{ arm_index: i }]);
     }
 
     // Four weeks from the start of real use the comparison ends: no place is drawn, the job runs.
@@ -122,6 +131,93 @@ describe("the timing arms and the Stats page", () => {
       "select next_index from {{schema}}.arm_sequence",
     );
     expect(rows).toEqual([{ next_index: 6 }]);
+  });
+
+  it("keeps the arm a post first took when it is shared again, drawing no new place", async () => {
+    const deps = { db, clock, storage: createLocalStorage({ root: ".", origin: "http://x" }) };
+    const start = (pastedText: string, hashes: string[] = []) =>
+      startJob(
+        { ...deps, random: fixed(7) },
+        {
+          images: hashes.map((sha256) => ({
+            contentType: "image/png" as const,
+            bytes: 100,
+            width: 10,
+            height: 10,
+            sha256,
+          })),
+          pastedText,
+          clientElapsedMs: 0,
+        },
+      );
+    const armOf = async (jobId: string) =>
+      (
+        await db.query<{ arm: string; arm_index: number | null; arm_from: string | null }>(
+          "select arm, arm_index, arm_from from {{schema}}.jobs where id = $1",
+          [jobId],
+        )
+      ).rows[0];
+    await went("email", 10, null);
+    clock.advance(11 * MINUTE);
+
+    const first = await start("Northwind is hiring a developer.");
+    if (!first.ok) throw new Error(first.message);
+    const drawn = await armOf(first.jobId);
+    expect(drawn).toMatchObject({ arm_index: 0, arm_from: null });
+
+    // The same words, spaced otherwise, are the same post: its first arm, and no new place.
+    const again = await start("Northwind  is hiring\na developer.");
+    if (!again.ok) throw new Error(again.message);
+    expect(await armOf(again.jobId)).toEqual({
+      arm: drawn!.arm,
+      arm_index: null,
+      arm_from: first.jobId,
+    });
+
+    // A screenshot the post was first shared with is the same post, though more come with it.
+    const shot = (n: number) => n.toString(16).padStart(64, "0");
+    const screenshots = await start("", [shot(1)]);
+    if (!screenshots.ok) throw new Error(screenshots.message);
+    const more = await start("", [shot(1), shot(2)]);
+    if (!more.ok) throw new Error(more.message);
+    expect((await armOf(more.jobId))?.arm_from).toBe(screenshots.jobId);
+
+    // Another post draws the next place.
+    const other = await start("Fabrikam is hiring a designer.");
+    if (!other.ok) throw new Error(other.message);
+    expect((await armOf(other.jobId))?.arm_index).toBe(2);
+  });
+
+  it("tells what became of each arm's jobs: went, left without going, still open, shared again", async () => {
+    const drawn = (arm: "tool" | "manual", from: string | null = null) =>
+      createJob(db, {
+        state: "manual_run",
+        receivedAt: clock.now(),
+        clientElapsedMs: 0,
+        arm: { arm, index: from === null ? 0 : null, from },
+        postHashes: ["a".repeat(64)],
+      });
+    const toolWent = await drawn("tool");
+    await db.query(
+      `insert into {{schema}}.applications
+         (job_id, role_id, company, role, role_key, route, status, opened_at, sent_at,
+          status_changed_at, arm, job_kind)
+       values ($1, 'P1', 'Northwind', 'Developer', 'developer', 'email', 'sent', $2, $2, $2,
+               'tool', 'real')`,
+      [toolWent, clock.now()],
+    );
+    const toolLeft = await drawn("tool");
+    const manualLeft = await drawn("manual");
+    await db.query("update {{schema}}.jobs set state = 'closed' where id = any($1::uuid[])", [
+      [toolLeft, manualLeft],
+    ]);
+    // Skipped, then shared again: the old way still, and open.
+    await drawn("manual", manualLeft);
+
+    expect((await statsReport(db)).arms).toEqual({
+      tool: { drawn: 2, went: 1, left: 1, open: 0, sharedAgain: 0 },
+      manual: { drawn: 2, went: 0, left: 1, open: 1, sharedAgain: 1 },
+    });
   });
 
   it("records a manual run's Stop once, with its route, company and role, as an application of the manual arm that went", async () => {
