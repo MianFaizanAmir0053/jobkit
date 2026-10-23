@@ -5,6 +5,7 @@
  * at once when the page is shown again. Plain functions over a page's
  * hooks, so tests can drive them with fake timers.
  */
+import type { StateKind } from "@/core/platform/jobStates";
 
 export interface PageHooks {
   hidden(): boolean;
@@ -50,6 +51,15 @@ export function browserPage(): PageHooks {
 
 /** A job's page polls every 2 seconds for its first minute, then every 5. */
 export const JOB_POLL = { fastMs: 2_000, slowMs: 5_000, fastForMs: 60_000 } as const;
+
+/**
+ * Whether a job's page asks its status: only while the job runs or uploads,
+ * never a ready, waiting, owner or final job's (platform AC19). A ready
+ * kit's page asks only its gate's check and a send's progress.
+ */
+export function pollsStatus(kind: StateKind): boolean {
+  return kind === "running" || kind === "client";
+}
 
 /** The jobs list advances its running jobs every 10 seconds. */
 export const LIST_TICK_MS = 10_000;

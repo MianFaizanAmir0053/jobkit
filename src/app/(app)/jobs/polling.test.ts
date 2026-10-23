@@ -11,9 +11,11 @@ import {
   outboundHeld,
   type PageHooks,
   pollJob,
+  pollsStatus,
   refreshList,
   watchGate,
 } from "./polling";
+import { JOB_STATES, kindOf } from "@/core/platform/jobStates";
 
 /* Polling on the job page and the jobs list (platform spec B9, review spec "Jobs list"), and the kit's gate (review spec, "The outbound gate"). */
 
@@ -315,6 +317,25 @@ describe("watchGate", () => {
 
     stop();
     expect(nudges.size).toBe(0);
+  });
+});
+
+describe("pollsStatus", () => {
+  it("asks a job's status only while it runs or uploads, never a ready, waiting, owner or final job's (platform AC19)", () => {
+    const polled = JOB_STATES.filter((state) => pollsStatus(kindOf(state)));
+
+    expect(polled).toEqual(
+      JOB_STATES.filter((state) => ["running", "client"].includes(kindOf(state))),
+    );
+    for (const state of [
+      "kit_ready",
+      "needs_role_pick",
+      "failed",
+      "manual_run",
+      "closed",
+    ] as const) {
+      expect(pollsStatus(kindOf(state)), state).toBe(false);
+    }
   });
 });
 

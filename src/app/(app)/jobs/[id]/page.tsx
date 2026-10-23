@@ -58,6 +58,7 @@ import { duplicateLine, formatTime, placeOfFlag, STATE_WORDS, withoutContacts } 
 import { ActionButton } from "./ActionButton";
 import { AddScreenshots } from "./AddScreenshots";
 import { ApproveSend } from "./ApproveSend";
+import { pollsStatus } from "../polling";
 import { JobPoller } from "./JobPoller";
 import { ManualRun } from "./ManualRun";
 import { OldWayForm } from "./OldWayForm";
@@ -147,7 +148,7 @@ export default async function JobPage(props: PageProps<"/jobs/[id]">) {
     [view.role?.title ?? view.application?.role, record?.company.name ?? view.application?.company]
       .filter(Boolean)
       .join(" · ") || "Job";
-  const polling = view.kind === "running" || view.kind === "client";
+  const polling = pollsStatus(view.kind);
   const ready = view.state === "kit_ready";
   const readable = ready && view.draft && view.role && view.kitParts && view.kitKey;
   const gmail = readable ? await gmailForViewer() : null;
